@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from project_maintainer.config import IssueAgentConfig
-from project_maintainer.github_client.models import Issue, Label, User
-from project_maintainer.issue_agent.classifier import IssueClassification, classify_issue
+from caretaker.config import IssueAgentConfig
+from caretaker.github_client.models import Issue, Label, User
+from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 
 
 def make_issue(

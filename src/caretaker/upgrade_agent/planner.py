@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.upgrade_agent.release_checker import Release
+from caretaker.github_client.api import GitHubClient
+from caretaker.upgrade_agent.release_checker import Release
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,11 @@ def build_upgrade_issue_body(
         "@copilot Please apply this upgrade.",
         "See `.github/agents/maintainer-upgrade.md` for instructions.",
         "",
-        "<!-- project-maintainer:upgrade -->",
+        "<!-- caretaker:upgrade -->",
         f"FROM: {current_version}",
         f"TO: {target.version}",
         f"BREAKING: {target.breaking}",
-        "<!-- /project-maintainer:upgrade -->",
+        "<!-- /caretaker:upgrade -->",
         "",
         "**Steps:**",
         "1. Update version pins in `pyproject.toml` / `requirements.txt`",

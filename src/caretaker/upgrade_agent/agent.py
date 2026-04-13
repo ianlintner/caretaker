@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from project_maintainer.config import UpgradeAgentConfig
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.upgrade_agent.planner import UpgradePlanner
-from project_maintainer.upgrade_agent.release_checker import fetch_releases, needs_upgrade
+from caretaker.config import UpgradeAgentConfig
+from caretaker.github_client.api import GitHubClient
+from caretaker.upgrade_agent.planner import UpgradePlanner
+from caretaker.upgrade_agent.release_checker import fetch_releases, needs_upgrade
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class UpgradeAgentReport:
 
 
 class UpgradeAgent:
-    """Checks for new project-maintainer releases and creates upgrade issues."""
+    """Checks for new caretaker releases and creates upgrade issues."""
 
     def __init__(
         self,

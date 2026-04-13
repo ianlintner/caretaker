@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from project_maintainer.config import MaintainerConfig
+from caretaker.config import MaintainerConfig
 
 
 class TestMaintainerConfig:

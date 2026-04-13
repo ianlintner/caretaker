@@ -1,4 +1,4 @@
-"""Shared test fixtures for project-maintainer."""
+"""Shared test fixtures for caretaker."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from project_maintainer.config import MaintainerConfig, PRAgentConfig
-from project_maintainer.github_client.models import (
+from caretaker.config import MaintainerConfig, PRAgentConfig
+from caretaker.github_client.models import (
     CheckConclusion,
     CheckRun,
     CheckStatus,

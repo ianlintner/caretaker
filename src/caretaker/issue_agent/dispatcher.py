@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.github_client.models import Issue
-from project_maintainer.issue_agent.classifier import IssueClassification
+from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.models import Issue
+from caretaker.issue_agent.classifier import IssueClassification
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def build_assignment_body(issue: Issue, classification: IssueClassification) -> 
         "@copilot Please implement this fix. "
         "See `.github/agents/maintainer-issue.md` for your workflow.",
         "",
-        "<!-- project-maintainer:assignment -->",
+        "<!-- caretaker:assignment -->",
         f"TYPE: {classification.value}",
         f"SOURCE_ISSUE: #{issue.number}",
         "PRIORITY: medium",
@@ -33,7 +33,7 @@ def build_assignment_body(issue: Issue, classification: IssueClassification) -> 
         "- [ ] The reported issue is resolved",
         "- [ ] Tests added for the fix",
         "- [ ] All existing tests continue to pass",
-        "<!-- /project-maintainer:assignment -->",
+        "<!-- /caretaker:assignment -->",
     ]
     return "\n".join(lines)
 
@@ -69,10 +69,10 @@ class IssueDispatcher:
                 f"@copilot This issue has been triaged as `{classification.value}`. "
                 "Please fix it.\n\n"
                 "See `.github/agents/maintainer-issue.md` for your workflow.\n\n"
-                "<!-- project-maintainer:assignment -->\n"
+                "<!-- caretaker:assignment -->\n"
                 f"TYPE: {classification.value}\n"
                 "PRIORITY: medium\n"
-                "<!-- /project-maintainer:assignment -->"
+                "<!-- /caretaker:assignment -->"
             )
             await self._github.add_issue_comment(
                 self._owner, self._repo, issue.number, comment_body
@@ -105,7 +105,7 @@ class IssueDispatcher:
                 self._owner,
                 self._repo,
                 issue.number,
-                f"This issue has been picked up by the project-maintainer. "
+                f"This issue has been picked up by the caretaker. "
                 f"Tracking in #{new_issue.number}.",
             )
             logger.info(

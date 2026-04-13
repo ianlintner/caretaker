@@ -7,8 +7,8 @@ import re
 from datetime import datetime, timezone
 from enum import Enum
 
-from project_maintainer.config import IssueAgentConfig
-from project_maintainer.github_client.models import Issue
+from caretaker.config import IssueAgentConfig
+from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 

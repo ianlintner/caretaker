@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from project_maintainer.config import PRAgentConfig
-from project_maintainer.github_client.models import PullRequest
-from project_maintainer.pr_agent.states import CIEvaluation, CIStatus, ReviewEvaluation
+from caretaker.config import PRAgentConfig
+from caretaker.github_client.models import PullRequest
+from caretaker.pr_agent.states import CIEvaluation, CIStatus, ReviewEvaluation
 
 logger = logging.getLogger(__name__)
 

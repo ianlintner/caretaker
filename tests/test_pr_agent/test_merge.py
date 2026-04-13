@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from project_maintainer.config import AutoMergeConfig, PRAgentConfig
-from project_maintainer.github_client.models import (
+from caretaker.config import AutoMergeConfig, PRAgentConfig
+from caretaker.github_client.models import (
     CheckConclusion,
     Label,
     ReviewState,
     User,
 )
-from project_maintainer.pr_agent.merge import evaluate_merge
-from project_maintainer.pr_agent.states import CIStatus, evaluate_ci, evaluate_reviews
+from caretaker.pr_agent.merge import evaluate_merge
+from caretaker.pr_agent.states import CIStatus, evaluate_ci, evaluate_reviews
 
 from tests.conftest import make_check_run, make_pr, make_review
 

@@ -39,6 +39,8 @@ class IssueTrackingState(str, Enum):
 class TrackedPR(BaseModel):
     number: int
     state: PRTrackingState = PRTrackingState.DISCOVERED
+    first_seen_at: datetime | None = None
+    merged_at: datetime | None = None
     ci_attempts: int = 0
     copilot_attempts: int = 0
     last_task_comment_id: int | None = None
@@ -68,6 +70,10 @@ class RunSummary(BaseModel):
     issues_escalated: int = 0
     orphaned_prs: int = 0
     stale_assignments_escalated: int = 0
+    prs_fix_requested: int = 0
+    avg_time_to_merge_hours: float = 0.0
+    escalation_rate: float = 0.0
+    copilot_success_rate: float = 0.0
     upgrade_available: bool = False
     upgrade_version: str = ""
     errors: list[str] = Field(default_factory=list)

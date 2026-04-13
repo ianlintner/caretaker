@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from project_maintainer.config import LLMConfig
+from caretaker.config import LLMConfig
 
 from .claude import ClaudeClient
 

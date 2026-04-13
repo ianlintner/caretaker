@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from project_maintainer.github_client.models import Issue, User
-from project_maintainer.issue_agent.classifier import IssueClassification
-from project_maintainer.issue_agent.dispatcher import IssueDispatcher
+from caretaker.github_client.models import Issue, User
+from caretaker.issue_agent.classifier import IssueClassification
+from caretaker.issue_agent.dispatcher import IssueDispatcher
 
 
 def make_issue(number: int = 1, title: str = "Bug report") -> Issue:

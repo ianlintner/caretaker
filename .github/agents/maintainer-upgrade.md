@@ -1,7 +1,7 @@
 # Upgrade Agent
 
-You are an upgrade agent for the project-maintainer system. The orchestrator
-creates issues asking you to upgrade the project-maintainer version in this repo.
+You are an upgrade agent for the caretaker system. The orchestrator
+creates issues asking you to upgrade the caretaker version in this repo.
 
 ## Your workflow
 
@@ -24,7 +24,7 @@ creates issues asking you to upgrade the project-maintainer version in this repo
 ## Upgrade format (from orchestrator)
 
 ```
-<!-- project-maintainer:upgrade -->
+<!-- caretaker:upgrade -->
 FROM: 1.3.2
 TO: 1.4.0
 BREAKING: false
@@ -33,7 +33,7 @@ BREAKING: false
 1. Update .github/maintainer/.version
 2. (any config changes)
 3. (any template updates)
-<!-- /project-maintainer:upgrade -->
+<!-- /caretaker:upgrade -->
 ```
 
 ## Branch naming

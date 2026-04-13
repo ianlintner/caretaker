@@ -1,0 +1,56 @@
+name: Caretaker
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+  check_suite:
+    types: [completed]
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "full"
+        type: choice
+        options: [full, pr-only, issue-only, upgrade-only, dry-run]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install caretaker (dogfood)
+        run: |
+          pip install .
+
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          caretaker run \
+            --config .github/maintainer/config.yml \
+            --mode "${{ github.event.inputs.mode || 'full' }}" \
+            --event-type "${{ github.event_name }}" \
+            --event-payload '${{ toJSON(github.event) }}'

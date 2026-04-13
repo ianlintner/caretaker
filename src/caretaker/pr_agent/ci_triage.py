@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from project_maintainer.github_client.models import CheckRun
-from project_maintainer.llm.router import LLMRouter
+from caretaker.github_client.models import CheckRun
+from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 

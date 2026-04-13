@@ -1,8 +1,8 @@
-<!-- Added by project-maintainer (dogfood) -->
+<!-- Added by caretaker (dogfood) -->
 
-## Project Maintainer System
+## Caretaker System
 
-This IS the central project-maintainer repository. It uses its own system for maintenance.
+This IS the central caretaker repository. It uses its own system for maintenance.
 
 ### How it works
 
@@ -11,7 +11,7 @@ This IS the central project-maintainer repository. It uses its own system for ma
 - When @copilot opens PRs, the orchestrator monitors them through CI, review, and merge
 - The orchestrator communicates with @copilot via structured issue/PR comments
 
-### When assigned an issue by project-maintainer
+### When assigned an issue by caretaker
 
 - Read the full issue body carefully — it contains structured instructions
 - Follow the instructions exactly as written

@@ -6,21 +6,21 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from project_maintainer.config import PRAgentConfig
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.github_client.models import PullRequest
-from project_maintainer.llm.copilot import CopilotProtocol, ResultStatus
-from project_maintainer.llm.router import LLMRouter
-from project_maintainer.pr_agent.ci_triage import triage_failure
-from project_maintainer.pr_agent.copilot import PRCopilotBridge
-from project_maintainer.pr_agent.merge import evaluate_merge
-from project_maintainer.pr_agent.review import analyze_reviews
-from project_maintainer.pr_agent.states import (
+from caretaker.config import PRAgentConfig
+from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.models import PullRequest
+from caretaker.llm.copilot import CopilotProtocol, ResultStatus
+from caretaker.llm.router import LLMRouter
+from caretaker.pr_agent.ci_triage import triage_failure
+from caretaker.pr_agent.copilot import PRCopilotBridge
+from caretaker.pr_agent.merge import evaluate_merge
+from caretaker.pr_agent.review import analyze_reviews
+from caretaker.pr_agent.states import (
     CIStatus,
     PRStateEvaluation,
     evaluate_pr,
 )
-from project_maintainer.state.models import PRTrackingState, TrackedPR
+from caretaker.state.models import PRTrackingState, TrackedPR
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,9 @@ class PRAgent:
         self, pr: PullRequest, tracking: TrackedPR, report: PRAgentReport
     ) -> TrackedPR:
         """Process a single PR through the state machine."""
+        if tracking.first_seen_at is None:
+            tracking.first_seen_at = datetime.utcnow()
+
         # Fetch CI status and reviews
         check_runs = await self._github.get_check_runs(
             self._owner, self._repo, pr.head_ref
@@ -150,6 +153,7 @@ class PRAgent:
             if success:
                 logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
                 tracking.state = PRTrackingState.MERGED
+                tracking.merged_at = datetime.utcnow()
                 report.merged.append(pr.number)
             else:
                 logger.warning("PR #%d merge failed", pr.number)
@@ -263,7 +267,7 @@ class PRAgent:
             report.waiting.append(pr.number)
             return tracking
 
-        from project_maintainer.github_client.models import Review
+        from caretaker.github_client.models import Review
 
         analyses = await analyze_reviews(
             reviews,
@@ -300,7 +304,7 @@ class PRAgent:
             self._owner, self._repo, pr.number, labels
         )
         body = (
-            f"⚠️ **Project Maintainer Escalation**\n\n"
+            f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
             f"**Reason:** {reason}\n\n"
             f"The automated system has exhausted its ability to resolve this. "

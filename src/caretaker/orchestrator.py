@@ -6,20 +6,20 @@ import logging
 import os
 from datetime import datetime
 
-from project_maintainer import __version__
-from project_maintainer.config import MaintainerConfig
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.issue_agent.agent import IssueAgent
-from project_maintainer.llm.router import LLMRouter
-from project_maintainer.pr_agent.agent import PRAgent
-from project_maintainer.state.models import (
+from caretaker import __version__
+from caretaker.config import MaintainerConfig
+from caretaker.github_client.api import GitHubClient
+from caretaker.issue_agent.agent import IssueAgent
+from caretaker.llm.router import LLMRouter
+from caretaker.pr_agent.agent import PRAgent
+from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
     PRTrackingState,
     RunSummary,
 )
-from project_maintainer.state.tracker import StateTracker
-from project_maintainer.upgrade_agent.agent import UpgradeAgent
+from caretaker.state.tracker import StateTracker
+from caretaker.upgrade_agent.agent import UpgradeAgent
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,27 @@ class Orchestrator:
 
         summary.stale_assignments_escalated = stale_escalated
 
+        total_work_items = summary.prs_monitored + summary.issues_triaged
+        total_escalated = summary.prs_escalated + summary.issues_escalated
+        summary.escalation_rate = (
+            total_escalated / total_work_items if total_work_items > 0 else 0.0
+        )
+
+        merged_durations_hours: list[float] = []
+        for tracked_pr in state.tracked_prs.values():
+            if tracked_pr.merged_at and tracked_pr.first_seen_at:
+                merged_durations_hours.append(
+                    (tracked_pr.merged_at - tracked_pr.first_seen_at).total_seconds()
+                    / 3600.0
+                )
+        if merged_durations_hours:
+            summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
+                merged_durations_hours
+            )
+
+        if summary.prs_monitored > 0:
+            summary.copilot_success_rate = summary.prs_merged / summary.prs_monitored
+
     async def _handle_event(
         self,
         event_type: str,
@@ -217,6 +238,7 @@ class Orchestrator:
         summary.prs_merged = len(report.merged)
         summary.prs_escalated = len(report.escalated)
         summary.errors.extend(report.errors)
+        summary.prs_fix_requested = len(report.fix_requested)
 
     async def _run_issue_agent(
         self, state: OrchestratorState, summary: RunSummary

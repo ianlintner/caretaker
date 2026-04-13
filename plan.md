@@ -1,4 +1,4 @@
-# Project Maintainer — Consolidated Architecture Plan
+# Caretaker — Consolidated Architecture Plan
 
 ## 1. Vision
 
@@ -12,7 +12,7 @@ No Python. No Node. No understanding of GitHub Actions. One issue. Done.
 
 ### 2.1 What the User Does
 
-1. Go to `github.com/your-org/project-maintainer` (our repo)
+1. Go to `github.com/your-org/caretaker` (our repo)
 2. Copy the setup issue template (prominently displayed in README)
 3. Create a new issue in *their* repo with that text
 4. Assign it to `@copilot`
@@ -23,14 +23,14 @@ That's it.
 ### 2.2 The Setup Issue Template
 
 ```markdown
-## Setup Project Maintainer
+## Setup Caretaker
 
-@copilot Please set up the project-maintainer system for this repository.
+@copilot Please set up the caretaker system for this repository.
 
 ### Instructions
 
 1. Read the setup guide at:
-   https://github.com/your-org/project-maintainer/blob/main/SETUP_AGENT.md
+   https://github.com/your-org/caretaker/blob/main/SETUP_AGENT.md
 
 2. Follow the instructions in that guide exactly. It will tell you:
    - What files to create and where
@@ -40,7 +40,7 @@ That's it.
    - How to configure copilot instructions and agent files for ongoing maintenance
 
 3. After creating all files, open a single PR with the changes.
-   Title: "chore: setup project-maintainer"
+   Title: "chore: setup caretaker"
    
 4. In the PR description, include:
    - A summary of what was configured and why
@@ -49,8 +49,8 @@ That's it.
 
 ### Context
 
-This repo uses the project-maintainer system for automated repo management.
-See: https://github.com/your-org/project-maintainer
+This repo uses the caretaker system for automated repo management.
+See: https://github.com/your-org/caretaker
 ```
 
 ### 2.3 What Copilot Does (Guided by SETUP_AGENT.md)
@@ -114,10 +114,10 @@ Copilot has several native extension points we use as boundaries between our orc
 This is Copilot's persistent memory for the repo. Our setup appends a section:
 
 ```markdown
-<!-- Added by project-maintainer -->
-## Project Maintainer System
+<!-- Added by caretaker -->
+## Caretaker System
 
-This repository uses the project-maintainer automated management system.
+This repository uses the caretaker automated management system.
 
 ### How it works
 - An orchestrator runs weekly via GitHub Actions
@@ -125,7 +125,7 @@ This repository uses the project-maintainer automated management system.
 - When @copilot opens PRs, the orchestrator monitors them through CI, review, and merge
 - The orchestrator communicates with @copilot via structured issue/PR comments
 
-### When assigned an issue by project-maintainer
+### When assigned an issue by caretaker
 - Read the full issue body carefully — it contains structured instructions
 - Follow the instructions exactly as written
 - If unclear, comment on the issue asking for clarification
@@ -148,7 +148,7 @@ Agent files (`.github/agents/`) give Copilot specialized personas. Our orchestra
 # PR Maintenance Agent
 
 You are a PR maintenance agent for this repository. You are invoked by the 
-project-maintainer orchestrator to fix issues on pull requests.
+caretaker orchestrator to fix issues on pull requests.
 
 ## Your capabilities
 - Fix failing CI builds (test failures, lint errors, type errors, build errors)
@@ -184,7 +184,7 @@ ACTION: Fix parseConfig to return null for empty input. Run all tests.
 ```markdown
 # Issue Execution Agent
 
-You are an issue execution agent. The project-maintainer orchestrator assigns 
+You are an issue execution agent. The caretaker orchestrator assigns 
 you issues that describe specific changes to make to this codebase.
 
 ## Your workflow
@@ -300,7 +300,7 @@ The PR Agent communicates with Copilot exclusively via PR comments using a struc
 ```markdown
 @copilot
 
-<!-- project-maintainer:task -->
+<!-- caretaker:task -->
 TASK: Fix CI failure
 TYPE: TEST_FAILURE
 JOB: test-unit
@@ -322,20 +322,20 @@ FAIL src/parser.test.ts
 
 **Context:**
 This PR was opened to fix #38. The original change introduced a regression in empty input handling.
-<!-- /project-maintainer:task -->
+<!-- /caretaker:task -->
 ```
 
 **Copilot → Orchestrator (expected response, trained via agent file):**
 ```markdown
-<!-- project-maintainer:result -->
+<!-- caretaker:result -->
 RESULT: FIXED
 CHANGES: Modified src/parser.ts line 42 — changed `return undefined` to `return null`
 TESTS: All 47 tests passing
 COMMIT: abc123f
-<!-- /project-maintainer:result -->
+<!-- /caretaker:result -->
 ```
 
-The structured comment blocks (`<!-- project-maintainer:task -->`) serve dual purpose:
+The structured comment blocks (`<!-- caretaker:task -->`) serve dual purpose:
 - Machine-parseable by the orchestrator on next run
 - Human-readable for the repo owner reviewing the PR
 
@@ -405,7 +405,7 @@ Fixes #52 (reported by @external-user)
 
 @copilot Please implement this fix. See `.github/agents/maintainer-issue.md` for your workflow.
 
-<!-- project-maintainer:assignment -->
+<!-- caretaker:assignment -->
 TYPE: BUG_SIMPLE
 SOURCE_ISSUE: #52
 PRIORITY: medium
@@ -423,7 +423,7 @@ has no keys. The null check on line 38 tests for `null` input but not empty obje
 **Files likely involved:**
 - `src/parser.ts` (line ~38)
 - `src/parser.test.ts`
-<!-- /project-maintainer:assignment -->
+<!-- /caretaker:assignment -->
 ```
 
 ### 6.4 Managing the Issue → PR → Merge Lifecycle
@@ -570,7 +570,7 @@ No Python files. No node_modules. No vendored code. Just config and Copilot inst
 ### 8.2 The Workflow File
 
 ```yaml
-name: Project Maintainer
+name: Caretaker
 
 on:
   schedule:
@@ -612,17 +612,17 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install project-maintainer
+      - name: Install caretaker
         run: |
           VERSION=$(cat .github/maintainer/.version)
-          pip install "project-maintainer==${VERSION}"
+          pip install "caretaker==${VERSION}"
 
       - name: Run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # optional
         run: |
-          project-maintainer run \
+          caretaker run \
             --config .github/maintainer/config.yml \
             --mode "${{ github.event.inputs.mode || 'full' }}" \
             --event-type "${{ github.event_name }}" \
@@ -634,11 +634,11 @@ jobs:
 For non-breaking upgrades, the Upgrade Agent can just create an issue:
 
 ```markdown
-## [Maintainer] Upgrade project-maintainer to 1.4.0
+## [Maintainer] Upgrade caretaker to 1.4.0
 
-@copilot Please upgrade the project-maintainer version.
+@copilot Please upgrade the caretaker version.
 
-<!-- project-maintainer:assignment -->
+<!-- caretaker:assignment -->
 TYPE: UPGRADE
 CURRENT_VERSION: 1.3.2
 TARGET_VERSION: 1.4.0
@@ -649,19 +649,19 @@ BREAKING: false
 2. No config changes needed for this version
 
 **Release notes:**
-https://github.com/your-org/project-maintainer/releases/tag/v1.4.0
+https://github.com/your-org/caretaker/releases/tag/v1.4.0
 
 **Changelog highlights:**
 - Improved review comment classification
 - Better flaky test detection
 - No config schema changes
-<!-- /project-maintainer:assignment -->
+<!-- /caretaker:assignment -->
 ```
 
 For breaking upgrades, the issue includes migration instructions that Copilot follows:
 
 ```markdown
-<!-- project-maintainer:assignment -->
+<!-- caretaker:assignment -->
 TYPE: UPGRADE
 CURRENT_VERSION: 1.4.0
 TARGET_VERSION: 2.0.0
@@ -674,13 +674,13 @@ REQUIRES_HUMAN_REVIEW: true
    - Move `pr_agent.nitpick_threshold` to `pr_agent.review.nitpick_threshold`
    - Add new required field: `orchestrator.summary_issue: true`
 3. Update `.github/agents/maintainer-pr.md` — fetch latest from:
-   https://raw.githubusercontent.com/your-org/project-maintainer/v2.0.0/dist/templates/agents/maintainer-pr.md
+   https://raw.githubusercontent.com/your-org/caretaker/v2.0.0/dist/templates/agents/maintainer-pr.md
 4. Update `.github/agents/maintainer-issue.md` — fetch latest from above
 5. Append to `.github/copilot-instructions.md` — add v2 section from:
-   https://raw.githubusercontent.com/your-org/project-maintainer/v2.0.0/dist/templates/copilot-instructions-append.md
+   https://raw.githubusercontent.com/your-org/caretaker/v2.0.0/dist/templates/copilot-instructions-append.md
 
 **Do NOT auto-merge this PR. Label it `maintainer:breaking` so the owner reviews.**
-<!-- /project-maintainer:assignment -->
+<!-- /caretaker:assignment -->
 ```
 
 ### 8.4 Agent File Updates
@@ -693,7 +693,7 @@ These artifacts are the stable interface between versions and must never have br
 
 1. **`releases.json`** — append-only release manifest
 2. **`SETUP_AGENT.md`** — setup prompt (can improve but must remain backwards-compatible)
-3. **Issue comment format** — `<!-- project-maintainer:task -->` blocks
+3. **Issue comment format** — `<!-- caretaker:task -->` blocks
 4. **`.version` file** — always a plain semver string
 
 Everything else (agent files, config schema, copilot-instructions content) is versionable and upgradeable through the system itself.
@@ -769,9 +769,9 @@ llm:
 ## 10. Central Repo Structure
 
 ```
-project-maintainer/
+caretaker/
   src/
-    project_maintainer/
+    caretaker/
       __init__.py
       cli.py                    # CLI entrypoint
       orchestrator.py           # Main orchestration loop

@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from project_maintainer.config import IssueAgentConfig
-from project_maintainer.github_client.models import Issue, PullRequest, PRState, User
-from project_maintainer.issue_agent.agent import IssueAgent
-from project_maintainer.state.models import IssueTrackingState, TrackedIssue
+from caretaker.config import IssueAgentConfig
+from caretaker.github_client.models import Issue, PullRequest, PRState, User
+from caretaker.issue_agent.agent import IssueAgent
+from caretaker.state.models import IssueTrackingState, TrackedIssue
 
 
 def make_issue(

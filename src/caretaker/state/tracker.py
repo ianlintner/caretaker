@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from project_maintainer.github_client.api import GitHubClient
+from caretaker.github_client.api import GitHubClient
 
 from .models import OrchestratorState, RunSummary
 
@@ -107,7 +107,7 @@ class StateTracker:
             self._repo,
             title=TRACKING_ISSUE_TITLE,
             body=(
-                "This issue is used by the project-maintainer orchestrator "
+                "This issue is used by the caretaker orchestrator "
                 "to track state and post run summaries.\n\n"
                 "**Do not close or modify this issue.**\n\n"
                 "Label: `maintainer:internal`"
@@ -153,6 +153,7 @@ class StateTracker:
             f"- {summary.prs_monitored} PRs monitored",
             f"- {summary.prs_merged} merged",
             f"- {summary.prs_escalated} escalated",
+            f"- {summary.prs_fix_requested} fix requests posted",
             "",
             "### Issue Agent",
             f"- {summary.issues_triaged} issues triaged",
@@ -163,6 +164,9 @@ class StateTracker:
             "### Reconciliation",
             f"- {summary.orphaned_prs} orphaned PRs detected",
             f"- {summary.stale_assignments_escalated} stale assignments escalated",
+            f"- Escalation rate: {summary.escalation_rate:.2%}",
+            f"- Copilot success rate: {summary.copilot_success_rate:.2%}",
+            f"- Avg time-to-merge: {summary.avg_time_to_merge_hours:.2f}h",
             "",
         ]
         if summary.upgrade_available:

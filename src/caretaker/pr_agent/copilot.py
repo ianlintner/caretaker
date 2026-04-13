@@ -5,17 +5,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.github_client.models import PullRequest
-from project_maintainer.llm.copilot import (
+from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.models import PullRequest
+from caretaker.llm.copilot import (
     CopilotProtocol,
     CopilotResult,
     CopilotTask,
     ResultStatus,
     TaskType,
 )
-from project_maintainer.pr_agent.ci_triage import TriageResult
-from project_maintainer.pr_agent.review import ReviewAnalysis
+from caretaker.pr_agent.ci_triage import TriageResult
+from caretaker.pr_agent.review import ReviewAnalysis
 
 logger = logging.getLogger(__name__)
 

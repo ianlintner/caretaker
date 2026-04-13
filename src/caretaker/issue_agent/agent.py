@@ -7,13 +7,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from project_maintainer.config import IssueAgentConfig
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.github_client.models import Issue
-from project_maintainer.issue_agent.classifier import IssueClassification, classify_issue
-from project_maintainer.issue_agent.dispatcher import IssueDispatcher
-from project_maintainer.llm.router import LLMRouter
-from project_maintainer.state.models import IssueTrackingState, TrackedIssue
+from caretaker.config import IssueAgentConfig
+from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.models import Issue
+from caretaker.issue_agent.classifier import IssueClassification, classify_issue
+from caretaker.issue_agent.dispatcher import IssueDispatcher
+from caretaker.llm.router import LLMRouter
+from caretaker.state.models import IssueTrackingState, TrackedIssue
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +251,7 @@ class IssueAgent:
             self._owner,
             self._repo,
             issue.number,
-            f"⚠️ **Project Maintainer Escalation**\n\n"
+            f"⚠️ **Caretaker Escalation**\n\n"
             f"**Reason:** {reason}\n\n"
             f"This issue needs human attention.",
         )

@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from project_maintainer.github_client.models import (
+from caretaker.github_client.models import (
     CheckConclusion,
     CheckRun,
     CheckStatus,
@@ -14,7 +14,7 @@ from project_maintainer.github_client.models import (
     Review,
     ReviewState,
 )
-from project_maintainer.state.models import PRTrackingState
+from caretaker.state.models import PRTrackingState
 
 logger = logging.getLogger(__name__)
 

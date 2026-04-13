@@ -1,5 +1,5 @@
 # .github/maintainer/config.yml
-# Dogfood — this repo uses project-maintainer on itself
+# Dogfood — this repo uses caretaker on itself
 version: v1
 
 orchestrator:

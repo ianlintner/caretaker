@@ -7,15 +7,15 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from project_maintainer.github_client.api import GitHubClient
-from project_maintainer.github_client.models import Comment
+from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.models import Comment
 
 logger = logging.getLogger(__name__)
 
-TASK_OPEN = "<!-- project-maintainer:task -->"
-TASK_CLOSE = "<!-- /project-maintainer:task -->"
-RESULT_OPEN = "<!-- project-maintainer:result -->"
-RESULT_CLOSE = "<!-- /project-maintainer:result -->"
+TASK_OPEN = "<!-- caretaker:task -->"
+TASK_CLOSE = "<!-- /caretaker:task -->"
+RESULT_OPEN = "<!-- caretaker:result -->"
+RESULT_CLOSE = "<!-- /caretaker:result -->"
 
 
 class TaskType(str, Enum):

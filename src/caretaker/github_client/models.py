@@ -79,11 +79,11 @@ class Comment(BaseModel):
 
     @property
     def is_maintainer_task(self) -> bool:
-        return "<!-- project-maintainer:task -->" in self.body
+        return "<!-- caretaker:task -->" in self.body
 
     @property
     def is_maintainer_result(self) -> bool:
-        return "<!-- project-maintainer:result -->" in self.body
+        return "<!-- caretaker:result -->" in self.body
 
 
 class PullRequest(BaseModel):

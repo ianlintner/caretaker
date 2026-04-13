@@ -6,8 +6,8 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from project_maintainer.github_client.models import Review, ReviewState
-from project_maintainer.llm.router import LLMRouter
+from caretaker.github_client.models import Review, ReviewState
+from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 

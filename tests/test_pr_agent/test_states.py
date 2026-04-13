@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from project_maintainer.github_client.models import (
+from caretaker.github_client.models import (
     CheckConclusion,
     CheckStatus,
     ReviewState,
 )
-from project_maintainer.pr_agent.states import (
+from caretaker.pr_agent.states import (
     CIStatus,
     evaluate_ci,
     evaluate_pr,
     evaluate_reviews,
 )
-from project_maintainer.state.models import PRTrackingState
+from caretaker.state.models import PRTrackingState
 
 from tests.conftest import make_check_run, make_pr, make_review
 
@@ -125,7 +125,7 @@ class TestEvaluateReviews:
 
     def test_approval_and_changes_requested(self) -> None:
         """Changes requested by one reviewer blocks even with another approval."""
-        from project_maintainer.github_client.models import User
+        from caretaker.github_client.models import User
 
         r1 = make_review(
             user=User(login="approver", id=10, type="User"),
@@ -144,7 +144,7 @@ class TestEvaluateReviews:
         """If a user first requests changes then approves, the approval wins."""
         from datetime import datetime, timezone
 
-        from project_maintainer.github_client.models import User
+        from caretaker.github_client.models import User
 
         user = User(login="reviewer", id=10, type="User")
         r1 = make_review(

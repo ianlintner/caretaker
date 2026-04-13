@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from project_maintainer.github_client.models import CheckConclusion, CheckRun, CheckStatus
-from project_maintainer.pr_agent.ci_triage import (
+from caretaker.github_client.models import CheckConclusion, CheckRun, CheckStatus
+from caretaker.pr_agent.ci_triage import (
     FailureType,
     build_fix_instructions,
     classify_failure,

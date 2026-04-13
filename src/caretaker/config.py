@@ -1,4 +1,4 @@
-"""Configuration models for project-maintainer."""
+"""Configuration models for caretaker."""
 
 from __future__ import annotations
 

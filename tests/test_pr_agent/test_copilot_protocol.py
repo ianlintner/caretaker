@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from project_maintainer.llm.copilot import (
+from caretaker.llm.copilot import (
     CopilotResult,
     CopilotTask,
     ResultStatus,

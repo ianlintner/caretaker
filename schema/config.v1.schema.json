@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/your-org/project-maintainer/schema/config.v1.schema.json",
-  "title": "Project Maintainer Config v1",
+  "$id": "https://github.com/your-org/caretaker/schema/config.v1.schema.json",
+  "title": "Caretaker Config v1",
   "type": "object",
   "additionalProperties": false,
   "properties": {

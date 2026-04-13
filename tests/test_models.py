@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from project_maintainer.github_client.models import (
+from caretaker.github_client.models import (
     Comment,
     Issue,
     Label,
@@ -46,7 +46,7 @@ class TestPullRequest:
 
 class TestComment:
     def test_is_maintainer_task(self) -> None:
-        comment = make_comment(body="<!-- project-maintainer:task -->Fix this")
+        comment = make_comment(body="<!-- caretaker:task -->Fix this")
         assert comment.is_maintainer_task is True
 
     def test_is_not_maintainer_task(self) -> None:
@@ -54,7 +54,7 @@ class TestComment:
         assert comment.is_maintainer_task is False
 
     def test_is_maintainer_result(self) -> None:
-        comment = make_comment(body="<!-- project-maintainer:result -->FIXED")
+        comment = make_comment(body="<!-- caretaker:result -->FIXED")
         assert comment.is_maintainer_result is True
 
 

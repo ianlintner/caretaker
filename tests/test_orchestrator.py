@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
-from project_maintainer.config import MaintainerConfig
-from project_maintainer.orchestrator import Orchestrator
-from project_maintainer.state.models import (
+from caretaker.config import MaintainerConfig
+from caretaker.orchestrator import Orchestrator
+from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
     PRTrackingState,

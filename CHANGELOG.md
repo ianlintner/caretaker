@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
 - Orchestrator: coordinates all agents, state persistence via GitHub issues
 - LLM layer: Copilot structured comment protocol, optional Claude integration
 - State tracking: issue-backed persistence with run summaries
-- CLI entrypoint (`project-maintainer run`)
+- CLI entrypoint (`caretaker run`)
 - Consumer templates: workflow, agent files, config, copilot instructions
 - SETUP_AGENT.md: zero-config onboarding via Copilot
 - CI pipeline: ruff lint, mypy strict, pytest with coverage

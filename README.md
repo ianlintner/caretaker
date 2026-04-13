@@ -1,4 +1,4 @@
-# Project Maintainer
+# Caretaker
 
 Autonomous GitHub repository management powered by Copilot.
 
@@ -22,24 +22,24 @@ The orchestrator uses Copilot as its execution engine — it observes your repo 
 ### 1. Create a new issue in your repo:
 
 ```markdown
-## Setup Project Maintainer
+## Setup Caretaker
 
-@copilot Please set up the project-maintainer system for this repository.
+@copilot Please set up the caretaker system for this repository.
 
 ### Instructions
 
 1. Read the setup guide at:
-   https://github.com/your-org/project-maintainer/blob/main/dist/SETUP_AGENT.md
+   https://github.com/your-org/caretaker/blob/main/dist/SETUP_AGENT.md
 
 2. Follow the instructions in that guide exactly.
 
 3. After creating all files, open a single PR with the changes.
-   Title: "chore: setup project-maintainer"
+   Title: "chore: setup caretaker"
 
 ### Context
 
-This repo uses the project-maintainer system for automated repo management.
-See: https://github.com/your-org/project-maintainer
+This repo uses the caretaker system for automated repo management.
+See: https://github.com/your-org/caretaker
 ```
 
 ### 2. Assign the issue to `@copilot`
@@ -93,7 +93,7 @@ No Python. No Node. No vendored code. Just config and Copilot instructions.
 
 ### Upgrade Agent
 
-- Checks for new project-maintainer releases
+- Checks for new caretaker releases
 - Creates upgrade issues for Copilot to execute
 - Handles breaking vs. non-breaking upgrades
 - Version pinning via `.version` file
@@ -155,8 +155,8 @@ The orchestrator **never writes code**. It manages Copilot, which does.
 
 ```bash
 # Clone and install
-git clone https://github.com/your-org/project-maintainer.git
-cd project-maintainer
+git clone https://github.com/your-org/caretaker.git
+cd caretaker
 pip install -e ".[dev]"
 
 # Run tests

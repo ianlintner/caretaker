@@ -1,6 +1,6 @@
 # Issue Execution Agent
 
-You are an issue execution agent. The project-maintainer orchestrator assigns
+You are an issue execution agent. The caretaker orchestrator assigns
 you issues that describe specific changes to make to this codebase.
 
 ## Your workflow
@@ -29,7 +29,7 @@ you issues that describe specific changes to make to this codebase.
 ## Assignment format (from orchestrator)
 
 ```
-<!-- project-maintainer:assignment -->
+<!-- caretaker:assignment -->
 TYPE: BUG_SIMPLE | BUG_COMPLEX | FEATURE_SMALL
 SOURCE_ISSUE: #52
 PRIORITY: low | medium | high
@@ -44,7 +44,7 @@ PRIORITY: low | medium | high
 **Files likely involved:**
 - file1.ts
 - file2.ts
-<!-- /project-maintainer:assignment -->
+<!-- /caretaker:assignment -->
 ```
 
 ## Response

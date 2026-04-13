@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from project_maintainer.github_client.models import ReviewState, User
-from project_maintainer.pr_agent.review import (
+from caretaker.github_client.models import ReviewState, User
+from caretaker.pr_agent.review import (
     ReviewCommentType,
     classify_review_basic,
     analyze_reviews,
