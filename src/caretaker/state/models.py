@@ -76,11 +76,23 @@ class RunSummary(BaseModel):
     copilot_success_rate: float = 0.0
     upgrade_available: bool = False
     upgrade_version: str = ""
+    # DevOps agent metrics
+    build_failures_detected: int = 0
+    build_fix_issues_created: int = 0
+    # Self-heal agent metrics
+    self_heal_failures_analyzed: int = 0
+    self_heal_local_issues: int = 0
+    self_heal_upstream_bugs: int = 0
+    self_heal_upstream_features: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
 class OrchestratorState(BaseModel):
     tracked_prs: dict[int, TrackedPR] = Field(default_factory=dict)
     tracked_issues: dict[int, TrackedIssue] = Field(default_factory=dict)
+    # Signatures of build failures already reported (devops agent dedup)
+    reported_build_sigs: list[str] = Field(default_factory=list)
+    # Signatures of self-heal issues already filed
+    reported_self_heal_sigs: list[str] = Field(default_factory=list)
     last_run: RunSummary | None = None
     run_history: list[RunSummary] = Field(default_factory=list)
