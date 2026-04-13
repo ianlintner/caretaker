@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 from enum import Enum
 
 from project_maintainer.config import IssueAgentConfig
@@ -33,12 +34,27 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
     # Label-based classification
     label_names = {l.name.lower() for l in issue.labels}
 
+    if "duplicate" in label_names:
+        return IssueClassification.DUPLICATE
+
     if label_names & {l.lower() for l in config.labels.question}:
         return IssueClassification.QUESTION
 
     body_lower = (issue.body or "").lower()
     title_lower = issue.title.lower()
     text = f"{title_lower} {body_lower}"
+
+    if "duplicate of #" in text or re.search(r"\bdup(?:licate)?\b.*#\d+", text):
+        return IssueClassification.DUPLICATE
+
+    last_activity = issue.updated_at or issue.created_at
+    if last_activity is not None:
+        now = datetime.now(timezone.utc)
+        if last_activity.tzinfo is None:
+            last_activity = last_activity.replace(tzinfo=timezone.utc)
+        age_days = (now - last_activity).days
+        if age_days >= config.auto_close_stale_days:
+            return IssueClassification.STALE
 
     # Infrastructure / config issues
     if any(kw in text for kw in ["secret", "permission", "deploy", "ci/cd", "workflow", "token"]):

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from project_maintainer.config import IssueAgentConfig
 from project_maintainer.github_client.api import GitHubClient
@@ -50,7 +51,10 @@ class IssueAgent:
         """Run the issue agent — triage all open issues."""
         report = IssueAgentReport()
 
-        issues = await self._github.list_issues(self._owner, self._repo)
+        issues = await self._github.list_issues(self._owner, self._repo, state="all")
+        pull_requests = await self._github.list_pull_requests(
+            self._owner, self._repo, state="all"
+        )
 
         for issue in issues:
             try:
@@ -58,14 +62,29 @@ class IssueAgent:
                     issue.number, TrackedIssue(number=issue.number)
                 )
 
+                # Reconcile closed issues and stop processing
+                if issue.state != "open":
+                    if tracking.state in (
+                        IssueTrackingState.PR_OPENED,
+                        IssueTrackingState.IN_PROGRESS,
+                        IssueTrackingState.ASSIGNED,
+                    ):
+                        tracking.state = IssueTrackingState.COMPLETED
+                    else:
+                        tracking.state = IssueTrackingState.CLOSED
+                    tracking.last_checked = datetime.utcnow()
+                    tracked_issues[issue.number] = tracking
+                    continue
+
+                tracking = self._reconcile_issue_progress(issue, pull_requests, tracking)
+
                 # Skip already-processed issues
                 if tracking.state in (
-                    IssueTrackingState.ASSIGNED,
-                    IssueTrackingState.IN_PROGRESS,
-                    IssueTrackingState.PR_OPENED,
                     IssueTrackingState.COMPLETED,
-                    IssueTrackingState.ESCALATED,
+                    IssueTrackingState.CLOSED,
                 ):
+                    tracking.last_checked = datetime.utcnow()
+                    tracked_issues[issue.number] = tracking
                     continue
 
                 classification = classify_issue(issue, self._config)
@@ -116,7 +135,11 @@ class IssueAgent:
                         tracking.state = IssueTrackingState.ASSIGNED
                         report.assigned.append(issue.number)
                 else:
-                    tracking.state = IssueTrackingState.TRIAGED
+                    if tracking.state in (
+                        IssueTrackingState.NEW,
+                        IssueTrackingState.TRIAGED,
+                    ):
+                        tracking.state = IssueTrackingState.TRIAGED
 
             case IssueClassification.FEATURE_LARGE:
                 await self._escalate(issue, "Large feature — needs human decomposition")
@@ -139,6 +162,34 @@ class IssueAgent:
                     tracking.state = IssueTrackingState.CLOSED
                     report.closed.append(issue.number)
 
+            case IssueClassification.DUPLICATE:
+                await self._github.add_issue_comment(
+                    self._owner,
+                    self._repo,
+                    issue.number,
+                    "This issue appears to be a duplicate. "
+                    "If needed, please reference the original tracking issue.",
+                )
+                await self._github.update_issue(
+                    self._owner, self._repo, issue.number, state="closed"
+                )
+                tracking.state = IssueTrackingState.CLOSED
+                report.closed.append(issue.number)
+
+            case IssueClassification.STALE:
+                await self._github.add_issue_comment(
+                    self._owner,
+                    self._repo,
+                    issue.number,
+                    "Closing as stale due to inactivity. "
+                    "Please reopen if this is still relevant.",
+                )
+                await self._github.update_issue(
+                    self._owner, self._repo, issue.number, state="closed"
+                )
+                tracking.state = IssueTrackingState.STALE
+                report.closed.append(issue.number)
+
             case IssueClassification.INFRA_OR_CONFIG:
                 await self._escalate(
                     issue, "Infrastructure/config issue — requires human access"
@@ -147,9 +198,49 @@ class IssueAgent:
                 report.escalated.append(issue.number)
 
             case _:
-                tracking.state = IssueTrackingState.TRIAGED
+                if tracking.state in (
+                    IssueTrackingState.NEW,
+                    IssueTrackingState.TRIAGED,
+                ):
+                    tracking.state = IssueTrackingState.TRIAGED
 
         return tracking
+
+    def _reconcile_issue_progress(
+        self,
+        issue: Issue,
+        pull_requests: list,
+        tracking: TrackedIssue,
+    ) -> TrackedIssue:
+        """Update issue tracking state based on assignees and linked PRs."""
+        if any(a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees):
+            if tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
+                tracking.state = IssueTrackingState.IN_PROGRESS
+
+        linked_pr = self._find_linked_pr_number(issue.number, pull_requests)
+        if linked_pr is not None:
+            tracking.assigned_pr = linked_pr
+            tracking.state = IssueTrackingState.PR_OPENED
+
+        return tracking
+
+    @staticmethod
+    def _find_linked_pr_number(issue_number: int, pull_requests: list) -> int | None:
+        """Find a PR that links to an issue via closing keywords or plain references."""
+        issue_ref = f"#{issue_number}"
+        link_pattern = re.compile(
+            rf"\b(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)\s+{re.escape(issue_ref)}\b",
+            re.IGNORECASE,
+        )
+
+        for pr in pull_requests:
+            text = f"{pr.title}\n{pr.body or ''}"
+            if issue_ref in text and (
+                link_pattern.search(text) or issue_ref in (pr.body or "")
+            ):
+                return pr.number
+
+        return None
 
     async def _escalate(self, issue: Issue, reason: str) -> None:
         """Escalate an issue to the repo owner."""
