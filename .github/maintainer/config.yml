@@ -1,0 +1,52 @@
+# .github/maintainer/config.yml
+# Dogfood — this repo uses project-maintainer on itself
+version: v1
+
+orchestrator:
+  schedule: weekly
+  summary_issue: true
+  dry_run: false
+
+pr_agent:
+  enabled: true
+  auto_merge:
+    copilot_prs: true
+    dependabot_prs: true
+    human_prs: false
+    merge_method: squash
+  copilot:
+    max_retries: 2
+    retry_window_hours: 24
+    context_injection: true
+  ci:
+    flaky_retries: 1
+    ignore_jobs: []
+  review:
+    auto_approve_copilot: false
+    nitpick_threshold: low
+
+issue_agent:
+  enabled: true
+  auto_assign_bugs: true
+  auto_assign_features: false
+  auto_close_stale_days: 30
+  auto_close_questions: true
+  labels:
+    bug: ["bug"]
+    feature: ["enhancement", "feature"]
+    question: ["question"]
+
+upgrade_agent:
+  enabled: false # This IS the central repo — no self-upgrade
+
+escalation:
+  targets: []
+  stale_days: 7
+  labels: ["maintainer:escalated"]
+
+llm:
+  claude_enabled: auto
+  claude_features:
+    - ci_log_analysis
+    - architectural_review
+    - issue_decomposition

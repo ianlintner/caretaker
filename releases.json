@@ -1,0 +1,11 @@
+{
+  "releases": [
+    {
+      "version": "0.1.0",
+      "min_compatible": "0.1.0",
+      "changelog_url": "",
+      "upgrade_notes": "Initial release. No upgrade required.",
+      "breaking": false
+    }
+  ]
+}

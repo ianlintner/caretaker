@@ -1,0 +1,151 @@
+"""GitHub data models."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+class PRState(str, Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
+class CheckStatus(str, Enum):
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
+class CheckConclusion(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    NEUTRAL = "neutral"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+    TIMED_OUT = "timed_out"
+    ACTION_REQUIRED = "action_required"
+    STALE = "stale"
+
+
+class ReviewState(str, Enum):
+    APPROVED = "APPROVED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    COMMENTED = "COMMENTED"
+    DISMISSED = "DISMISSED"
+    PENDING = "PENDING"
+
+
+class User(BaseModel):
+    login: str
+    id: int
+    type: str = "User"
+
+
+class Label(BaseModel):
+    name: str
+    color: str = ""
+
+
+class CheckRun(BaseModel):
+    id: int
+    name: str
+    status: CheckStatus
+    conclusion: CheckConclusion | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    html_url: str = ""
+    output_title: str | None = None
+    output_summary: str | None = None
+
+
+class Review(BaseModel):
+    id: int
+    user: User
+    state: ReviewState
+    body: str = ""
+    submitted_at: datetime | None = None
+
+
+class Comment(BaseModel):
+    id: int
+    user: User
+    body: str
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    @property
+    def is_maintainer_task(self) -> bool:
+        return "<!-- project-maintainer:task -->" in self.body
+
+    @property
+    def is_maintainer_result(self) -> bool:
+        return "<!-- project-maintainer:result -->" in self.body
+
+
+class PullRequest(BaseModel):
+    number: int
+    title: str
+    body: str = ""
+    state: PRState
+    user: User
+    head_ref: str = ""
+    base_ref: str = ""
+    mergeable: bool | None = None
+    merged: bool = False
+    draft: bool = False
+    labels: list[Label] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    html_url: str = ""
+
+    @property
+    def is_copilot_pr(self) -> bool:
+        return self.user.login in ("copilot", "github-copilot[bot]", "copilot[bot]")
+
+    @property
+    def is_dependabot_pr(self) -> bool:
+        return self.user.login in ("dependabot[bot]", "dependabot")
+
+    @property
+    def is_maintainer_pr(self) -> bool:
+        return any(l.name.startswith("maintainer:") for l in self.labels)
+
+    def has_label(self, name: str) -> bool:
+        return any(l.name == name for l in self.labels)
+
+
+class Issue(BaseModel):
+    number: int
+    title: str
+    body: str = ""
+    state: str = "open"
+    user: User
+    labels: list[Label] = Field(default_factory=list)
+    assignees: list[User] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    html_url: str = ""
+
+    def has_label(self, name: str) -> bool:
+        return any(l.name == name for l in self.labels)
+
+    @property
+    def is_maintainer_issue(self) -> bool:
+        return self.title.startswith("[Maintainer]") or self.has_label("maintainer:internal")
+
+
+class Repository(BaseModel):
+    owner: str
+    name: str
+    full_name: str
+    default_branch: str = "main"
+    private: bool = False
+
+    @property
+    def nwo(self) -> str:
+        """Name with owner (e.g. 'owner/repo')."""
+        return self.full_name

@@ -1,0 +1,229 @@
+"""Tests for PR state machine evaluation."""
+
+from __future__ import annotations
+
+from project_maintainer.github_client.models import (
+    CheckConclusion,
+    CheckStatus,
+    ReviewState,
+)
+from project_maintainer.pr_agent.states import (
+    CIStatus,
+    evaluate_ci,
+    evaluate_pr,
+    evaluate_reviews,
+)
+from project_maintainer.state.models import PRTrackingState
+
+from tests.conftest import make_check_run, make_pr, make_review
+
+
+# ── evaluate_ci ──────────────────────────────────────────────────────
+
+
+class TestEvaluateCI:
+    def test_empty_check_runs(self) -> None:
+        result = evaluate_ci([])
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is True
+
+    def test_all_passing(self) -> None:
+        runs = [
+            make_check_run(name="lint"),
+            make_check_run(name="test"),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PASSING
+        assert len(result.passed_runs) == 2
+        assert result.all_completed is True
+
+    def test_all_failing(self) -> None:
+        runs = [
+            make_check_run(name="test", conclusion=CheckConclusion.FAILURE),
+            make_check_run(name="lint", conclusion=CheckConclusion.FAILURE),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.FAILING
+        assert len(result.failed_runs) == 2
+
+    def test_mixed_results(self) -> None:
+        runs = [
+            make_check_run(name="lint"),  # passing
+            make_check_run(name="test", conclusion=CheckConclusion.FAILURE),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.MIXED
+        assert len(result.failed_runs) == 1
+        assert len(result.passed_runs) == 1
+
+    def test_pending_runs(self) -> None:
+        runs = [
+            make_check_run(name="lint"),
+            make_check_run(
+                name="test",
+                status=CheckStatus.IN_PROGRESS,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+        assert len(result.pending_runs) == 1
+
+    def test_ignore_jobs(self) -> None:
+        runs = [
+            make_check_run(name="lint"),
+            make_check_run(name="deploy", conclusion=CheckConclusion.FAILURE),
+        ]
+        result = evaluate_ci(runs, ignore_jobs=["deploy"])
+        assert result.status == CIStatus.PASSING
+        assert len(result.passed_runs) == 1
+
+    def test_timed_out_counts_as_failure(self) -> None:
+        runs = [
+            make_check_run(name="test", conclusion=CheckConclusion.TIMED_OUT),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.FAILING
+        assert len(result.failed_runs) == 1
+
+    def test_queued_is_pending(self) -> None:
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.QUEUED,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+
+
+# ── evaluate_reviews ─────────────────────────────────────────────────
+
+
+class TestEvaluateReviews:
+    def test_no_reviews(self) -> None:
+        result = evaluate_reviews([])
+        assert result.pending is True
+        assert result.approved is False
+        assert result.changes_requested is False
+
+    def test_single_approval(self) -> None:
+        reviews = [make_review(state=ReviewState.APPROVED)]
+        result = evaluate_reviews(reviews)
+        assert result.approved is True
+        assert result.changes_requested is False
+
+    def test_changes_requested(self) -> None:
+        reviews = [make_review(state=ReviewState.CHANGES_REQUESTED, body="Fix this")]
+        result = evaluate_reviews(reviews)
+        assert result.approved is False
+        assert result.changes_requested is True
+        assert len(result.blocking_reviews) == 1
+
+    def test_approval_and_changes_requested(self) -> None:
+        """Changes requested by one reviewer blocks even with another approval."""
+        from project_maintainer.github_client.models import User
+
+        r1 = make_review(
+            user=User(login="approver", id=10, type="User"),
+            state=ReviewState.APPROVED,
+        )
+        r2 = make_review(
+            user=User(login="blocker", id=11, type="User"),
+            state=ReviewState.CHANGES_REQUESTED,
+            body="Needs work",
+        )
+        result = evaluate_reviews([r1, r2])
+        assert result.approved is False
+        assert result.changes_requested is True
+
+    def test_latest_review_per_user_wins(self) -> None:
+        """If a user first requests changes then approves, the approval wins."""
+        from datetime import datetime, timezone
+
+        from project_maintainer.github_client.models import User
+
+        user = User(login="reviewer", id=10, type="User")
+        r1 = make_review(
+            user=user,
+            state=ReviewState.CHANGES_REQUESTED,
+            body="Needs work",
+            submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
+        r2 = make_review(
+            user=user,
+            state=ReviewState.APPROVED,
+            submitted_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+        result = evaluate_reviews([r1, r2])
+        assert result.approved is True
+        assert result.changes_requested is False
+
+
+# ── evaluate_pr ──────────────────────────────────────────────────────
+
+
+class TestEvaluatePR:
+    def test_merged_pr(self) -> None:
+        pr = make_pr(merged=True, state="closed")
+        result = evaluate_pr(pr, [], [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.MERGED
+        assert result.recommended_action == "none"
+
+    def test_closed_pr(self) -> None:
+        pr = make_pr(state="closed")
+        result = evaluate_pr(pr, [], [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CLOSED
+
+    def test_ci_pending(self) -> None:
+        pr = make_pr()
+        checks = [
+            make_check_run(name="test", status=CheckStatus.IN_PROGRESS, conclusion=None),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_failing_request_fix(self) -> None:
+        pr = make_pr()
+        checks = [
+            make_check_run(name="test", conclusion=CheckConclusion.FAILURE),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CI_FAILING
+        assert result.recommended_action == "request_fix"
+
+    def test_ci_failing_wait_for_fix(self) -> None:
+        """If we already requested a fix, wait for it."""
+        pr = make_pr()
+        checks = [
+            make_check_run(name="test", conclusion=CheckConclusion.FAILURE),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.FIX_REQUESTED)
+        assert result.recommended_state == PRTrackingState.CI_FAILING
+        assert result.recommended_action == "wait_for_fix"
+
+    def test_ci_passing_no_reviews_merge_ready(self) -> None:
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+        assert result.recommended_action == "merge"
+
+    def test_ci_passing_approved_merge_ready(self) -> None:
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        reviews = [make_review(state=ReviewState.APPROVED)]
+        result = evaluate_pr(pr, checks, reviews, PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+    def test_ci_passing_changes_requested(self) -> None:
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        reviews = [make_review(state=ReviewState.CHANGES_REQUESTED, body="Fix")]
+        result = evaluate_pr(pr, checks, reviews, PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.REVIEW_CHANGES_REQUESTED
+        assert result.recommended_action == "request_review_fix"

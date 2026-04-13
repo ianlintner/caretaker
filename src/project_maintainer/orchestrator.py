@@ -1,0 +1,220 @@
+"""Orchestrator — wires all agents together and runs the main loop."""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime
+
+from project_maintainer import __version__
+from project_maintainer.config import MaintainerConfig
+from project_maintainer.github_client.api import GitHubClient
+from project_maintainer.issue_agent.agent import IssueAgent
+from project_maintainer.llm.router import LLMRouter
+from project_maintainer.pr_agent.agent import PRAgent
+from project_maintainer.state.models import OrchestratorState, RunSummary
+from project_maintainer.state.tracker import StateTracker
+from project_maintainer.upgrade_agent.agent import UpgradeAgent
+
+logger = logging.getLogger(__name__)
+
+
+class Orchestrator:
+    """Central orchestrator that coordinates all agents."""
+
+    def __init__(
+        self,
+        config: MaintainerConfig,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+    ) -> None:
+        self._config = config
+        self._github = github
+        self._owner = owner
+        self._repo = repo
+        self._llm = LLMRouter(config.llm)
+        self._state_tracker = StateTracker(github, owner, repo)
+
+    @classmethod
+    def from_config_path(cls, path: str) -> Orchestrator:
+        """Create an orchestrator from a YAML config file path."""
+        config = MaintainerConfig.from_yaml(path)
+
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            raise RuntimeError("GITHUB_TOKEN environment variable is required")
+
+        owner = os.environ.get("GITHUB_REPOSITORY_OWNER", "")
+        repo_name = os.environ.get("GITHUB_REPOSITORY_NAME", "")
+
+        # Fall back to GITHUB_REPOSITORY (owner/repo format)
+        if not owner or not repo_name:
+            full = os.environ.get("GITHUB_REPOSITORY", "")
+            if "/" in full:
+                owner, repo_name = full.split("/", 1)
+            else:
+                raise RuntimeError(
+                    "GITHUB_REPOSITORY or GITHUB_REPOSITORY_OWNER + "
+                    "GITHUB_REPOSITORY_NAME environment variables are required"
+                )
+
+        github = GitHubClient(token=token)
+        return cls(config=config, github=github, owner=owner, repo=repo_name)
+
+    async def run(
+        self,
+        mode: str = "full",
+        event_type: str | None = None,
+        event_payload: dict | None = None,
+    ) -> int:
+        """Run the orchestrator. Returns 0 on success, 1 on errors."""
+        logger.info(
+            "Orchestrator starting — mode=%s, version=%s, repo=%s/%s",
+            mode,
+            __version__,
+            self._owner,
+            self._repo,
+        )
+
+        # Load persisted state
+        state = await self._state_tracker.load()
+        summary = RunSummary(mode=mode, run_at=datetime.utcnow())
+        has_errors = False
+
+        try:
+            # Event-driven mode — route to specific agent
+            if mode == "event" and event_type:
+                await self._handle_event(event_type, event_payload or {}, state, summary)
+            else:
+                # Scheduled / full mode
+                if mode in ("full", "pr-only"):
+                    await self._run_pr_agent(state, summary)
+
+                if mode in ("full", "issue-only"):
+                    await self._run_issue_agent(state, summary)
+
+                if mode in ("full", "upgrade"):
+                    await self._run_upgrade_agent(state, summary)
+
+        except Exception as e:
+            logger.error("Orchestrator error: %s", e, exc_info=True)
+            summary.errors.append(str(e))
+            has_errors = True
+
+        # Persist state (save also appends summary to history)
+        await self._state_tracker.save(summary)
+
+        # Post summary if configured
+        if self._config.orchestrator.summary_issue and mode != "dry-run":
+            try:
+                await self._state_tracker.post_run_summary(summary)
+            except Exception as e:
+                logger.warning("Failed to post summary: %s", e)
+
+        if summary.errors:
+            has_errors = True
+            logger.warning("Run completed with %d errors", len(summary.errors))
+        else:
+            logger.info("Run completed successfully")
+
+        return 1 if has_errors else 0
+
+    async def _handle_event(
+        self,
+        event_type: str,
+        payload: dict,
+        state: OrchestratorState,
+        summary: RunSummary,
+    ) -> None:
+        """Handle a single GitHub event."""
+        logger.info("Handling event: %s", event_type)
+
+        if event_type in ("pull_request", "pull_request_review", "check_run", "check_suite"):
+            await self._run_pr_agent(state, summary)
+        elif event_type in ("issues", "issue_comment"):
+            await self._run_issue_agent(state, summary)
+        else:
+            logger.info("Event type %s — running full cycle", event_type)
+            await self._run_pr_agent(state, summary)
+            await self._run_issue_agent(state, summary)
+
+    async def _run_pr_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the PR agent."""
+        if not self._config.pr_agent.enabled:
+            logger.info("PR agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] PR agent would run")
+            return
+
+        pr_agent = PRAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            config=self._config.pr_agent,
+            llm_router=self._llm,
+        )
+        report, tracked_prs = await pr_agent.run(state.tracked_prs)
+        state.tracked_prs = tracked_prs
+
+        summary.prs_monitored = report.monitored
+        summary.prs_merged = len(report.merged)
+        summary.prs_escalated = len(report.escalated)
+        summary.errors.extend(report.errors)
+
+    async def _run_issue_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the issue agent."""
+        if not self._config.issue_agent.enabled:
+            logger.info("Issue agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Issue agent would run")
+            return
+
+        issue_agent = IssueAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            config=self._config.issue_agent,
+            llm_router=self._llm,
+        )
+        report, tracked_issues = await issue_agent.run(state.tracked_issues)
+        state.tracked_issues = tracked_issues
+
+        summary.issues_triaged = report.triaged
+        summary.issues_assigned = len(report.assigned)
+        summary.issues_closed = len(report.closed)
+        summary.issues_escalated = len(report.escalated)
+        summary.errors.extend(report.errors)
+
+    async def _run_upgrade_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the upgrade agent."""
+        if not self._config.upgrade_agent.enabled:
+            logger.info("Upgrade agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Upgrade agent would run")
+            return
+
+        upgrade_agent = UpgradeAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            config=self._config.upgrade_agent,
+            current_version=__version__,
+        )
+        report = await upgrade_agent.run()
+
+        summary.upgrade_available = report.upgrade_needed
+        summary.upgrade_version = report.latest_version or ""
+        summary.errors.extend(report.errors)
