@@ -12,7 +12,12 @@ from project_maintainer.github_client.api import GitHubClient
 from project_maintainer.issue_agent.agent import IssueAgent
 from project_maintainer.llm.router import LLMRouter
 from project_maintainer.pr_agent.agent import PRAgent
-from project_maintainer.state.models import OrchestratorState, RunSummary
+from project_maintainer.state.models import (
+    IssueTrackingState,
+    OrchestratorState,
+    PRTrackingState,
+    RunSummary,
+)
 from project_maintainer.state.tracker import StateTracker
 from project_maintainer.upgrade_agent.agent import UpgradeAgent
 
@@ -97,6 +102,9 @@ class Orchestrator:
                 if mode in ("full", "upgrade"):
                     await self._run_upgrade_agent(state, summary)
 
+            # Cross-agent state reconciliation
+            self._reconcile_state(state, summary)
+
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)
             summary.errors.append(str(e))
@@ -119,6 +127,50 @@ class Orchestrator:
             logger.info("Run completed successfully")
 
         return 1 if has_errors else 0
+
+    def _reconcile_state(self, state: OrchestratorState, summary: RunSummary) -> None:
+        """Reconcile cross-agent tracked PR/issue state and derive reconciliation metrics."""
+        now = datetime.utcnow()
+
+        issue_to_pr: dict[int, int] = {
+            issue_number: tracked_issue.assigned_pr
+            for issue_number, tracked_issue in state.tracked_issues.items()
+            if tracked_issue.assigned_pr is not None
+        }
+
+        linked_pr_numbers = set(issue_to_pr.values())
+        orphaned_prs = 0
+        for pr_number, tracked_pr in state.tracked_prs.items():
+            if tracked_pr.state in (PRTrackingState.MERGED, PRTrackingState.CLOSED):
+                continue
+            if pr_number not in linked_pr_numbers:
+                orphaned_prs += 1
+        summary.orphaned_prs = orphaned_prs
+
+        stale_escalated = 0
+        for tracked_issue in state.tracked_issues.values():
+            if tracked_issue.assigned_pr is not None:
+                pr = state.tracked_prs.get(tracked_issue.assigned_pr)
+                if pr is not None:
+                    if pr.state == PRTrackingState.MERGED:
+                        tracked_issue.state = IssueTrackingState.COMPLETED
+                    elif pr.state == PRTrackingState.CLOSED:
+                        tracked_issue.state = IssueTrackingState.CLOSED
+                    elif pr.state == PRTrackingState.ESCALATED:
+                        tracked_issue.state = IssueTrackingState.ESCALATED
+
+            if tracked_issue.state in (
+                IssueTrackingState.ASSIGNED,
+                IssueTrackingState.IN_PROGRESS,
+            ):
+                if tracked_issue.last_checked is not None:
+                    age_days = (now - tracked_issue.last_checked).days
+                    if age_days >= self._config.escalation.stale_days:
+                        tracked_issue.state = IssueTrackingState.ESCALATED
+                        tracked_issue.escalated = True
+                        stale_escalated += 1
+
+        summary.stale_assignments_escalated = stale_escalated
 
     async def _handle_event(
         self,
