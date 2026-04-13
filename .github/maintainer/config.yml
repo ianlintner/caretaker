@@ -51,6 +51,47 @@ self_heal_agent:
   # This IS the upstream caretaker source repo; upstream reporting is suppressed to avoid loops
   is_upstream_repo: true
 
+security_agent:
+  enabled: true
+  min_severity: medium
+  max_issues_per_run: 5
+  false_positive_rules: []
+  include_dependabot: true
+  include_code_scanning: true
+  include_secret_scanning: true
+
+dependency_agent:
+  enabled: true
+  auto_merge_patch: true
+  auto_merge_minor: true
+  merge_method: squash
+  post_digest: true
+
+docs_agent:
+  enabled: true
+  lookback_days: 7
+  changelog_path: CHANGELOG.md
+  update_readme: false
+
+stale_agent:
+  enabled: true
+  stale_days: 60
+  close_after: 14
+  close_stale_prs: true
+  delete_merged_branches: true
+  exempt_labels:
+    - pinned
+    - security
+    - security:finding
+    - dependencies:major-upgrade
+    - caretaker:self-heal
+    - devops:build-failure
+
+human_escalation:
+  enabled: true
+  post_digest_issue: true
+  notify_assignees: []
+
 escalation:
   targets: []
   stale_days: 7

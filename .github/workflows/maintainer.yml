@@ -17,6 +17,8 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  # Triggered by new Dependabot/security alerts — used by security agent
+  repository_vulnerability_alert: {}
   workflow_dispatch:
     inputs:
       mode:
@@ -25,7 +27,20 @@ on:
         default: "full"
         type: choice
         options:
-          [full, pr-only, issue-only, upgrade-only, devops, self-heal, dry-run]
+          [
+            full,
+            pr-only,
+            issue-only,
+            upgrade-only,
+            devops,
+            self-heal,
+            security,
+            deps,
+            docs,
+            stale,
+            escalation,
+            dry-run,
+          ]
 
 permissions:
   contents: write
