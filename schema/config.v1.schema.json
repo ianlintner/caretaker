@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/your-org/project-maintainer/schema/config.v1.schema.json",
+  "title": "Project Maintainer Config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "orchestrator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schedule": {
+          "type": "string",
+          "enum": ["weekly", "daily", "manual"]
+        },
+        "summary_issue": { "type": "boolean" },
+        "dry_run": { "type": "boolean" }
+      }
+    },
+    "pr_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "auto_merge": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "copilot_prs": { "type": "boolean" },
+            "dependabot_prs": { "type": "boolean" },
+            "human_prs": { "type": "boolean" },
+            "merge_method": {
+              "type": "string",
+              "enum": ["squash", "merge", "rebase"]
+            }
+          }
+        },
+        "copilot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_retries": { "type": "integer", "minimum": 0 },
+            "retry_window_hours": { "type": "integer", "minimum": 0 },
+            "context_injection": { "type": "boolean" }
+          }
+        },
+        "ci": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "flaky_retries": { "type": "integer", "minimum": 0 },
+            "ignore_jobs": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "auto_approve_copilot": { "type": "boolean" },
+            "nitpick_threshold": {
+              "type": "string",
+              "enum": ["low", "high"]
+            }
+          }
+        }
+      }
+    },
+    "issue_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "auto_assign_bugs": { "type": "boolean" },
+        "auto_assign_features": { "type": "boolean" },
+        "auto_close_stale_days": { "type": "integer", "minimum": 1 },
+        "auto_close_questions": { "type": "boolean" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bug": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "feature": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "question": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "upgrade_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "strategy": {
+          "type": "string",
+          "enum": ["auto-minor", "auto-patch", "latest", "pinned", "manual"]
+        },
+        "channel": {
+          "type": "string",
+          "enum": ["stable", "preview"]
+        },
+        "auto_merge_non_breaking": { "type": "boolean" }
+      }
+    },
+    "escalation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "stale_days": { "type": "integer", "minimum": 1 },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude_enabled": {
+          "type": "string",
+          "enum": ["auto", "true", "false"]
+        },
+        "claude_features": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

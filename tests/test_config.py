@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from project_maintainer.config import MaintainerConfig
 
 
@@ -71,3 +73,54 @@ escalation:
         assert config.escalation.targets == ["@lead-dev"]
         assert config.escalation.stale_days == 14
         assert config.pr_agent.enabled is True
+
+    def test_unsupported_version_raises(self) -> None:
+        yaml_content = """
+version: v2
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            with pytest.raises(ValueError, match="Unsupported config version"):
+                MaintainerConfig.from_yaml(f.name)
+
+    def test_unknown_top_level_key_raises(self) -> None:
+        yaml_content = """
+version: v1
+unknown_key: true
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            with pytest.raises(Exception):
+                MaintainerConfig.from_yaml(f.name)
+
+    def test_unknown_nested_key_raises(self) -> None:
+        yaml_content = """
+version: v1
+pr_agent:
+  ci:
+    not_a_real_field: 123
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            with pytest.raises(Exception):
+                MaintainerConfig.from_yaml(f.name)
+
+    def test_non_mapping_yaml_root_raises(self) -> None:
+        yaml_content = """
+- just
+- a
+- list
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            with pytest.raises(ValueError, match="must be a mapping"):
+                MaintainerConfig.from_yaml(f.name)
+
+    def test_schema_file_exists(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        schema_path = repo_root / "schema" / "config.v1.schema.json"
+        assert schema_path.exists()
