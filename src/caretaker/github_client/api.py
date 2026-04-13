@@ -187,13 +187,28 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
     ) -> Issue:
+        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
+        assign_copilot = assignees and "copilot" in assignees
+        real_assignees = [a for a in (assignees or []) if a != "copilot"]
+
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
-        if assignees:
-            payload["assignees"] = assignees
+        if real_assignees:
+            payload["assignees"] = real_assignees
         data = await self._post(f"/repos/{owner}/{repo}/issues", json=payload)
-        return self._parse_issue(data)
+        issue = self._parse_issue(data)
+
+        if assign_copilot:
+            await self.assign_copilot_to_issue(owner, repo, issue.number)
+
+        return issue
+
+    async def assign_copilot_to_issue(
+        self, owner: str, repo: str, issue_number: int
+    ) -> None:
+        """Assign GitHub Copilot to an issue via the dedicated endpoint."""
+        await self._post(f"/repos/{owner}/{repo}/issues/{issue_number}/copilot")
 
     async def update_issue(
         self,
