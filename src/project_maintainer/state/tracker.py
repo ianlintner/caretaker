@@ -160,6 +160,10 @@ class StateTracker:
             f"- {summary.issues_closed} closed",
             f"- {summary.issues_escalated} escalated",
             "",
+            "### Reconciliation",
+            f"- {summary.orphaned_prs} orphaned PRs detected",
+            f"- {summary.stale_assignments_escalated} stale assignments escalated",
+            "",
         ]
         if summary.upgrade_available:
             lines.extend([

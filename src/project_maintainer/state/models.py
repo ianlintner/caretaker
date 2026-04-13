@@ -66,6 +66,8 @@ class RunSummary(BaseModel):
     issues_assigned: int = 0
     issues_closed: int = 0
     issues_escalated: int = 0
+    orphaned_prs: int = 0
+    stale_assignments_escalated: int = 0
     upgrade_available: bool = False
     upgrade_version: str = ""
     errors: list[str] = Field(default_factory=list)
