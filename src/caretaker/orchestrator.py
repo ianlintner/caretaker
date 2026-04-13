@@ -384,3 +384,147 @@ class Orchestrator:
         summary.self_heal_upstream_bugs = len(report.upstream_issues_opened)
         summary.self_heal_upstream_features = len(report.upstream_features_requested)
         summary.errors.extend(report.errors)
+
+    async def _run_security_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the security agent to triage Dependabot/code-scanning/secret-scanning alerts."""
+        cfg = self._config.security_agent
+        if not cfg.enabled:
+            logger.info("Security agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Security agent would run")
+            return
+
+        agent = SecurityAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            min_severity=cfg.min_severity,
+            max_issues_per_run=cfg.max_issues_per_run,
+            false_positive_rules=cfg.false_positive_rules,
+            include_dependabot=cfg.include_dependabot,
+            include_code_scanning=cfg.include_code_scanning,
+            include_secret_scanning=cfg.include_secret_scanning,
+        )
+        report = await agent.run()
+
+        summary.security_findings_found = report.findings_found
+        summary.security_issues_created = report.issues_created
+        summary.security_false_positives = report.false_positives_flagged
+        summary.errors.extend(report.errors)
+
+    async def _run_dependency_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the dependency agent to handle Dependabot upgrade PRs."""
+        cfg = self._config.dependency_agent
+        if not cfg.enabled:
+            logger.info("Dependency agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Dependency agent would run")
+            return
+
+        agent = DependencyAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            auto_merge_patch=cfg.auto_merge_patch,
+            auto_merge_minor=cfg.auto_merge_minor,
+            merge_method=cfg.merge_method,
+            post_digest=cfg.post_digest,
+        )
+        report = await agent.run()
+
+        summary.dependency_prs_reviewed = report.prs_reviewed
+        summary.dependency_prs_auto_merged = report.prs_auto_merged
+        summary.dependency_major_issues = report.major_issues_created
+        summary.errors.extend(report.errors)
+
+    async def _run_docs_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the docs agent to produce weekly CHANGELOG update PRs."""
+        cfg = self._config.docs_agent
+        if not cfg.enabled:
+            logger.info("Docs agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Docs agent would run")
+            return
+
+        repo_info = await self._github.get_repo(self._owner, self._repo)
+        agent = DocsAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            default_branch=repo_info.default_branch,
+            lookback_days=cfg.lookback_days,
+            changelog_path=cfg.changelog_path,
+            update_readme=cfg.update_readme,
+        )
+        report = await agent.run()
+
+        summary.docs_prs_analyzed = report.prs_analyzed
+        summary.docs_pr_opened = report.doc_pr_opened
+        summary.errors.extend(report.errors)
+
+    async def _run_stale_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the stale agent to warn/close stale issues/PRs and prune branches."""
+        cfg = self._config.stale_agent
+        if not cfg.enabled:
+            logger.info("Stale agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Stale agent would run")
+            return
+
+        agent = StaleAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            stale_days=cfg.stale_days,
+            close_after=cfg.close_after,
+            close_stale_prs=cfg.close_stale_prs,
+            delete_merged_branches=cfg.delete_merged_branches,
+            exempt_labels=set(cfg.exempt_labels),
+        )
+        report = await agent.run()
+
+        summary.stale_issues_warned = report.issues_warned
+        summary.stale_issues_closed = report.issues_closed
+        summary.stale_branches_deleted = report.branches_deleted
+        summary.errors.extend(report.errors)
+
+    async def _run_escalation_agent(
+        self, state: OrchestratorState, summary: RunSummary
+    ) -> None:
+        """Run the escalation agent to post a human-action-required digest."""
+        cfg = self._config.human_escalation
+        if not cfg.enabled:
+            logger.info("Escalation agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Escalation agent would run")
+            return
+
+        agent = EscalationAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            notify_assignees=cfg.notify_assignees,
+        )
+        report = await agent.run()
+
+        summary.escalation_items_found = report.items_found
+        summary.escalation_digest_issue = report.digest_issue_number
+        summary.errors.extend(report.errors)
