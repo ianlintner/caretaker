@@ -15,6 +15,15 @@ SECURITY_LABEL = "security:finding"
 SECURITY_FP_LABEL = "security:false-positive"
 SECURITY_AGENT_MARKER = "<!-- caretaker:security-agent"
 
+# Numeric priority for Severity comparison: smaller = more severe
+_SEVERITY_PRIORITY = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+    "unknown": 4,
+}
+
 
 class AlertKind(str, Enum):
     DEPENDABOT = "dependabot"
@@ -43,6 +52,18 @@ class Severity(str, Enum):
         if v in ("low",):
             return cls.LOW
         return cls.UNKNOWN
+
+    def __lt__(self, other: "Severity") -> bool:  # type: ignore[override]
+        return _SEVERITY_PRIORITY.get(self.value, 4) < _SEVERITY_PRIORITY.get(other.value, 4)
+
+    def __le__(self, other: "Severity") -> bool:  # type: ignore[override]
+        return self == other or self.__lt__(other)
+
+    def __gt__(self, other: "Severity") -> bool:  # type: ignore[override]
+        return not self.__le__(other)
+
+    def __ge__(self, other: "Severity") -> bool:  # type: ignore[override]
+        return not self.__lt__(other)
 
 
 @dataclass
@@ -113,6 +134,11 @@ class SecurityAgent:
         Severity.UNKNOWN: 0,
     }
 
+    @staticmethod
+    def _finding_signature(finding: "SecurityFinding") -> str:
+        """Return the deduplication signature for a finding."""
+        return _finding_signature(finding)
+
     async def run(self) -> SecurityReport:
         """Collect all open security alerts and create/manage tracking issues."""
         report = SecurityReport()
@@ -174,7 +200,7 @@ class SecurityAgent:
 
             try:
                 issue = await self._create_security_issue(finding, sig)
-                report.issues_created.append(issue["number"])
+                report.issues_created.append(issue["number"] if isinstance(issue, dict) else issue.number)
                 created += 1
             except Exception as e:
                 logger.error("Security agent: failed to create issue for %s: %s", finding.title, e)
@@ -201,7 +227,12 @@ class SecurityAgent:
             package = (
                 a.get("dependency", {}).get("package", {}).get("name", "unknown")
             )
-            severity = adv.get("severity") or a.get("severity") or "unknown"
+            severity = (
+                adv.get("severity")
+                or a.get("security_vulnerability", {}).get("severity")
+                or a.get("severity")
+                or "unknown"
+            )
             findings.append(
                 SecurityFinding(
                     kind=AlertKind.DEPENDABOT,

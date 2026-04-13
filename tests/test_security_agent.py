@@ -12,6 +12,8 @@ from caretaker.security_agent.agent import (
     SecurityAgent,
     SecurityFinding,
     Severity,
+    _finding_signature,
+    SECURITY_AGENT_MARKER,
 )
 
 
@@ -65,13 +67,13 @@ class TestSeverity:
 _DEPENDABOT_ALERT = {
     "number": 1,
     "state": "open",
-    "security_vulnerability": {
-        "severity": "high",
+    "dependency": {
         "package": {"name": "requests", "ecosystem": "pip"},
     },
     "security_advisory": {
         "summary": "SSRF in requests",
         "description": "Detailed description",
+        "severity": "high",
     },
     "html_url": "https://github.com/o/r/security/dependabot/1",
     "dismissed_reason": None,
@@ -95,24 +97,23 @@ class TestSecurityAgentCollectsAlerts:
         report = await agent.run()
 
         assert report.findings_found == 1
-        assert report.issues_created == 1
+        assert len(report.issues_created) == 1
         gh.create_issue.assert_awaited_once()
         call_kwargs = gh.create_issue.call_args.kwargs
         assert "copilot" in call_kwargs.get("assignees", [])
 
     @pytest.mark.asyncio
     async def test_skips_below_min_severity(self) -> None:
-        alert = {**_DEPENDABOT_ALERT, "security_vulnerability": {**_DEPENDABOT_ALERT["security_vulnerability"], "severity": "low"}}
+        alert = {**_DEPENDABOT_ALERT, "security_advisory": {**_DEPENDABOT_ALERT["security_advisory"], "severity": "low"}}
         gh = make_github(dependabot_alerts=[alert])
         agent = SecurityAgent(github=gh, owner="o", repo="r", min_severity="high")
         report = await agent.run()
 
-        assert report.issues_created == 0
+        assert len(report.issues_created) == 0
 
     @pytest.mark.asyncio
     async def test_deduplicates_existing_issue(self) -> None:
-        secret_agent = SecurityAgent.__new__(SecurityAgent)
-        sig = SecurityAgent._finding_signature(
+        sig = _finding_signature(
             SecurityFinding(
                 kind=AlertKind.DEPENDABOT,
                 alert_number=1,
@@ -128,7 +129,7 @@ class TestSecurityAgentCollectsAlerts:
             Issue(
                 number=10,
                 title="[Security] SSRF in requests",
-                body=f"<!-- caretaker:security-agent\nsig:{sig}\n-->",
+                body=f"{SECURITY_AGENT_MARKER} sig:{sig} -->",
                 state="open",
                 user=User(login="bot", id=1),
                 labels=[],
@@ -150,7 +151,7 @@ class TestSecurityAgentCollectsAlerts:
         report = await agent.run()
 
         assert report.findings_found == 1
-        assert report.issues_created == 1
+        assert len(report.issues_created) == 1
 
     @pytest.mark.asyncio
     async def test_include_flags_disable_sources(self) -> None:

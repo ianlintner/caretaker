@@ -17,7 +17,7 @@ DEPENDENCY_AGENT_MARKER = "<!-- caretaker:dependency-agent"
 
 # Bump types Dependabot encodes in PR titles
 _SEMVER_BUMP_RE = re.compile(
-    r"bump\s+(\S+)\s+from\s+([\d.]+(?:[-+]\S+)?)\s+to\s+([\d.]+(?:[-+]\S+)?)",
+    r"bump\s+(\S+)\s+from\s+([\d.]+\S*)\s+to\s+([\d.]+\S*)",
     re.IGNORECASE,
 )
 
@@ -33,21 +33,6 @@ class DependencyBump:
     is_major: bool
     is_security: bool
     html_url: str
-
-
-@dataclass
-class DependencyReport:
-    """Results from a single Dependency agent run."""
-
-    prs_reviewed: int = 0
-    prs_auto_merged: int = field(default_factory=list)
-    major_issues_created: list[int] = field(default_factory=list)
-    digest_issue_number: int | None = None
-    errors: list[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        if isinstance(self.prs_auto_merged, list):
-            object.__setattr__(self, "prs_auto_merged", self.prs_auto_merged)
 
 
 @dataclass
@@ -118,7 +103,7 @@ class DependencyAgent:
                 if bump.pr_number not in existing_major_sigs:
                     try:
                         issue = await self._create_major_upgrade_issue(bump)
-                        report.major_issues_created.append(issue["number"])
+                        report.major_issues_created.append(issue["number"] if isinstance(issue, dict) else issue.number)
                     except Exception as e:
                         logger.error("Dependency agent: failed major issue for PR#%d: %s", bump.pr_number, e)
                         report.errors.append(str(e))
@@ -307,15 +292,17 @@ def _parse_bump(pr) -> DependencyBump | None:
 
 def _detect_ecosystem(pr) -> str:
     title_lower = pr.title.lower()
-    if "pip" in title_lower or ".txt" in title_lower or "requirements" in title_lower:
+    head_ref_lower = getattr(pr, "head_ref", "").lower()
+    combined = f"{title_lower} {head_ref_lower}"
+    if "pip" in combined or ".txt" in combined or "requirements" in combined:
         return "pip"
-    if "npm" in title_lower or "package.json" in title_lower:
+    if "npm" in combined or "package.json" in combined or "npm_and_yarn" in combined:
         return "npm"
-    if "cargo" in title_lower or "rust" in title_lower:
+    if "cargo" in combined or "rust" in combined:
         return "cargo"
-    if "go" in title_lower:
+    if "go" in combined:
         return "go"
-    if "maven" in title_lower or "gradle" in title_lower:
+    if "maven" in combined or "gradle" in combined:
         return "java"
     base = getattr(pr, "base_ref", "")
     if "python" in base.lower():

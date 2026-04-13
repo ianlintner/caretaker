@@ -78,25 +78,26 @@ def make_github(
 
 class TestParseBump:
     def test_parses_standard_title(self) -> None:
-        result = _parse_bump("Bump requests from 2.28.0 to 2.29.0")
+        pr = make_pr(title="Bump requests from 2.28.0 to 2.29.0")
+        result = _parse_bump(pr)
         assert result is not None
-        pkg, from_ver, to_ver = result
-        assert pkg == "requests"
-        assert from_ver == "2.28.0"
-        assert to_ver == "2.29.0"
+        assert result.package == "requests"
+        assert result.from_version == "2.28.0"
+        assert result.to_version == "2.29.0"
 
     def test_parses_scoped_package(self) -> None:
-        result = _parse_bump("Bump @babel/core from 7.0.0 to 8.0.0")
+        pr = make_pr(title="Bump @babel/core from 7.0.0 to 8.0.0")
+        result = _parse_bump(pr)
         assert result is not None
-        pkg, from_ver, to_ver = result
-        assert pkg == "@babel/core"
+        assert result.package == "@babel/core"
 
     def test_returns_none_for_non_dependabot_title(self) -> None:
-        assert _parse_bump("fix: update login logic") is None
+        pr = make_pr(title="fix: update login logic")
+        assert _parse_bump(pr) is None
 
     def test_parses_pre_release_version(self) -> None:
-        result = _parse_bump("Bump pytest from 8.0.0a1 to 8.0.0")
-        assert result is not None
+        pr = make_pr(title="Bump pytest from 8.0.0a1 to 8.0.0")
+        assert _parse_bump(pr) is not None
 
 
 class TestIsMajorBump:
@@ -119,13 +120,46 @@ class TestIsMajorBump:
 
 class TestDetectEcosystem:
     def test_detects_pip(self) -> None:
-        assert _detect_ecosystem("dependabot/pip/requests-2.29.0") == "pip"
+        pr = make_pr(title="Bump requests from 2.28.0 to 2.29.0",
+                     number=1)
+        # head_ref from make_pr is "dependabot/pip/requests-2.29.0" by default
+        assert _detect_ecosystem(pr) == "pip"
 
     def test_detects_npm(self) -> None:
-        assert _detect_ecosystem("dependabot/npm_and_yarn/lodash-4.17.21") == "npm"
+        from caretaker.github_client.models import PullRequest, User
+        pr = PullRequest(
+            number=2,
+            title="Bump lodash from 4.17.20 to 4.17.21",
+            body="",
+            state="open",
+            user=User(login="dependabot[bot]", id=2),
+            head_ref="dependabot/npm_and_yarn/lodash-4.17.21",
+            base_ref="main",
+            mergeable=True,
+            merged=False,
+            draft=False,
+            labels=[],
+            html_url="https://github.com/o/r/pull/2",
+        )
+        assert _detect_ecosystem(pr) == "npm"
 
     def test_returns_unknown(self) -> None:
-        assert _detect_ecosystem("feature/my-feature") == "unknown"
+        from caretaker.github_client.models import PullRequest, User
+        pr = PullRequest(
+            number=3,
+            title="Update feature flags",
+            body="",
+            state="open",
+            user=User(login="human", id=3),
+            head_ref="feature/my-feature",
+            base_ref="main",
+            mergeable=True,
+            merged=False,
+            draft=False,
+            labels=[],
+            html_url="https://github.com/o/r/pull/3",
+        )
+        assert _detect_ecosystem(pr) == "unknown"
 
 
 # ── DependencyAgent tests ────────────────────────────────────────────
@@ -140,7 +174,7 @@ class TestDependencyAgentAutoMerge:
         report = await agent.run()
 
         assert report.prs_reviewed == 1
-        assert report.prs_auto_merged == 1
+        assert len(report.prs_auto_merged) == 1
         gh.merge_pull_request.assert_awaited_once_with("o", "r", pr.number, method="squash")
 
     @pytest.mark.asyncio
@@ -150,7 +184,7 @@ class TestDependencyAgentAutoMerge:
         agent = DependencyAgent(github=gh, owner="o", repo="r", auto_merge_minor=True)
         report = await agent.run()
 
-        assert report.prs_auto_merged == 1
+        assert len(report.prs_auto_merged) == 1
 
     @pytest.mark.asyncio
     async def test_skips_merge_when_ci_failing(self) -> None:
@@ -159,17 +193,17 @@ class TestDependencyAgentAutoMerge:
         agent = DependencyAgent(github=gh, owner="o", repo="r")
         report = await agent.run()
 
-        assert report.prs_auto_merged == 0
+        assert len(report.prs_auto_merged) == 0
         gh.merge_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_creates_issue_for_major_bump(self) -> None:
         pr = make_pr(title="Bump requests from 2.28.0 to 3.0.0")
         gh = make_github(prs=[pr])
-        agent = DependencyAgent(github=gh, owner="o", repo="r")
+        agent = DependencyAgent(github=gh, owner="o", repo="r", post_digest=False)
         report = await agent.run()
 
-        assert report.major_issues_created == 1
+        assert len(report.major_issues_created) == 1
         gh.create_issue.assert_awaited_once()
         call_kwargs = gh.create_issue.call_args.kwargs
         assert "copilot" in call_kwargs.get("assignees", [])
@@ -194,4 +228,4 @@ class TestDependencyAgentAutoMerge:
         )
         report = await agent.run()
 
-        assert report.prs_auto_merged == 0
+        assert len(report.prs_auto_merged) == 0
