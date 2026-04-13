@@ -93,12 +93,32 @@ class OrchestratorConfig(StrictBaseModel):
     dry_run: bool = False
 
 
+class DevOpsAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    # Branch to monitor for CI failures
+    target_branch: str = "main"
+    # Maximum fix-issues opened per caretaker run (avoid spam on persistent failures)
+    max_issues_per_run: int = 3
+    # Re-open or skip if a similar open issue already exists
+    dedup_open_issues: bool = True
+
+
+class SelfHealAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    # Whether to report bugs / feature requests to the upstream caretaker repo
+    report_upstream: bool = True
+    # Suppress upstream reporting if this repo IS the upstream (set true for ianlintner/caretaker)
+    is_upstream_repo: bool = False
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     pr_agent: PRAgentConfig = Field(default_factory=PRAgentConfig)
     issue_agent: IssueAgentConfig = Field(default_factory=IssueAgentConfig)
     upgrade_agent: UpgradeAgentConfig = Field(default_factory=UpgradeAgentConfig)
+    devops_agent: DevOpsAgentConfig = Field(default_factory=DevOpsAgentConfig)
+    self_heal_agent: SelfHealAgentConfig = Field(default_factory=SelfHealAgentConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
 

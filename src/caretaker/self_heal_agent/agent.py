@@ -1,0 +1,438 @@
+"""Self-heal Agent — triages caretaker's own workflow failures and self-repairs."""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+
+from caretaker import __version__
+from caretaker.github_client.api import GitHubClient
+from caretaker.self_heal_agent.upstream_reporter import (
+    report_upstream_bug,
+    report_upstream_feature,
+)
+
+logger = logging.getLogger(__name__)
+
+SELF_HEAL_LABEL = "caretaker:self-heal"
+SELF_HEAL_MARKER = "<!-- caretaker:self-heal -->"
+
+# Workflow name for the caretaker dogfood run (as seen in workflow_run events)
+CARETAKER_WORKFLOW_NAMES = {"Caretaker", "caretaker", "maintainer"}
+
+
+class FailureKind(str, Enum):
+    CONFIG_ERROR = "config_error"
+    INTEGRATION_ERROR = "integration_error"
+    UPSTREAM_BUG = "upstream_bug"
+    MISSING_FEATURE = "missing_feature"
+    TRANSIENT = "transient"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class SelfHealReport:
+    failures_analyzed: int = 0
+    local_issues_created: list[int] = field(default_factory=list)
+    upstream_issues_opened: list[int] = field(default_factory=list)
+    upstream_features_requested: list[int] = field(default_factory=list)
+    auto_fixed: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+class SelfHealAgent:
+    """
+    Monitors caretaker's own workflow runs.
+
+    When a caretaker run fails it:
+    1. Parses the failure log to classify the problem
+    2. If it's a local config / integration issue → creates a fix issue assigned to @copilot
+    3. If it looks like a caretaker library bug → opens a bug report upstream
+    4. If a feature is obviously missing → opens a feature request upstream
+    5. Transient failures are noted but not actioned
+    """
+
+    def __init__(
+        self,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+        report_upstream: bool = True,
+    ) -> None:
+        self._github = github
+        self._owner = owner
+        self._repo = repo
+        self._report_upstream = report_upstream
+
+    async def run(self, event_payload: dict | None = None) -> SelfHealReport:
+        """Analyse caretaker workflow failures."""
+        report = SelfHealReport()
+
+        failure_logs = await self._collect_failure_logs(event_payload)
+        if not failure_logs:
+            logger.info("Self-heal agent: no caretaker workflow failures found")
+            return report
+
+        report.failures_analyzed = len(failure_logs)
+        logger.info("Self-heal agent: %d failure(s) to analyse", len(failure_logs))
+
+        existing_sigs = await self._get_existing_self_heal_sigs()
+
+        for job_name, log_text in failure_logs:
+            kind, title, details = _classify_failure(job_name, log_text)
+            sig = _sig(job_name, kind, title)
+
+            if sig in existing_sigs:
+                logger.debug("Self-heal: skipping duplicate for %s", job_name)
+                continue
+
+            logger.info("Self-heal: job=%s kind=%s", job_name, kind.value)
+
+            if kind == FailureKind.TRANSIENT:
+                logger.info("Self-heal: transient failure in %s — no action", job_name)
+                continue
+
+            if kind in (FailureKind.CONFIG_ERROR, FailureKind.INTEGRATION_ERROR):
+                # Create a local fix issue assigned to @copilot
+                try:
+                    issue = await self._create_local_fix_issue(
+                        job_name, kind, title, details, log_text, sig
+                    )
+                    report.local_issues_created.append(issue.number)
+                except Exception as e:
+                    logger.error("Self-heal: failed to create local issue: %s", e)
+                    report.errors.append(str(e))
+
+            elif kind == FailureKind.UPSTREAM_BUG and self._report_upstream:
+                upstream = await report_upstream_bug(
+                    github=self._github,
+                    title=title,
+                    description=details,
+                    context=log_text[-2000:],
+                    caretaker_version=__version__,
+                    reporter_repo=f"{self._owner}/{self._repo}",
+                )
+                if not upstream.skipped and upstream.issue_number:
+                    report.upstream_issues_opened.append(upstream.issue_number)
+                    # Also create a local tracking issue referencing upstream
+                    try:
+                        issue = await self._create_local_tracking_issue(
+                            job_name, title, upstream.issue_number, log_text, sig
+                        )
+                        report.local_issues_created.append(issue.number)
+                    except Exception as e:
+                        logger.warning("Self-heal: tracking issue failed: %s", e)
+
+            elif kind == FailureKind.MISSING_FEATURE and self._report_upstream:
+                upstream = await report_upstream_feature(
+                    github=self._github,
+                    title=title,
+                    description=details,
+                    caretaker_version=__version__,
+                    reporter_repo=f"{self._owner}/{self._repo}",
+                )
+                if not upstream.skipped and upstream.issue_number:
+                    report.upstream_features_requested.append(upstream.issue_number)
+
+            else:
+                # UNKNOWN — create a local investigation issue
+                try:
+                    issue = await self._create_local_fix_issue(
+                        job_name, FailureKind.UNKNOWN, title, details, log_text, sig
+                    )
+                    report.local_issues_created.append(issue.number)
+                except Exception as e:
+                    report.errors.append(str(e))
+
+        return report
+
+    # ── Private helpers ─────────────────────────────────────────────────────
+
+    async def _collect_failure_logs(
+        self, event_payload: dict | None
+    ) -> list[tuple[str, str]]:
+        """Return [(job_name, log_text)] for failed caretaker workflow jobs."""
+        results: list[tuple[str, str]] = []
+
+        if event_payload and event_payload.get("workflow_run"):
+            run = event_payload["workflow_run"]
+            workflow_name = run.get("name", "")
+            if workflow_name not in CARETAKER_WORKFLOW_NAMES:
+                return []
+            if run.get("conclusion") not in ("failure", "timed_out"):
+                return []
+
+            run_id = run["id"]
+            jobs_data = await self._github._get(
+                f"/repos/{self._owner}/{self._repo}/actions/runs/{run_id}/jobs"
+            )
+            if not jobs_data:
+                return []
+
+            for job in jobs_data.get("jobs", []):
+                if job.get("conclusion") not in ("failure", "timed_out"):
+                    continue
+                log = await self._fetch_job_log(job["id"])
+                results.append((job["name"], log))
+            return results
+
+        # Fallback: inspect the most recent workflow run for "Caretaker" workflow
+        runs_data = await self._github._get(
+            f"/repos/{self._owner}/{self._repo}/actions/workflows",
+        )
+        if not runs_data:
+            return []
+
+        caretaker_workflow_id: int | None = None
+        for wf in runs_data.get("workflows", []):
+            if wf.get("name") in CARETAKER_WORKFLOW_NAMES:
+                caretaker_workflow_id = wf["id"]
+                break
+
+        if caretaker_workflow_id is None:
+            return []
+
+        recent_runs = await self._github._get(
+            f"/repos/{self._owner}/{self._repo}/actions/workflows/{caretaker_workflow_id}/runs",
+            params={"per_page": 5, "status": "failure"},
+        )
+        if not recent_runs:
+            return []
+
+        for run in (recent_runs.get("workflow_runs") or [])[:1]:
+            run_id = run["id"]
+            jobs_data = await self._github._get(
+                f"/repos/{self._owner}/{self._repo}/actions/runs/{run_id}/jobs"
+            )
+            if not jobs_data:
+                continue
+            for job in jobs_data.get("jobs", []):
+                if job.get("conclusion") not in ("failure", "timed_out"):
+                    continue
+                log = await self._fetch_job_log(job["id"])
+                results.append((job["name"], log))
+
+        return results
+
+    async def _fetch_job_log(self, job_id: int) -> str:
+        try:
+            resp = await self._github._client.get(
+                f"/repos/{self._owner}/{self._repo}/actions/jobs/{job_id}/logs",
+                follow_redirects=True,
+            )
+            if resp.status_code == 200:
+                return resp.text
+        except Exception as e:
+            logger.debug("Self-heal: could not fetch job log %s: %s", job_id, e)
+        return ""
+
+    async def _get_existing_self_heal_sigs(self) -> set[str]:
+        issues = await self._github.list_issues(
+            self._owner, self._repo, state="open", labels=SELF_HEAL_LABEL
+        )
+        sigs: set[str] = set()
+        for issue in issues:
+            for line in issue.body.splitlines():
+                if line.startswith(SELF_HEAL_MARKER):
+                    s = line.replace(SELF_HEAL_MARKER, "").replace("-->", "").strip()
+                    # Marker is on its own line — sig is in next pattern
+                m = re.search(r"sig:([a-f0-9]{12})", issue.body)
+                if m:
+                    sigs.add(m.group(1))
+        return sigs
+
+    async def _create_local_fix_issue(
+        self,
+        job_name: str,
+        kind: FailureKind,
+        title: str,
+        details: str,
+        log_text: str,
+        sig: str,
+    ):
+        full_title = f"🩺 Caretaker self-heal: {title}"
+        body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig)
+        await self._ensure_label(
+            SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed"
+        )
+        return await self._github.create_issue(
+            owner=self._owner,
+            repo=self._repo,
+            title=full_title,
+            body=body,
+            labels=[SELF_HEAL_LABEL, "bug"],
+            assignees=["copilot"],
+        )
+
+    async def _create_local_tracking_issue(
+        self,
+        job_name: str,
+        title: str,
+        upstream_issue: int,
+        log_text: str,
+        sig: str,
+    ):
+        full_title = f"🩺 Caretaker upstream bug filed: {title}"
+        body = (
+            f"{SELF_HEAL_MARKER} sig:{sig} -->\n\n"
+            f"## Caretaker upstream bug filed\n\n"
+            f"The self-heal agent detected a caretaker library bug in job `{job_name}` "
+            f"and opened **ianlintner/caretaker#{upstream_issue}** upstream.\n\n"
+            f"This issue tracks the local impact. It will be auto-closed when the upstream "
+            f"fix is released and caretaker is upgraded.\n\n"
+            f"<details><summary>Log snippet</summary>\n\n```\n{log_text[-2000:]}\n```\n\n</details>"
+        )
+        await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
+        return await self._github.create_issue(
+            owner=self._owner,
+            repo=self._repo,
+            title=full_title,
+            body=body,
+            labels=[SELF_HEAL_LABEL],
+        )
+
+    async def _ensure_label(self, name: str, color: str, description: str) -> None:
+        try:
+            await self._github._post(
+                f"/repos/{self._owner}/{self._repo}/labels",
+                json={"name": name, "color": color, "description": description},
+            )
+        except Exception:
+            pass
+
+
+# ── Failure classification ────────────────────────────────────────────────────
+
+
+_CONFIG_PATTERNS = [
+    re.compile(r"pydantic|ValidationError|extra fields|field required", re.IGNORECASE),
+    re.compile(r"ValueError.*[Cc]onfig", re.IGNORECASE),
+    re.compile(r"yaml\.scanner\.ScannerError|yaml\.parser\.ParserError", re.IGNORECASE),
+    re.compile(r"Config.*v1.*not supported|SUPPORTED_CONFIG_VERSIONS", re.IGNORECASE),
+]
+
+_INTEGRATION_PATTERNS = [
+    re.compile(r"GITHUB_TOKEN.*required|401 Unauthorized|403 Forbidden", re.IGNORECASE),
+    re.compile(r"ANTHROPIC_API_KEY|OPENAI_API_KEY", re.IGNORECASE),
+    re.compile(r"GitHubAPIError", re.IGNORECASE),
+    re.compile(r"httpx.*ConnectError|ConnectionRefused", re.IGNORECASE),
+]
+
+_UPSTREAM_BUG_PATTERNS = [
+    re.compile(r"AttributeError|TypeError|IndexError|KeyError", re.IGNORECASE),
+    re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE),
+    re.compile(r"caretaker\.(orchestrator|pr_agent|issue_agent|upgrade_agent|devops_agent)\.", re.IGNORECASE),
+    re.compile(r"unexpected keyword argument|takes \d+ positional argument", re.IGNORECASE),
+]
+
+_TRANSIENT_PATTERNS = [
+    re.compile(r"rate limit|429|retry after", re.IGNORECASE),
+    re.compile(r"timed out|timeout", re.IGNORECASE),
+    re.compile(r"network.*error|connection.*reset", re.IGNORECASE),
+    re.compile(r"secondary rate limit", re.IGNORECASE),
+]
+
+
+def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, str]:
+    """Return (kind, short title, description) from a job log."""
+    log_tail = log_text[-4000:]
+
+    if any(p.search(log_tail) for p in _TRANSIENT_PATTERNS):
+        return (
+            FailureKind.TRANSIENT,
+            f"Transient failure in {job_name}",
+            "Rate limit or network timeout — no action needed.",
+        )
+
+    if any(p.search(log_tail) for p in _CONFIG_PATTERNS):
+        # Extract the specific error message
+        msg = _extract_first_error(log_tail)
+        return (
+            FailureKind.CONFIG_ERROR,
+            f"Config error in caretaker: {msg[:80]}",
+            f"A configuration validation error caused the caretaker run to fail.\n\n"
+            f"Error: {msg}",
+        )
+
+    if any(p.search(log_tail) for p in _INTEGRATION_PATTERNS):
+        msg = _extract_first_error(log_tail)
+        return (
+            FailureKind.INTEGRATION_ERROR,
+            f"Integration/auth error in caretaker: {msg[:80]}",
+            f"An API integration or authentication error caused the caretaker run to fail.\n\n"
+            f"Error: {msg}\n\n"
+            f"Common fixes:\n"
+            f"- Verify `GITHUB_TOKEN` has the required permissions\n"
+            f"- Verify `ANTHROPIC_API_KEY` is set if LLM features are enabled\n"
+            f"- Check that repository secrets are configured correctly",
+        )
+
+    if any(p.search(log_tail) for p in _UPSTREAM_BUG_PATTERNS):
+        msg = _extract_first_error(log_tail)
+        return (
+            FailureKind.UPSTREAM_BUG,
+            f"Caretaker library error: {msg[:80]}",
+            f"An unhandled exception in the caretaker library caused the run to fail.\n\n"
+            f"Error: {msg}",
+        )
+
+    msg = _extract_first_error(log_tail)
+    return (
+        FailureKind.UNKNOWN,
+        f"Unknown caretaker failure: {msg[:80]}",
+        f"The caretaker workflow failed with an unclassified error.\n\nError: {msg}",
+    )
+
+
+def _extract_first_error(log_text: str) -> str:
+    """Return the first non-trivial error-looking line from the log."""
+    for line in log_text.splitlines():
+        stripped = line.strip()
+        if len(stripped) > 20 and any(
+            kw in stripped
+            for kw in ("Error", "error", "Exception", "FAILED", "invalid", "required")
+        ):
+            return stripped[:300]
+    return log_text.strip()[:200]
+
+
+def _sig(job_name: str, kind: FailureKind, title: str) -> str:
+    import hashlib
+    raw = f"{job_name}:{kind.value}:{title[:60]}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def _build_fix_issue_body(
+    job_name: str,
+    kind: FailureKind,
+    title: str,
+    details: str,
+    log_text: str,
+    sig: str,
+) -> str:
+    kind_label = {
+        FailureKind.CONFIG_ERROR: "⚙️ Config error",
+        FailureKind.INTEGRATION_ERROR: "🔌 Integration / auth error",
+        FailureKind.UNKNOWN: "❓ Unknown error",
+    }.get(kind, "🩺 Error")
+
+    return (
+        f"{SELF_HEAL_MARKER} sig:{sig} -->\n\n"
+        f"## {kind_label}\n\n"
+        f"{details}\n\n"
+        f"**Job:** `{job_name}`\n\n"
+        f"<details><summary>Log snippet</summary>\n\n"
+        f"```\n{log_text[-3000:]}\n```\n\n</details>\n\n"
+        f"---\n\n"
+        f"<!-- caretaker:self-heal-assignment -->\n"
+        f"TYPE: BUG_SIMPLE\n"
+        f"KIND: {kind.value}\n\n"
+        f"**Root cause:**\n{details}\n\n"
+        f"**Acceptance criteria:**\n"
+        f"- [ ] Caretaker workflow runs successfully on this repo\n"
+        f"- [ ] The root cause identified above is resolved\n"
+        f"- [ ] Add a test or config guard to prevent regression\n"
+        f"<!-- /caretaker:self-heal-assignment -->\n"
+    )
