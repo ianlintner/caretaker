@@ -9,9 +9,11 @@ from datetime import datetime
 from caretaker import __version__
 from caretaker.config import MaintainerConfig
 from caretaker.github_client.api import GitHubClient
+from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
+from caretaker.self_heal_agent.agent import SelfHealAgent
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -101,6 +103,9 @@ class Orchestrator:
 
                 if mode in ("full", "upgrade"):
                     await self._run_upgrade_agent(state, summary)
+
+                if mode in ("full", "devops"):
+                    await self._run_devops_agent(state, summary)
 
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
@@ -207,6 +212,10 @@ class Orchestrator:
             await self._run_pr_agent(state, summary)
         elif event_type in ("issues", "issue_comment"):
             await self._run_issue_agent(state, summary)
+        elif event_type == "workflow_run":
+            # A workflow completed — run devops (CI failures) and self-heal
+            await self._run_devops_agent(state, summary, event_payload=payload)
+            await self._run_self_heal_agent(state, summary, event_payload=payload)
         else:
             logger.info("Event type %s — running full cycle", event_type)
             await self._run_pr_agent(state, summary)
@@ -291,4 +300,64 @@ class Orchestrator:
 
         summary.upgrade_available = report.upgrade_needed
         summary.upgrade_version = report.latest_version or ""
+        summary.errors.extend(report.errors)
+
+    async def _run_devops_agent(
+        self,
+        state: OrchestratorState,
+        summary: RunSummary,
+        event_payload: dict | None = None,
+    ) -> None:
+        """Run the DevOps agent to triage CI build failures on the default branch."""
+        cfg = self._config.devops_agent
+        if not cfg.enabled:
+            logger.info("DevOps agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] DevOps agent would run")
+            return
+
+        agent = DevOpsAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            default_branch=cfg.target_branch,
+            max_issues_per_run=cfg.max_issues_per_run,
+        )
+        report = await agent.run(event_payload=event_payload)
+
+        summary.build_failures_detected = report.failures_detected
+        summary.build_fix_issues_created = len(report.issues_created)
+        summary.errors.extend(report.errors)
+
+    async def _run_self_heal_agent(
+        self,
+        state: OrchestratorState,
+        summary: RunSummary,
+        event_payload: dict | None = None,
+    ) -> None:
+        """Run the self-heal agent to diagnose and fix caretaker's own failures."""
+        cfg = self._config.self_heal_agent
+        if not cfg.enabled:
+            logger.info("Self-heal agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Self-heal agent would run")
+            return
+
+        report_upstream = cfg.report_upstream and not cfg.is_upstream_repo
+        agent = SelfHealAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            report_upstream=report_upstream,
+        )
+        report = await agent.run(event_payload=event_payload)
+
+        summary.self_heal_failures_analyzed = report.failures_analyzed
+        summary.self_heal_local_issues = len(report.local_issues_created)
+        summary.self_heal_upstream_bugs = len(report.upstream_issues_opened)
+        summary.self_heal_upstream_features = len(report.upstream_features_requested)
         summary.errors.extend(report.errors)

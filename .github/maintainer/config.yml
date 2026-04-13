@@ -39,6 +39,18 @@ issue_agent:
 upgrade_agent:
   enabled: false # This IS the central repo — no self-upgrade
 
+devops_agent:
+  enabled: true
+  target_branch: main
+  max_issues_per_run: 3
+  dedup_open_issues: true
+
+self_heal_agent:
+  enabled: true
+  report_upstream: true
+  # This IS the upstream caretaker source repo; upstream reporting is suppressed to avoid loops
+  is_upstream_repo: true
+
 escalation:
   targets: []
   stale_days: 7
