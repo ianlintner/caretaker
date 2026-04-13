@@ -2,51 +2,51 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from caretaker.docs_agent.agent import DocsAgent, _build_changelog_entry, _clean_title
-from caretaker.github_client.models import PullRequest, User
+from caretaker.docs_agent.agent import (
+    DOCS_AGENT_MARKER,
+    DocsAgent,
+    _build_changelog_entry,
+    _clean_title,
+)
+from caretaker.github_client.models import Label, PullRequest, User
 
 
-def _merged_pr(
-    number: int,
-    title: str,
-    merged_days_ago: int = 1,
-) -> PullRequest:
-    merged_at = (datetime.now(timezone.utc) - timedelta(days=merged_days_ago)).isoformat()
-    pr = PullRequest(
+def _pr(number: int, title: str, merged_at: str | None = None) -> SimpleNamespace:
+    """Return a lightweight PR-like object that DocsAgent can iterate over."""
+    return SimpleNamespace(
         number=number,
         title=title,
         body="",
-        state="closed",
-        user=User(login="dev", id=1),
-        head_ref="feature",
-        base_ref="main",
-        mergeable=None,
-        merged=True,
-        draft=False,
+        merged_at=merged_at,  # attribute checked by _get_recently_merged_prs
         labels=[],
-        html_url=f"https://github.com/o/r/pull/{number}",
-        created_at=merged_at,
-        updated_at=merged_at,
+        user=User(login="dev", id=1),
     )
-    # DocsAgent checks the raw PR for merged_at; inject it via additional attribute
-    object.__setattr__(pr, "_merged_at_raw", merged_at)
-    return pr
 
 
-def make_github(
-    prs: list | None = None,
-    file_contents: dict | None = None,
-) -> AsyncMock:
+def _open_docs_pr(number: int = 55) -> PullRequest:
+    """Return an open PR that looks like a docs-update PR (has the marker)."""
+    return PullRequest(
+        number=number,
+        title="docs: reconcile CHANGELOG",
+        body=f"{DOCS_AGENT_MARKER}\n-->",
+        state="open",
+        user=User(login="bot", id=9),
+        head_ref="docs/changelog-2024-W01",
+        base_ref="main",
+    )
+
+
+def make_github() -> AsyncMock:
     gh = AsyncMock()
-    gh.list_pull_requests.return_value = prs or []
-    gh.get_file_contents.return_value = file_contents  # None → file doesn't exist yet
+    gh.list_pull_requests.return_value = []
+    gh.get_file_contents.return_value = None
     gh.ensure_label.return_value = None
-    gh.get_default_branch_sha.return_value = "abc123"
+    gh._get.return_value = {"object": {"sha": "abc123sha"}}
     gh.create_branch.return_value = None
     gh.create_or_update_file.return_value = {"content": {"sha": "def456"}}
     gh.create_pull_request.return_value = {"number": 77}
@@ -76,15 +76,21 @@ class TestCleanTitle:
 class TestBuildChangelogEntry:
     def test_produces_markdown_with_pr_links(self) -> None:
         prs = [
-            _merged_pr(1, "feat: add search"),
-            _merged_pr(2, "fix: broken login"),
+            _pr(1, "feat: add search"),
+            _pr(2, "fix: broken login"),
         ]
-        entry = _build_changelog_entry(prs, "o", "r")
-        assert "## [Unreleased]" in entry
+        entry = _build_changelog_entry(prs)
         assert "add search" in entry
         assert "broken login" in entry
         assert "#1" in entry
         assert "#2" in entry
+
+    def test_strips_conventional_prefix_in_entry(self) -> None:
+        prs = [_pr(3, "feat: shiny new thing")]
+        entry = _build_changelog_entry(prs)
+        # prefix stripped; raw "feat:" should not appear
+        assert "feat:" not in entry
+        assert "shiny new thing" in entry
 
 
 # ── DocsAgent integration tests ─────────────────────────────────────
@@ -92,16 +98,13 @@ class TestBuildChangelogEntry:
 
 class TestDocsAgentRun:
     @pytest.mark.asyncio
-    async def test_opens_pr_when_merged_prs_exist(self) -> None:
-        prs = [_merged_pr(10, "feat: cool feature")]
-        gh = make_github(prs=prs)
+    async def test_opens_pr_when_merged_prs_found(self) -> None:
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
         agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
-        with patch.object(
-            agent, "_get_merged_prs_since", return_value=prs
-        ), patch.object(
-            agent, "_duplicate_doc_pr_exists", return_value=False
-        ):
+        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
+             patch.object(agent, "_find_open_docs_prs", return_value=[]):
             report = await agent.run()
 
         assert report.prs_analyzed == 1
@@ -109,11 +112,24 @@ class TestDocsAgentRun:
         gh.create_pull_request.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_skips_when_no_merged_prs(self) -> None:
-        gh = make_github(prs=[])
-        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+    async def test_assigns_copilot_to_pr(self) -> None:
+        merged = [_pr(10, "fix: something", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        agent = DocsAgent(github=gh, owner="o", repo="r")
 
-        with patch.object(agent, "_get_merged_prs_since", return_value=[]):
+        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
+             patch.object(agent, "_find_open_docs_prs", return_value=[]):
+            await agent.run()
+
+        call_kwargs = gh.create_pull_request.call_args.kwargs
+        assert "copilot" in call_kwargs.get("assignees", [])
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_merged_prs(self) -> None:
+        gh = make_github()
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with patch.object(agent, "_get_recently_merged_prs", return_value=[]):
             report = await agent.run()
 
         assert report.prs_analyzed == 0
@@ -121,17 +137,15 @@ class TestDocsAgentRun:
         gh.create_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_skips_when_duplicate_pr_open(self) -> None:
-        prs = [_merged_pr(10, "feat: cool feature")]
-        gh = make_github(prs=prs)
-        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+    async def test_skips_when_open_docs_pr_exists(self) -> None:
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        agent = DocsAgent(github=gh, owner="o", repo="r")
 
-        with patch.object(
-            agent, "_get_merged_prs_since", return_value=prs
-        ), patch.object(
-            agent, "_duplicate_doc_pr_exists", return_value=True
-        ):
+        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
+             patch.object(agent, "_find_open_docs_prs", return_value=[55]):
             report = await agent.run()
 
-        assert report.doc_pr_opened is None
+        # should return the existing PR number, not create a new one
+        assert report.doc_pr_opened == 55
         gh.create_pull_request.assert_not_awaited()
