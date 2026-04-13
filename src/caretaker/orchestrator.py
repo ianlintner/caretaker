@@ -8,12 +8,17 @@ from datetime import datetime
 
 from caretaker import __version__
 from caretaker.config import MaintainerConfig
+from caretaker.dependency_agent.agent import DependencyAgent
+from caretaker.docs_agent.agent import DocsAgent
+from caretaker.escalation_agent.agent import EscalationAgent
 from caretaker.github_client.api import GitHubClient
 from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
+from caretaker.security_agent.agent import SecurityAgent
 from caretaker.self_heal_agent.agent import SelfHealAgent
+from caretaker.stale_agent.agent import StaleAgent
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -106,6 +111,21 @@ class Orchestrator:
 
                 if mode in ("full", "devops"):
                     await self._run_devops_agent(state, summary)
+
+                if mode in ("full", "security"):
+                    await self._run_security_agent(state, summary)
+
+                if mode in ("full", "deps"):
+                    await self._run_dependency_agent(state, summary)
+
+                if mode in ("full", "docs"):
+                    await self._run_docs_agent(state, summary)
+
+                if mode in ("full", "stale"):
+                    await self._run_stale_agent(state, summary)
+
+                if mode in ("full", "escalation"):
+                    await self._run_escalation_agent(state, summary)
 
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
@@ -216,6 +236,9 @@ class Orchestrator:
             # A workflow completed — run devops (CI failures) and self-heal
             await self._run_devops_agent(state, summary, event_payload=payload)
             await self._run_self_heal_agent(state, summary, event_payload=payload)
+        elif event_type == "repository_vulnerability_alert":
+            # A new Dependabot/security alert was raised
+            await self._run_security_agent(state, summary)
         else:
             logger.info("Event type %s — running full cycle", event_type)
             await self._run_pr_agent(state, summary)

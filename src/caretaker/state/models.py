@@ -84,6 +84,24 @@ class RunSummary(BaseModel):
     self_heal_local_issues: int = 0
     self_heal_upstream_bugs: int = 0
     self_heal_upstream_features: int = 0
+    # Security agent metrics
+    security_findings_found: int = 0
+    security_issues_created: int = 0
+    security_false_positives: int = 0
+    # Dependency agent metrics
+    dependency_prs_reviewed: int = 0
+    dependency_prs_auto_merged: int = 0
+    dependency_major_issues: int = 0
+    # Docs agent metrics
+    docs_prs_analyzed: int = 0
+    docs_pr_opened: int | None = None
+    # Stale agent metrics
+    stale_issues_warned: int = 0
+    stale_issues_closed: int = 0
+    stale_branches_deleted: int = 0
+    # Escalation agent metrics
+    escalation_items_found: int = 0
+    escalation_digest_issue: int | None = None
     errors: list[str] = Field(default_factory=list)
 
 

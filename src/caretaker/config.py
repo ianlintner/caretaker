@@ -111,6 +111,46 @@ class SelfHealAgentConfig(StrictBaseModel):
     is_upstream_repo: bool = False
 
 
+class SecurityAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    min_severity: str = "medium"
+    max_issues_per_run: int = 5
+    false_positive_rules: list[str] = Field(default_factory=list)
+    include_dependabot: bool = True
+    include_code_scanning: bool = True
+    include_secret_scanning: bool = True
+
+
+class DependencyAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    auto_merge_patch: bool = True
+    auto_merge_minor: bool = True
+    merge_method: Literal["squash", "merge", "rebase"] = "squash"
+    post_digest: bool = True
+
+
+class DocsAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    lookback_days: int = 7
+    changelog_path: str = "CHANGELOG.md"
+    update_readme: bool = False
+
+
+class StaleAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    stale_days: int = 60
+    close_after: int = 14
+    close_stale_prs: bool = True
+    delete_merged_branches: bool = True
+    exempt_labels: list[str] = Field(default_factory=list)
+
+
+class HumanEscalationConfig(StrictBaseModel):
+    enabled: bool = True
+    post_digest_issue: bool = True
+    notify_assignees: list[str] = Field(default_factory=list)
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -119,6 +159,11 @@ class MaintainerConfig(StrictBaseModel):
     upgrade_agent: UpgradeAgentConfig = Field(default_factory=UpgradeAgentConfig)
     devops_agent: DevOpsAgentConfig = Field(default_factory=DevOpsAgentConfig)
     self_heal_agent: SelfHealAgentConfig = Field(default_factory=SelfHealAgentConfig)
+    security_agent: SecurityAgentConfig = Field(default_factory=SecurityAgentConfig)
+    dependency_agent: DependencyAgentConfig = Field(default_factory=DependencyAgentConfig)
+    docs_agent: DocsAgentConfig = Field(default_factory=DocsAgentConfig)
+    stale_agent: StaleAgentConfig = Field(default_factory=StaleAgentConfig)
+    human_escalation: HumanEscalationConfig = Field(default_factory=HumanEscalationConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
 

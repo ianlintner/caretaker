@@ -229,6 +229,170 @@ class GitHubClient:
         result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
         return result is None  # 204 = success
 
+    # ── Labels ──────────────────────────────────────────────────
+
+    async def ensure_label(
+        self, owner: str, repo: str, name: str, color: str, description: str = ""
+    ) -> None:
+        """Create the label if it does not already exist."""
+        existing = await self._get(f"/repos/{owner}/{repo}/labels/{name}")
+        if existing is not None:
+            return
+        try:
+            await self._post(
+                f"/repos/{owner}/{repo}/labels",
+                json={"name": name, "color": color, "description": description},
+            )
+        except GitHubAPIError as e:
+            if e.status_code == 422:
+                pass  # Already exists (race condition)
+            else:
+                raise
+
+    # ── Security alerts ─────────────────────────────────────────
+
+    async def list_dependabot_alerts(
+        self, owner: str, repo: str, state: str = "open"
+    ) -> list[dict]:
+        data = await self._get(
+            f"/repos/{owner}/{repo}/dependabot/alerts",
+            params={"state": state, "per_page": 100},
+        )
+        return data or []
+
+    async def dismiss_dependabot_alert(
+        self,
+        owner: str,
+        repo: str,
+        alert_number: int,
+        reason: str,
+        comment: str = "",
+    ) -> None:
+        await self._patch(
+            f"/repos/{owner}/{repo}/dependabot/alerts/{alert_number}",
+            json={
+                "state": "dismissed",
+                "dismissed_reason": reason,
+                "dismissed_comment": comment,
+            },
+        )
+
+    async def list_code_scanning_alerts(
+        self, owner: str, repo: str, state: str = "open"
+    ) -> list[dict]:
+        data = await self._get(
+            f"/repos/{owner}/{repo}/code-scanning/alerts",
+            params={"state": state, "per_page": 100},
+        )
+        return data or []
+
+    async def dismiss_code_scanning_alert(
+        self,
+        owner: str,
+        repo: str,
+        alert_number: int,
+        reason: str,
+        comment: str = "",
+    ) -> None:
+        await self._patch(
+            f"/repos/{owner}/{repo}/code-scanning/alerts/{alert_number}",
+            json={
+                "state": "dismissed",
+                "dismissed_reason": reason,
+                "dismissed_comment": comment,
+            },
+        )
+
+    async def list_secret_scanning_alerts(
+        self, owner: str, repo: str, state: str = "open"
+    ) -> list[dict]:
+        data = await self._get(
+            f"/repos/{owner}/{repo}/secret-scanning/alerts",
+            params={"state": state, "per_page": 100},
+        )
+        return data or []
+
+    # ── Contents / branches / PRs ────────────────────────────────
+
+    async def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str | None = None
+    ) -> dict | None:
+        """Return the raw GitHub contents API response dict, or None if missing."""
+        params = {}
+        if ref:
+            params["ref"] = ref
+        return await self._get(f"/repos/{owner}/{repo}/contents/{path}", params=params)
+
+    async def get_default_branch_sha(self, owner: str, repo: str, branch: str) -> str:
+        """Return the latest commit SHA of *branch*."""
+        data = await self._get(f"/repos/{owner}/{repo}/git/ref/heads/{branch}")
+        if not data:
+            raise GitHubAPIError(404, f"Branch {branch!r} not found")
+        return data["object"]["sha"]
+
+    async def create_branch(self, owner: str, repo: str, name: str, sha: str) -> None:
+        """Create a new branch pointing at *sha*."""
+        await self._post(
+            f"/repos/{owner}/{repo}/git/refs",
+            json={"ref": f"refs/heads/{name}", "sha": sha},
+        )
+
+    async def create_or_update_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        content: str,
+        branch: str,
+        sha: str | None = None,
+    ) -> dict:
+        """Create or update a file via the contents API. *content* is raw UTF-8 text."""
+        import base64
+
+        payload: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode()).decode(),
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        data = await self._put(f"/repos/{owner}/{repo}/contents/{path}", json=payload)
+        return data or {}
+
+    async def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        labels: list[str] | None = None,
+        assignees: list[str] | None = None,
+    ) -> dict:
+        data = await self._post(
+            f"/repos/{owner}/{repo}/pulls",
+            json={"title": title, "body": body, "head": head, "base": base},
+        )
+        pr_number = data["number"]
+        if labels:
+            await self._post(
+                f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                json={"labels": labels},
+            )
+        if assignees:
+            await self._post(
+                f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
+                json={"assignees": assignees},
+            )
+        return data
+
+    async def delete_branch(self, owner: str, repo: str, branch: str) -> None:
+        await self._request(
+            "DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}"
+        )
+
     # ── Parsing helpers ─────────────────────────────────────────
 
     @staticmethod
