@@ -56,7 +56,8 @@
             "ignore_jobs": {
               "type": "array",
               "items": { "type": "string" }
-            }
+            },
+            "close_managed_prs_on_backlog": { "type": "boolean" }
           }
         },
         "review": {

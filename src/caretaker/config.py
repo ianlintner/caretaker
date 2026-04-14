@@ -33,6 +33,7 @@ class CopilotConfig(StrictBaseModel):
 class CIConfig(StrictBaseModel):
     flaky_retries: int = 1
     ignore_jobs: list[str] = Field(default_factory=list)
+    close_managed_prs_on_backlog: bool = False
 
 
 class ReviewConfig(StrictBaseModel):

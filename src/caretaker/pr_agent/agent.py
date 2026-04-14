@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
-from caretaker.pr_agent.ci_triage import triage_failure
+from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
 from caretaker.pr_agent.merge import evaluate_merge
 from caretaker.pr_agent.review import analyze_reviews
@@ -223,6 +223,10 @@ class PRAgent:
         # Triage the failure and request a fix
         for failed_run in evaluation.ci.failed_runs[:1]:  # Fix one at a time
             triage = await triage_failure(failed_run, self._llm)
+
+            if triage.failure_type == FailureType.BACKLOG:
+                return await self._handle_ci_backlog(pr, tracking, report)
+
             attempt = tracking.copilot_attempts + 1
 
             result = await self._copilot_bridge.request_ci_fix(
@@ -242,6 +246,37 @@ class PRAgent:
                 self._config.copilot.max_retries,
             )
 
+        return tracking
+
+    async def _handle_ci_backlog(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Handle a deliberate CI failure caused by repository queue pressure."""
+        should_close_managed_pr = self._config.ci.close_managed_prs_on_backlog and (
+            pr.is_copilot_pr or pr.is_maintainer_pr
+        )
+
+        if should_close_managed_pr:
+            body = (
+                "🧹 **Caretaker cleanup**\n\n"
+                "Closing this caretaker-managed PR because the repository PR CI backlog "
+                "limit was exceeded. This run failed intentionally to reduce queue pressure, "
+                "not because caretaker found a code defect. Reopen or regenerate the PR "
+                "after the backlog clears."
+            )
+            await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
+            await self._github.update_issue(self._owner, self._repo, pr.number, state="closed")
+            tracking.state = PRTrackingState.CLOSED
+            tracking.notes = "closed:ci_backlog_guard"
+            logger.info("PR #%d: closed due to CI backlog guard", pr.number)
+            return tracking
+
+        logger.info("PR #%d: CI backlog guard tripped; leaving PR open for later retry", pr.number)
+        tracking.notes = "ci_backlog_guard"
+        report.waiting.append(pr.number)
         return tracking
 
     async def _handle_wait_for_fix(

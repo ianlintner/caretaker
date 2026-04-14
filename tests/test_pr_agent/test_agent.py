@@ -17,9 +17,16 @@ from caretaker.state.models import PRTrackingState, TrackedPR
 from tests.conftest import make_check_run, make_pr, make_review
 
 
-def make_config(flaky_retries: int = 1, max_retries: int = 2) -> PRAgentConfig:
+def make_config(
+    flaky_retries: int = 1,
+    max_retries: int = 2,
+    close_managed_prs_on_backlog: bool = False,
+) -> PRAgentConfig:
     config = PRAgentConfig()
-    config.ci = CIConfig(flaky_retries=flaky_retries)
+    config.ci = CIConfig(
+        flaky_retries=flaky_retries,
+        close_managed_prs_on_backlog=close_managed_prs_on_backlog,
+    )
     config.copilot = CopilotConfig(max_retries=max_retries)
     return config
 
@@ -28,7 +35,13 @@ def make_config(flaky_retries: int = 1, max_retries: int = 2) -> PRAgentConfig:
 class TestCIFixLifecycle:
     """Tests for _handle_ci_fix — flaky retry bypass and fix request."""
 
-    async def _run_handle_ci_fix(self, pr, tracking: TrackedPR, config: PRAgentConfig) -> tuple:
+    async def _run_handle_ci_fix(
+        self,
+        pr,
+        tracking: TrackedPR,
+        config: PRAgentConfig,
+        failed_run=None,
+    ) -> tuple:
         """Helper: invoke _handle_ci_fix and return (tracking, report)."""
         from caretaker.pr_agent.agent import PRAgent, PRAgentReport
         from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
@@ -36,7 +49,8 @@ class TestCIFixLifecycle:
         github = AsyncMock()
         agent = PRAgent(github=github, owner="o", repo="r", config=config)
 
-        failed_run = make_check_run(name="lint", conclusion=CheckConclusion.FAILURE)
+        if failed_run is None:
+            failed_run = make_check_run(name="lint", conclusion=CheckConclusion.FAILURE)
         ci_eval = CIEvaluation(
             status=CIStatus.FAILING,
             failed_runs=[failed_run],
@@ -154,6 +168,56 @@ class TestCIFixLifecycle:
 
         assert updated.state == PRTrackingState.ESCALATED
         assert 5 in report.escalated
+
+    async def test_managed_pr_with_backlog_failure_is_closed_when_enabled(self) -> None:
+        """A backlog-guard failure should close managed PRs when configured."""
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=6, user=copilot_user)
+        tracking = TrackedPR(number=6)
+        config = make_config(flaky_retries=0, close_managed_prs_on_backlog=True)
+        failed_run = make_check_run(
+            name="queue-guard",
+            conclusion=CheckConclusion.FAILURE,
+            output_summary="CI backlog guard tripped",
+        )
+
+        updated, report, agent = await self._run_handle_ci_fix(
+            pr,
+            tracking,
+            config,
+            failed_run=failed_run,
+        )
+
+        agent._copilot_bridge.request_ci_fix.assert_not_awaited()
+        agent._github.add_issue_comment.assert_awaited_once()
+        agent._github.update_issue.assert_awaited_once_with("o", "r", 6, state="closed")
+        assert updated.state == PRTrackingState.CLOSED
+        assert report.fix_requested == []
+
+    async def test_human_pr_with_backlog_failure_stays_open(self) -> None:
+        """A backlog-guard failure should not auto-close human PRs."""
+        human_user = User(login="dev", id=5, type="User")
+        pr = make_pr(number=7, user=human_user)
+        tracking = TrackedPR(number=7)
+        config = make_config(flaky_retries=0, close_managed_prs_on_backlog=True)
+        failed_run = make_check_run(
+            name="queue-guard",
+            conclusion=CheckConclusion.FAILURE,
+            output_summary="CI backlog guard tripped",
+        )
+
+        updated, report, agent = await self._run_handle_ci_fix(
+            pr,
+            tracking,
+            config,
+            failed_run=failed_run,
+        )
+
+        agent._copilot_bridge.request_ci_fix.assert_not_awaited()
+        agent._github.add_issue_comment.assert_not_awaited()
+        agent._github.update_issue.assert_not_awaited()
+        assert updated.state == PRTrackingState.DISCOVERED
+        assert 7 in report.waiting
 
 
 @pytest.mark.asyncio
