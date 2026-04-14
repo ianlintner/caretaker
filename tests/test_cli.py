@@ -8,10 +8,21 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from caretaker.cli import _configure_logging, main
+from caretaker.cli import RunMode, _configure_logging, main
 
 if TYPE_CHECKING:
     import pathlib
+
+
+class TestRunMode:
+    def test_self_heal_mode_is_valid(self) -> None:
+        """self-heal must be a recognised RunMode value (used by the self-heal-on-failure CI job)."""
+        assert RunMode("self-heal") == RunMode.SELF_HEAL
+
+    def test_all_expected_modes_present(self) -> None:
+        values = {m.value for m in RunMode}
+        for expected in ("full", "pr-only", "issue-only", "upgrade", "dry-run", "event", "self-heal"):
+            assert expected in values, f"RunMode missing expected value: {expected!r}"
 
 
 class TestCLI:

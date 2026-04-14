@@ -85,7 +85,29 @@ class TestOrchestratorReconciliation:
         assert summary.stale_assignments_escalated == 1
 
 
-class TestOrchestratorReportPath:
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_calls_only_self_heal_agent(self) -> None:
+        """self-heal mode must invoke only _run_self_heal_agent, not the full cycle."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent") as mock_self_heal,
+            patch.object(orchestrator, "_run_pr_agent") as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent") as mock_issue,
+            patch.object(orchestrator, "_run_devops_agent") as mock_devops,
+        ):
+            await orchestrator.run(mode="self-heal", report_path=None)
+
+        mock_self_heal.assert_called_once()
+        mock_pr.assert_not_called()
+        mock_issue.assert_not_called()
+        mock_devops.assert_not_called()
+
+
+
     async def test_run_writes_json_report(self, tmp_path: pathlib.Path) -> None:
         """Orchestrator.run writes a JSON report when report_path is provided."""
         orchestrator = make_orchestrator()
