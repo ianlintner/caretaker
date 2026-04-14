@@ -13,7 +13,7 @@ Documentation: https://ianlintner.github.io/caretaker/
 1. **You** paste a setup issue into your repo and assign it to `@copilot`
 2. **Copilot** reads our [SETUP_AGENT.md](dist/SETUP_AGENT.md), analyzes your repo, and opens a PR with everything configured
 3. **You** merge the PR
-4. **The orchestrator** runs weekly via GitHub Actions, managing PRs, issues, and upgrades
+4. **The orchestrator** runs daily via GitHub Actions, managing PRs, issues, and upgrades
 
 The orchestrator uses Copilot as its execution engine — it observes your repo state, decides what needs to happen, and delegates code changes to Copilot via structured comments.
 

@@ -6,7 +6,7 @@ This IS the central caretaker repository. It uses its own system for maintenance
 
 ### How it works
 
-- An orchestrator runs weekly via GitHub Actions
+- An orchestrator runs hourly via GitHub Actions
 - It creates issues and assigns them to @copilot for execution
 - When @copilot opens PRs, the orchestrator monitors them through CI, review, and merge
 - The orchestrator communicates with @copilot via structured issue/PR comments

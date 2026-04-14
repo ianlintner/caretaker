@@ -2,7 +2,7 @@ name: Caretaker
 
 on:
   schedule:
-    - cron: "0 8 * * 1"
+    - cron: "0 8 * * *"
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_review:

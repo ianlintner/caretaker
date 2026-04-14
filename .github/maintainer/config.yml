@@ -3,7 +3,7 @@
 version: v1
 
 orchestrator:
-  schedule: weekly
+  schedule: hourly
   summary_issue: true
   dry_run: false
 
