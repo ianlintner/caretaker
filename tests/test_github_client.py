@@ -50,7 +50,7 @@ class TestAssignCopilotToIssue:
 
         assert exc_info.value.status_code == 500
 
-    async def test_404_result_raises_graceful_error(self) -> None:
+    async def test_404_result_raises_error(self) -> None:
         """A None result (404 from underlying request) raises a GitHubAPIError."""
         client = make_client()
         client._copilot_post = AsyncMock(return_value=None)  # type: ignore[method-assign]

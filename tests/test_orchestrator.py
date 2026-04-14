@@ -142,7 +142,7 @@ class TestOrchestratorReportPath:
 
 @pytest.mark.asyncio
 class TestSelfHealMode:
-    """self-heal mode invokes only the self-heal agent."""
+    """Self-heal mode invokes only the self-heal agent."""
 
     async def test_self_heal_mode_calls_self_heal_agent(self) -> None:
         orchestrator = make_orchestrator()
