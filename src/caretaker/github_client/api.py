@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from caretaker.tools.github import CopilotAgentAssignment
+
+if TYPE_CHECKING:
+    from caretaker.tools.github import GitHubRepositoryTools
 
 from .models import (
     CheckRun,

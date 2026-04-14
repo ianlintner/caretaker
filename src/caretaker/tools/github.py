@@ -68,8 +68,8 @@ class GitHubIssueTools:
         self,
         title: str,
         body: str,
-        labels: list[str] | None = None,
-        assignees: list[str] | None = None,
+        labels: list[str] | None = None,  # type: ignore[valid-type]
+        assignees: list[str] | None = None,  # type: ignore[valid-type]
         copilot_assignment: CopilotAgentAssignment | None = None,
     ) -> Issue:
         return await self._github.create_issue(
@@ -88,7 +88,7 @@ class GitHubIssueTools:
     async def comment(self, number: int, body: str) -> Comment:
         return await self._github.add_issue_comment(self._owner, self._repo, number, body)
 
-    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:
+    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:  # type: ignore[valid-type]
         return await self._github.add_labels(self._owner, self._repo, number, labels)
 
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
@@ -127,8 +127,8 @@ class GitHubPullRequestTools:
         body: str,
         head: str,
         base: str,
-        labels: list[str] | None = None,
-        assignees: list[str] | None = None,
+        labels: list[str] | None = None,  # type: ignore[valid-type]
+        assignees: list[str] | None = None,  # type: ignore[valid-type]
     ) -> dict[str, Any]:
         return await self._github.create_pull_request(
             owner=self._owner,
@@ -152,13 +152,13 @@ class GitHubPullRequestTools:
     async def comment(self, number: int, body: str) -> Comment:
         return await self._github.add_issue_comment(self._owner, self._repo, number, body)
 
-    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:
+    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:  # type: ignore[valid-type]
         return await self._github.add_labels(self._owner, self._repo, number, labels)
 
-    async def get_reviews(self, number: int) -> list[Review]:
+    async def get_reviews(self, number: int) -> list[Review]:  # type: ignore[valid-type]
         return await self._github.get_pr_reviews(self._owner, self._repo, number)
 
-    async def get_comments(self, number: int) -> list[Comment]:
+    async def get_comments(self, number: int) -> list[Comment]:  # type: ignore[valid-type]
         return await self._github.get_pr_comments(self._owner, self._repo, number)
 
 
