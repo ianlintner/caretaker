@@ -108,8 +108,15 @@ class Orchestrator:
             if mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
             else:
-                # Scheduled / full mode — run every agent registered for this mode
-                await self._registry.run_all(state, summary, mode=mode)
+                # Dry-run evaluates full mode with read-only behavior controlled by context.
+                dispatch_mode = "full" if mode == "dry-run" else mode
+                # Scheduled mode — run every agent registered for this mode
+                await self._registry.run_all(
+                    state,
+                    summary,
+                    mode=dispatch_mode,
+                    event_payload=event_payload or {},
+                )
 
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)

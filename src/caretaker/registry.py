@@ -21,7 +21,7 @@ class AgentRegistry:
         registry.register(PRAgentV2(ctx))
         registry.register(IssueAgentV2(ctx))
         ...
-        await registry.run_all(state, summary, modes={"full"})
+        await registry.run_all(state, summary, mode="full")
     """
 
     def __init__(self) -> None:
@@ -36,7 +36,7 @@ class AgentRegistry:
         Args:
             agent: A ``BaseAgent`` instance.
             modes: Set of mode strings (e.g. ``{"full", "pr-only"}``) under
-                which this agent should run.  ``"full"`` is always included.
+                which this agent should run.
         """
         name = agent.name
         if name in self._agents:

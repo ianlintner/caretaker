@@ -528,7 +528,7 @@ AGENT_MODES: dict[str, set[str]] = {
     "issue": {"full", "issue-only"},
     "upgrade": {"full", "upgrade"},
     "devops": {"full", "devops"},
-    "self-heal": set(),  # event-driven only (workflow_run)
+    "self-heal": {"self-heal"},  # scheduled self-heal mode only
     "security": {"full", "security"},
     "deps": {"full", "deps"},
     "docs": {"full", "docs"},
