@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import httpx
 
-from caretaker.tools.github import CopilotAgentAssignment
+from caretaker.tools.github import CopilotAgentAssignment, GitHubRepositoryTools
 
 from .models import (
     CheckRun,
@@ -118,8 +118,6 @@ class GitHubClient:
 
     def for_repo(self, owner: str, repo: str) -> GitHubRepositoryTools:
         """Return a repo-bound toolset for issue and pull-request operations."""
-        from caretaker.tools.github import GitHubRepositoryTools
-
         return GitHubRepositoryTools(self, owner, repo)
 
     # ── Repository ──────────────────────────────────────────────
