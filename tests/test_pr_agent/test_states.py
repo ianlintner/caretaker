@@ -296,3 +296,32 @@ class TestEvaluateReviewsAutomated:
         ]
         result = evaluate_reviews(reviews)
         assert result.has_automated_comments
+
+
+class TestEvaluatePRReviewGuards:
+    """Tests for wait_for_fix guards on review-related recommendations."""
+
+    def test_changes_requested_waits_when_fix_already_requested(self) -> None:
+        """If a fix was already requested, CHANGES_REQUESTED should wait, not re-request."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        reviews = [make_review(state=ReviewState.CHANGES_REQUESTED, body="Fix this")]
+        result = evaluate_pr(pr, checks, reviews, PRTrackingState.FIX_REQUESTED)
+        assert result.recommended_state == PRTrackingState.REVIEW_CHANGES_REQUESTED
+        assert result.recommended_action == "wait_for_fix"
+
+    def test_automated_comments_dont_retrigger_after_fix_requested(self) -> None:
+        """Once a fix has been requested for bot comments, don't re-request — proceed."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider reconciling state before skipping.",
+        )
+        result = evaluate_pr(pr, checks, [bot_review], PRTrackingState.FIX_REQUESTED)
+        # Should fall through to merge — bot comments already addressed
+        assert result.recommended_action in ("merge", "await_review")
+        assert result.recommended_action != "request_review_fix"

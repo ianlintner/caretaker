@@ -104,7 +104,12 @@ class PullRequest(BaseModel):
 
     @property
     def is_copilot_pr(self) -> bool:
-        return self.user.login in ("copilot", "github-copilot[bot]", "copilot[bot]")
+        return self.user.login in (
+            "copilot",
+            "github-copilot[bot]",
+            "copilot[bot]",
+            "copilot-swe-agent[bot]",
+        )
 
     @property
     def is_dependabot_pr(self) -> bool:

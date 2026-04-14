@@ -190,24 +190,35 @@ def evaluate_pr(
 
     # CI passing — check reviews
     if review_eval.changes_requested:
+        action = (
+            "wait_for_fix"
+            if current_state == PRTrackingState.FIX_REQUESTED
+            else "request_review_fix"
+        )
         return PRStateEvaluation(
             pr=pr,
             ci=ci,
             reviews=review_eval,
             recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
-            recommended_action="request_review_fix",
+            recommended_action=action,
         )
 
     # Automated reviewer bots (e.g. copilot-pull-request-reviewer) posted comments
     # that are not formal CHANGES_REQUESTED but still carry actionable feedback.
+    # Once a fix has been requested, don't re-request — the old bot comments are
+    # permanent and would otherwise block the PR forever.
     if review_eval.has_automated_comments:
-        return PRStateEvaluation(
-            pr=pr,
-            ci=ci,
-            reviews=review_eval,
-            recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
-            recommended_action="request_review_fix",
-        )
+        if current_state == PRTrackingState.FIX_REQUESTED:
+            # Fix was already requested for these comments — proceed to merge check
+            pass
+        else:
+            return PRStateEvaluation(
+                pr=pr,
+                ci=ci,
+                reviews=review_eval,
+                recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
+                recommended_action="request_review_fix",
+            )
 
     if ci.status == CIStatus.PASSING and (review_eval.approved or review_eval.pending):
         return PRStateEvaluation(

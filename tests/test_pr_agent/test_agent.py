@@ -10,10 +10,11 @@ from caretaker.config import CIConfig, CopilotConfig, PRAgentConfig
 from caretaker.github_client.models import (
     CheckConclusion,
     Label,
+    ReviewState,
     User,
 )
 from caretaker.state.models import PRTrackingState, TrackedPR
-from tests.conftest import make_check_run, make_pr
+from tests.conftest import make_check_run, make_pr, make_review
 
 
 def make_config(flaky_retries: int = 1, max_retries: int = 2) -> PRAgentConfig:
@@ -240,3 +241,130 @@ class TestOrchestratorWorkflowRunEvent:
 
         # Only the matching PR was evaluated
         assert report.monitored == 1
+
+
+# ── is_copilot_pr recognition ────────────────────────────────────────
+
+
+class TestIsCopilotPR:
+    """Verify that is_copilot_pr covers all known Copilot bot logins."""
+
+    def test_copilot_swe_agent_bot_is_recognized(self) -> None:
+        pr = make_pr(user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"))
+        assert pr.is_copilot_pr
+
+    def test_copilot_bot_is_recognized(self) -> None:
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        assert pr.is_copilot_pr
+
+    def test_github_copilot_bot_is_recognized(self) -> None:
+        pr = make_pr(user=User(login="github-copilot[bot]", id=1, type="Bot"))
+        assert pr.is_copilot_pr
+
+    def test_human_is_not_copilot(self) -> None:
+        pr = make_pr(user=User(login="dev", id=5, type="User"))
+        assert not pr.is_copilot_pr
+
+
+# ── _handle_review_fix — no author gating ─────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestReviewFixLifecycle:
+    """Tests for _handle_review_fix — review fix request for any PR."""
+
+    async def _run_handle_review_fix(self, pr, tracking: TrackedPR, config: PRAgentConfig) -> tuple:
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider reconciling state before skipping.",
+        )
+
+        mock_result = MagicMock()
+        mock_result.comment_id = 42
+        agent._copilot_bridge.request_review_fix = AsyncMock(return_value=mock_result)
+
+        report = PRAgentReport()
+        updated = await agent._handle_review_fix(pr, [bot_review], tracking, report)
+        return updated, report, agent
+
+    async def test_human_pr_gets_review_fix_requested(self) -> None:
+        """A human-authored PR must also get review fix requests (no author gating)."""
+        pr = make_pr(number=20, user=User(login="dev", id=5, type="User"))
+        tracking = TrackedPR(number=20)
+        config = make_config()
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
+        agent._copilot_bridge.request_review_fix.assert_awaited_once()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+        assert 20 in report.fix_requested
+
+    async def test_copilot_swe_agent_pr_gets_review_fix_requested(self) -> None:
+        """copilot-swe-agent[bot] authored PR gets review fix requests."""
+        pr = make_pr(number=21, user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"))
+        tracking = TrackedPR(number=21)
+        config = make_config()
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
+        agent._copilot_bridge.request_review_fix.assert_awaited_once()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+
+    async def test_maintainer_pr_gets_review_fix_requested(self) -> None:
+        """Maintainer-labeled PR gets review fix requests."""
+        pr = make_pr(number=22, labels=[Label(name="maintainer:managed", color="")])
+        tracking = TrackedPR(number=22)
+        config = make_config()
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
+        agent._copilot_bridge.request_review_fix.assert_awaited_once()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+
+
+# ── _process_pr state persistence ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestProcessPRStatePersistence:
+    """Verify that action handlers' state overrides are not clobbered."""
+
+    async def test_fix_requested_state_persists_after_review_fix(self) -> None:
+        """After _handle_review_fix sets FIX_REQUESTED, it must not be
+        overwritten back to REVIEW_CHANGES_REQUESTED by _process_pr."""
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        # Set up a PR with passing CI and automated review comments
+        pr = make_pr(number=30)
+        checks = [make_check_run(name="test")]
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider reconciling state.",
+        )
+
+        github.get_check_runs.return_value = checks
+        github.get_pr_reviews.return_value = [bot_review]
+
+        mock_result = MagicMock()
+        mock_result.comment_id = 42
+        agent._copilot_bridge.request_review_fix = AsyncMock(return_value=mock_result)
+
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        tracking = TrackedPR(number=30)
+        report = PRAgentReport()
+        updated = await agent._process_pr(pr, tracking, report)
+
+        # The handler sets FIX_REQUESTED — it must persist
+        assert updated.state == PRTrackingState.FIX_REQUESTED

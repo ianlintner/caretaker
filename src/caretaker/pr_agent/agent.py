@@ -123,6 +123,10 @@ class PRAgent:
             evaluation.recommended_action,
         )
 
+        # Set state to the recommendation first; action handlers may override
+        # (e.g. FIX_REQUESTED after posting a @copilot comment).
+        tracking.state = evaluation.recommended_state
+
         # Act on the recommendation
         match evaluation.recommended_action:
             case "merge":
@@ -140,7 +144,6 @@ class PRAgent:
             case _:
                 report.waiting.append(pr.number)
 
-        tracking.state = evaluation.recommended_state
         return tracking
 
     async def _handle_merge(
@@ -275,11 +278,6 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Handle review comments — request fixes from Copilot."""
-        if not pr.is_copilot_pr:
-            # Don't auto-fix non-Copilot PRs
-            report.waiting.append(pr.number)
-            return tracking
-
         analyses = await analyze_reviews(
             reviews,
             nitpick_threshold=self._config.review.nitpick_threshold,
