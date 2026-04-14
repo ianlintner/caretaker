@@ -21,6 +21,7 @@ class RunMode(StrEnum):
     UPGRADE_ONLY = "upgrade"
     DRY_RUN = "dry-run"
     EVENT = "event"
+    SELF_HEAL = "self-heal"
 
 
 def _configure_logging(log_file: str | None, debug: bool) -> None:
