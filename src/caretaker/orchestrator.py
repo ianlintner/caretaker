@@ -92,10 +92,15 @@ class Orchestrator:
             self._repo,
         )
 
-        # Load persisted state
-        state = await self._state_tracker.load()
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
         has_errors = False
+
+        # Load persisted state — fall back to fresh state on transient errors (e.g., rate limits)
+        try:
+            state = await self._state_tracker.load()
+        except Exception as e:
+            logger.warning("Failed to load persisted state — starting with fresh state: %s", e)
+            state = OrchestratorState()
 
         try:
             # Event-driven mode — route to specific agent
@@ -139,7 +144,10 @@ class Orchestrator:
             has_errors = True
 
         # Persist state (save also appends summary to history)
-        await self._state_tracker.save(summary)
+        try:
+            await self._state_tracker.save(summary)
+        except Exception as e:
+            logger.warning("Failed to save state: %s", e)
 
         # Post summary if configured
         if self._config.orchestrator.summary_issue and mode != "dry-run":

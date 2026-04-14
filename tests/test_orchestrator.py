@@ -136,3 +136,63 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorResiliency:
+    async def test_run_continues_when_state_load_fails(self) -> None:
+        """Orchestrator.run falls back to fresh state when state load raises an error."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        orchestrator = make_orchestrator()
+
+        load_mock = AsyncMock(
+            side_effect=GitHubAPIError(403, "Rate limited: API rate limit exceeded")
+        )
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", load_mock),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent"),
+            patch.object(orchestrator, "_run_issue_agent"),
+            patch.object(orchestrator, "_run_upgrade_agent"),
+            patch.object(orchestrator, "_run_devops_agent"),
+            patch.object(orchestrator, "_run_security_agent"),
+            patch.object(orchestrator, "_run_dependency_agent"),
+            patch.object(orchestrator, "_run_docs_agent"),
+            patch.object(orchestrator, "_run_stale_agent"),
+            patch.object(orchestrator, "_run_escalation_agent"),
+        ):
+            exit_code = await orchestrator.run(mode="dry-run")
+
+        # Should exit successfully (0) — state load failure is a warning, not a fatal error
+        assert exit_code == 0
+
+    async def test_run_continues_when_state_save_fails(self) -> None:
+        """Orchestrator.run still completes when state save raises an error."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        orchestrator = make_orchestrator()
+
+        save_mock = AsyncMock(
+            side_effect=GitHubAPIError(403, "Rate limited: API rate limit exceeded")
+        )
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save", save_mock),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent"),
+            patch.object(orchestrator, "_run_issue_agent"),
+            patch.object(orchestrator, "_run_upgrade_agent"),
+            patch.object(orchestrator, "_run_devops_agent"),
+            patch.object(orchestrator, "_run_security_agent"),
+            patch.object(orchestrator, "_run_dependency_agent"),
+            patch.object(orchestrator, "_run_docs_agent"),
+            patch.object(orchestrator, "_run_stale_agent"),
+            patch.object(orchestrator, "_run_escalation_agent"),
+        ):
+            exit_code = await orchestrator.run(mode="dry-run")
+
+        # State save failure is a warning — run should still report success
+        assert exit_code == 0
