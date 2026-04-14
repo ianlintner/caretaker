@@ -5,22 +5,24 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
-from caretaker.config import PRAgentConfig
-from caretaker.github_client.api import GitHubClient
-from caretaker.github_client.models import PullRequest
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
-from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.ci_triage import triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
 from caretaker.pr_agent.merge import evaluate_merge
 from caretaker.pr_agent.review import analyze_reviews
 from caretaker.pr_agent.states import (
-    CIStatus,
     PRStateEvaluation,
     evaluate_pr,
 )
 from caretaker.state.models import PRTrackingState, TrackedPR
+
+if TYPE_CHECKING:
+    from caretaker.config import PRAgentConfig
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
+    from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +89,8 @@ class PRAgent:
             tracking.first_seen_at = datetime.utcnow()
 
         # Fetch CI status and reviews
-        check_runs = await self._github.get_check_runs(
-            self._owner, self._repo, pr.head_ref
-        )
-        reviews = await self._github.get_pr_reviews(
-            self._owner, self._repo, pr.number
-        )
+        check_runs = await self._github.get_check_runs(self._owner, self._repo, pr.head_ref)
+        reviews = await self._github.get_pr_reviews(self._owner, self._repo, pr.number)
 
         # Evaluate PR state
         evaluation = evaluate_pr(
@@ -139,9 +137,7 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Attempt to merge a PR that's ready."""
-        merge_decision = evaluate_merge(
-            pr, evaluation.ci, evaluation.reviews, self._config
-        )
+        merge_decision = evaluate_merge(pr, evaluation.ci, evaluation.reviews, self._config)
 
         if merge_decision.should_merge:
             success = await self._github.merge_pull_request(
@@ -177,10 +173,7 @@ class PRAgent:
     ) -> TrackedPR:
         """Handle CI failure — request fix from Copilot."""
         # Check if we should retry CI first (flaky test handling)
-        if (
-            tracking.ci_attempts < self._config.ci.flaky_retries
-            and evaluation.ci.failed_runs
-        ):
+        if tracking.ci_attempts < self._config.ci.flaky_retries and evaluation.ci.failed_runs:
             tracking.ci_attempts += 1
             logger.info(
                 "PR #%d: retrying CI (flaky retry %d/%d)",
@@ -257,7 +250,7 @@ class PRAgent:
     async def _handle_review_fix(
         self,
         pr: PullRequest,
-        reviews: list,
+        reviews: list[Any],
         tracking: TrackedPR,
         report: PRAgentReport,
     ) -> TrackedPR:
@@ -266,8 +259,6 @@ class PRAgent:
             # Don't auto-fix non-Copilot PRs
             report.waiting.append(pr.number)
             return tracking
-
-        from caretaker.github_client.models import Review
 
         analyses = await analyze_reviews(
             reviews,
@@ -300,9 +291,7 @@ class PRAgent:
     async def _escalate(self, pr: PullRequest, reason: str) -> None:
         """Escalate a PR to the repo owner."""
         labels = ["maintainer:escalated"]
-        await self._github.add_labels(
-            self._owner, self._repo, pr.number, labels
-        )
+        await self._github.add_labels(self._owner, self._repo, pr.number, labels)
         body = (
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
@@ -310,7 +299,5 @@ class PRAgent:
             f"The automated system has exhausted its ability to resolve this. "
             f"Please review and take appropriate action."
         )
-        await self._github.add_issue_comment(
-            self._owner, self._repo, pr.number, body
-        )
+        await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
         logger.info("PR #%d escalated: %s", pr.number, reason)

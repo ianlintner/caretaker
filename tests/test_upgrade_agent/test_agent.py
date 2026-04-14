@@ -43,9 +43,15 @@ class TestUpgradeAgent:
             changelog_url="https://example.com/changelog",
         )
 
-        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=AsyncMock(return_value=[release])):
-            with patch.object(agent._planner, "create_upgrade_issue", new=AsyncMock(return_value=99)):
-                report = await agent.run()
+        issue_mock = AsyncMock(return_value=99)
+        with (
+            patch(
+                "caretaker.upgrade_agent.agent.fetch_releases",
+                new=AsyncMock(return_value=[release]),
+            ),
+            patch.object(agent._planner, "create_upgrade_issue", new=issue_mock),
+        ):
+            report = await agent.run()
 
         assert report.checked is True
         assert report.upgrade_needed is True
@@ -67,7 +73,8 @@ class TestUpgradeAgent:
             changelog_url="https://example.com/changelog",
         )
 
-        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=AsyncMock(return_value=[release])):
+        releases_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=releases_mock):
             report = await agent.run()
 
         assert report.checked is True

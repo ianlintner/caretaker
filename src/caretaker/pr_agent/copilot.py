@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.api import GitHubClient
-from caretaker.github_client.models import PullRequest
 from caretaker.llm.copilot import (
     CopilotProtocol,
     CopilotResult,
     CopilotTask,
-    ResultStatus,
     TaskType,
 )
-from caretaker.pr_agent.ci_triage import TriageResult
-from caretaker.pr_agent.review import ReviewAnalysis
+
+if TYPE_CHECKING:
+    from caretaker.github_client.models import PullRequest
+    from caretaker.pr_agent.ci_triage import TriageResult
+    from caretaker.pr_agent.review import ReviewAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,7 @@ class PRCopilotBridge:
         review_items = []
         for i, analysis in enumerate(analyses, 1):
             review_items.append(
-                f"{i}. **{analysis.reviewer}** ({analysis.comment_type.value}): "
-                f"{analysis.summary}"
+                f"{i}. **{analysis.reviewer}** ({analysis.comment_type.value}): {analysis.summary}"
             )
 
         instructions = (

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from caretaker.github_client.models import ReviewState, User
+from caretaker.github_client.models import ReviewState
 from caretaker.pr_agent.review import (
     ReviewCommentType,
-    classify_review_basic,
     analyze_reviews,
+    classify_review_basic,
 )
-
 from tests.conftest import make_review
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -13,15 +13,15 @@ from caretaker.github_client.models import (
     CheckStatus,
     Comment,
     Label,
-    PullRequest,
     PRState,
+    PullRequest,
     Review,
     ReviewState,
     User,
 )
 
-
 # ── Users ────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def copilot_user() -> User:
@@ -44,6 +44,7 @@ def reviewer_user() -> User:
 
 
 # ── Pull Requests ────────────────────────────────────────────────────
+
 
 def make_pr(
     number: int = 1,
@@ -68,13 +69,14 @@ def make_pr(
         merged=merged,
         draft=draft,
         labels=labels or [],
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2024, 1, 1, tzinfo=UTC),
         html_url=f"https://github.com/test/repo/pull/{number}",
     )
 
 
 # ── Check Runs ───────────────────────────────────────────────────────
+
 
 def make_check_run(
     name: str = "test",
@@ -95,6 +97,7 @@ def make_check_run(
 
 # ── Reviews ──────────────────────────────────────────────────────────
 
+
 def make_review(
     user: User | None = None,
     state: ReviewState = ReviewState.APPROVED,
@@ -108,11 +111,12 @@ def make_review(
         user=user,
         state=state,
         body=body,
-        submitted_at=submitted_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+        submitted_at=submitted_at or datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
 # ── Comments ─────────────────────────────────────────────────────────
+
 
 def make_comment(
     body: str = "",
@@ -124,11 +128,12 @@ def make_comment(
         id=1,
         user=user,
         body=body,
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
 # ── Config ───────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def default_config() -> MaintainerConfig:

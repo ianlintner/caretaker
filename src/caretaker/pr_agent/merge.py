@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from caretaker.config import PRAgentConfig
-from caretaker.github_client.models import PullRequest
 from caretaker.pr_agent.states import CIEvaluation, CIStatus, ReviewEvaluation
+
+if TYPE_CHECKING:
+    from caretaker.config import PRAgentConfig
+    from caretaker.github_client.models import PullRequest
 
 logger = logging.getLogger(__name__)
 

@@ -6,14 +6,17 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, cast
 
-from caretaker.config import IssueAgentConfig
-from caretaker.github_client.api import GitHubClient
-from caretaker.github_client.models import Issue
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
-from caretaker.llm.router import LLMRouter
 from caretaker.state.models import IssueTrackingState, TrackedIssue
+
+if TYPE_CHECKING:
+    from caretaker.config import IssueAgentConfig
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
+    from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +55,11 @@ class IssueAgent:
         report = IssueAgentReport()
 
         issues = await self._github.list_issues(self._owner, self._repo, state="all")
-        pull_requests = await self._github.list_pull_requests(
-            self._owner, self._repo, state="all"
-        )
+        pull_requests = await self._github.list_pull_requests(self._owner, self._repo, state="all")
 
         for issue in issues:
             try:
-                tracking = tracked_issues.get(
-                    issue.number, TrackedIssue(number=issue.number)
-                )
+                tracking = tracked_issues.get(issue.number, TrackedIssue(number=issue.number))
 
                 # Reconcile closed issues and stop processing
                 if issue.state != "open":
@@ -91,9 +90,7 @@ class IssueAgent:
                 tracking.classification = classification.value
                 report.triaged += 1
 
-                tracking = await self._process_issue(
-                    issue, classification, tracking, report
-                )
+                tracking = await self._process_issue(issue, classification, tracking, report)
                 tracking.last_checked = datetime.utcnow()
                 tracked_issues[issue.number] = tracking
 
@@ -181,8 +178,7 @@ class IssueAgent:
                     self._owner,
                     self._repo,
                     issue.number,
-                    "Closing as stale due to inactivity. "
-                    "Please reopen if this is still relevant.",
+                    "Closing as stale due to inactivity. Please reopen if this is still relevant.",
                 )
                 await self._github.update_issue(
                     self._owner, self._repo, issue.number, state="closed"
@@ -191,9 +187,7 @@ class IssueAgent:
                 report.closed.append(issue.number)
 
             case IssueClassification.INFRA_OR_CONFIG:
-                await self._escalate(
-                    issue, "Infrastructure/config issue — requires human access"
-                )
+                await self._escalate(issue, "Infrastructure/config issue — requires human access")
                 tracking.state = IssueTrackingState.ESCALATED
                 report.escalated.append(issue.number)
 
@@ -209,13 +203,15 @@ class IssueAgent:
     def _reconcile_issue_progress(
         self,
         issue: Issue,
-        pull_requests: list,
+        pull_requests: list[Any],
         tracking: TrackedIssue,
     ) -> TrackedIssue:
         """Update issue tracking state based on assignees and linked PRs."""
-        if any(a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees):
-            if tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
-                tracking.state = IssueTrackingState.IN_PROGRESS
+        is_copilot = any(
+            a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees
+        )
+        if is_copilot and tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
+            tracking.state = IssueTrackingState.IN_PROGRESS
 
         linked_pr = self._find_linked_pr_number(issue.number, pull_requests)
         if linked_pr is not None:
@@ -225,7 +221,7 @@ class IssueAgent:
         return tracking
 
     @staticmethod
-    def _find_linked_pr_number(issue_number: int, pull_requests: list) -> int | None:
+    def _find_linked_pr_number(issue_number: int, pull_requests: list[Any]) -> int | None:
         """Find a PR that links to an issue via closing keywords or plain references."""
         issue_ref = f"#{issue_number}"
         link_pattern = re.compile(
@@ -235,10 +231,8 @@ class IssueAgent:
 
         for pr in pull_requests:
             text = f"{pr.title}\n{pr.body or ''}"
-            if issue_ref in text and (
-                link_pattern.search(text) or issue_ref in (pr.body or "")
-            ):
-                return pr.number
+            if issue_ref in text and (link_pattern.search(text) or issue_ref in (pr.body or "")):
+                return cast("int", cast("Any", pr).number)
 
         return None
 

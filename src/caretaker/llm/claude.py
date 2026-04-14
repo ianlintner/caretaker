@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ class ClaudeClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self._client = None
+        self._client: Any = None
 
     @property
     def available(self) -> bool:
@@ -49,7 +50,7 @@ class ClaudeClient:
                 }
             ],
         )
-        return response.content[0].text
+        return cast("str", response.content[0].text)
 
     async def analyze_review_comment(self, comment: str, diff: str) -> str:
         """Analyze a review comment and determine if it's actionable."""
@@ -76,7 +77,7 @@ class ClaudeClient:
                 }
             ],
         )
-        return response.content[0].text
+        return cast("str", response.content[0].text)
 
     async def decompose_issue(self, issue_body: str, repo_context: str = "") -> str:
         """Break a large issue into smaller implementable tasks."""
@@ -106,4 +107,4 @@ class ClaudeClient:
                 }
             ],
         )
-        return response.content[0].text
+        return cast("str", response.content[0].text)

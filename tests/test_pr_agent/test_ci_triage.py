@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from caretaker.github_client.models import CheckConclusion, CheckRun, CheckStatus
+from caretaker.github_client.models import CheckConclusion
 from caretaker.pr_agent.ci_triage import (
     FailureType,
     build_fix_instructions,
     classify_failure,
     triage_failure,
 )
-
 from tests.conftest import make_check_run
 
 

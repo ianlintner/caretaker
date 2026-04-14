@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from caretaker.github_client.models import (
     CheckConclusion,
     CheckStatus,
@@ -14,9 +16,7 @@ from caretaker.pr_agent.states import (
     evaluate_reviews,
 )
 from caretaker.state.models import PRTrackingState
-
 from tests.conftest import make_check_run, make_pr, make_review
-
 
 # ── evaluate_ci ──────────────────────────────────────────────────────
 
@@ -142,7 +142,7 @@ class TestEvaluateReviews:
 
     def test_latest_review_per_user_wins(self) -> None:
         """If a user first requests changes then approves, the approval wins."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from caretaker.github_client.models import User
 
@@ -151,12 +151,12 @@ class TestEvaluateReviews:
             user=user,
             state=ReviewState.CHANGES_REQUESTED,
             body="Needs work",
-            submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            submitted_at=datetime(2024, 1, 1, tzinfo=UTC),
         )
         r2 = make_review(
             user=user,
             state=ReviewState.APPROVED,
-            submitted_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            submitted_at=datetime(2024, 1, 2, tzinfo=UTC),
         )
         result = evaluate_reviews([r1, r2])
         assert result.approved is True

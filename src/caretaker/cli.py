@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from enum import Enum
+from enum import StrEnum
 
 import click
 
@@ -13,7 +13,7 @@ from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
 
 
-class RunMode(str, Enum):
+class RunMode(StrEnum):
     FULL = "full"
     PR_ONLY = "pr-only"
     ISSUE_ONLY = "issue-only"
@@ -70,7 +70,7 @@ def validate_config(config: str) -> None:
         loaded = MaintainerConfig.from_yaml(config)
     except Exception as exc:  # pragma: no cover - surfaced to CLI user
         click.echo(f"❌ Invalid config: {exc}", err=True)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
     click.echo(
         f"✅ Config valid (version={loaded.version}, schedule={loaded.orchestrator.schedule})"

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from caretaker.llm.copilot import (
+    RESULT_CLOSE,
+    RESULT_OPEN,
+    TASK_CLOSE,
+    TASK_OPEN,
     CopilotResult,
     CopilotTask,
     ResultStatus,
     TaskType,
-    TASK_OPEN,
-    TASK_CLOSE,
-    RESULT_OPEN,
-    RESULT_CLOSE,
 )
 
 

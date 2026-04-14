@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
-from caretaker.github_client.api import GitHubClient
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +58,8 @@ class EscalationAgent:
         report = EscalationReport()
 
         # Collect all items requiring action grouped by label
-        buckets: dict[str, list] = {}
-        for label, description in _ACTION_LABELS.items():
+        buckets: dict[str, list[Any]] = {}
+        for label, _description in _ACTION_LABELS.items():
             try:
                 items = await self._github.list_issues(
                     self._owner, self._repo, state="open", labels=label
@@ -90,8 +92,11 @@ class EscalationAgent:
 
     async def _upsert_digest(self, body: str) -> int:
         await self._github.ensure_label(
-            self._owner, self._repo, ESCALATION_DIGEST_LABEL,
-            color="b91c1c", description="Weekly human-action-required digest",
+            self._owner,
+            self._repo,
+            ESCALATION_DIGEST_LABEL,
+            color="b91c1c",
+            description="Weekly human-action-required digest",
         )
 
         existing = await self._github.list_issues(
@@ -101,9 +106,7 @@ class EscalationAgent:
 
         if digest_issues:
             issue = digest_issues[0]
-            await self._github.update_issue(
-                self._owner, self._repo, issue.number, body=body
-            )
+            await self._github.update_issue(self._owner, self._repo, issue.number, body=body)
             logger.info("Escalation agent: updated digest issue #%d", issue.number)
             return issue.number
 
@@ -111,7 +114,7 @@ class EscalationAgent:
         issue = await self._github.create_issue(
             owner=self._owner,
             repo=self._repo,
-            title=f"[Caretaker] Human action required — {datetime.now(timezone.utc).strftime('%Y-W%V')}",
+            title=f"[Caretaker] Human action required — {datetime.now(UTC).strftime('%Y-W%V')}",
             body=body,
             labels=[ESCALATION_DIGEST_LABEL],
             assignees=assignees if assignees else None,
@@ -129,16 +132,19 @@ class EscalationAgent:
             for issue in existing:
                 if ESCALATION_AGENT_MARKER in (issue.body or ""):
                     await self._github.update_issue(
-                        self._owner, self._repo, issue.number,
-                        state="closed", state_reason="completed",
+                        self._owner,
+                        self._repo,
+                        issue.number,
+                        state="closed",
+                        state_reason="completed",
                     )
                     logger.info("Escalation agent: closed resolved digest #%d", issue.number)
         except Exception as e:
             logger.warning("Escalation agent: could not close digest: %s", e)
 
-    def _build_digest_body(self, buckets: dict[str, list]) -> str:
-        week = datetime.now(timezone.utc).strftime("%Y-W%V")
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    def _build_digest_body(self, buckets: dict[str, list[Any]]) -> str:
+        week = datetime.now(UTC).strftime("%Y-W%V")
+        date = datetime.now(UTC).strftime("%Y-%m-%d")
         lines = [
             f"## 🔔 Caretaker — Human Action Required — {week} ({date})\n",
             "The following items have been identified as requiring manual maintainer review.\n",
@@ -169,7 +175,7 @@ def _age_str(updated_at: str | None) -> str:
         return "unknown"
     try:
         dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
-        days = (datetime.now(timezone.utc) - dt).days
+        days = (datetime.now(UTC) - dt).days
         if days == 0:
             return "today"
         if days == 1:

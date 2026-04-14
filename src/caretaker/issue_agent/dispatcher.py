@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.api import GitHubClient
-from caretaker.github_client.models import Issue
 from caretaker.issue_agent.classifier import IssueClassification
+
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,7 @@ class IssueDispatcher:
                 self._repo,
                 issue.number,
                 assignees=["copilot"],
-                labels=[l.name for l in issue.labels] + ["maintainer:assigned"],
+                labels=[lbl.name for lbl in issue.labels] + ["maintainer:assigned"],
             )
             logger.info("Issue #%d assigned to Copilot as %s", issue.number, classification.value)
             return issue
@@ -105,8 +108,7 @@ class IssueDispatcher:
                 self._owner,
                 self._repo,
                 issue.number,
-                f"This issue has been picked up by the caretaker. "
-                f"Tracking in #{new_issue.number}.",
+                f"This issue has been picked up by the caretaker. Tracking in #{new_issue.number}.",
             )
             logger.info(
                 "Created assignment issue #%d for source issue #%d",

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 from caretaker.github_client.models import (
-    Comment,
     Issue,
     Label,
-    PullRequest,
     User,
 )
-
 from tests.conftest import make_comment, make_pr
 
 
@@ -60,7 +57,6 @@ class TestComment:
 
 class TestIssue:
     def test_is_maintainer_issue_by_title(self) -> None:
-        from datetime import datetime, timezone
 
         issue = Issue(
             number=1,

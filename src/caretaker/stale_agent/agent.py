@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.api import GitHubClient
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
 
 STALE_LABEL = "stale"
-_STALE_EXEMPT_LABELS = frozenset({
-    "pinned", "security", "security:finding", "dependencies:major-upgrade",
-    "caretaker:self-heal", "devops:build-failure",
-})
+_STALE_EXEMPT_LABELS = frozenset(
+    {
+        "pinned",
+        "security",
+        "security:finding",
+        "dependencies:major-upgrade",
+        "caretaker:self-heal",
+        "devops:build-failure",
+    }
+)
 _STALE_WARNING = (
     "This issue has been inactive for {days} days and will be closed in "
     "{close_in} days if there is no new activity. "
@@ -63,7 +71,7 @@ class StaleAgent:
 
     async def run(self) -> StaleReport:
         report = StaleReport()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # ── Issues ──────────────────────────────────────────────
         try:
@@ -76,12 +84,14 @@ class StaleAgent:
             if self._is_exempt(issue):
                 continue
             try:
-                updated_at = _parse_dt(getattr(issue, "updated_at", None) or
-                                       getattr(issue, "raw", {}).get("updated_at"))
+                updated_at = _parse_dt(
+                    getattr(issue, "updated_at", None)
+                    or getattr(issue, "raw", {}).get("updated_at")
+                )
                 if updated_at is None:
                     continue
                 age = (now - updated_at).days
-                label_names = {l.name for l in getattr(issue, "labels", [])}
+                label_names = {lbl.name for lbl in getattr(issue, "labels", [])}
                 already_stale = STALE_LABEL in label_names
 
                 if not already_stale and age >= self._stale_days:
@@ -90,14 +100,19 @@ class StaleAgent:
                         self._owner, self._repo, issue.number, [STALE_LABEL]
                     )
                     await self._github.add_issue_comment(
-                        self._owner, self._repo, issue.number,
+                        self._owner,
+                        self._repo,
+                        issue.number,
                         _STALE_WARNING.format(days=age, close_in=self._close_after),
                     )
                     report.issues_warned += 1
 
                 elif already_stale and age >= (self._stale_days + self._close_after):
                     await self._github.update_issue(
-                        self._owner, self._repo, issue.number, state="closed",
+                        self._owner,
+                        self._repo,
+                        issue.number,
+                        state="closed",
                         state_reason="not_planned",
                     )
                     report.issues_closed += 1
@@ -108,9 +123,7 @@ class StaleAgent:
         # ── Stale PRs ────────────────────────────────────────────
         if self._close_stale_prs:
             try:
-                prs = await self._github.list_pull_requests(
-                    self._owner, self._repo, state="open"
-                )
+                prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
             except Exception as e:
                 report.errors.append(f"list_prs: {e}")
                 prs = []
@@ -118,18 +131,22 @@ class StaleAgent:
             for pr in prs:
                 if pr.draft:
                     continue  # skip drafts — they signal WIP
-                label_names = {l.name for l in getattr(pr, "labels", [])}
+                label_names = {lbl.name for lbl in getattr(pr, "labels", [])}
                 if label_names & self._exempt_labels:
                     continue
                 try:
-                    updated_at = _parse_dt(getattr(pr, "updated_at", None) or
-                                           getattr(pr, "raw", {}).get("updated_at"))
+                    updated_at = _parse_dt(
+                        getattr(pr, "updated_at", None) or getattr(pr, "raw", {}).get("updated_at")
+                    )
                     if updated_at is None:
                         continue
                     age = (now - updated_at).days
                     if age >= (self._stale_days + self._close_after):
                         await self._github.update_issue(
-                            self._owner, self._repo, pr.number, state="closed",
+                            self._owner,
+                            self._repo,
+                            pr.number,
+                            state="closed",
                         )
                         report.prs_closed += 1
                         logger.info("Stale agent: closed stale PR #%d", pr.number)
@@ -148,19 +165,20 @@ class StaleAgent:
 
         logger.info(
             "Stale agent: warned=%d closed_issues=%d closed_prs=%d branches_deleted=%d",
-            report.issues_warned, report.issues_closed, report.prs_closed, report.branches_deleted,
+            report.issues_warned,
+            report.issues_closed,
+            report.prs_closed,
+            report.branches_deleted,
         )
         return report
 
-    def _is_exempt(self, issue) -> bool:
-        label_names = {l.name for l in getattr(issue, "labels", [])}
+    def _is_exempt(self, issue: object) -> bool:
+        label_names = {lbl.name for lbl in getattr(issue, "labels", [])}
         return bool(label_names & self._exempt_labels)
 
     async def _prune_merged_branches(self) -> int:
         """Delete branches whose associated PRs have been merged."""
-        merged_prs = await self._github.list_pull_requests(
-            self._owner, self._repo, state="closed"
-        )
+        merged_prs = await self._github.list_pull_requests(self._owner, self._repo, state="closed")
         deleted = 0
         for pr in merged_prs:
             if not getattr(pr, "merged", False):
@@ -182,7 +200,7 @@ def _parse_dt(value: str | datetime | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))

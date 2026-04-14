@@ -92,7 +92,7 @@ unknown_key: true
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
             f.flush()
-            with pytest.raises(Exception):
+            with pytest.raises(Exception, match="."):
                 MaintainerConfig.from_yaml(f.name)
 
     def test_unknown_nested_key_raises(self) -> None:
@@ -105,7 +105,7 @@ pr_agent:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
             f.flush()
-            with pytest.raises(Exception):
+            with pytest.raises(Exception, match="."):
                 MaintainerConfig.from_yaml(f.name)
 
     def test_non_mapping_yaml_root_raises(self) -> None:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SUPPORTED_CONFIG_VERSIONS = {"v1"}
 

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from caretaker.github_client.models import Review, ReviewState
-from caretaker.llm.router import LLMRouter
+
+if TYPE_CHECKING:
+    from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
 
-class ReviewCommentType(str, Enum):
+class ReviewCommentType(StrEnum):
     ACTIONABLE = "ACTIONABLE"
     NITPICK = "NITPICK"
     QUESTION = "QUESTION"
@@ -49,10 +52,22 @@ def classify_review_basic(review: Review) -> ReviewAnalysis:
     elif any(w in body_lower for w in ["?", "why", "what", "how", "could you explain"]):
         comment_type = ReviewCommentType.QUESTION
         complexity = "trivial"
-    elif any(w in body_lower for w in [
-        "bug", "error", "wrong", "fix", "must", "should", "required",
-        "missing", "incorrect", "add test", "security",
-    ]):
+    elif any(
+        w in body_lower
+        for w in [
+            "bug",
+            "error",
+            "wrong",
+            "fix",
+            "must",
+            "should",
+            "required",
+            "missing",
+            "incorrect",
+            "add test",
+            "security",
+        ]
+    ):
         comment_type = ReviewCommentType.ACTIONABLE
         complexity = "moderate"
     else:

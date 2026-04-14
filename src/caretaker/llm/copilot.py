@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.api import GitHubClient
-from caretaker.github_client.models import Comment
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Comment
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ RESULT_OPEN = "<!-- caretaker:result -->"
 RESULT_CLOSE = "<!-- /caretaker:result -->"
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     CI_FAILURE = "CI_FAILURE"
     TEST_FAILURE = "TEST_FAILURE"
     LINT_FAILURE = "LINT_FAILURE"
@@ -28,7 +30,7 @@ class TaskType(str, Enum):
     GENERIC = "GENERIC"
 
 
-class ResultStatus(str, Enum):
+class ResultStatus(StrEnum):
     FIXED = "FIXED"
     BLOCKED = "BLOCKED"
     PARTIAL = "PARTIAL"
@@ -140,16 +142,12 @@ class CopilotProtocol:
             task.attempt,
             task.max_attempts,
         )
-        return await self._github.add_issue_comment(
-            self._owner, self._repo, pr_number, body
-        )
+        return await self._github.add_issue_comment(self._owner, self._repo, pr_number, body)
 
     async def find_latest_result(
         self, pr_number: int, after_comment_id: int | None = None
     ) -> CopilotResult | None:
-        comments = await self._github.get_pr_comments(
-            self._owner, self._repo, pr_number
-        )
+        comments = await self._github.get_pr_comments(self._owner, self._repo, pr_number)
         for comment in reversed(comments):
             if after_comment_id and comment.id <= after_comment_id:
                 break
@@ -160,7 +158,5 @@ class CopilotProtocol:
         return None
 
     async def count_task_attempts(self, pr_number: int) -> int:
-        comments = await self._github.get_pr_comments(
-            self._owner, self._repo, pr_number
-        )
+        comments = await self._github.get_pr_comments(self._owner, self._repo, pr_number)
         return sum(1 for c in comments if c.is_maintainer_task)

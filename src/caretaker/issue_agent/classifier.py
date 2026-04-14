@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from caretaker.config import IssueAgentConfig
-from caretaker.github_client.models import Issue
+if TYPE_CHECKING:
+    from caretaker.config import IssueAgentConfig
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
 
-class IssueClassification(str, Enum):
+class IssueClassification(StrEnum):
     BUG_SIMPLE = "BUG_SIMPLE"
     BUG_COMPLEX = "BUG_COMPLEX"
     FEATURE_SMALL = "FEATURE_SMALL"
@@ -32,12 +34,12 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
         return IssueClassification.MAINTAINER_INTERNAL
 
     # Label-based classification
-    label_names = {l.name.lower() for l in issue.labels}
+    label_names = {lbl.name.lower() for lbl in issue.labels}
 
     if "duplicate" in label_names:
         return IssueClassification.DUPLICATE
 
-    if label_names & {l.lower() for l in config.labels.question}:
+    if label_names & {lbl.lower() for lbl in config.labels.question}:
         return IssueClassification.QUESTION
 
     body_lower = (issue.body or "").lower()
@@ -49,9 +51,9 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
 
     last_activity = issue.updated_at or issue.created_at
     if last_activity is not None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if last_activity.tzinfo is None:
-            last_activity = last_activity.replace(tzinfo=timezone.utc)
+            last_activity = last_activity.replace(tzinfo=UTC)
         age_days = (now - last_activity).days
         if age_days >= config.auto_close_stale_days:
             return IssueClassification.STALE
@@ -61,12 +63,22 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
         return IssueClassification.INFRA_OR_CONFIG
 
     # Bug detection
-    is_bug = label_names & {l.lower() for l in config.labels.bug}
+    is_bug: bool = bool(label_names & {lbl.lower() for lbl in config.labels.bug})
     if not is_bug:
-        is_bug = any(kw in text for kw in [
-            "bug", "crash", "error", "exception", "broken", "not working",
-            "regression", "fails", "failure",
-        ])
+        is_bug = any(
+            kw in text
+            for kw in [
+                "bug",
+                "crash",
+                "error",
+                "exception",
+                "broken",
+                "not working",
+                "regression",
+                "fails",
+                "failure",
+            ]
+        )
 
     if is_bug:
         # Simple vs complex heuristic: body length and number of files mentioned
@@ -76,12 +88,20 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
         return IssueClassification.BUG_SIMPLE
 
     # Feature detection
-    is_feature = label_names & {l.lower() for l in config.labels.feature}
+    is_feature: bool = bool(label_names & {lbl.lower() for lbl in config.labels.feature})
     if not is_feature:
-        is_feature = any(kw in text for kw in [
-            "feature", "enhancement", "request", "add support", "implement",
-            "would be nice", "proposal",
-        ])
+        is_feature = any(
+            kw in text
+            for kw in [
+                "feature",
+                "enhancement",
+                "request",
+                "add support",
+                "implement",
+                "would be nice",
+                "proposal",
+            ]
+        )
 
     if is_feature:
         if len(body_lower) > 3000:
@@ -89,10 +109,18 @@ def classify_issue(issue: Issue, config: IssueAgentConfig) -> IssueClassificatio
         return IssueClassification.FEATURE_SMALL
 
     # Question detection
-    if "?" in issue.title or any(kw in text for kw in [
-        "how to", "how do", "is it possible", "can i", "question",
-        "help", "documentation",
-    ]):
+    if "?" in issue.title or any(
+        kw in text
+        for kw in [
+            "how to",
+            "how do",
+            "is it possible",
+            "can i",
+            "question",
+            "help",
+            "documentation",
+        ]
+    ):
         return IssueClassification.QUESTION
 
     # Default to feature small

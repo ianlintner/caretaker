@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="description" content="Autonomous GitHub repository maintenance powered by Copilot" /><link rel="canonical" href="https://ianlintner.github.io/caretaker/" />
+      <link rel="shortcut icon" href="img/favicon.ico" />
+    <title>Caretaker</title>
+    <link rel="stylesheet" href="css/theme.css" />
+    <link rel="stylesheet" href="css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Overview";
+        var mkdocs_page_input_path = "index.md";
+        var mkdocs_page_url = "/caretaker/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="." class="icon icon-home"> Caretaker
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="./search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Overview</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#what-it-does">What it does</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#start-here">Start here</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#repository-pointers">Repository pointers</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#dogfooding">Dogfooding</a>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="getting-started/">Getting started</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="configuration/">Configuration</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="agents/">Agents</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="architecture/">Architecture</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="development/">Development</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="release-notes/">Release notes</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href=".">Caretaker</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Overview</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/ianlintner/caretaker/edit/main/docs/index.md">Edit on ianlintner/caretaker</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="caretaker">Caretaker<a class="headerlink" href="#caretaker" title="Permanent link">&para;</a></h1>
+<p>Caretaker is an autonomous repository-maintenance system that uses GitHub Copilot as the execution engine and a Python orchestrator as the coordinator.</p>
+<p>It watches pull requests, issues, CI failures, upgrades, stale work, and security findings, then routes the right next action instead of waiting for a human to play inbox pinball.</p>
+<h2 id="what-it-does">What it does<a class="headerlink" href="#what-it-does" title="Permanent link">&para;</a></h2>
+<ul>
+<li>triages pull requests and CI failures</li>
+<li>classifies and dispatches issues</li>
+<li>opens upgrade issues when newer caretaker releases exist</li>
+<li>raises dependency and security findings for remediation</li>
+<li>produces documentation and escalation digests</li>
+<li>tracks state across runs using GitHub itself</li>
+</ul>
+<h2 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="getting-started/">Getting started</a></li>
+<li><a href="configuration/">Configuration reference</a></li>
+<li><a href="agents/">Agent overview</a></li>
+<li><a href="development/">Development workflow</a></li>
+</ul>
+<h2 id="repository-pointers">Repository pointers<a class="headerlink" href="#repository-pointers" title="Permanent link">&para;</a></h2>
+<ul>
+<li>setup guide: <a href="https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md"><code>dist/SETUP_AGENT.md</code></a></li>
+<li>default config template: <a href="https://github.com/ianlintner/caretaker/blob/main/dist/templates/config-default.yml"><code>dist/templates/config-default.yml</code></a></li>
+<li>schema: <a href="https://github.com/ianlintner/caretaker/blob/main/schema/config.v1.schema.json"><code>schema/config.v1.schema.json</code></a></li>
+<li>source package: <a href="https://github.com/ianlintner/caretaker/tree/main/src/caretaker"><code>src/caretaker</code></a></li>
+</ul>
+<h2 id="dogfooding">Dogfooding<a class="headerlink" href="#dogfooding" title="Permanent link">&para;</a></h2>
+<p>This repository is also the central caretaker repository, which means it uses its own automation to maintain itself. Very on-brand. Slightly terrifying. Mostly useful.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="getting-started/" class="btn btn-neutral float-right" title="Getting started">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/ianlintner/caretaker" class="fa fa-code-fork" style="color: #fcfcfc"> ianlintner/caretaker</a>
+        </span>
+    
+    
+    
+      <span><a href="getting-started/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = ".";</script>
+    <script src="js/theme_extra.js"></script>
+    <script src="js/theme.js"></script>
+      <script src="search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
+
+<!--
+MkDocs version : 1.6.1
+Build Date UTC : 2026-04-14 00:17:34.487051+00:00
+-->

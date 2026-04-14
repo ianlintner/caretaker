@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -162,7 +162,7 @@ class GitHubClient:
         data = await self._get(f"/repos/{owner}/{repo}/commits/{ref}/status")
         if not data:
             return "pending"
-        return data.get("state", "pending")
+        return str(data.get("state", "pending"))
 
     # ── Issues ──────────────────────────────────────────────────
 
@@ -174,9 +174,7 @@ class GitHubClient:
             params["labels"] = labels
         data = await self._get(f"/repos/{owner}/{repo}/issues", params=params)
         # GitHub returns PRs in the issues endpoint — filter them out
-        return [
-            self._parse_issue(i) for i in (data or []) if "pull_request" not in i
-        ]
+        return [self._parse_issue(i) for i in (data or []) if "pull_request" not in i]
 
     async def create_issue(
         self,
@@ -204,9 +202,7 @@ class GitHubClient:
 
         return issue
 
-    async def assign_copilot_to_issue(
-        self, owner: str, repo: str, issue_number: int
-    ) -> None:
+    async def assign_copilot_to_issue(self, owner: str, repo: str, issue_number: int) -> None:
         """Assign GitHub Copilot to an issue via the dedicated endpoint."""
         await self._post(f"/repos/{owner}/{repo}/issues/{issue_number}/copilot")
 
@@ -220,9 +216,7 @@ class GitHubClient:
         data = await self._patch(f"/repos/{owner}/{repo}/issues/{number}", json=kwargs)
         return self._parse_issue(data)
 
-    async def add_issue_comment(
-        self, owner: str, repo: str, number: int, body: str
-    ) -> Comment:
+    async def add_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Comment:
         data = await self._post(
             f"/repos/{owner}/{repo}/issues/{number}/comments",
             json={"body": body},
@@ -236,7 +230,7 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/issues/{number}/labels",
             json={"labels": labels},
         )
-        return [Label(name=l["name"], color=l.get("color", "")) for l in (data or [])]
+        return [Label(name=lbl["name"], color=lbl.get("color", "")) for lbl in (data or [])]
 
     # ── Workflow dispatch ───────────────────────────────────────
 
@@ -268,7 +262,7 @@ class GitHubClient:
 
     async def list_dependabot_alerts(
         self, owner: str, repo: str, state: str = "open"
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         data = await self._get(
             f"/repos/{owner}/{repo}/dependabot/alerts",
             params={"state": state, "per_page": 100},
@@ -294,7 +288,7 @@ class GitHubClient:
 
     async def list_code_scanning_alerts(
         self, owner: str, repo: str, state: str = "open"
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         data = await self._get(
             f"/repos/{owner}/{repo}/code-scanning/alerts",
             params={"state": state, "per_page": 100},
@@ -320,7 +314,7 @@ class GitHubClient:
 
     async def list_secret_scanning_alerts(
         self, owner: str, repo: str, state: str = "open"
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         data = await self._get(
             f"/repos/{owner}/{repo}/secret-scanning/alerts",
             params={"state": state, "per_page": 100},
@@ -331,19 +325,20 @@ class GitHubClient:
 
     async def get_file_contents(
         self, owner: str, repo: str, path: str, ref: str | None = None
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """Return the raw GitHub contents API response dict, or None if missing."""
         params = {}
         if ref:
             params["ref"] = ref
-        return await self._get(f"/repos/{owner}/{repo}/contents/{path}", params=params)
+        data = await self._get(f"/repos/{owner}/{repo}/contents/{path}", params=params)
+        return cast("dict[str, Any] | None", data)
 
     async def get_default_branch_sha(self, owner: str, repo: str, branch: str) -> str:
         """Return the latest commit SHA of *branch*."""
         data = await self._get(f"/repos/{owner}/{repo}/git/ref/heads/{branch}")
         if not data:
             raise GitHubAPIError(404, f"Branch {branch!r} not found")
-        return data["object"]["sha"]
+        return str(data["object"]["sha"])
 
     async def create_branch(self, owner: str, repo: str, name: str, sha: str) -> None:
         """Create a new branch pointing at *sha*."""
@@ -361,7 +356,7 @@ class GitHubClient:
         content: str,
         branch: str,
         sha: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create or update a file via the contents API. *content* is raw UTF-8 text."""
         import base64
 
@@ -373,7 +368,7 @@ class GitHubClient:
         if sha:
             payload["sha"] = sha
         data = await self._put(f"/repos/{owner}/{repo}/contents/{path}", json=payload)
-        return data or {}
+        return cast("dict[str, Any]", data) if data is not None else {}
 
     async def create_pull_request(
         self,
@@ -385,7 +380,7 @@ class GitHubClient:
         base: str,
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         data = await self._post(
             f"/repos/{owner}/{repo}/pulls",
             json={"title": title, "body": body, "head": head, "base": base},
@@ -401,12 +396,10 @@ class GitHubClient:
                 f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
                 json={"assignees": assignees},
             )
-        return data
+        return cast("dict[str, Any]", data)
 
     async def delete_branch(self, owner: str, repo: str, branch: str) -> None:
-        await self._request(
-            "DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}"
-        )
+        await self._request("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}")
 
     # ── Parsing helpers ─────────────────────────────────────────
 
@@ -424,8 +417,8 @@ class GitHubClient:
             merged=data.get("merged", False),
             draft=data.get("draft", False),
             labels=[
-                Label(name=l["name"], color=l.get("color", ""))
-                for l in data.get("labels", [])
+                Label(name=lbl["name"], color=lbl.get("color", ""))
+                for lbl in data.get("labels", [])
             ],
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
@@ -441,12 +434,10 @@ class GitHubClient:
             state=data["state"],
             user=User(login=data["user"]["login"], id=data["user"]["id"]),
             labels=[
-                Label(name=l["name"], color=l.get("color", ""))
-                for l in data.get("labels", [])
+                Label(name=lbl["name"], color=lbl.get("color", ""))
+                for lbl in data.get("labels", [])
             ],
-            assignees=[
-                User(login=a["login"], id=a["id"]) for a in data.get("assignees", [])
-            ],
+            assignees=[User(login=a["login"], id=a["id"]) for a in data.get("assignees", [])],
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
             html_url=data.get("html_url", ""),

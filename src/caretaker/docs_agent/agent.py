@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
-import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
-from caretaker.github_client.api import GitHubClient
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class DocsReport:
 
     prs_analyzed: int = 0
     changelog_updated: bool = False
-    doc_pr_opened: int | None = None   # PR number if a docs-update PR was created
+    doc_pr_opened: int | None = None  # PR number if a docs-update PR was created
     errors: list[str] = field(default_factory=list)
 
 
@@ -61,7 +62,7 @@ class DocsAgent:
     async def run(self) -> DocsReport:
         report = DocsReport()
 
-        since = datetime.now(timezone.utc) - timedelta(days=self._lookback_days)
+        since = datetime.now(UTC) - timedelta(days=self._lookback_days)
 
         # Find merged PRs in the lookback window
         try:
@@ -71,7 +72,11 @@ class DocsAgent:
             return report
 
         report.prs_analyzed = len(merged_prs)
-        logger.info("Docs agent: %d merged PR(s) in last %d days", len(merged_prs), self._lookback_days)
+        logger.info(
+            "Docs agent: %d merged PR(s) in last %d days",
+            len(merged_prs),
+            self._lookback_days,
+        )
 
         if not merged_prs:
             logger.info("Docs agent: no recent merged PRs — nothing to document")
@@ -80,7 +85,10 @@ class DocsAgent:
         # Check if a docs-update PR is already open (dedup)
         open_docs_prs = await self._find_open_docs_prs()
         if open_docs_prs:
-            logger.info("Docs agent: open docs-update PR already exists (#%d) — skipping", open_docs_prs[0])
+            logger.info(
+                "Docs agent: open docs-update PR already exists (#%d) — skipping",
+                open_docs_prs[0],
+            )
             report.doc_pr_opened = open_docs_prs[0]
             return report
 
@@ -101,7 +109,7 @@ class DocsAgent:
             return report
 
         # Create a branch and commit the update
-        week_str = datetime.now(timezone.utc).strftime("%Y-W%V")
+        week_str = datetime.now(UTC).strftime("%Y-W%V")
         branch_name = f"docs/changelog-{week_str}"
 
         try:
@@ -119,8 +127,11 @@ class DocsAgent:
             )
 
             await self._github.ensure_label(
-                self._owner, self._repo, DOCS_LABEL,
-                color="0075ca", description="Documentation updates",
+                self._owner,
+                self._repo,
+                DOCS_LABEL,
+                color="0075ca",
+                description="Documentation updates",
             )
 
             pr_body = _build_pr_body(merged_prs, changelog_entry)
@@ -144,10 +155,8 @@ class DocsAgent:
 
         return report
 
-    async def _get_recently_merged_prs(self, since: datetime) -> list[dict]:
-        prs = await self._github.list_pull_requests(
-            self._owner, self._repo, state="closed"
-        )
+    async def _get_recently_merged_prs(self, since: datetime) -> list[PullRequest]:
+        prs = await self._github.list_pull_requests(self._owner, self._repo, state="closed")
         merged = []
         for pr in prs:
             merged_at_str = getattr(pr, "merged_at", None) or (
@@ -165,10 +174,7 @@ class DocsAgent:
 
     async def _find_open_docs_prs(self) -> list[int]:
         prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
-        return [
-            pr.number for pr in prs
-            if (pr.body or "").find(DOCS_AGENT_MARKER) != -1
-        ]
+        return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
 
     async def _get_file(self, path: str) -> tuple[str, str | None]:
         data = await self._github.get_file_contents(self._owner, self._repo, path)
@@ -180,12 +186,12 @@ class DocsAgent:
 
     async def _get_branch_sha(self, branch: str) -> str:
         data = await self._github._get(f"/repos/{self._owner}/{self._repo}/git/ref/heads/{branch}")
-        return data["object"]["sha"]
+        return str(data["object"]["sha"])
 
 
-def _build_changelog_entry(prs: list) -> str:
-    week = datetime.now(timezone.utc).strftime("%Y-W%V")
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _build_changelog_entry(prs: list[Any]) -> str:
+    week = datetime.now(UTC).strftime("%Y-W%V")
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
     lines = [f"## [{week}] — {date}\n"]
     for pr in sorted(prs, key=lambda p: p.number):
         title = _clean_title(pr.title)
@@ -195,22 +201,25 @@ def _build_changelog_entry(prs: list) -> str:
 
 def _clean_title(title: str) -> str:
     """Strip conventional-commit prefix for readability."""
-    return re.sub(r"^(feat|fix|chore|docs|refactor|test|ci|style|perf|build|revert)([!(/].*?)?:\s*", "", title)
+    _prefix_re = re.compile(
+        r"^(feat|fix|chore|docs|refactor|test|ci|style|perf|build|revert)([!(/].*?)?:\s*"
+    )
+    return _prefix_re.sub("", title)
 
 
 def _prepend_changelog_entry(current: str, entry: str) -> str:
     """Insert the new entry after the top-level # heading (if any), otherwise prepend."""
     if "\n## " in current:
         pos = current.index("\n## ")
-        return current[:pos] + "\n" + entry + "\n" + current[pos + 1:]
+        return current[:pos] + "\n" + entry + "\n" + current[pos + 1 :]
     # First entry ever
     if current.startswith("# "):
         newline_pos = current.index("\n")
-        return current[:newline_pos + 1] + "\n" + entry + "\n" + current[newline_pos + 1:]
+        return current[: newline_pos + 1] + "\n" + entry + "\n" + current[newline_pos + 1 :]
     return entry + "\n" + current
 
 
-def _build_pr_body(prs: list, changelog_entry: str) -> str:
+def _build_pr_body(prs: list[Any], changelog_entry: str) -> str:
     pr_list = "\n".join(f"- #{pr.number}: {pr.title}" for pr in prs)
     return f"""## Documentation reconciliation
 
@@ -224,7 +233,8 @@ This PR updates `CHANGELOG.md` to capture the following merged pull requests:
 {changelog_entry}
 ```
 
-@copilot — please review the generated entry for accuracy, expand any cryptic titles, and merge when ready.
+@copilot — please review the generated entry for accuracy,
+expand any cryptic titles, and merge when ready.
 
 ---
 {DOCS_AGENT_MARKER} -->"""

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from caretaker.github_client.models import Issue, User
 from caretaker.security_agent.agent import (
+    SECURITY_AGENT_MARKER,
     AlertKind,
     SecurityAgent,
     SecurityFinding,
     Severity,
     _finding_signature,
-    SECURITY_AGENT_MARKER,
 )
 
 
@@ -104,7 +104,10 @@ class TestSecurityAgentCollectsAlerts:
 
     @pytest.mark.asyncio
     async def test_skips_below_min_severity(self) -> None:
-        alert = {**_DEPENDABOT_ALERT, "security_advisory": {**_DEPENDABOT_ALERT["security_advisory"], "severity": "low"}}
+        alert = {
+            **_DEPENDABOT_ALERT,
+            "security_advisory": {**_DEPENDABOT_ALERT["security_advisory"], "severity": "low"},
+        }
         gh = make_github(dependabot_alerts=[alert])
         agent = SecurityAgent(github=gh, owner="o", repo="r", min_severity="high")
         report = await agent.run()

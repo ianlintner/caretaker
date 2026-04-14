@@ -54,7 +54,7 @@ async def fetch_releases(
 
 def needs_upgrade(current_version: str, latest: Release) -> bool:
     """Check if the current version is behind the latest release."""
-    from packaging.version import Version, InvalidVersion
+    from packaging.version import InvalidVersion, Version
 
     try:
         current = Version(current_version)

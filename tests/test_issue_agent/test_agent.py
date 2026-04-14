@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 
 from caretaker.config import IssueAgentConfig
-from caretaker.github_client.models import Issue, PullRequest, PRState, User
+from caretaker.github_client.models import Issue, PRState, PullRequest, User
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.state.models import IssueTrackingState, TrackedIssue
 
@@ -46,7 +46,7 @@ def make_pr(number: int, title: str, body: str) -> PullRequest:
 class TestIssueAgent:
     async def test_stale_issue_is_closed(self) -> None:
         github = AsyncMock()
-        old = datetime.now(timezone.utc) - timedelta(days=40)
+        old = datetime.now(UTC) - timedelta(days=40)
         github.list_issues.return_value = [
             make_issue(1, "Needs follow-up", "still broken", updated_at=old),
         ]

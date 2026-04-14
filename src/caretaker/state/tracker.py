@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
-
-from caretaker.github_client.api import GitHubClient
+from typing import TYPE_CHECKING
 
 from .models import OrchestratorState, RunSummary
+
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,7 @@ class StateTracker:
             return self._state
 
         self._tracking_issue_number = issue_number
-        comments = await self._github.get_pr_comments(
-            self._owner, self._repo, issue_number
-        )
+        comments = await self._github.get_pr_comments(self._owner, self._repo, issue_number)
 
         # Find the latest state comment (search from newest)
         for comment in reversed(comments):
@@ -93,9 +91,7 @@ class StateTracker:
         )
 
     async def _find_tracking_issue(self) -> int | None:
-        issues = await self._github.list_issues(
-            self._owner, self._repo, labels=TRACKING_LABEL
-        )
+        issues = await self._github.list_issues(self._owner, self._repo, labels=TRACKING_LABEL)
         for issue in issues:
             if issue.title == TRACKING_ISSUE_TITLE:
                 return issue.number
@@ -144,7 +140,6 @@ class StateTracker:
 
     @staticmethod
     def _format_summary(summary: RunSummary) -> str:
-        from datetime import datetime
 
         lines = [
             f"## Maintainer Run — {summary.run_at.strftime('%B %d, %Y')}",
@@ -170,15 +165,19 @@ class StateTracker:
             "",
         ]
         if summary.upgrade_available:
-            lines.extend([
-                "### Upgrade Agent",
-                f"- Upgrade available: {summary.upgrade_version}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Upgrade Agent",
+                    f"- Upgrade available: {summary.upgrade_version}",
+                    "",
+                ]
+            )
         if summary.errors:
-            lines.extend([
-                "### Errors",
-                *[f"- {e}" for e in summary.errors],
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Errors",
+                    *[f"- {e}" for e in summary.errors],
+                    "",
+                ]
+            )
         return "\n".join(lines)

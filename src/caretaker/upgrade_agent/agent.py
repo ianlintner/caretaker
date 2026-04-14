@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from caretaker.config import UpgradeAgentConfig
-from caretaker.github_client.api import GitHubClient
 from caretaker.upgrade_agent.planner import UpgradePlanner
 from caretaker.upgrade_agent.release_checker import fetch_releases, needs_upgrade
+
+if TYPE_CHECKING:
+    from caretaker.config import UpgradeAgentConfig
+    from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
 

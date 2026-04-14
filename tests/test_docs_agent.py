@@ -13,7 +13,7 @@ from caretaker.docs_agent.agent import (
     _build_changelog_entry,
     _clean_title,
 )
-from caretaker.github_client.models import Label, PullRequest, User
+from caretaker.github_client.models import PullRequest, User
 
 
 def _pr(number: int, title: str, merged_at: str | None = None) -> SimpleNamespace:
@@ -103,8 +103,10 @@ class TestDocsAgentRun:
         gh = make_github()
         agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
-        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
-             patch.object(agent, "_find_open_docs_prs", return_value=[]):
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
             report = await agent.run()
 
         assert report.prs_analyzed == 1
@@ -117,8 +119,10 @@ class TestDocsAgentRun:
         gh = make_github()
         agent = DocsAgent(github=gh, owner="o", repo="r")
 
-        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
-             patch.object(agent, "_find_open_docs_prs", return_value=[]):
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
             await agent.run()
 
         call_kwargs = gh.create_pull_request.call_args.kwargs
@@ -142,8 +146,10 @@ class TestDocsAgentRun:
         gh = make_github()
         agent = DocsAgent(github=gh, owner="o", repo="r")
 
-        with patch.object(agent, "_get_recently_merged_prs", return_value=merged), \
-             patch.object(agent, "_find_open_docs_prs", return_value=[55]):
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[55]),
+        ):
             report = await agent.run()
 
         # should return the existing PR number, not create a new one

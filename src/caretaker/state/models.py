@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class PRTrackingState(str, Enum):
+class PRTrackingState(StrEnum):
     DISCOVERED = "discovered"
     CI_PENDING = "ci_pending"
     CI_PASSING = "ci_passing"
@@ -24,7 +24,7 @@ class PRTrackingState(str, Enum):
     CLOSED = "closed"
 
 
-class IssueTrackingState(str, Enum):
+class IssueTrackingState(StrEnum):
     NEW = "new"
     TRIAGED = "triaged"
     ASSIGNED = "assigned"

@@ -10,8 +10,7 @@ from caretaker.github_client.models import (
     User,
 )
 from caretaker.pr_agent.merge import evaluate_merge
-from caretaker.pr_agent.states import CIStatus, evaluate_ci, evaluate_reviews
-
+from caretaker.pr_agent.states import evaluate_ci, evaluate_reviews
 from tests.conftest import make_check_run, make_pr, make_review
 
 
@@ -32,9 +31,11 @@ def _reviews_none():
 
 
 def _reviews_blocking():
-    return evaluate_reviews([
-        make_review(state=ReviewState.CHANGES_REQUESTED, body="Fix this"),
-    ])
+    return evaluate_reviews(
+        [
+            make_review(state=ReviewState.CHANGES_REQUESTED, body="Fix this"),
+        ]
+    )
 
 
 class TestEvaluateMerge:

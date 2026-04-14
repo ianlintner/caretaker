@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from caretaker.github_client.models import (
     CheckConclusion,
@@ -19,7 +19,7 @@ from caretaker.state.models import PRTrackingState
 logger = logging.getLogger(__name__)
 
 
-class CIStatus(str, Enum):
+class CIStatus(StrEnum):
     PENDING = "pending"
     PASSING = "passing"
     FAILING = "failing"
@@ -73,11 +73,7 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
         if cr.status == CheckStatus.COMPLETED
         and cr.conclusion in (CheckConclusion.FAILURE, CheckConclusion.TIMED_OUT)
     ]
-    pending = [
-        cr
-        for cr in relevant
-        if cr.status in (CheckStatus.QUEUED, CheckStatus.IN_PROGRESS)
-    ]
+    pending = [cr for cr in relevant if cr.status in (CheckStatus.QUEUED, CheckStatus.IN_PROGRESS)]
     passed = [
         cr
         for cr in relevant
@@ -114,9 +110,7 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
             latest_by_user[review.user.login] = review
 
     approvals = [r for r in latest_by_user.values() if r.state == ReviewState.APPROVED]
-    blockers = [
-        r for r in latest_by_user.values() if r.state == ReviewState.CHANGES_REQUESTED
-    ]
+    blockers = [r for r in latest_by_user.values() if r.state == ReviewState.CHANGES_REQUESTED]
 
     return ReviewEvaluation(
         approved=len(approvals) > 0 and len(blockers) == 0,
@@ -169,10 +163,7 @@ def evaluate_pr(
 
     # CI failing
     if ci.status in (CIStatus.FAILING, CIStatus.MIXED):
-        if current_state == PRTrackingState.FIX_REQUESTED:
-            action = "wait_for_fix"
-        else:
-            action = "request_fix"
+        action = "wait_for_fix" if current_state == PRTrackingState.FIX_REQUESTED else "request_fix"
         return PRStateEvaluation(
             pr=pr,
             ci=ci,

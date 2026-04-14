@@ -5,14 +5,15 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from typing import Any
 
 from caretaker import __version__
 from caretaker.config import MaintainerConfig
 from caretaker.dependency_agent.agent import DependencyAgent
+from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
 from caretaker.github_client.api import GitHubClient
-from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
@@ -78,7 +79,7 @@ class Orchestrator:
         self,
         mode: str = "full",
         event_type: str | None = None,
-        event_payload: dict | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> int:
         """Run the orchestrator. Returns 0 on success, 1 on errors."""
         logger.info(
@@ -184,16 +185,19 @@ class Orchestrator:
                     elif pr.state == PRTrackingState.ESCALATED:
                         tracked_issue.state = IssueTrackingState.ESCALATED
 
-            if tracked_issue.state in (
-                IssueTrackingState.ASSIGNED,
-                IssueTrackingState.IN_PROGRESS,
+            if (
+                tracked_issue.state
+                in (
+                    IssueTrackingState.ASSIGNED,
+                    IssueTrackingState.IN_PROGRESS,
+                )
+                and tracked_issue.last_checked is not None
             ):
-                if tracked_issue.last_checked is not None:
-                    age_days = (now - tracked_issue.last_checked).days
-                    if age_days >= self._config.escalation.stale_days:
-                        tracked_issue.state = IssueTrackingState.ESCALATED
-                        tracked_issue.escalated = True
-                        stale_escalated += 1
+                age_days = (now - tracked_issue.last_checked).days
+                if age_days >= self._config.escalation.stale_days:
+                    tracked_issue.state = IssueTrackingState.ESCALATED
+                    tracked_issue.escalated = True
+                    stale_escalated += 1
 
         summary.stale_assignments_escalated = stale_escalated
 
@@ -207,8 +211,7 @@ class Orchestrator:
         for tracked_pr in state.tracked_prs.values():
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
                 merged_durations_hours.append(
-                    (tracked_pr.merged_at - tracked_pr.first_seen_at).total_seconds()
-                    / 3600.0
+                    (tracked_pr.merged_at - tracked_pr.first_seen_at).total_seconds() / 3600.0
                 )
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
@@ -221,7 +224,7 @@ class Orchestrator:
     async def _handle_event(
         self,
         event_type: str,
-        payload: dict,
+        payload: dict[str, Any],
         state: OrchestratorState,
         summary: RunSummary,
     ) -> None:
@@ -244,9 +247,7 @@ class Orchestrator:
             await self._run_pr_agent(state, summary)
             await self._run_issue_agent(state, summary)
 
-    async def _run_pr_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_pr_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the PR agent."""
         if not self._config.pr_agent.enabled:
             logger.info("PR agent is disabled")
@@ -272,9 +273,7 @@ class Orchestrator:
         summary.errors.extend(report.errors)
         summary.prs_fix_requested = len(report.fix_requested)
 
-    async def _run_issue_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_issue_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the issue agent."""
         if not self._config.issue_agent.enabled:
             logger.info("Issue agent is disabled")
@@ -300,9 +299,7 @@ class Orchestrator:
         summary.issues_escalated = len(report.escalated)
         summary.errors.extend(report.errors)
 
-    async def _run_upgrade_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_upgrade_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the upgrade agent."""
         if not self._config.upgrade_agent.enabled:
             logger.info("Upgrade agent is disabled")
@@ -329,7 +326,7 @@ class Orchestrator:
         self,
         state: OrchestratorState,
         summary: RunSummary,
-        event_payload: dict | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> None:
         """Run the DevOps agent to triage CI build failures on the default branch."""
         cfg = self._config.devops_agent
@@ -358,7 +355,7 @@ class Orchestrator:
         self,
         state: OrchestratorState,
         summary: RunSummary,
-        event_payload: dict | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> None:
         """Run the self-heal agent to diagnose and fix caretaker's own failures."""
         cfg = self._config.self_heal_agent
@@ -385,9 +382,7 @@ class Orchestrator:
         summary.self_heal_upstream_features = len(report.upstream_features_requested)
         summary.errors.extend(report.errors)
 
-    async def _run_security_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_security_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the security agent to triage Dependabot/code-scanning/secret-scanning alerts."""
         cfg = self._config.security_agent
         if not cfg.enabled:
@@ -412,13 +407,11 @@ class Orchestrator:
         report = await agent.run()
 
         summary.security_findings_found = report.findings_found
-        summary.security_issues_created = report.issues_created
+        summary.security_issues_created = len(report.issues_created)
         summary.security_false_positives = report.false_positives_flagged
         summary.errors.extend(report.errors)
 
-    async def _run_dependency_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_dependency_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the dependency agent to handle Dependabot upgrade PRs."""
         cfg = self._config.dependency_agent
         if not cfg.enabled:
@@ -441,13 +434,11 @@ class Orchestrator:
         report = await agent.run()
 
         summary.dependency_prs_reviewed = report.prs_reviewed
-        summary.dependency_prs_auto_merged = report.prs_auto_merged
-        summary.dependency_major_issues = report.major_issues_created
+        summary.dependency_prs_auto_merged = len(report.prs_auto_merged)
+        summary.dependency_major_issues = len(report.major_issues_created)
         summary.errors.extend(report.errors)
 
-    async def _run_docs_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_docs_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the docs agent to produce weekly CHANGELOG update PRs."""
         cfg = self._config.docs_agent
         if not cfg.enabled:
@@ -474,9 +465,7 @@ class Orchestrator:
         summary.docs_pr_opened = report.doc_pr_opened
         summary.errors.extend(report.errors)
 
-    async def _run_stale_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_stale_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the stale agent to warn/close stale issues/PRs and prune branches."""
         cfg = self._config.stale_agent
         if not cfg.enabled:
@@ -495,7 +484,7 @@ class Orchestrator:
             close_after=cfg.close_after,
             close_stale_prs=cfg.close_stale_prs,
             delete_merged_branches=cfg.delete_merged_branches,
-            exempt_labels=set(cfg.exempt_labels),
+            exempt_labels=list(cfg.exempt_labels),
         )
         report = await agent.run()
 
@@ -504,9 +493,7 @@ class Orchestrator:
         summary.stale_branches_deleted = report.branches_deleted
         summary.errors.extend(report.errors)
 
-    async def _run_escalation_agent(
-        self, state: OrchestratorState, summary: RunSummary
-    ) -> None:
+    async def _run_escalation_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Run the escalation agent to post a human-action-required digest."""
         cfg = self._config.human_escalation
         if not cfg.enabled:

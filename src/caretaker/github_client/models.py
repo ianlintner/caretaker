@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from enum import Enum
+from datetime import datetime  # noqa: TC003 - needed for Pydantic annotation resolution
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class PRState(str, Enum):
+class PRState(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
     MERGED = "merged"
 
 
-class CheckStatus(str, Enum):
+class CheckStatus(StrEnum):
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
 
 
-class CheckConclusion(str, Enum):
+class CheckConclusion(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
     NEUTRAL = "neutral"
@@ -31,7 +31,7 @@ class CheckConclusion(str, Enum):
     STALE = "stale"
 
 
-class ReviewState(str, Enum):
+class ReviewState(StrEnum):
     APPROVED = "APPROVED"
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
     COMMENTED = "COMMENTED"
@@ -112,10 +112,10 @@ class PullRequest(BaseModel):
 
     @property
     def is_maintainer_pr(self) -> bool:
-        return any(l.name.startswith("maintainer:") for l in self.labels)
+        return any(lbl.name.startswith("maintainer:") for lbl in self.labels)
 
     def has_label(self, name: str) -> bool:
-        return any(l.name == name for l in self.labels)
+        return any(lbl.name == name for lbl in self.labels)
 
 
 class Issue(BaseModel):
@@ -131,7 +131,7 @@ class Issue(BaseModel):
     html_url: str = ""
 
     def has_label(self, name: str) -> bool:
-        return any(l.name == name for l in self.labels)
+        return any(lbl.name == name for lbl in self.labels)
 
     @property
     def is_maintainer_issue(self) -> bool:

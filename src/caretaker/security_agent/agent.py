@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
-from caretaker.github_client.api import GitHubClient
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +28,13 @@ _SEVERITY_PRIORITY = {
 }
 
 
-class AlertKind(str, Enum):
+class AlertKind(StrEnum):
     DEPENDABOT = "dependabot"
     CODE_SCANNING = "code_scanning"
     SECRET_SCANNING = "secret_scanning"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -39,7 +42,7 @@ class Severity(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def from_str(cls, value: str | None) -> "Severity":
+    def from_str(cls, value: str | None) -> Severity:
         if not value:
             return cls.UNKNOWN
         v = value.lower()
@@ -53,16 +56,16 @@ class Severity(str, Enum):
             return cls.LOW
         return cls.UNKNOWN
 
-    def __lt__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __lt__(self, other: Severity) -> bool:  # type: ignore[override]
         return _SEVERITY_PRIORITY.get(self.value, 4) < _SEVERITY_PRIORITY.get(other.value, 4)
 
-    def __le__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __le__(self, other: Severity) -> bool:  # type: ignore[override]
         return self == other or self.__lt__(other)
 
-    def __gt__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __gt__(self, other: Severity) -> bool:  # type: ignore[override]
         return not self.__le__(other)
 
-    def __ge__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __ge__(self, other: Severity) -> bool:  # type: ignore[override]
         return not self.__lt__(other)
 
 
@@ -77,7 +80,7 @@ class SecurityFinding:
     package: str  # package / rule / secret type
     description: str
     html_url: str
-    raw: dict  # original API payload
+    raw: dict[str, Any]  # original API payload
 
 
 @dataclass
@@ -86,7 +89,7 @@ class SecurityReport:
 
     findings_found: int = 0
     issues_created: list[int] = field(default_factory=list)
-    issues_skipped: int = 0    # duplicate / below threshold
+    issues_skipped: int = 0  # duplicate / below threshold
     false_positives_flagged: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -135,7 +138,7 @@ class SecurityAgent:
     }
 
     @staticmethod
-    def _finding_signature(finding: "SecurityFinding") -> str:
+    def _finding_signature(finding: SecurityFinding) -> str:
         """Return the deduplication signature for a finding."""
         return _finding_signature(finding)
 
@@ -174,9 +177,7 @@ class SecurityAgent:
             return report
 
         # Sort by descending severity
-        findings.sort(
-            key=lambda f: self._SEVERITY_ORDER.get(f.severity, 0), reverse=True
-        )
+        findings.sort(key=lambda f: self._SEVERITY_ORDER.get(f.severity, 0), reverse=True)
 
         existing_sigs = await self._get_existing_issue_signatures()
 
@@ -190,7 +191,11 @@ class SecurityAgent:
                     await self._dismiss_as_false_positive(finding)
                     report.false_positives_flagged += 1
                 except Exception as e:
-                    logger.warning("Security agent: FP dismiss failed for %s: %s", finding.alert_number, e)
+                    logger.warning(
+                        "Security agent: FP dismiss failed for %s: %s",
+                        finding.alert_number,
+                        e,
+                    )
                 continue
 
             sig = _finding_signature(finding)
@@ -200,10 +205,15 @@ class SecurityAgent:
 
             try:
                 issue = await self._create_security_issue(finding, sig)
-                report.issues_created.append(issue["number"] if isinstance(issue, dict) else issue.number)
+                issue_num = issue["number"] if isinstance(issue, dict) else issue.number
+                report.issues_created.append(issue_num)
                 created += 1
             except Exception as e:
-                logger.error("Security agent: failed to create issue for %s: %s", finding.title, e)
+                logger.error(
+                    "Security agent: failed to create issue for %s: %s",
+                    finding.title,
+                    e,
+                )
                 report.errors.append(str(e))
 
         return report
@@ -218,15 +228,11 @@ class SecurityAgent:
         return any(rule in pkg_lower for rule in self._fp_rules)
 
     async def _collect_dependabot_alerts(self) -> list[SecurityFinding]:
-        alerts = await self._github.list_dependabot_alerts(
-            self._owner, self._repo, state="open"
-        )
+        alerts = await self._github.list_dependabot_alerts(self._owner, self._repo, state="open")
         findings = []
         for a in alerts:
             adv = a.get("security_advisory", {})
-            package = (
-                a.get("dependency", {}).get("package", {}).get("name", "unknown")
-            )
+            package = a.get("dependency", {}).get("package", {}).get("name", "unknown")
             severity = (
                 adv.get("severity")
                 or a.get("security_vulnerability", {}).get("severity")
@@ -248,13 +254,15 @@ class SecurityAgent:
         return findings
 
     async def _collect_code_scanning_alerts(self) -> list[SecurityFinding]:
-        alerts = await self._github.list_code_scanning_alerts(
-            self._owner, self._repo, state="open"
-        )
+        alerts = await self._github.list_code_scanning_alerts(self._owner, self._repo, state="open")
         findings = []
         for a in alerts:
             rule = a.get("rule", {})
-            severity = rule.get("severity") or a.get("most_recent_instance", {}).get("severity") or "unknown"
+            severity = (
+                rule.get("severity")
+                or a.get("most_recent_instance", {}).get("severity")
+                or "unknown"
+            )
             findings.append(
                 SecurityFinding(
                     kind=AlertKind.CODE_SCANNING,
@@ -275,11 +283,12 @@ class SecurityAgent:
         )
         findings = []
         for a in alerts:
+            secret_label = a.get("secret_type_display_name", a.get("secret_type", "secret"))
             findings.append(
                 SecurityFinding(
                     kind=AlertKind.SECRET_SCANNING,
                     alert_number=a["number"],
-                    title=f"[Secret] {a.get('secret_type_display_name', a.get('secret_type', 'secret'))} exposed",
+                    title=f"[Secret] {secret_label} exposed",
                     severity=Severity.CRITICAL,  # all live secrets are critical
                     package=a.get("secret_type", "unknown"),
                     description=(
@@ -300,27 +309,33 @@ class SecurityAgent:
         for issue in existing:
             body = issue.body or ""
             for line in body.splitlines():
-                if line.startswith(SECURITY_AGENT_MARKER):
+                if line.startswith(SECURITY_AGENT_MARKER) and "sig:" in line:
                     # extract sig:<value>
-                    if "sig:" in line:
-                        sigs.add(line.split("sig:")[1].strip().rstrip(" -->").strip())
+                    raw = line.split("sig:")[1].strip()
+                    sigs.add(raw.split()[0])
         return sigs
 
     async def _dismiss_as_false_positive(self, finding: SecurityFinding) -> None:
         comment = "Automatically flagged as false positive by caretaker security agent."
         if finding.kind == AlertKind.DEPENDABOT:
             await self._github.dismiss_dependabot_alert(
-                self._owner, self._repo, finding.alert_number,
-                reason="tolerable_risk", comment=comment,
+                self._owner,
+                self._repo,
+                finding.alert_number,
+                reason="tolerable_risk",
+                comment=comment,
             )
         elif finding.kind == AlertKind.CODE_SCANNING:
             await self._github.dismiss_code_scanning_alert(
-                self._owner, self._repo, finding.alert_number,
-                reason="false positive", comment=comment,
+                self._owner,
+                self._repo,
+                finding.alert_number,
+                reason="false positive",
+                comment=comment,
             )
         # Secret scanning alerts cannot be dismissed automatically without human confirmation
 
-    async def _create_security_issue(self, finding: SecurityFinding, sig: str) -> dict:
+    async def _create_security_issue(self, finding: SecurityFinding, sig: str) -> Issue:
         sev_emoji = {
             Severity.CRITICAL: "🔴",
             Severity.HIGH: "🟠",
@@ -350,9 +365,11 @@ class SecurityAgent:
 **Resolution steps for @copilot:**
 
 1. Review the alert at {finding.html_url}
-2. If this is a **dependency vulnerability**: bump `{finding.package}` to a patched version; update lockfile.
+2. If this is a **dependency vulnerability**: bump `{finding.package}` to a patched
+   version; update lockfile.
 3. If this is a **code-scanning finding**: fix the flagged code pattern.
-4. If this is a **secret exposure**: rotate the credential immediately and remove it from git history.
+4. If this is a **secret exposure**: rotate the credential immediately and
+   remove it from git history.
 5. Open a pull request with the fix and reference this issue.
 6. Ensure CI passes before requesting review.
 <!-- /caretaker:security-assignment -->
@@ -361,7 +378,10 @@ class SecurityAgent:
 {SECURITY_AGENT_MARKER} sig:{sig} -->"""
 
         await self._github.ensure_label(
-            self._owner, self._repo, SECURITY_LABEL, color="e11d48",
+            self._owner,
+            self._repo,
+            SECURITY_LABEL,
+            color="e11d48",
             description="Security finding requiring remediation",
         )
 

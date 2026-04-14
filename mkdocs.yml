@@ -1,0 +1,31 @@
+site_name: Caretaker
+site_description: Autonomous GitHub repository maintenance powered by Copilot
+site_url: https://ianlintner.github.io/caretaker/
+repo_url: https://github.com/ianlintner/caretaker
+repo_name: ianlintner/caretaker
+edit_uri: edit/main/docs/
+
+theme:
+  name: readthedocs
+
+nav:
+  - Overview: index.md
+  - Getting started: getting-started.md
+  - Configuration: configuration.md
+  - Agents: agents.md
+  - Architecture: architecture.md
+  - Development: development.md
+  - Release notes: release-notes.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+
+strict: true

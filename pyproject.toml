@@ -38,14 +38,18 @@ dev = [
     "mypy>=1.13,<2",
     "respx>=0.22,<1",
 ]
+docs = [
+    "mkdocs>=1.6,<2",
+]
 
 [project.scripts]
 caretaker = "caretaker.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/caretaker"
-Repository = "https://github.com/your-org/caretaker"
-Issues = "https://github.com/your-org/caretaker/issues"
+Homepage = "https://github.com/ianlintner/caretaker"
+Documentation = "https://ianlintner.github.io/caretaker/"
+Repository = "https://github.com/ianlintner/caretaker"
+Issues = "https://github.com/ianlintner/caretaker/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/caretaker"]

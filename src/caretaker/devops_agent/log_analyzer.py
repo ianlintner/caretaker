@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-
 # Maximum log bytes to analyze (avoid sending huge logs to LLM)
 MAX_LOG_BYTES = 16_000
 
@@ -21,7 +20,7 @@ _FAILURE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"ruff|mypy|pytest", re.MULTILINE),
 ]
 
-_PYTHON_FILE_PATTERN = re.compile(r'([\w/_\-]+\.py)(?::(\d+))?')
+_PYTHON_FILE_PATTERN = re.compile(r"([\w/_\-]+\.py)(?::(\d+))?")
 
 
 @dataclass
@@ -43,7 +42,7 @@ class FailureSummary:
             f"**Category:** {self.category}\n\n"
             f"**Suspected files:**\n{files_md}\n\n"
             f"**Error lines:**\n{errors_md}\n\n"
-            f"<details><summary>Log snippet</summary>\n\n```\n{self.log_snippet[:4000]}\n```\n\n</details>"
+            f"<details><summary>Log snippet</summary>\n\n```\n{self.log_snippet[:4000]}\n```\n\n</details>"  # noqa: E501
         )
 
 
@@ -82,7 +81,7 @@ def analyze_job_log(job_name: str, conclusion: str, raw_log: str) -> FailureSumm
 
     # Build a short snippet — last N lines with error context
     lines = log.splitlines()
-    snippet_lines = [l for l in lines if any(p.search(l) for p in _FAILURE_PATTERNS)]
+    snippet_lines = [ln for ln in lines if any(p.search(ln) for p in _FAILURE_PATTERNS)]
     log_snippet = "\n".join(snippet_lines[-60:]) if snippet_lines else "\n".join(lines[-60:])
 
     return FailureSummary(

@@ -5,15 +5,17 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.models import CheckRun
-from caretaker.llm.router import LLMRouter
+if TYPE_CHECKING:
+    from caretaker.github_client.models import CheckRun
+    from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
 
-class FailureType(str, Enum):
+class FailureType(StrEnum):
     TEST_FAILURE = "TEST_FAILURE"
     LINT_FAILURE = "LINT_FAILURE"
     BUILD_FAILURE = "BUILD_FAILURE"
@@ -33,37 +35,49 @@ class TriageResult:
 
 # Patterns for classifying CI failures by job name / output
 _PATTERNS: list[tuple[FailureType, list[str]]] = [
-    (FailureType.TEST_FAILURE, [
-        r"(?i)test",
-        r"(?i)jest",
-        r"(?i)pytest",
-        r"(?i)mocha",
-        r"(?i)vitest",
-        r"FAIL\s+\S+",
-        r"Expected.*Received",
-        r"AssertionError",
-    ]),
-    (FailureType.LINT_FAILURE, [
-        r"(?i)lint",
-        r"(?i)eslint",
-        r"(?i)ruff",
-        r"(?i)flake8",
-        r"(?i)prettier",
-        r"(?i)stylelint",
-    ]),
-    (FailureType.BUILD_FAILURE, [
-        r"(?i)build",
-        r"(?i)compile",
-        r"(?i)tsc",
-        r"error TS\d+",
-        r"SyntaxError",
-    ]),
-    (FailureType.TYPE_ERROR, [
-        r"(?i)typecheck",
-        r"(?i)mypy",
-        r"(?i)pyright",
-        r"error TS\d+",
-    ]),
+    (
+        FailureType.TEST_FAILURE,
+        [
+            r"(?i)test",
+            r"(?i)jest",
+            r"(?i)pytest",
+            r"(?i)mocha",
+            r"(?i)vitest",
+            r"FAIL\s+\S+",
+            r"Expected.*Received",
+            r"AssertionError",
+        ],
+    ),
+    (
+        FailureType.LINT_FAILURE,
+        [
+            r"(?i)lint",
+            r"(?i)eslint",
+            r"(?i)ruff",
+            r"(?i)flake8",
+            r"(?i)prettier",
+            r"(?i)stylelint",
+        ],
+    ),
+    (
+        FailureType.BUILD_FAILURE,
+        [
+            r"(?i)build",
+            r"(?i)compile",
+            r"(?i)tsc",
+            r"error TS\d+",
+            r"SyntaxError",
+        ],
+    ),
+    (
+        FailureType.TYPE_ERROR,
+        [
+            r"(?i)typecheck",
+            r"(?i)mypy",
+            r"(?i)pyright",
+            r"error TS\d+",
+        ],
+    ),
 ]
 
 
@@ -133,9 +147,7 @@ def build_fix_instructions(failure_type: FailureType, check_run: CheckRun) -> st
     return instructions.get(failure_type, instructions[FailureType.UNKNOWN])
 
 
-async def triage_failure(
-    check_run: CheckRun, llm_router: LLMRouter | None = None
-) -> TriageResult:
+async def triage_failure(check_run: CheckRun, llm_router: LLMRouter | None = None) -> TriageResult:
     """Triage a CI failure — classify and generate fix instructions."""
     failure_type = classify_failure(check_run)
     raw_output = check_run.output_summary or check_run.output_title or ""

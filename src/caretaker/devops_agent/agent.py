@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-from caretaker.github_client.api import GitHubClient
 from caretaker.devops_agent.log_analyzer import FailureSummary, analyze_job_log
+
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +48,7 @@ class DevOpsAgent:
         self._default_branch = default_branch
         self._max_issues_per_run = max_issues_per_run
 
-    async def run(self, event_payload: dict | None = None) -> DevOpsReport:
+    async def run(self, event_payload: dict[str, Any] | None = None) -> DevOpsReport:
         """Inspect recent CI runs on the default branch and act on failures."""
         report = DevOpsReport()
 
@@ -94,7 +99,7 @@ class DevOpsAgent:
     # ── Private helpers ─────────────────────────────────────────────────────
 
     async def _discover_failing_jobs(
-        self, event_payload: dict | None
+        self, event_payload: dict[str, Any] | None
     ) -> list[FailureSummary]:
         """Return FailureSummary objects for each failed CI job on the default branch."""
         summaries: list[FailureSummary] = []
@@ -126,31 +131,21 @@ class DevOpsAgent:
         sha = branch_info["commit"]["sha"]
         check_runs = await self._github.get_check_runs(self._owner, self._repo, sha)
 
-        failed = [
-            cr for cr in check_runs if cr.conclusion in ("failure", "timed_out")
-        ]
+        failed = [cr for cr in check_runs if cr.conclusion in ("failure", "timed_out")]
         for cr in failed:
             # We don't have full logs via check-run endpoint, build from output fields
-            log_text = "\n".join(
-                filter(None, [cr.output_title, cr.output_summary])
-            )
-            summaries.append(
-                analyze_job_log(cr.name, cr.conclusion or "failure", log_text)
-            )
+            log_text = "\n".join(filter(None, [cr.output_title, cr.output_summary]))
+            summaries.append(analyze_job_log(cr.name, cr.conclusion or "failure", log_text))
 
         return summaries
 
-    async def _get_failed_jobs_for_run(self, run_id: int) -> list[dict]:
+    async def _get_failed_jobs_for_run(self, run_id: int) -> list[dict[str, Any]]:
         data = await self._github._get(
             f"/repos/{self._owner}/{self._repo}/actions/runs/{run_id}/jobs"
         )
         if not data:
             return []
-        return [
-            j
-            for j in data.get("jobs", [])
-            if j.get("conclusion") in ("failure", "timed_out")
-        ]
+        return [j for j in data.get("jobs", []) if j.get("conclusion") in ("failure", "timed_out")]
 
     async def _fetch_job_log(self, job_id: int) -> str:
         """Download the text log for a specific Actions job (best-effort)."""
@@ -182,14 +177,18 @@ class DevOpsAgent:
                             sigs.add(sig)
         return sigs
 
-    async def _create_fix_issue(self, summary: FailureSummary, sig: str):
+    async def _create_fix_issue(self, summary: FailureSummary, sig: str) -> Issue:
         """Create a GitHub issue and assign to @copilot for fix."""
-        title = f"🔧 CI failure on `{self._default_branch}`: {summary.job_name} ({summary.category})"
+        title = (
+            f"🔧 CI failure on `{self._default_branch}`: {summary.job_name} ({summary.category})"
+        )
 
         body = _build_issue_body(summary, sig, self._default_branch)
 
         # Ensure the label exists
-        await self._ensure_label(BUILD_FAILURE_LABEL, "d93f0b", "CI build failure on default branch")
+        await self._ensure_label(
+            BUILD_FAILURE_LABEL, "d93f0b", "CI build failure on default branch"
+        )
 
         return await self._github.create_issue(
             owner=self._owner,
@@ -202,13 +201,11 @@ class DevOpsAgent:
 
     async def _ensure_label(self, name: str, color: str, description: str) -> None:
         """Create the label if it does not already exist (best-effort)."""
-        try:
+        with contextlib.suppress(Exception):
             await self._github._post(
                 f"/repos/{self._owner}/{self._repo}/labels",
                 json={"name": name, "color": color, "description": description},
             )
-        except Exception:
-            pass  # Already exists or no permission — ignore
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

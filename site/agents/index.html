@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://ianlintner.github.io/caretaker/agents/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Agents - Caretaker</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Agents";
+        var mkdocs_page_input_path = "agents.md";
+        var mkdocs_page_url = "/caretaker/agents/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> Caretaker
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Overview</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../getting-started/">Getting started</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../configuration/">Configuration</a>
+                </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Agents</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#core-agents">Core agents</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#how-they-collaborate">How they collaborate</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#event-mapping">Event mapping</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#copilot-facing-instructions">Copilot-facing instructions</a>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../architecture/">Architecture</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../development/">Development</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../release-notes/">Release notes</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">Caretaker</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Agents</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/ianlintner/caretaker/edit/main/docs/agents.md">Edit on ianlintner/caretaker</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="agents">Agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h1>
+<p>Caretaker is organized as a set of focused agents coordinated by the orchestrator.</p>
+<h2 id="core-agents">Core agents<a class="headerlink" href="#core-agents" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PR agent</td>
+<td>monitors pull requests, triages CI failures, requests fixes, merges when safe</td>
+</tr>
+<tr>
+<td>Issue agent</td>
+<td>classifies issues and dispatches work to Copilot or escalates it</td>
+</tr>
+<tr>
+<td>Upgrade agent</td>
+<td>detects new caretaker releases and opens upgrade work</td>
+</tr>
+<tr>
+<td>DevOps agent</td>
+<td>turns default-branch CI failures into actionable fix issues</td>
+</tr>
+<tr>
+<td>Self-heal agent</td>
+<td>investigates caretaker's own workflow failures</td>
+</tr>
+<tr>
+<td>Security agent</td>
+<td>triages Dependabot, code scanning, and secret scanning alerts</td>
+</tr>
+<tr>
+<td>Dependency agent</td>
+<td>reviews Dependabot PRs, auto-merges safe bumps, posts digests</td>
+</tr>
+<tr>
+<td>Docs agent</td>
+<td>reconciles merged PRs into changelog/docs updates</td>
+</tr>
+<tr>
+<td>Stale agent</td>
+<td>warns/closes stale work and prunes merged branches</td>
+</tr>
+<tr>
+<td>Escalation agent</td>
+<td>creates a digest for work requiring human attention</td>
+</tr>
+</tbody>
+</table>
+<h2 id="how-they-collaborate">How they collaborate<a class="headerlink" href="#how-they-collaborate" title="Permanent link">&para;</a></h2>
+<ul>
+<li>the <strong>orchestrator</strong> decides which agent to run based on the event or scheduled mode</li>
+<li>the <strong>GitHub client</strong> is the shared integration layer for repo state and mutations</li>
+<li>the <strong>state tracker</strong> persists issue/PR tracking data in GitHub comments</li>
+<li>the <strong>LLM layer</strong> adds higher-quality reasoning where configured</li>
+</ul>
+<h2 id="event-mapping">Event mapping<a class="headerlink" href="#event-mapping" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>GitHub signal</th>
+<th>Typical agent path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pull_request</code>, <code>pull_request_review</code>, <code>check_run</code>, <code>check_suite</code></td>
+<td>PR agent</td>
+</tr>
+<tr>
+<td><code>issues</code>, <code>issue_comment</code></td>
+<td>Issue agent</td>
+</tr>
+<tr>
+<td><code>workflow_run</code></td>
+<td>DevOps agent + Self-heal agent</td>
+</tr>
+<tr>
+<td><code>repository_vulnerability_alert</code></td>
+<td>Security agent</td>
+</tr>
+<tr>
+<td>scheduled/manual full run</td>
+<td>orchestrator invokes the broader maintenance cycle</td>
+</tr>
+</tbody>
+</table>
+<h2 id="copilot-facing-instructions">Copilot-facing instructions<a class="headerlink" href="#copilot-facing-instructions" title="Permanent link">&para;</a></h2>
+<p>The repo also ships instruction files for Copilot-driven execution:</p>
+<ul>
+<li><code>.github/copilot-instructions.md</code></li>
+<li><code>.github/agents/maintainer-pr.md</code></li>
+<li><code>.github/agents/maintainer-issue.md</code></li>
+<li><code>.github/agents/maintainer-upgrade.md</code></li>
+<li><code>.github/agents/devops-build-triage.md</code></li>
+<li><code>.github/agents/docs-update.md</code></li>
+<li><code>.github/agents/maintainer-self-heal.md</code></li>
+<li><code>.github/agents/dependency-upgrade.md</code></li>
+<li><code>.github/agents/security-triage.md</code></li>
+<li><code>.github/agents/escalation-review.md</code></li>
+</ul>
+<p>Those files define how Copilot should behave when Caretaker assigns work or requests changes.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../configuration/" class="btn btn-neutral float-left" title="Configuration"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../architecture/" class="btn btn-neutral float-right" title="Architecture">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/ianlintner/caretaker" class="fa fa-code-fork" style="color: #fcfcfc"> ianlintner/caretaker</a>
+        </span>
+    
+    
+      <span><a href="../configuration/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../architecture/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

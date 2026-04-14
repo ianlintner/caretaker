@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
-
-from caretaker.config import LLMConfig
+from typing import TYPE_CHECKING
 
 from .claude import ClaudeClient
+
+if TYPE_CHECKING:
+    from caretaker.config import LLMConfig
 
 logger = logging.getLogger(__name__)
 

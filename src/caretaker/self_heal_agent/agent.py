@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 from caretaker import __version__
-from caretaker.github_client.api import GitHubClient
 from caretaker.self_heal_agent.upstream_reporter import (
     report_upstream_bug,
     report_upstream_feature,
 )
+
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +28,7 @@ SELF_HEAL_MARKER = "<!-- caretaker:self-heal -->"
 CARETAKER_WORKFLOW_NAMES = {"Caretaker", "caretaker", "maintainer"}
 
 
-class FailureKind(str, Enum):
+class FailureKind(StrEnum):
     CONFIG_ERROR = "config_error"
     INTEGRATION_ERROR = "integration_error"
     UPSTREAM_BUG = "upstream_bug"
@@ -66,7 +71,7 @@ class SelfHealAgent:
         self._repo = repo
         self._report_upstream = report_upstream
 
-    async def run(self, event_payload: dict | None = None) -> SelfHealReport:
+    async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
         report = SelfHealReport()
 
@@ -151,7 +156,7 @@ class SelfHealAgent:
     # ── Private helpers ─────────────────────────────────────────────────────
 
     async def _collect_failure_logs(
-        self, event_payload: dict | None
+        self, event_payload: dict[str, Any] | None
     ) -> list[tuple[str, str]]:
         """Return [(job_name, log_text)] for failed caretaker workflow jobs."""
         results: list[tuple[str, str]] = []
@@ -236,7 +241,7 @@ class SelfHealAgent:
         for issue in issues:
             for line in issue.body.splitlines():
                 if line.startswith(SELF_HEAL_MARKER):
-                    s = line.replace(SELF_HEAL_MARKER, "").replace("-->", "").strip()
+                    line.replace(SELF_HEAL_MARKER, "").replace("-->", "").strip()
                     # Marker is on its own line — sig is in next pattern
                 m = re.search(r"sig:([a-f0-9]{12})", issue.body)
                 if m:
@@ -251,12 +256,10 @@ class SelfHealAgent:
         details: str,
         log_text: str,
         sig: str,
-    ):
+    ) -> Issue:
         full_title = f"🩺 Caretaker self-heal: {title}"
         body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig)
-        await self._ensure_label(
-            SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed"
-        )
+        await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
         return await self._github.create_issue(
             owner=self._owner,
             repo=self._repo,
@@ -273,7 +276,7 @@ class SelfHealAgent:
         upstream_issue: int,
         log_text: str,
         sig: str,
-    ):
+    ) -> Issue:
         full_title = f"🩺 Caretaker upstream bug filed: {title}"
         body = (
             f"{SELF_HEAL_MARKER} sig:{sig} -->\n\n"
@@ -294,13 +297,11 @@ class SelfHealAgent:
         )
 
     async def _ensure_label(self, name: str, color: str, description: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             await self._github._post(
                 f"/repos/{self._owner}/{self._repo}/labels",
                 json={"name": name, "color": color, "description": description},
             )
-        except Exception:
-            pass
 
 
 # ── Failure classification ────────────────────────────────────────────────────
@@ -323,7 +324,10 @@ _INTEGRATION_PATTERNS = [
 _UPSTREAM_BUG_PATTERNS = [
     re.compile(r"AttributeError|TypeError|IndexError|KeyError", re.IGNORECASE),
     re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE),
-    re.compile(r"caretaker\.(orchestrator|pr_agent|issue_agent|upgrade_agent|devops_agent)\.", re.IGNORECASE),
+    re.compile(
+        r"caretaker\.(orchestrator|pr_agent|issue_agent|upgrade_agent|devops_agent)\.",
+        re.IGNORECASE,
+    ),
     re.compile(r"unexpected keyword argument|takes \d+ positional argument", re.IGNORECASE),
 ]
 
@@ -352,8 +356,7 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
         return (
             FailureKind.CONFIG_ERROR,
             f"Config error in caretaker: {msg[:80]}",
-            f"A configuration validation error caused the caretaker run to fail.\n\n"
-            f"Error: {msg}",
+            f"A configuration validation error caused the caretaker run to fail.\n\nError: {msg}",
         )
 
     if any(p.search(log_tail) for p in _INTEGRATION_PATTERNS):
@@ -400,6 +403,7 @@ def _extract_first_error(log_text: str) -> str:
 
 def _sig(job_name: str, kind: FailureKind, title: str) -> str:
     import hashlib
+
     raw = f"{job_name}:{kind.value}:{title[:60]}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 

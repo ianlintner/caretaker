@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from caretaker.github_client.api import GitHubClient
-from caretaker.upgrade_agent.release_checker import Release
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.upgrade_agent.release_checker import Release
 
 logger = logging.getLogger(__name__)
 
@@ -24,45 +26,53 @@ def build_upgrade_issue_body(
     ]
 
     if target.breaking:
-        lines.extend([
-            "⚠️ **This is a breaking release.** Manual review is recommended.",
-            "",
-        ])
+        lines.extend(
+            [
+                "⚠️ **This is a breaking release.** Manual review is recommended.",
+                "",
+            ]
+        )
 
     if target.upgrade_notes:
-        lines.extend([
-            "### Upgrade Notes",
-            target.upgrade_notes,
-            "",
-        ])
+        lines.extend(
+            [
+                "### Upgrade Notes",
+                target.upgrade_notes,
+                "",
+            ]
+        )
 
     if target.changelog_url:
-        lines.extend([
-            f"📋 [Full Changelog]({target.changelog_url})",
-            "",
-        ])
+        lines.extend(
+            [
+                f"📋 [Full Changelog]({target.changelog_url})",
+                "",
+            ]
+        )
 
-    lines.extend([
-        "@copilot Please apply this upgrade.",
-        "See `.github/agents/maintainer-upgrade.md` for instructions.",
-        "",
-        "<!-- caretaker:upgrade -->",
-        f"FROM: {current_version}",
-        f"TO: {target.version}",
-        f"BREAKING: {target.breaking}",
-        "<!-- /caretaker:upgrade -->",
-        "",
-        "**Steps:**",
-        "1. Update version pins in `pyproject.toml` / `requirements.txt`",
-        "2. Update any workflow references",
-        "3. Run tests to verify compatibility",
-        "4. Update the version in config if applicable",
-        "",
-        "**Acceptance criteria:**",
-        "- [ ] Version updated to target",
-        "- [ ] All tests pass",
-        "- [ ] No regressions",
-    ])
+    lines.extend(
+        [
+            "@copilot Please apply this upgrade.",
+            "See `.github/agents/maintainer-upgrade.md` for instructions.",
+            "",
+            "<!-- caretaker:upgrade -->",
+            f"FROM: {current_version}",
+            f"TO: {target.version}",
+            f"BREAKING: {target.breaking}",
+            "<!-- /caretaker:upgrade -->",
+            "",
+            "**Steps:**",
+            "1. Update version pins in `pyproject.toml` / `requirements.txt`",
+            "2. Update any workflow references",
+            "3. Run tests to verify compatibility",
+            "4. Update the version in config if applicable",
+            "",
+            "**Acceptance criteria:**",
+            "- [ ] Version updated to target",
+            "- [ ] All tests pass",
+            "- [ ] No regressions",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -84,10 +94,7 @@ class UpgradePlanner:
         # Check if an upgrade issue already exists for this version
         issues = await self._github.list_issues(self._owner, self._repo)
         for issue in issues:
-            if (
-                f"Upgrade to v{target.version}" in issue.title
-                and issue.is_maintainer_issue
-            ):
+            if f"Upgrade to v{target.version}" in issue.title and issue.is_maintainer_issue:
                 logger.info(
                     "Upgrade issue for v%s already exists: #%d",
                     target.version,

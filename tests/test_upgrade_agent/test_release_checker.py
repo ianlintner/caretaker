@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from caretaker.upgrade_agent.release_checker import Release, needs_upgrade
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,7 +12,7 @@ from caretaker.stale_agent.agent import STALE_LABEL, StaleAgent
 
 
 def _dt_str(days_ago: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
 
 
 def _issue(
@@ -28,7 +28,7 @@ def _issue(
         user=User(login="dev", id=1),
         labels=[Label(name=n) for n in (labels or [])],
         assignees=[],
-        updated_at=datetime.now(timezone.utc) - timedelta(days=updated_days_ago),
+        updated_at=datetime.now(UTC) - timedelta(days=updated_days_ago),
         html_url=f"https://github.com/o/r/issues/{number}",
     )
 
@@ -52,7 +52,7 @@ def _pr(
         merged=merged,
         draft=draft,
         labels=[Label(name=n) for n in (labels or [])],
-        updated_at=datetime.now(timezone.utc) - timedelta(days=updated_days_ago),
+        updated_at=datetime.now(UTC) - timedelta(days=updated_days_ago),
         html_url=f"https://github.com/o/r/pull/{number}",
     )
 
@@ -151,9 +151,7 @@ class TestStalePRHandling:
     async def test_close_stale_prs_disabled(self) -> None:
         stale_pr = _pr(101, updated_days_ago=90)
         gh = make_github(open_prs=[stale_pr])
-        agent = StaleAgent(
-            github=gh, owner="o", repo="r", stale_days=60, close_stale_prs=False
-        )
+        agent = StaleAgent(github=gh, owner="o", repo="r", stale_days=60, close_stale_prs=False)
         report = await agent.run()
 
         assert report.prs_closed == 0
@@ -186,9 +184,7 @@ class TestBranchPruning:
     async def test_branch_pruning_disabled(self) -> None:
         merged = _pr(200, merged=True, head_ref="feature/old-branch")
         gh = make_github(closed_prs=[merged])
-        agent = StaleAgent(
-            github=gh, owner="o", repo="r", delete_merged_branches=False
-        )
+        agent = StaleAgent(github=gh, owner="o", repo="r", delete_merged_branches=False)
         report = await agent.run()
 
         assert report.branches_deleted == 0

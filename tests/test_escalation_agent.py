@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -90,9 +90,7 @@ class TestEscalationAgentCreatesDigest:
         gh = make_github(
             items_by_label={"help wanted": [_issue(5, "Need help")]},
         )
-        agent = EscalationAgent(
-            github=gh, owner="o", repo="r", notify_assignees=["maintainer1"]
-        )
+        agent = EscalationAgent(github=gh, owner="o", repo="r", notify_assignees=["maintainer1"])
         await agent.run()
 
         call_kwargs = gh.create_issue.call_args.kwargs

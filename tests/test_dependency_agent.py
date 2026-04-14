@@ -8,7 +8,6 @@ import pytest
 
 from caretaker.dependency_agent.agent import (
     DependencyAgent,
-    DependencyBump,
     _detect_ecosystem,
     _is_major_bump,
     _parse_bump,
@@ -29,7 +28,7 @@ def make_pr(
         body="",
         state="open",
         user=User(login=user_login, id=2),
-        head_ref=f"dependabot/pip/requests-2.29.0",
+        head_ref="dependabot/pip/requests-2.29.0",
         base_ref="main",
         mergeable=True,
         merged=False,
@@ -120,13 +119,13 @@ class TestIsMajorBump:
 
 class TestDetectEcosystem:
     def test_detects_pip(self) -> None:
-        pr = make_pr(title="Bump requests from 2.28.0 to 2.29.0",
-                     number=1)
+        pr = make_pr(title="Bump requests from 2.28.0 to 2.29.0", number=1)
         # head_ref from make_pr is "dependabot/pip/requests-2.29.0" by default
         assert _detect_ecosystem(pr) == "pip"
 
     def test_detects_npm(self) -> None:
         from caretaker.github_client.models import PullRequest, User
+
         pr = PullRequest(
             number=2,
             title="Bump lodash from 4.17.20 to 4.17.21",
@@ -145,6 +144,7 @@ class TestDetectEcosystem:
 
     def test_returns_unknown(self) -> None:
         from caretaker.github_client.models import PullRequest, User
+
         pr = PullRequest(
             number=3,
             title="Update feature flags",
@@ -223,8 +223,11 @@ class TestDependencyAgentAutoMerge:
         pr = make_pr(title="Bump requests from 2.28.0 to 2.28.1")
         gh = make_github(prs=[pr], ci_status="success")
         agent = DependencyAgent(
-            github=gh, owner="o", repo="r",
-            auto_merge_patch=False, auto_merge_minor=False,
+            github=gh,
+            owner="o",
+            repo="r",
+            auto_merge_patch=False,
+            auto_merge_minor=False,
         )
         report = await agent.run()
 

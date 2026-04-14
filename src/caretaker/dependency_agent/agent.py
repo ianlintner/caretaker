@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
-from caretaker.github_client.api import GitHubClient
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,7 @@ class DependencyBump:
     package: str
     from_version: str
     to_version: str
-    ecosystem: str   # pip, npm, cargo, etc.
+    ecosystem: str  # pip, npm, cargo, etc.
     is_major: bool
     is_security: bool
     html_url: str
@@ -83,8 +86,7 @@ class DependencyAgent:
             return report
 
         dep_prs = [
-            pr for pr in all_prs
-            if pr.user.login in ("dependabot[bot]", "dependabot-preview[bot]")
+            pr for pr in all_prs if pr.user.login in ("dependabot[bot]", "dependabot-preview[bot]")
         ]
         report.prs_reviewed = len(dep_prs)
         logger.info("Dependency agent: %d Dependabot PR(s) open", len(dep_prs))
@@ -92,8 +94,8 @@ class DependencyAgent:
         if not dep_prs:
             return report
 
-        bumps = [_parse_bump(pr) for pr in dep_prs]
-        bumps = [b for b in bumps if b is not None]
+        bumps_raw = [_parse_bump(pr) for pr in dep_prs]
+        bumps = cast("list[DependencyBump]", [b for b in bumps_raw if b is not None])
 
         existing_major_sigs = await self._get_existing_major_issue_prs()
 
@@ -103,21 +105,25 @@ class DependencyAgent:
                 if bump.pr_number not in existing_major_sigs:
                     try:
                         issue = await self._create_major_upgrade_issue(bump)
-                        report.major_issues_created.append(issue["number"] if isinstance(issue, dict) else issue.number)
+                        issue_num = issue["number"] if isinstance(issue, dict) else issue.number
+                        report.major_issues_created.append(issue_num)
                     except Exception as e:
-                        logger.error("Dependency agent: failed major issue for PR#%d: %s", bump.pr_number, e)
+                        logger.error(
+                            "Dependency agent: failed major issue for PR#%d: %s",
+                            bump.pr_number,
+                            e,
+                        )
                         report.errors.append(str(e))
             else:
                 # Auto-merge patch / minor when CI passes
-                should_merge = (
-                    (self._auto_merge_patch and _is_patch(bump)) or
-                    (self._auto_merge_minor and _is_minor(bump))
+                should_merge = (self._auto_merge_patch and _is_patch(bump)) or (
+                    self._auto_merge_minor and _is_minor(bump)
                 )
                 if not should_merge:
                     continue
                 try:
                     ci_status = await self._github.get_combined_status(
-                        self._owner, self._repo, bump.pr_number
+                        self._owner, self._repo, str(bump.pr_number)
                     )
                     # ci_status here is the commit status; also check check-runs
                     if ci_status in ("success", "pending"):
@@ -126,9 +132,17 @@ class DependencyAgent:
                         )
                         if merged:
                             report.prs_auto_merged.append(bump.pr_number)
-                            logger.info("Dependency agent: auto-merged PR#%d (%s)", bump.pr_number, bump.package)
+                            logger.info(
+                                "Dependency agent: auto-merged PR#%d (%s)",
+                                bump.pr_number,
+                                bump.package,
+                            )
                 except Exception as e:
-                    logger.warning("Dependency agent: merge failed for PR#%d: %s", bump.pr_number, e)
+                    logger.warning(
+                        "Dependency agent: merge failed for PR#%d: %s",
+                        bump.pr_number,
+                        e,
+                    )
                     report.errors.append(str(e))
 
         # Post weekly digest
@@ -153,19 +167,26 @@ class DependencyAgent:
             for line in body.splitlines():
                 if DEPENDENCY_AGENT_MARKER in line and "pr:" in line:
                     try:
-                        pr_numbers.add(int(line.split("pr:")[1].strip().rstrip(" -->").strip()))
+                        raw = line.split("pr:")[1].strip()
+                        pr_numbers.add(int(raw.split()[0]))
                     except ValueError:
                         pass
         return pr_numbers
 
-    async def _create_major_upgrade_issue(self, bump: DependencyBump) -> dict:
+    async def _create_major_upgrade_issue(self, bump: DependencyBump) -> Issue:
         await self._github.ensure_label(
-            self._owner, self._repo, DEPENDENCY_MAJOR_LABEL,
-            color="f97316", description="Major dependency version upgrade requiring review",
+            self._owner,
+            self._repo,
+            DEPENDENCY_MAJOR_LABEL,
+            color="f97316",
+            description="Major dependency version upgrade requiring review",
         )
         await self._github.ensure_label(
-            self._owner, self._repo, DEPENDENCY_DIGEST_LABEL,
-            color="8b5cf6", description="Dependency update digest",
+            self._owner,
+            self._repo,
+            DEPENDENCY_DIGEST_LABEL,
+            color="8b5cf6",
+            description="Dependency update digest",
         )
 
         body = f"""## Major Dependency Upgrade: `{bump.package}`
@@ -177,26 +198,31 @@ A major version upgrade from **{bump.from_version}** → **{bump.to_version}** i
 | Package | `{bump.package}` |
 | Ecosystem | {bump.ecosystem} |
 | Change | `{bump.from_version}` → `{bump.to_version}` |
-| Dependabot PR | #{bump.pr_number} |
+| Dependabot PR | #{str(bump.pr_number)} |
 | PR link | {bump.html_url} |
 
 ## Action required
 
 This upgrade may contain **breaking changes**. @copilot, please:
 
-1. Review the changelog / release notes for `{bump.package}` between `{bump.from_version}` and `{bump.to_version}`.
+1. Review the changelog / release notes for `{bump.package}` between
+   `{bump.from_version}` and `{bump.to_version}`.
 2. Identify any breaking API changes that affect this repository.
 3. Apply necessary code migrations.
-4. Merge or close Dependabot PR #{bump.pr_number} once the migration is in place.
-5. If the migration is complex, add a checklist comment summarising the work needed and flag with `help wanted`.
+4. Merge or close Dependabot PR #{str(bump.pr_number)} once the migration is in place.
+5. If the migration is complex, add a checklist comment summarising
+   the work needed and flag with `help wanted`.
 
 ---
-{DEPENDENCY_AGENT_MARKER} pr:{bump.pr_number} -->"""
+{DEPENDENCY_AGENT_MARKER} pr:{str(bump.pr_number)} -->"""
 
         return await self._github.create_issue(
             owner=self._owner,
             repo=self._repo,
-            title=f"[Dependencies] Major upgrade: {bump.package} {bump.from_version} → {bump.to_version}",
+            title=(
+                f"[Dependencies] Major upgrade: {bump.package}"
+                f" {bump.from_version} → {bump.to_version}"
+            ),
             body=body,
             labels=[DEPENDENCY_MAJOR_LABEL],
             assignees=["copilot"],
@@ -215,19 +241,24 @@ This upgrade may contain **breaking changes**. @copilot, please:
             # Only one digest at a time — update the existing one
             issue = digest_issues[0]
             await self._github.update_issue(
-                self._owner, self._repo, issue.number,
+                self._owner,
+                self._repo,
+                issue.number,
                 body=self._build_digest_body(bumps, report),
             )
             return issue.number
 
         await self._github.ensure_label(
-            self._owner, self._repo, DEPENDENCY_DIGEST_LABEL,
-            color="8b5cf6", description="Dependency update digest",
+            self._owner,
+            self._repo,
+            DEPENDENCY_DIGEST_LABEL,
+            color="8b5cf6",
+            description="Dependency update digest",
         )
         issue = await self._github.create_issue(
             owner=self._owner,
             repo=self._repo,
-            title=f"[Dependencies] Weekly digest — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            title=f"[Dependencies] Weekly digest — {datetime.now(UTC).strftime('%Y-%m-%d')}",
             body=self._build_digest_body(bumps, report),
             labels=[DEPENDENCY_DIGEST_LABEL],
         )
@@ -237,19 +268,25 @@ This upgrade may contain **breaking changes**. @copilot, please:
         patch_minor = [b for b in bumps if not b.is_major]
         major = [b for b in bumps if b.is_major]
 
-        rows_pm = "\n".join(
-            f"| `{b.package}` | {b.ecosystem} | {b.from_version} → {b.to_version} "
-            f"| {'✅ auto-merged' if b.pr_number in report.prs_auto_merged else f'[PR #{b.pr_number}]({b.html_url})'} |"
-            for b in patch_minor
-        ) or "_None_"
+        rows_pm = (
+            "\n".join(
+                f"| `{b.package}` | {b.ecosystem} | {b.from_version} → {b.to_version} "
+                f"| {'✅ auto-merged' if b.pr_number in report.prs_auto_merged else f'[PR #{b.pr_number}]({b.html_url})'} |"  # noqa: E501
+                for b in patch_minor
+            )
+            or "_None_"
+        )
 
-        rows_major = "\n".join(
-            f"| `{b.package}` | {b.ecosystem} | {b.from_version} → {b.to_version} "
-            f"| [PR #{b.pr_number}]({b.html_url}) | ⚠️ needs review |"
-            for b in major
-        ) or "_None_"
+        rows_major = (
+            "\n".join(
+                f"| `{b.package}` | {b.ecosystem} | {b.from_version} → {b.to_version} "
+                f"| [PR #{b.pr_number}]({b.html_url}) | ⚠️ needs review |"
+                for b in major
+            )
+            or "_None_"
+        )
 
-        week = datetime.now(timezone.utc).strftime("%Y-W%V")
+        week = datetime.now(UTC).strftime("%Y-W%V")
         return f"""## Dependency Update Digest — {week}
 
 ### Patch / Minor (auto-managed)
@@ -266,33 +303,35 @@ This upgrade may contain **breaking changes**. @copilot, please:
 {DEPENDENCY_AGENT_MARKER} digest:{week} -->"""
 
 
-def _parse_bump(pr) -> DependencyBump | None:
-    m = _SEMVER_BUMP_RE.search(pr.title)
+def _parse_bump(pr: object) -> DependencyBump | None:
+    pr_obj = cast("Any", pr)
+    m = _SEMVER_BUMP_RE.search(pr_obj.title)
     if not m:
         return None
     package, from_ver, to_ver = m.group(1), m.group(2), m.group(3)
     ecosystem = _detect_ecosystem(pr)
     is_major = _is_major_bump(from_ver, to_ver)
     is_security = any(
-        l.name.lower() in ("security", "dependencies")
-        for l in getattr(pr, "labels", [])
+        label.name.lower() in ("security", "dependencies")
+        for label in getattr(pr_obj, "labels", [])
     )
     return DependencyBump(
-        pr_number=pr.number,
-        title=pr.title,
+        pr_number=pr_obj.number,
+        title=pr_obj.title,
         package=package,
         from_version=from_ver,
         to_version=to_ver,
         ecosystem=ecosystem,
         is_major=is_major,
         is_security=is_security,
-        html_url=getattr(pr, "html_url", f"https://github.com/pulls/{pr.number}"),
+        html_url=getattr(pr_obj, "html_url", f"https://github.com/pulls/{pr_obj.number}"),
     )
 
 
-def _detect_ecosystem(pr) -> str:
-    title_lower = pr.title.lower()
-    head_ref_lower = getattr(pr, "head_ref", "").lower()
+def _detect_ecosystem(pr: object) -> str:
+    pr_obj = cast("Any", pr)
+    title_lower = pr_obj.title.lower()
+    head_ref_lower = getattr(pr_obj, "head_ref", "").lower()
     combined = f"{title_lower} {head_ref_lower}"
     if "pip" in combined or ".txt" in combined or "requirements" in combined:
         return "pip"
@@ -304,7 +343,7 @@ def _detect_ecosystem(pr) -> str:
         return "go"
     if "maven" in combined or "gradle" in combined:
         return "java"
-    base = getattr(pr, "base_ref", "")
+    base = getattr(pr_obj, "base_ref", "")
     if "python" in base.lower():
         return "pip"
     return "unknown"

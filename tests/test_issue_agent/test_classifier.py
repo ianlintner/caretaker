@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from caretaker.config import IssueAgentConfig
 from caretaker.github_client.models import Issue, Label, User
@@ -43,7 +43,7 @@ class TestClassifyIssue:
         assert result == IssueClassification.DUPLICATE
 
     def test_stale_by_age(self) -> None:
-        old = datetime.now(timezone.utc) - timedelta(days=45)
+        old = datetime.now(UTC) - timedelta(days=45)
         issue = make_issue(updated_at=old)
         result = classify_issue(issue, IssueAgentConfig(auto_close_stale_days=30))
         assert result == IssueClassification.STALE
