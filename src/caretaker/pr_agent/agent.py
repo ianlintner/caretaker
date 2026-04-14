@@ -346,7 +346,7 @@ class PRAgent:
         labels = ["maintainer:escalated"]
         await self._github.add_labels(self._owner, self._repo, pr.number, labels)
         body = (
-            f"⚠️ **Caretaker Escalation**\n\n"
+            f"⚠ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
             f"**Reason:** {reason}\n\n"
             f"The automated system has exhausted its ability to resolve this. "

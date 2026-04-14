@@ -265,7 +265,7 @@ This upgrade may contain **breaking changes**. @copilot, please:
         rows_major = (
             "\n".join(
                 f"| `{b.package}` | {b.ecosystem} | {b.from_version} → {b.to_version} "
-                f"| [PR #{b.pr_number}]({b.html_url}) | ⚠️ needs review |"
+                f"| [PR #{b.pr_number}]({b.html_url}) | ⚠ needs review |"
                 for b in major
             )
             or "_None_"

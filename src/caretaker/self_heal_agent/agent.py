@@ -415,7 +415,7 @@ def _build_fix_issue_body(
     sig: str,
 ) -> str:
     kind_label = {
-        FailureKind.CONFIG_ERROR: "⚙️ Config error",
+        FailureKind.CONFIG_ERROR: "⚙ Config error",
         FailureKind.INTEGRATION_ERROR: "🔌 Integration / auth error",
         FailureKind.UNKNOWN: "❓ Unknown error",
     }.get(kind, "🩺 Error")

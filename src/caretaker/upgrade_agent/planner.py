@@ -30,7 +30,7 @@ def build_upgrade_issue_body(
     if target.breaking:
         lines.extend(
             [
-                "⚠️ **This is a breaking release.** Manual review is recommended.",
+                "⚠ **This is a breaking release.** Manual review is recommended.",
                 "",
             ]
         )

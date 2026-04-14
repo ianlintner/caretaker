@@ -248,7 +248,7 @@ class IssueAgent:
         await self._issues.add_labels(issue.number, ["maintainer:escalated"])
         await self._issues.comment(
             issue.number,
-            f"⚠️ **Caretaker Escalation**\n\n"
+            f"⚠ **Caretaker Escalation**\n\n"
             f"**Reason:** {reason}\n\n"
             f"This issue needs human attention.",
         )
