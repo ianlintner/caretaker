@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import TYPE_CHECKING, Any, cast
@@ -99,7 +100,7 @@ class GitHubClient:
             try:
                 body_json = resp.json()
                 body_message = body_json.get("message", "")
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 body_message = body_text
             if "rate limit" in body_message.lower():
                 retry_after = resp.headers.get("Retry-After", "60")
