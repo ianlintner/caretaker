@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
@@ -15,6 +17,9 @@ from caretaker.state.models import (
     TrackedIssue,
     TrackedPR,
 )
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 def make_orchestrator() -> Orchestrator:
@@ -78,3 +83,56 @@ class TestOrchestratorReconciliation:
         assert state.tracked_issues[3].state == IssueTrackingState.ESCALATED
         assert state.tracked_issues[3].escalated is True
         assert summary.stale_assignments_escalated == 1
+
+
+class TestOrchestratorReportPath:
+    async def test_run_writes_json_report(self, tmp_path: pathlib.Path) -> None:
+        """Orchestrator.run writes a JSON report when report_path is provided."""
+        orchestrator = make_orchestrator()
+        report_file = tmp_path / "report.json"
+
+        # Stub out all agent runners and state so we can just test report writing
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent"),
+            patch.object(orchestrator, "_run_issue_agent"),
+            patch.object(orchestrator, "_run_upgrade_agent"),
+            patch.object(orchestrator, "_run_devops_agent"),
+            patch.object(orchestrator, "_run_security_agent"),
+            patch.object(orchestrator, "_run_dependency_agent"),
+            patch.object(orchestrator, "_run_docs_agent"),
+            patch.object(orchestrator, "_run_stale_agent"),
+            patch.object(orchestrator, "_run_escalation_agent"),
+        ):
+            await orchestrator.run(mode="dry-run", report_path=str(report_file))
+
+        assert report_file.exists()
+        data = json.loads(report_file.read_text())
+        assert "mode" in data
+        assert "run_at" in data
+        assert "errors" in data
+
+    async def test_run_without_report_path_writes_no_file(self, tmp_path: pathlib.Path) -> None:
+        """Orchestrator.run does not create any extra files when report_path is None."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent"),
+            patch.object(orchestrator, "_run_issue_agent"),
+            patch.object(orchestrator, "_run_upgrade_agent"),
+            patch.object(orchestrator, "_run_devops_agent"),
+            patch.object(orchestrator, "_run_security_agent"),
+            patch.object(orchestrator, "_run_dependency_agent"),
+            patch.object(orchestrator, "_run_docs_agent"),
+            patch.object(orchestrator, "_run_stale_agent"),
+            patch.object(orchestrator, "_run_escalation_agent"),
+        ):
+            await orchestrator.run(mode="dry-run", report_path=None)
+
+        # No unexpected JSON files in tmp_path
+        assert list(tmp_path.glob("*.json")) == []
