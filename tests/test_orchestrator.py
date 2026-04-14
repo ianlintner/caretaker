@@ -136,3 +136,88 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorRateLimitHandling:
+    """Tests that rate-limit errors are handled as transient and do not cause CI failure."""
+
+    async def test_rate_limit_during_state_load_returns_exit_0(self) -> None:
+        """A 429 GitHubAPIError during state load is treated as transient (exit 0)."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker,
+                "load",
+                side_effect=GitHubAPIError(429, "Rate limited. Retry after 60s"),
+            ),
+            patch.object(orchestrator._state_tracker, "save", new_callable=AsyncMock),
+            patch.object(
+                orchestrator._state_tracker,
+                "post_run_summary",
+                new_callable=AsyncMock,
+            ),
+        ):
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 0
+
+    async def test_rate_limit_during_state_save_does_not_raise(self) -> None:
+        """A 429 GitHubAPIError during state save is silently logged, not re-raised."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker, "load", return_value=OrchestratorState()
+            ),
+            patch.object(
+                orchestrator._state_tracker,
+                "save",
+                side_effect=GitHubAPIError(429, "Rate limited. Retry after 60s"),
+            ),
+            patch.object(
+                orchestrator._state_tracker,
+                "post_run_summary",
+                new_callable=AsyncMock,
+            ),
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_upgrade_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_security_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_dependency_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_docs_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_stale_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_escalation_agent", new_callable=AsyncMock),
+        ):
+            # Should not raise; rate limit during save is non-fatal
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 0
+
+    async def test_non_rate_limit_403_still_raises_error(self) -> None:
+        """A real 403 (not rate-limit) during state load returns exit 1."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker,
+                "load",
+                side_effect=GitHubAPIError(403, '{"message": "Resource not accessible"}'),
+            ),
+            patch.object(orchestrator._state_tracker, "save", new_callable=AsyncMock),
+            patch.object(
+                orchestrator._state_tracker,
+                "post_run_summary",
+                new_callable=AsyncMock,
+            ),
+        ):
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 1
