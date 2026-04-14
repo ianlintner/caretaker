@@ -101,7 +101,7 @@ class GitHubClient:
             except Exception:
                 message = resp.text
             if "rate limit" in message.lower():
-                detail = f"Retry after {retry_after}s" if retry_after else message
+                detail = f"Retry after {retry_after}s" if retry_after else "No retry time specified"
                 raise GitHubAPIError(403, f"Rate limited. {detail}")
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code >= 400:

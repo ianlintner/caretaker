@@ -45,6 +45,7 @@ async def test_403_rate_limit_raises_githubapieerror() -> None:
     error = exc_info.value
     assert error.status_code == 403
     assert "Rate limited" in str(error)
+    assert "No retry time specified" in str(error)
 
 
 @pytest.mark.asyncio
