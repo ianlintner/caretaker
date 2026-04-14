@@ -47,6 +47,7 @@ _DEVOPS_SIG_RE = re.compile(r"caretaker:devops-build-failure\s+sig:([0-9a-f]+)",
 _ESCALATION_WEEK_RE = re.compile(
     r"caretaker:escalation-digest\s+week:([0-9]{4}-W\d+)", re.IGNORECASE
 )
+_RUN_ID_RE = re.compile(r"\brun_id:(\d+)\b")
 
 
 @dataclass
@@ -113,6 +114,9 @@ class CharlieAgent:
             report.managed_prs_seen,
         )
 
+        # Build issue → run_id map for cross-referencing PRs with related issues
+        issue_run_map = _build_issue_run_map(managed_issues)
+
         closed_issue_numbers: set[int] = set()
         closed_pr_numbers: set[int] = set()
 
@@ -121,7 +125,9 @@ class CharlieAgent:
                 managed_issues, report
             )
         if self._close_duplicate_prs:
-            closed_pr_numbers |= await self._close_duplicate_prs_in_place(managed_prs, report)
+            closed_pr_numbers |= await self._close_duplicate_prs_in_place(
+                managed_prs, report, issue_run_map=issue_run_map
+            )
         if self._close_stale_issues:
             closed_issue_numbers |= await self._close_stale_issues_in_place(
                 managed_issues, closed_issue_numbers, report
@@ -161,9 +167,13 @@ class CharlieAgent:
         return closed
 
     async def _close_duplicate_prs_in_place(
-        self, prs: list[PullRequest], report: CharlieReport
+        self,
+        prs: list[PullRequest],
+        report: CharlieReport,
+        *,
+        issue_run_map: dict[int, str] | None = None,
     ) -> set[int]:
-        groups = self._group_prs_by_work_key(prs)
+        groups = self._group_prs_by_work_key(prs, issue_run_map=issue_run_map)
         closed: set[int] = set()
 
         for work_key, grouped_prs in groups.items():
@@ -310,13 +320,22 @@ class CharlieAgent:
         return grouped
 
     @staticmethod
-    def _group_prs_by_work_key(items: list[PullRequest]) -> dict[str, list[PullRequest]]:
+    def _group_prs_by_work_key(
+        items: list[PullRequest],
+        *,
+        issue_run_map: dict[int, str] | None = None,
+    ) -> dict[str, list[PullRequest]]:
         grouped: dict[str, list[PullRequest]] = {}
         for item in items:
             work_key = _extract_work_key(item.title, item.body or "")
+            if work_key is None and issue_run_map:
+                work_key = _resolve_pr_run_key(item.body or "", issue_run_map)
             if work_key is None:
                 continue
             grouped.setdefault(work_key, []).append(item)
+        # Merge groups whose linked issues share a workflow run_id
+        if issue_run_map:
+            grouped = _merge_pr_groups_by_run(grouped, issue_run_map)
         return grouped
 
     @staticmethod
@@ -334,6 +353,7 @@ def _extract_work_key(title: str, body: str) -> str | None:
     for prefix, pattern in (
         ("source_issue", _SOURCE_ISSUE_RE),
         ("fixes", _FIXES_RE),
+        ("run_id", _RUN_ID_RE),
         ("devops_sig", _DEVOPS_SIG_RE),
         ("escalation_week", _ESCALATION_WEEK_RE),
     ):
@@ -352,3 +372,72 @@ def _item_timestamp(item: Issue | PullRequest) -> datetime:
     if timestamp.tzinfo is None:
         return timestamp.replace(tzinfo=UTC)
     return timestamp.astimezone(UTC)
+
+
+def _build_issue_run_map(issues: list[Issue]) -> dict[int, str]:
+    """Map issue number → run_id for issues that have a workflow run_id marker.
+
+    This enables cross-referencing: PRs that fix issues from the same workflow
+    run can be grouped together even though each PR references a different issue.
+    """
+    result: dict[int, str] = {}
+    for issue in issues:
+        body = issue.body or ""
+        match = _RUN_ID_RE.search(body)
+        if match:
+            result[issue.number] = match.group(1)
+    return result
+
+
+def _resolve_pr_run_key(pr_body: str, issue_run_map: dict[int, str]) -> str | None:
+    """Try to derive a run-based work key for a PR via its linked issue.
+
+    If the PR body contains ``Fixes #N`` and issue *N* has a ``run_id``, the
+    returned key groups all PRs that fix issues from the same workflow run.
+    """
+    match = _FIXES_RE.search(pr_body)
+    if not match:
+        return None
+    issue_number = int(match.group(1))
+    run_id = issue_run_map.get(issue_number)
+    if run_id is None:
+        return None
+    return f"run_id:{run_id}"
+
+
+def _merge_pr_groups_by_run(
+    groups: dict[str, list[PullRequest]],
+    issue_run_map: dict[int, str],
+) -> dict[str, list[PullRequest]]:
+    """Merge PR groups whose linked issues share a workflow run_id.
+
+    When two PRs reference different issues (``Fixes #A`` and ``Fixes #B``)
+    but both issues originate from the same workflow run, the PRs should be
+    treated as duplicates.  This function merges their groups under a single
+    ``run_id:<id>`` key.
+    """
+    # Map each fixes:N key to its run_id (if any)
+    run_to_keys: dict[str, list[str]] = {}
+    for key in list(groups):
+        if not key.startswith("fixes:"):
+            continue
+        try:
+            issue_num = int(key.split(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        run_id = issue_run_map.get(issue_num)
+        if run_id:
+            run_to_keys.setdefault(run_id, []).append(key)
+
+    merged = dict(groups)
+    for run_id, keys in run_to_keys.items():
+        if len(keys) < 2:
+            continue
+        canonical_key = f"run_id:{run_id}"
+        combined: list[PullRequest] = []
+        for key in keys:
+            combined.extend(merged.pop(key, []))
+        if combined:
+            merged.setdefault(canonical_key, []).extend(combined)
+
+    return merged
