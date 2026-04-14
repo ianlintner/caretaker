@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from caretaker.github_client.models import Review, ReviewState
+from caretaker.pr_agent._constants import is_automated_reviewer
 
 if TYPE_CHECKING:
     from caretaker.llm.router import LLMRouter
@@ -90,12 +91,19 @@ async def analyze_reviews(
     nitpick_threshold: str = "low",
     llm_router: LLMRouter | None = None,
 ) -> list[ReviewAnalysis]:
-    """Analyze all blocking review comments."""
+    """Analyze all blocking and automated-bot review comments."""
     analyses: list[ReviewAnalysis] = []
 
-    blocking = [r for r in reviews if r.state == ReviewState.CHANGES_REQUESTED]
+    # Formal CHANGES_REQUESTED reviews always count as blocking.
+    # COMMENTED reviews from automated reviewer bots also carry actionable feedback.
+    actionable = [
+        r
+        for r in reviews
+        if r.state == ReviewState.CHANGES_REQUESTED
+        or (r.state == ReviewState.COMMENTED and r.body and is_automated_reviewer(r.user.login))
+    ]
 
-    for review in blocking:
+    for review in actionable:
         if llm_router and llm_router.feature_enabled("architectural_review"):
             try:
                 result = await llm_router.claude.analyze_review_comment(review.body, "")

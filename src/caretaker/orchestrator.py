@@ -248,9 +248,15 @@ class Orchestrator:
         elif event_type in ("issues", "issue_comment"):
             await self._run_issue_agent(state, summary)
         elif event_type == "workflow_run":
-            # A workflow completed — run devops (CI failures) and self-heal
+            # A workflow completed — run devops (CI failures on default branch) and self-heal
             await self._run_devops_agent(state, summary, event_payload=payload)
             await self._run_self_heal_agent(state, summary, event_payload=payload)
+            # Also evaluate the PR on the affected branch so CI failures trigger
+            # @copilot fix requests promptly, without scanning every open PR.
+            head_branch: str | None = (
+                payload.get("workflow_run", {}).get("head_branch") if payload else None
+            )
+            await self._run_pr_agent(state, summary, head_branch=head_branch)
         elif event_type == "dependabot_alert":
             # A new Dependabot alert was raised
             await self._run_security_agent(state, summary)
@@ -259,8 +265,21 @@ class Orchestrator:
             await self._run_pr_agent(state, summary)
             await self._run_issue_agent(state, summary)
 
-    async def _run_pr_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
-        """Run the PR agent."""
+    async def _run_pr_agent(
+        self,
+        state: OrchestratorState,
+        summary: RunSummary,
+        head_branch: str | None = None,
+    ) -> None:
+        """Run the PR agent.
+
+        Args:
+            state: Current orchestrator state.
+            summary: Run summary to update.
+            head_branch: Optional branch name to restrict evaluation to a single
+                PR branch (used for event-driven ``workflow_run`` invocations to
+                avoid scanning every open PR on every CI completion).
+        """
         if not self._config.pr_agent.enabled:
             logger.info("PR agent is disabled")
             return
@@ -276,7 +295,7 @@ class Orchestrator:
             config=self._config.pr_agent,
             llm_router=self._llm,
         )
-        report, tracked_prs = await pr_agent.run(state.tracked_prs)
+        report, tracked_prs = await pr_agent.run(state.tracked_prs, head_branch=head_branch)
         state.tracked_prs = tracked_prs
 
         summary.prs_monitored = report.monitored

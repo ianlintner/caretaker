@@ -60,13 +60,27 @@ class PRAgent:
         )
 
     async def run(
-        self, tracked_prs: dict[int, TrackedPR]
+        self,
+        tracked_prs: dict[int, TrackedPR],
+        head_branch: str | None = None,
     ) -> tuple[PRAgentReport, dict[int, TrackedPR]]:
-        """Run the PR agent — evaluate all open PRs and take action."""
+        """Run the PR agent — evaluate all open PRs and take action.
+
+        Args:
+            tracked_prs: Current tracking state keyed by PR number.
+            head_branch: Optional branch name filter. When provided, only PRs
+                whose ``head_ref`` matches this value are evaluated (used to
+                limit work on ``workflow_run`` events to the relevant branch).
+        """
         report = PRAgentReport()
 
         # Discover open PRs
         open_prs = await self._github.list_pull_requests(self._owner, self._repo)
+
+        # Filter to branch of interest when provided (avoids full scan on workflow_run)
+        if head_branch:
+            open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
+
         report.monitored = len(open_prs)
 
         for pr in open_prs:
@@ -109,6 +123,10 @@ class PRAgent:
             evaluation.recommended_action,
         )
 
+        # Set state to the recommendation first; action handlers may override
+        # (e.g. FIX_REQUESTED after posting a @copilot comment).
+        tracking.state = evaluation.recommended_state
+
         # Act on the recommendation
         match evaluation.recommended_action:
             case "merge":
@@ -126,7 +144,6 @@ class PRAgent:
             case _:
                 report.waiting.append(pr.number)
 
-        tracking.state = evaluation.recommended_state
         return tracking
 
     async def _handle_merge(
@@ -172,8 +189,14 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Handle CI failure — request fix from Copilot."""
-        # Check if we should retry CI first (flaky test handling)
-        if tracking.ci_attempts < self._config.ci.flaky_retries and evaluation.ci.failed_runs:
+        # For Copilot/maintainer PRs, skip flaky-retry to request a fix immediately.
+        # For human PRs, do one silent wait cycle to guard against transient flakes.
+        is_automated_pr = pr.is_copilot_pr or pr.is_maintainer_pr
+        if (
+            not is_automated_pr
+            and tracking.ci_attempts < self._config.ci.flaky_retries
+            and evaluation.ci.failed_runs
+        ):
             tracking.ci_attempts += 1
             logger.info(
                 "PR #%d: retrying CI (flaky retry %d/%d)",
@@ -255,11 +278,6 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Handle review comments — request fixes from Copilot."""
-        if not pr.is_copilot_pr:
-            # Don't auto-fix non-Copilot PRs
-            report.waiting.append(pr.number)
-            return tracking
-
         analyses = await analyze_reviews(
             reviews,
             nitpick_threshold=self._config.review.nitpick_threshold,

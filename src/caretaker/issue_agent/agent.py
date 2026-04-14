@@ -77,8 +77,13 @@ class IssueAgent:
 
                 tracking = self._reconcile_issue_progress(issue, pull_requests, tracking)
 
-                # Skip already-processed issues
+                # Skip issues that are already actioned or in-flight
                 if tracking.state in (
+                    IssueTrackingState.ASSIGNED,
+                    IssueTrackingState.IN_PROGRESS,
+                    IssueTrackingState.PR_OPENED,
+                    IssueTrackingState.ESCALATED,
+                    IssueTrackingState.STALE,
                     IssueTrackingState.COMPLETED,
                     IssueTrackingState.CLOSED,
                 ):
@@ -217,6 +222,19 @@ class IssueAgent:
         if linked_pr is not None:
             tracking.assigned_pr = linked_pr
             tracking.state = IssueTrackingState.PR_OPENED
+
+        # If we previously dispatched this issue but Copilot is no longer assigned
+        # and there is no linked PR, downgrade so the issue can be re-dispatched.
+        if (
+            tracking.state in (IssueTrackingState.ASSIGNED, IssueTrackingState.IN_PROGRESS)
+            and not is_copilot
+            and linked_pr is None
+        ):
+            logger.info(
+                "Issue #%d: no Copilot assignee and no linked PR — resetting to TRIAGED",
+                issue.number,
+            )
+            tracking.state = IssueTrackingState.TRIAGED
 
         return tracking
 
