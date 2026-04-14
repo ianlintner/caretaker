@@ -239,8 +239,8 @@ class Orchestrator:
             # A workflow completed — run devops (CI failures) and self-heal
             await self._run_devops_agent(state, summary, event_payload=payload)
             await self._run_self_heal_agent(state, summary, event_payload=payload)
-        elif event_type == "repository_vulnerability_alert":
-            # A new Dependabot/security alert was raised
+        elif event_type == "dependabot_alert":
+            # A new Dependabot alert was raised
             await self._run_security_agent(state, summary)
         else:
             logger.info("Event type %s — running full cycle", event_type)
