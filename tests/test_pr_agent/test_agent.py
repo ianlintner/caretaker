@@ -541,3 +541,193 @@ class TestHandleMergeBranchProtection:
             await self._run_handle_merge(pr, tracking, config, merge_side_effect=exc)
 
         assert exc_info.value.status_code == 500
+
+
+# ── Comment deduplication ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestCommentDeduplication:
+    """Tests for _has_pending_task_comment and its integration with fix handlers."""
+
+    async def test_no_comments_means_no_pending_task(self) -> None:
+        """When no comments exist, there is no pending task."""
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = []
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is False
+
+    async def test_task_without_result_is_pending(self) -> None:
+        """A task comment with no subsequent result is pending."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_comment
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->Fix CI failure"),
+        ]
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is True
+
+    async def test_task_followed_by_result_is_not_pending(self) -> None:
+        """A task comment that has been answered by a result is not pending."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_comment
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->Fix CI failure"),
+            make_comment(body="<!-- caretaker:result -->FIXED"),
+        ]
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is False
+
+    async def test_multiple_tasks_last_unanswered_is_pending(self) -> None:
+        """When there are multiple tasks, pending status depends on the last one."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_comment
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->First task"),
+            make_comment(body="<!-- caretaker:result -->FIXED"),
+            make_comment(body="<!-- caretaker:task -->Second task"),
+        ]
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is True
+
+    async def test_ci_fix_skips_when_task_pending(self) -> None:
+        """_handle_ci_fix should skip posting when a task comment is already pending."""
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
+        from tests.conftest import make_comment
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=100, user=copilot_user)
+        tracking = TrackedPR(number=100)
+        config = make_config()
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->Fix CI failure"),
+        ]
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        failed_run = make_check_run(name="lint", conclusion=CheckConclusion.FAILURE)
+        ci_eval = CIEvaluation(
+            status=CIStatus.FAILING,
+            failed_runs=[failed_run],
+            pending_runs=[],
+            passed_runs=[],
+            all_completed=True,
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=MagicMock(changes_requested=False),
+            recommended_state=PRTrackingState.CI_FAILING,
+            recommended_action="request_fix",
+        )
+
+        mock_result = MagicMock()
+        mock_result.comment_id = 99
+        agent._copilot_bridge.request_ci_fix = AsyncMock(return_value=mock_result)
+
+        report = PRAgentReport()
+        updated = await agent._handle_ci_fix(pr, evaluation, tracking, report)
+
+        # No new fix comment should have been posted
+        agent._copilot_bridge.request_ci_fix.assert_not_awaited()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+        assert 100 in report.waiting
+        assert report.fix_requested == []
+
+    async def test_review_fix_skips_when_task_pending(self) -> None:
+        """_handle_review_fix should skip posting when a task comment is already pending."""
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from tests.conftest import make_comment
+
+        pr = make_pr(number=101, user=User(login="copilot[bot]", id=1, type="Bot"))
+        tracking = TrackedPR(number=101)
+        config = make_config()
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->Fix review comments"),
+        ]
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider fixing this.",
+        )
+
+        mock_result = MagicMock()
+        mock_result.comment_id = 42
+        agent._copilot_bridge.request_review_fix = AsyncMock(return_value=mock_result)
+
+        report = PRAgentReport()
+        updated = await agent._handle_review_fix(pr, [bot_review], tracking, report)
+
+        # No new fix comment should have been posted
+        agent._copilot_bridge.request_review_fix.assert_not_awaited()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+        assert 101 in report.waiting
+        assert report.fix_requested == []
+
+    async def test_ci_fix_posts_when_previous_task_answered(self) -> None:
+        """_handle_ci_fix should post normally when the previous task was answered."""
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
+        from tests.conftest import make_comment
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=102, user=copilot_user)
+        tracking = TrackedPR(number=102)
+        config = make_config()
+
+        github = AsyncMock()
+        github.get_pr_comments.return_value = [
+            make_comment(body="<!-- caretaker:task -->Fix CI failure"),
+            make_comment(body="<!-- caretaker:result -->FIXED"),
+        ]
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        failed_run = make_check_run(name="lint", conclusion=CheckConclusion.FAILURE)
+        ci_eval = CIEvaluation(
+            status=CIStatus.FAILING,
+            failed_runs=[failed_run],
+            pending_runs=[],
+            passed_runs=[],
+            all_completed=True,
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=MagicMock(changes_requested=False),
+            recommended_state=PRTrackingState.CI_FAILING,
+            recommended_action="request_fix",
+        )
+
+        mock_result = MagicMock()
+        mock_result.comment_id = 99
+        agent._copilot_bridge.request_ci_fix = AsyncMock(return_value=mock_result)
+
+        report = PRAgentReport()
+        updated = await agent._handle_ci_fix(pr, evaluation, tracking, report)
+
+        # Fix comment should have been posted since previous was answered
+        agent._copilot_bridge.request_ci_fix.assert_awaited_once()
+        assert updated.copilot_attempts == 1
+        assert 102 in report.fix_requested
