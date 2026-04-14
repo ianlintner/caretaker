@@ -68,12 +68,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
         run: |
           caretaker run \
             --config .github/maintainer/config.yml \
             --mode "${{ github.event.inputs.mode || (github.event_name == 'workflow_run' && 'event') || 'full' }}" \
             --event-type "${{ github.event_name }}" \
-            --event-payload '${{ toJSON(github.event) }}'
+            --event-payload "$CARETAKER_EVENT_PAYLOAD"
 
   # When the caretaker run itself fails, trigger the self-heal agent
   self-heal-on-failure:
@@ -99,16 +100,18 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
-        run: |
-          caretaker run \
-            --config .github/maintainer/config.yml \
-            --mode self-heal \
-            --event-type workflow_run \
-            --event-payload '{
+          CARETAKER_EVENT_PAYLOAD: >-
+            {
               "workflow_run": {
                 "id": ${{ github.run_id }},
                 "name": "Caretaker",
                 "conclusion": "failure",
                 "head_branch": "${{ github.ref_name }}"
               }
-            }'
+            }
+        run: |
+          caretaker run \
+            --config .github/maintainer/config.yml \
+            --mode self-heal \
+            --event-type workflow_run \
+            --event-payload "$CARETAKER_EVENT_PAYLOAD"
