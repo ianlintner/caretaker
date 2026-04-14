@@ -197,6 +197,25 @@ class PRAgent:
 
         return tracking
 
+    async def _has_pending_task_comment(self, pr_number: int) -> bool:
+        """Check if there's already a pending (unanswered) task comment on the PR.
+
+        Returns True when the most recent ``caretaker:task`` comment has **no**
+        subsequent ``caretaker:result`` comment — meaning a fix request is
+        already outstanding and we should not spam another one.
+        """
+        comments = await self._github.get_pr_comments(self._owner, self._repo, pr_number)
+        last_task_idx: int | None = None
+        for i, comment in enumerate(comments):
+            if comment.is_maintainer_task:
+                last_task_idx = i
+
+        if last_task_idx is None:
+            return False
+
+        # Check if any result comment exists after the last task
+        return all(not comment.is_maintainer_result for comment in comments[last_task_idx + 1 :])
+
     async def _handle_ci_fix(
         self,
         pr: PullRequest,
@@ -234,6 +253,17 @@ class PRAgent:
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
+            return tracking
+
+        # Guard against duplicate task comments (e.g. concurrent workflow runs
+        # that all loaded the same stale persisted state).
+        if await self._has_pending_task_comment(pr.number):
+            logger.info(
+                "PR #%d: pending task comment already exists — skipping duplicate",
+                pr.number,
+            )
+            tracking.state = PRTrackingState.FIX_REQUESTED
+            report.waiting.append(pr.number)
             return tracking
 
         # Triage the failure and request a fix
@@ -345,6 +375,16 @@ class PRAgent:
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
+            return tracking
+
+        # Guard against duplicate task comments from concurrent workflow runs.
+        if await self._has_pending_task_comment(pr.number):
+            logger.info(
+                "PR #%d: pending task comment already exists — skipping duplicate review fix",
+                pr.number,
+            )
+            tracking.state = PRTrackingState.FIX_REQUESTED
+            report.waiting.append(pr.number)
             return tracking
 
         result = await self._copilot_bridge.request_review_fix(
