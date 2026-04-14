@@ -142,7 +142,13 @@ class CopilotProtocol:
             task.attempt,
             task.max_attempts,
         )
-        return await self._github.add_issue_comment(self._owner, self._repo, pr_number, body)
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            pr_number,
+            body,
+            use_copilot_token=True,
+        )
 
     async def find_latest_result(
         self, pr_number: int, after_comment_id: int | None = None
