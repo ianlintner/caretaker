@@ -262,10 +262,22 @@ class GitHubClient:
             "assignees": [COPILOT_ASSIGNEE_LOGIN],
             "agent_assignment": agent_assignment.to_api_payload(),
         }
-        result = await self._copilot_post(
-            f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
-            json=payload,
-        )
+        try:
+            result = await self._copilot_post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                json=payload,
+            )
+        except GitHubAPIError as exc:
+            if exc.status_code in (403, 422):
+                logger.warning(
+                    "Copilot assignment unavailable for issue #%d in %s/%s: %s",
+                    issue_number,
+                    owner,
+                    repo,
+                    exc,
+                )
+                return
+            raise
         if result is None:
             raise GitHubAPIError(
                 404,

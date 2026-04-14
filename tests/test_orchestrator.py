@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
 from caretaker.state.models import (
@@ -136,3 +138,42 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+class TestSelfHealMode:
+    """self-heal mode invokes only the self-heal agent."""
+
+    async def test_self_heal_mode_calls_self_heal_agent(self) -> None:
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent") as mock_self_heal,
+            patch.object(orchestrator, "_run_pr_agent") as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent") as mock_issue,
+        ):
+            exit_code = await orchestrator.run(mode="self-heal")
+
+        mock_self_heal.assert_awaited_once()
+        mock_pr.assert_not_called()
+        mock_issue.assert_not_called()
+        assert exit_code == 0
+
+    async def test_self_heal_mode_passes_event_payload(self) -> None:
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 123, "conclusion": "failure", "head_branch": "main"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent") as mock_self_heal,
+        ):
+            await orchestrator.run(mode="self-heal", event_payload=payload)
+
+        mock_self_heal.assert_awaited_once()
+        _, kwargs = mock_self_heal.call_args
+        assert kwargs.get("event_payload") == payload
