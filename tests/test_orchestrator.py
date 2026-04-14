@@ -136,3 +136,41 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_runs_only_self_heal_agent(self) -> None:
+        """Mode 'self-heal' invokes only the self-heal agent."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 1, "name": "Caretaker", "conclusion": "failure"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock) as mock_heal,
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as mock_issue,
+        ):
+            exit_code = await orchestrator.run(mode="self-heal", event_payload=payload)
+
+        assert exit_code == 0
+        mock_heal.assert_awaited_once()
+        # self-heal mode must not trigger unrelated agents
+        mock_pr.assert_not_awaited()
+        mock_issue.assert_not_awaited()
+
+    async def test_self_heal_mode_passes_event_payload_to_agent(self) -> None:
+        """Mode 'self-heal' forwards the event payload to the self-heal agent."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 42, "name": "Caretaker", "conclusion": "failure"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock) as mock_heal,
+        ):
+            await orchestrator.run(mode="self-heal", event_payload=payload)
+
+        assert mock_heal.call_args.kwargs.get("event_payload") == payload
