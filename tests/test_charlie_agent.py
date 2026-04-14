@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from caretaker.charlie_agent.agent import CharlieAgent
+from caretaker.charlie_agent.agent import (
+    CharlieAgent,
+    _build_issue_run_map,
+    _extract_work_key,
+    _resolve_pr_run_key,
+)
 from caretaker.github_client.models import Issue, Label, PRState, PullRequest, User
 
 
@@ -160,3 +165,118 @@ class TestCharlieAgent:
         assert report.stale_issues_closed == 0
         assert report.issues_closed == 0
         gh.update_issue.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_groups_issues_by_run_id(self) -> None:
+        """Issues from the same workflow run should be grouped as duplicates."""
+        canonical = _issue(
+            40,
+            body="<!-- caretaker:devops-build-failure sig:aaa111 run_id:99001 -->",
+            labels=["devops:build-failure"],
+            assignees=[User(login="Copilot", id=3, type="Bot")],
+        )
+        duplicate = _issue(
+            41,
+            body="<!-- caretaker:devops-build-failure sig:bbb222 run_id:99001 -->",
+            labels=["devops:build-failure"],
+        )
+        gh = make_github(issues=[canonical, duplicate])
+
+        report = await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        assert report.managed_issues_seen == 2
+        assert report.duplicate_issues_closed == 1
+        assert report.issues_closed == 1
+        gh.update_issue.assert_awaited_once_with("o", "r", 41, state="closed")
+
+    @pytest.mark.asyncio
+    async def test_groups_prs_by_linked_issue_run_id(self) -> None:
+        """PRs fixing different issues from the same workflow run should be grouped."""
+        issue_a = _issue(
+            50,
+            body="<!-- caretaker:devops-build-failure sig:aaa111 run_id:88001 -->",
+            labels=["devops:build-failure"],
+        )
+        issue_b = _issue(
+            51,
+            body="<!-- caretaker:devops-build-failure sig:bbb222 run_id:88001 -->",
+            labels=["devops:build-failure"],
+        )
+        pr_a = _pr(60, body="Fixes #50")
+        pr_b = _pr(61, body="Fixes #51", draft=True)
+        gh = make_github(issues=[issue_a, issue_b], prs=[pr_a, pr_b])
+
+        report = await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        assert report.managed_prs_seen == 2
+        assert report.duplicate_prs_closed == 1
+        assert report.prs_closed == 1
+        # Draft PR #61 should be closed in favor of non-draft #60
+        gh.update_issue.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_does_not_group_issues_with_different_run_ids(self) -> None:
+        """Issues from different workflow runs should NOT be grouped."""
+        issue_a = _issue(
+            70,
+            body="<!-- caretaker:devops-build-failure sig:ccc333 run_id:11111 -->",
+            labels=["devops:build-failure"],
+        )
+        issue_b = _issue(
+            71,
+            body="<!-- caretaker:devops-build-failure sig:ddd444 run_id:22222 -->",
+            labels=["devops:build-failure"],
+        )
+        gh = make_github(issues=[issue_a, issue_b])
+
+        report = await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        assert report.managed_issues_seen == 2
+        assert report.duplicate_issues_closed == 0
+        gh.update_issue.assert_not_awaited()
+
+
+class TestExtractWorkKey:
+    def test_run_id_takes_priority_over_devops_sig(self) -> None:
+        body = "<!-- caretaker:devops-build-failure sig:abc123 run_id:99001 -->"
+        assert _extract_work_key("CI failure", body) == "run_id:99001"
+
+    def test_returns_devops_sig_when_no_run_id(self) -> None:
+        body = "<!-- caretaker:devops-build-failure sig:abc123 -->"
+        assert _extract_work_key("CI failure", body) == "devops_sig:abc123"
+
+    def test_returns_run_id_key_when_no_higher_priority_match(self) -> None:
+        body = "some body text\nrun_id:55555\nmore text"
+        assert _extract_work_key("Some title", body) == "run_id:55555"
+
+    def test_returns_none_for_body_without_markers(self) -> None:
+        assert _extract_work_key("Regular title", "plain body") is None
+
+
+class TestBuildIssueRunMap:
+    def test_extracts_run_ids_from_issues(self) -> None:
+        issues = [
+            _issue(1, body="<!-- caretaker:devops-build-failure sig:a run_id:100 -->"),
+            _issue(2, body="no marker here"),
+            _issue(3, body="<!-- caretaker:self-heal --> sig:b run_id:200 -->"),
+        ]
+        result = _build_issue_run_map(issues)
+        assert result == {1: "100", 3: "200"}
+
+    def test_returns_empty_for_no_run_ids(self) -> None:
+        issues = [_issue(1, body="just text")]
+        assert _build_issue_run_map(issues) == {}
+
+
+class TestResolvePrRunKey:
+    def test_resolves_pr_to_run_id_via_linked_issue(self) -> None:
+        issue_run_map = {50: "99001", 51: "99001"}
+        assert _resolve_pr_run_key("Fixes #50", issue_run_map) == "run_id:99001"
+
+    def test_returns_none_when_linked_issue_has_no_run_id(self) -> None:
+        issue_run_map = {50: "99001"}
+        assert _resolve_pr_run_key("Fixes #99", issue_run_map) is None
+
+    def test_returns_none_when_no_fixes_reference(self) -> None:
+        issue_run_map = {50: "99001"}
+        assert _resolve_pr_run_key("Some PR body without fixes", issue_run_map) is None
