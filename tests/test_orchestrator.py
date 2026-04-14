@@ -136,3 +136,38 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_calls_only_self_heal_agent(self) -> None:
+        """Mode 'self-heal' invokes only the self-heal agent, not other agents."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 123, "conclusion": "failure"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(
+                orchestrator, "_run_self_heal_agent", new_callable=AsyncMock
+            ) as mock_heal,
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as mock_issue,
+            patch.object(
+                orchestrator, "_run_devops_agent", new_callable=AsyncMock
+            ) as mock_devops,
+        ):
+            await orchestrator.run(
+                mode="self-heal",
+                event_type="workflow_run",
+                event_payload=payload,
+            )
+
+        mock_heal.assert_called_once()
+        # Verify self-heal agent received the event payload
+        _, kwargs = mock_heal.call_args
+        assert kwargs.get("event_payload") == payload
+        # Other agents must not have been called
+        mock_pr.assert_not_called()
+        mock_issue.assert_not_called()
+        mock_devops.assert_not_called()
