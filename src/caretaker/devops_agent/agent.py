@@ -172,7 +172,9 @@ class DevOpsAgent:
                 # Extract the sig embedded in the marker
                 for line in issue.body.splitlines():
                     if line.startswith(DEVOPS_AGENT_MARKER):
-                        sig = line.replace(DEVOPS_AGENT_MARKER, "").replace("-->", "").strip()
+                        raw = line.replace(DEVOPS_AGENT_MARKER, "").replace("-->", "").strip()
+                        # Strip the "sig:" prefix so the hash matches _failure_signature output
+                        sig = raw.removeprefix("sig:").strip()
                         if sig:
                             sigs.add(sig)
         return sigs
