@@ -10,6 +10,7 @@ from caretaker.devops_agent.agent import (
     BUILD_FAILURE_LABEL,
     DEVOPS_AGENT_MARKER,
     DevOpsAgent,
+    _build_issue_body,
     _failure_signature,
 )
 from caretaker.devops_agent.log_analyzer import FailureSummary
@@ -61,3 +62,59 @@ class TestDevOpsAgentDuplicateSuppression:
         assert report.issues_skipped == 1
         assert report.issues_created == []
         agent._create_fix_issue.assert_not_awaited()
+
+
+class TestDevOpsIssueBodyRunId:
+    def test_build_issue_body_includes_run_id_when_provided(self) -> None:
+        summary = FailureSummary(
+            job_name="lint",
+            conclusion="failure",
+            suspected_files=["src/foo.py"],
+            category="lint",
+        )
+        sig = _failure_signature(summary)
+        body = _build_issue_body(summary, sig, "main", run_id=99001)
+        assert "run_id:99001" in body
+        assert f"sig:{sig}" in body
+
+    def test_build_issue_body_omits_run_id_when_none(self) -> None:
+        summary = FailureSummary(
+            job_name="lint",
+            conclusion="failure",
+            suspected_files=["src/foo.py"],
+            category="lint",
+        )
+        sig = _failure_signature(summary)
+        body = _build_issue_body(summary, sig, "main")
+        assert "run_id:" not in body
+        assert f"sig:{sig}" in body
+
+    @pytest.mark.asyncio
+    async def test_run_passes_run_id_from_event_payload(self) -> None:
+        summary = FailureSummary(
+            job_name="test",
+            conclusion="failure",
+            suspected_files=[],
+            category="test",
+        )
+        gh = AsyncMock()
+        gh.list_issues.return_value = []
+        agent = DevOpsAgent(github=gh, owner="o", repo="r")
+        agent._discover_failing_jobs = AsyncMock(return_value=[summary])  # type: ignore[method-assign]
+
+        created_issue = Issue(
+            number=99,
+            title="test",
+            body="",
+            state="open",
+            user=User(login="bot", id=1, type="Bot"),
+            html_url="https://github.com/o/r/issues/99",
+        )
+        agent._create_fix_issue = AsyncMock(return_value=created_issue)  # type: ignore[method-assign]
+
+        payload = {"workflow_run": {"id": 12345, "conclusion": "failure", "head_branch": "main"}}
+        await agent.run(event_payload=payload)
+
+        agent._create_fix_issue.assert_awaited_once()
+        call_kwargs = agent._create_fix_issue.call_args
+        assert call_kwargs.kwargs.get("run_id") == 12345

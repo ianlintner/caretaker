@@ -55,6 +55,11 @@ class DevOpsAgent:
         """Inspect recent CI runs on the default branch and act on failures."""
         report = DevOpsReport()
 
+        # Extract workflow run_id for grouping related issues
+        run_id: int | None = None
+        if event_payload and event_payload.get("workflow_run"):
+            run_id = event_payload["workflow_run"].get("id")
+
         try:
             failing_jobs = await self._discover_failing_jobs(event_payload)
         except Exception as e:
@@ -85,7 +90,7 @@ class DevOpsAgent:
                 continue
 
             try:
-                issue = await self._create_fix_issue(summary, sig)
+                issue = await self._create_fix_issue(summary, sig, run_id=run_id)
                 report.issues_created.append(issue.number)
                 created += 1
                 logger.info(
@@ -178,13 +183,15 @@ class DevOpsAgent:
                             sigs.add(match.group(1))
         return sigs
 
-    async def _create_fix_issue(self, summary: FailureSummary, sig: str) -> Issue:
+    async def _create_fix_issue(
+        self, summary: FailureSummary, sig: str, *, run_id: int | None = None
+    ) -> Issue:
         """Create a GitHub issue and assign to @copilot for fix."""
         title = (
             f"🔧 CI failure on `{self._default_branch}`: {summary.job_name} ({summary.category})"
         )
 
-        body = _build_issue_body(summary, sig, self._default_branch)
+        body = _build_issue_body(summary, sig, self._default_branch, run_id=run_id)
 
         # Ensure the label exists
         await self._issues.ensure_label(
@@ -219,8 +226,11 @@ def _failure_signature(summary: FailureSummary) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
-def _build_issue_body(summary: FailureSummary, sig: str, branch: str) -> str:
-    return f"""{DEVOPS_AGENT_MARKER} sig:{sig} -->
+def _build_issue_body(
+    summary: FailureSummary, sig: str, branch: str, *, run_id: int | None = None
+) -> str:
+    run_id_fragment = f" run_id:{run_id}" if run_id else ""
+    return f"""{DEVOPS_AGENT_MARKER} sig:{sig}{run_id_fragment} -->
 
 ## CI Build Failure — `{branch}` branch
 
