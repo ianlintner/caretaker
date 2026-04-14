@@ -8,6 +8,8 @@ from typing import Any, cast
 
 import httpx
 
+from caretaker.tools.github import CopilotAgentAssignment
+
 from .models import (
     CheckRun,
     Comment,
@@ -17,11 +19,13 @@ from .models import (
     Repository,
     Review,
     User,
+    is_copilot_login,
 )
 
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.github.com"
+COPILOT_ASSIGNEE_LOGIN = "copilot-swe-agent[bot]"
 
 
 class GitHubAPIError(Exception):
@@ -33,14 +37,28 @@ class GitHubAPIError(Exception):
 class GitHubClient:
     """Async GitHub REST API client."""
 
-    def __init__(self, token: str | None = None) -> None:
-        self._token = token or os.environ.get("GITHUB_TOKEN", "")
+    def __init__(
+        self,
+        token: str | None = None,
+        copilot_token: str | None = None,
+    ) -> None:
+        self._token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
         if not self._token:
-            raise ValueError("GITHUB_TOKEN is required")
-        self._client = httpx.AsyncClient(
+            raise ValueError("GITHUB_TOKEN or COPILOT_PAT is required")
+        self._copilot_token = copilot_token or os.environ.get("COPILOT_PAT") or self._token
+        self._client = self._build_client(self._token)
+        self._copilot_client = (
+            self._client
+            if self._copilot_token == self._token
+            else self._build_client(self._copilot_token)
+        )
+
+    @staticmethod
+    def _build_client(token: str) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
             base_url=API_BASE,
             headers={
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
@@ -48,6 +66,8 @@ class GitHubClient:
         )
 
     async def close(self) -> None:
+        if self._copilot_client is not self._client:
+            await self._copilot_client.aclose()
         await self._client.aclose()
 
     async def __aenter__(self) -> GitHubClient:
@@ -56,8 +76,14 @@ class GitHubClient:
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        resp = await self._client.request(method, path, **kwargs)
+    async def _request_with_client(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> Any:
+        resp = await client.request(method, path, **kwargs)
         if resp.status_code == 404:
             return None
         if resp.status_code == 429:
@@ -68,6 +94,12 @@ class GitHubClient:
         if resp.status_code == 204:
             return None
         return resp.json()
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        return await self._request_with_client(self._client, method, path, **kwargs)
+
+    async def _copilot_request(self, method: str, path: str, **kwargs: Any) -> Any:
+        return await self._request_with_client(self._copilot_client, method, path, **kwargs)
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
         return await self._request("GET", path, **kwargs)
@@ -80,6 +112,15 @@ class GitHubClient:
 
     async def _put(self, path: str, **kwargs: Any) -> Any:
         return await self._request("PUT", path, **kwargs)
+
+    async def _copilot_post(self, path: str, **kwargs: Any) -> Any:
+        return await self._copilot_request("POST", path, **kwargs)
+
+    def for_repo(self, owner: str, repo: str) -> GitHubRepositoryTools:
+        """Return a repo-bound toolset for issue and pull-request operations."""
+        from caretaker.tools.github import GitHubRepositoryTools
+
+        return GitHubRepositoryTools(self, owner, repo)
 
     # ── Repository ──────────────────────────────────────────────
 
@@ -184,10 +225,11 @@ class GitHubClient:
         body: str,
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
+        copilot_assignment: CopilotAgentAssignment | None = None,
     ) -> Issue:
-        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
-        assign_copilot = assignees and "copilot" in assignees
-        real_assignees = [a for a in (assignees or []) if a != "copilot"]
+        # Copilot assignment requires the dedicated issue-assignees flow with a user token.
+        assign_copilot = any(is_copilot_login(assignee) for assignee in (assignees or []))
+        real_assignees = [a for a in (assignees or []) if not is_copilot_login(a)]
 
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
@@ -198,13 +240,37 @@ class GitHubClient:
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(owner, repo, issue.number)
+            await self.assign_copilot_to_issue(
+                owner,
+                repo,
+                issue.number,
+                assignment=copilot_assignment,
+            )
 
         return issue
 
-    async def assign_copilot_to_issue(self, owner: str, repo: str, issue_number: int) -> None:
-        """Assign GitHub Copilot to an issue via the dedicated endpoint."""
-        await self._post(f"/repos/{owner}/{repo}/issues/{issue_number}/copilot")
+    async def assign_copilot_to_issue(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        assignment: CopilotAgentAssignment | None = None,
+    ) -> None:
+        """Assign GitHub Copilot to an issue via the supported assignees endpoint."""
+        agent_assignment = assignment or CopilotAgentAssignment(target_repo=f"{owner}/{repo}")
+        payload: dict[str, Any] = {
+            "assignees": [COPILOT_ASSIGNEE_LOGIN],
+            "agent_assignment": agent_assignment.to_api_payload(),
+        }
+        result = await self._copilot_post(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+            json=payload,
+        )
+        if result is None:
+            raise GitHubAPIError(
+                404,
+                f"Unable to assign Copilot to issue #{issue_number} in {owner}/{repo}",
+            )
 
     async def update_issue(
         self,
@@ -213,17 +279,28 @@ class GitHubClient:
         number: int,
         **kwargs: Any,
     ) -> Issue:
-        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
+        # Copilot assignment requires the dedicated issue-assignees flow with a user token.
+        copilot_assignment = kwargs.pop("copilot_assignment", None)
         assignees: list[str] | None = kwargs.get("assignees")
-        assign_copilot = assignees is not None and "copilot" in assignees
+        assign_copilot = assignees is not None and any(
+            is_copilot_login(assignee) for assignee in assignees
+        )
         if assign_copilot and assignees is not None:
-            kwargs["assignees"] = [a for a in assignees if a != "copilot"]
+            kwargs["assignees"] = [a for a in assignees if not is_copilot_login(a)]
 
-        data = await self._patch(f"/repos/{owner}/{repo}/issues/{number}", json=kwargs)
+        if kwargs:
+            data = await self._patch(f"/repos/{owner}/{repo}/issues/{number}", json=kwargs)
+        else:
+            data = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(owner, repo, number)
+            await self.assign_copilot_to_issue(
+                owner,
+                repo,
+                number,
+                assignment=copilot_assignment,
+            )
 
         return issue
 

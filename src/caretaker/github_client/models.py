@@ -8,6 +8,22 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 
+COPILOT_LOGINS = frozenset(
+    {
+        "copilot",
+        "github-copilot[bot]",
+        "copilot[bot]",
+        "copilot-swe-agent",
+        "copilot-swe-agent[bot]",
+    }
+)
+
+
+def is_copilot_login(login: str) -> bool:
+    """Return whether *login* refers to a GitHub Copilot coding agent identity."""
+    return login in COPILOT_LOGINS
+
+
 class PRState(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
@@ -104,12 +120,7 @@ class PullRequest(BaseModel):
 
     @property
     def is_copilot_pr(self) -> bool:
-        return self.user.login in (
-            "copilot",
-            "github-copilot[bot]",
-            "copilot[bot]",
-            "copilot-swe-agent[bot]",
-        )
+        return is_copilot_login(self.user.login)
 
     @property
     def is_dependabot_pr(self) -> bool:
@@ -137,6 +148,10 @@ class Issue(BaseModel):
 
     def has_label(self, name: str) -> bool:
         return any(lbl.name == name for lbl in self.labels)
+
+    @property
+    def is_copilot_assigned(self) -> bool:
+        return any(is_copilot_login(assignee.login) for assignee in self.assignees)
 
     @property
     def is_maintainer_issue(self) -> bool:
