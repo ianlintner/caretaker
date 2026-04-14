@@ -105,6 +105,7 @@ class TestOrchestratorReportPath:
             patch.object(orchestrator, "_run_docs_agent"),
             patch.object(orchestrator, "_run_stale_agent"),
             patch.object(orchestrator, "_run_escalation_agent"),
+            patch.object(orchestrator, "_run_self_heal_agent"),
         ):
             await orchestrator.run(mode="dry-run", report_path=str(report_file))
 
@@ -131,8 +132,65 @@ class TestOrchestratorReportPath:
             patch.object(orchestrator, "_run_docs_agent"),
             patch.object(orchestrator, "_run_stale_agent"),
             patch.object(orchestrator, "_run_escalation_agent"),
+            patch.object(orchestrator, "_run_self_heal_agent"),
         ):
             await orchestrator.run(mode="dry-run", report_path=None)
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_calls_self_heal_agent(self) -> None:
+        """Orchestrator.run with mode='self-heal' calls _run_self_heal_agent with event_payload."""
+        orchestrator = make_orchestrator()
+        payload = {
+            "workflow_run": {
+                "id": 12345,
+                "name": "Caretaker",
+                "conclusion": "failure",
+                "head_branch": "main",
+            }
+        }
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock) as mock_heal,
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+        ):
+            await orchestrator.run(
+                mode="self-heal",
+                event_type="workflow_run",
+                event_payload=payload,
+            )
+
+        mock_heal.assert_called_once()
+        call_kwargs = mock_heal.call_args
+        assert call_kwargs.kwargs.get("event_payload") == payload
+        # PR agent should NOT run for self-heal mode
+        mock_pr.assert_not_called()
+
+    async def test_self_heal_mode_does_not_run_other_agents(self) -> None:
+        """Orchestrator.run with mode='self-heal' only runs the self-heal agent."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as mock_issue,
+            patch.object(
+                orchestrator, "_run_upgrade_agent", new_callable=AsyncMock
+            ) as mock_upgrade,
+            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock) as mock_devops,
+        ):
+            await orchestrator.run(mode="self-heal")
+
+        mock_pr.assert_not_called()
+        mock_issue.assert_not_called()
+        mock_upgrade.assert_not_called()
+        mock_devops.assert_not_called()
