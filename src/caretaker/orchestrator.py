@@ -248,9 +248,11 @@ class Orchestrator:
         elif event_type in ("issues", "issue_comment"):
             await self._run_issue_agent(state, summary)
         elif event_type == "workflow_run":
-            # A workflow completed — run devops (CI failures) and self-heal
+            # A workflow completed — run devops (CI failures on default branch) and self-heal
             await self._run_devops_agent(state, summary, event_payload=payload)
             await self._run_self_heal_agent(state, summary, event_payload=payload)
+            # Also evaluate open PRs so CI failures trigger @copilot fix requests promptly
+            await self._run_pr_agent(state, summary)
         elif event_type == "dependabot_alert":
             # A new Dependabot alert was raised
             await self._run_security_agent(state, summary)

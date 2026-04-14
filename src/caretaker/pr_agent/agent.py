@@ -172,8 +172,14 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Handle CI failure — request fix from Copilot."""
-        # Check if we should retry CI first (flaky test handling)
-        if tracking.ci_attempts < self._config.ci.flaky_retries and evaluation.ci.failed_runs:
+        # For Copilot/maintainer PRs, skip flaky-retry to request a fix immediately.
+        # For human PRs, do one silent wait cycle to guard against transient flakes.
+        is_automated_pr = pr.is_copilot_pr or pr.is_maintainer_pr
+        if (
+            not is_automated_pr
+            and tracking.ci_attempts < self._config.ci.flaky_retries
+            and evaluation.ci.failed_runs
+        ):
             tracking.ci_attempts += 1
             logger.info(
                 "PR #%d: retrying CI (flaky retry %d/%d)",
