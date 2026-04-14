@@ -172,3 +172,40 @@ class TestOrchestratorReportPath:
         run_docs.assert_not_awaited()
         run_stale.assert_not_awaited()
         run_escalation.assert_not_awaited()
+
+
+class TestOrchestratorStateLoadFailure:
+    async def test_run_returns_error_when_state_load_fails(self) -> None:
+        """If state_tracker.load() raises, the run returns exit code 1 gracefully."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker,
+                "load",
+                side_effect=Exception("GitHub API error 403: Rate limited."),
+            ),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+        ):
+            result = await orchestrator.run(mode="dry-run")
+
+        assert result == 1
+
+    async def test_run_does_not_raise_when_state_load_fails(self) -> None:
+        """If state_tracker.load() raises, the run completes without propagating the exception."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker,
+                "load",
+                side_effect=RuntimeError("connection refused"),
+            ),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+        ):
+            # Should not raise; errors are captured and reported via exit code
+            result = await orchestrator.run(mode="dry-run")
+
+        assert result == 1
