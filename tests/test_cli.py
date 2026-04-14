@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from caretaker.cli import _configure_logging, main
+from caretaker.cli import RunMode, _configure_logging, main
 
 if TYPE_CHECKING:
     import pathlib
@@ -36,6 +36,26 @@ class TestCLI:
 
         assert result.exit_code == 1
         assert "Invalid config" in result.output
+
+
+class TestRunMode:
+    def test_self_heal_mode_is_valid(self) -> None:
+        """RunMode.SELF_HEAL must exist so --mode self-heal is accepted by the CLI."""
+        assert RunMode.SELF_HEAL == "self-heal"
+        assert "self-heal" in [m.value for m in RunMode]
+
+    def test_run_rejects_unknown_mode(self) -> None:
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            with open("config.yml", "w") as f:
+                f.write("version: v1\n")
+
+            result = runner.invoke(
+                main, ["run", "--config", "config.yml", "--mode", "unknown-mode"]
+            )
+
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output
 
 
 class TestConfigureLogging:
