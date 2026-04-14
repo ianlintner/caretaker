@@ -50,11 +50,11 @@ jobs:
   maintain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
@@ -80,7 +80,7 @@ jobs:
 
       - name: Upload run log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: caretaker-run-log-${{ github.run_id }}
           path: caretaker-run.log
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload run report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: caretaker-run-report-${{ github.run_id }}
           path: caretaker-report.json
@@ -102,11 +102,11 @@ jobs:
     needs: maintain
     if: failure()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
@@ -140,7 +140,7 @@ jobs:
 
       - name: Upload self-heal log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: caretaker-self-heal-log-${{ github.run_id }}
           path: caretaker-self-heal.log
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload self-heal report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: caretaker-self-heal-report-${{ github.run_id }}
           path: caretaker-self-heal-report.json
