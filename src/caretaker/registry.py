@@ -6,10 +6,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from caretaker.agent_protocol import AgentResult, BaseAgent
     from caretaker.state.models import OrchestratorState, RunSummary
-
-    BaseAgent = Any
-    AgentResult = Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +21,7 @@ class AgentRegistry:
         registry.register(PRAgentV2(ctx))
         registry.register(IssueAgentV2(ctx))
         ...
-        await registry.run_all(state, summary, modes={"full"})
+        await registry.run_all(state, summary, mode="full")
     """
 
     def __init__(self) -> None:
@@ -38,13 +36,13 @@ class AgentRegistry:
         Args:
             agent: A ``BaseAgent`` instance.
             modes: Set of mode strings (e.g. ``{"full", "pr-only"}``) under
-                which this agent should run.  ``"full"`` is always included.
+                which this agent should run.
         """
         name = agent.name
         if name in self._agents:
             raise ValueError(f"Agent '{name}' is already registered")
         self._agents[name] = agent
-        effective_modes = (modes or set()) | {"full"}
+        effective_modes = modes if modes is not None else set()
         self._mode_map[name] = effective_modes
         logger.debug("Registered agent '%s' for modes %s", name, effective_modes)
 

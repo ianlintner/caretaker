@@ -91,20 +91,12 @@ class TestOrchestratorReportPath:
         orchestrator = make_orchestrator()
         report_file = tmp_path / "report.json"
 
-        # Stub out all agent runners and state so we can just test report writing
+        # Stub out the registry and state so we can just test report writing
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
-            patch.object(orchestrator, "_run_pr_agent"),
-            patch.object(orchestrator, "_run_issue_agent"),
-            patch.object(orchestrator, "_run_upgrade_agent"),
-            patch.object(orchestrator, "_run_devops_agent"),
-            patch.object(orchestrator, "_run_security_agent"),
-            patch.object(orchestrator, "_run_dependency_agent"),
-            patch.object(orchestrator, "_run_docs_agent"),
-            patch.object(orchestrator, "_run_stale_agent"),
-            patch.object(orchestrator, "_run_escalation_agent"),
+            patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock),
         ):
             await orchestrator.run(mode="dry-run", report_path=str(report_file))
 
@@ -122,15 +114,7 @@ class TestOrchestratorReportPath:
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
-            patch.object(orchestrator, "_run_pr_agent"),
-            patch.object(orchestrator, "_run_issue_agent"),
-            patch.object(orchestrator, "_run_upgrade_agent"),
-            patch.object(orchestrator, "_run_devops_agent"),
-            patch.object(orchestrator, "_run_security_agent"),
-            patch.object(orchestrator, "_run_dependency_agent"),
-            patch.object(orchestrator, "_run_docs_agent"),
-            patch.object(orchestrator, "_run_stale_agent"),
-            patch.object(orchestrator, "_run_escalation_agent"),
+            patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock),
         ):
             await orchestrator.run(mode="dry-run", report_path=None)
 
@@ -145,33 +129,45 @@ class TestOrchestratorReportPath:
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
-            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as run_pr,
-            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as run_issue,
-            patch.object(orchestrator, "_run_upgrade_agent", new_callable=AsyncMock) as run_upgrade,
-            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock) as run_devops,
-            patch.object(
-                orchestrator, "_run_security_agent", new_callable=AsyncMock
-            ) as run_security,
-            patch.object(orchestrator, "_run_dependency_agent", new_callable=AsyncMock) as run_deps,
-            patch.object(orchestrator, "_run_docs_agent", new_callable=AsyncMock) as run_docs,
-            patch.object(orchestrator, "_run_charlie_agent", new_callable=AsyncMock) as run_charlie,
-            patch.object(orchestrator, "_run_stale_agent", new_callable=AsyncMock) as run_stale,
-            patch.object(
-                orchestrator, "_run_escalation_agent", new_callable=AsyncMock
-            ) as run_escalation,
+            patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
         ):
             await orchestrator.run(mode="charlie")
 
-        run_charlie.assert_awaited_once()
-        run_pr.assert_not_awaited()
-        run_issue.assert_not_awaited()
-        run_upgrade.assert_not_awaited()
-        run_devops.assert_not_awaited()
-        run_security.assert_not_awaited()
-        run_deps.assert_not_awaited()
-        run_docs.assert_not_awaited()
-        run_stale.assert_not_awaited()
-        run_escalation.assert_not_awaited()
+        mock_run_all.assert_awaited_once()
+        call_kwargs = mock_run_all.call_args
+        assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
+
+    async def test_dry_run_dispatches_full_mode(self) -> None:
+        """Dry-run should evaluate the same agent set as full mode."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+        ):
+            await orchestrator.run(mode="dry-run")
+
+        mock_run_all.assert_awaited_once()
+        assert mock_run_all.call_args.kwargs.get("mode") == "full"
+
+    async def test_self_heal_mode_forwards_event_payload(self) -> None:
+        """Self-heal mode should pass event payload through to registry dispatch."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 123}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+        ):
+            await orchestrator.run(mode="self-heal", event_payload=payload)
+
+        mock_run_all.assert_awaited_once()
+        assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
+        assert mock_run_all.call_args.kwargs.get("event_payload") == payload
 
 
 class TestOrchestratorStateLoadFailure:

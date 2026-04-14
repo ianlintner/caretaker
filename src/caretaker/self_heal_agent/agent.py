@@ -77,6 +77,11 @@ class SelfHealAgent:
         """Analyse caretaker workflow failures."""
         report = SelfHealReport()
 
+        # Extract workflow run_id for grouping related issues
+        run_id: int | None = None
+        if event_payload and event_payload.get("workflow_run"):
+            run_id = event_payload["workflow_run"].get("id")
+
         failure_logs = await self._collect_failure_logs(event_payload)
         if not failure_logs:
             logger.info("Self-heal agent: no caretaker workflow failures found")
@@ -105,7 +110,7 @@ class SelfHealAgent:
                 # Create a local fix issue assigned to @copilot
                 try:
                     issue = await self._create_local_fix_issue(
-                        job_name, kind, title, details, log_text, sig
+                        job_name, kind, title, details, log_text, sig, run_id=run_id
                     )
                     report.local_issues_created.append(issue.number)
                 except Exception as e:
@@ -126,7 +131,12 @@ class SelfHealAgent:
                     # Also create a local tracking issue referencing upstream
                     try:
                         issue = await self._create_local_tracking_issue(
-                            job_name, title, upstream.issue_number, log_text, sig
+                            job_name,
+                            title,
+                            upstream.issue_number,
+                            log_text,
+                            sig,
+                            run_id=run_id,
                         )
                         report.local_issues_created.append(issue.number)
                     except Exception as e:
@@ -147,7 +157,13 @@ class SelfHealAgent:
                 # UNKNOWN — create a local investigation issue
                 try:
                     issue = await self._create_local_fix_issue(
-                        job_name, FailureKind.UNKNOWN, title, details, log_text, sig
+                        job_name,
+                        FailureKind.UNKNOWN,
+                        title,
+                        details,
+                        log_text,
+                        sig,
+                        run_id=run_id,
                     )
                     report.local_issues_created.append(issue.number)
                 except Exception as e:
@@ -256,9 +272,11 @@ class SelfHealAgent:
         details: str,
         log_text: str,
         sig: str,
+        *,
+        run_id: int | None = None,
     ) -> Issue:
         full_title = f"🩺 Caretaker self-heal: {title}"
-        body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig)
+        body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig, run_id=run_id)
         await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
         return await self._issues.create(
             title=full_title,
@@ -275,10 +293,13 @@ class SelfHealAgent:
         upstream_issue: int,
         log_text: str,
         sig: str,
+        *,
+        run_id: int | None = None,
     ) -> Issue:
         full_title = f"🩺 Caretaker upstream bug filed: {title}"
+        run_id_fragment = f" run_id:{run_id}" if run_id else ""
         body = (
-            f"{SELF_HEAL_MARKER} sig:{sig} -->\n\n"
+            f"{SELF_HEAL_MARKER} sig:{sig}{run_id_fragment} -->\n\n"
             f"## Caretaker upstream bug filed\n\n"
             f"The self-heal agent detected a caretaker library bug in job `{job_name}` "
             f"and opened **ianlintner/caretaker#{upstream_issue}** upstream.\n\n"
@@ -413,6 +434,8 @@ def _build_fix_issue_body(
     details: str,
     log_text: str,
     sig: str,
+    *,
+    run_id: int | None = None,
 ) -> str:
     kind_label = {
         FailureKind.CONFIG_ERROR: "⚙️ Config error",
@@ -420,8 +443,9 @@ def _build_fix_issue_body(
         FailureKind.UNKNOWN: "❓ Unknown error",
     }.get(kind, "🩺 Error")
 
+    run_id_fragment = f" run_id:{run_id}" if run_id else ""
     return (
-        f"{SELF_HEAL_MARKER} sig:{sig} -->\n\n"
+        f"{SELF_HEAL_MARKER} sig:{sig}{run_id_fragment} -->\n\n"
         f"## {kind_label}\n\n"
         f"{details}\n\n"
         f"**Job:** `{job_name}`\n\n"
