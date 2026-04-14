@@ -172,3 +172,25 @@ class TestIssueAgent:
 
         assert tracked[3].state == IssueTrackingState.PR_OPENED
         assert tracked[3].assigned_pr == 77
+
+    async def test_copilot_swe_agent_assignee_counts_as_copilot(self) -> None:
+        github = AsyncMock()
+        issue = make_issue(
+            6,
+            "Fix the bug",
+            "there is a bug",
+            assignees=[User(login="copilot-swe-agent[bot]", id=22, type="Bot")],
+        )
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(auto_assign_bugs=True),
+        )
+
+        _report, tracked = await agent.run({6: TrackedIssue(number=6)})
+
+        assert tracked[6].state == IssueTrackingState.IN_PROGRESS

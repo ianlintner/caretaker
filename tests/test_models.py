@@ -81,3 +81,12 @@ class TestIssue:
             user=User(login="user", id=1, type="User"),
         )
         assert issue.is_maintainer_issue is False
+
+    def test_is_copilot_assigned_for_swe_agent(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="copilot-swe-agent[bot]", id=2, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True

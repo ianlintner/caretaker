@@ -212,9 +212,7 @@ class IssueAgent:
         tracking: TrackedIssue,
     ) -> TrackedIssue:
         """Update issue tracking state based on assignees and linked PRs."""
-        is_copilot = any(
-            a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees
-        )
+        is_copilot = issue.is_copilot_assigned
         if is_copilot and tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
             tracking.state = IssueTrackingState.IN_PROGRESS
 

@@ -7,6 +7,14 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+COPILOT_LOGINS = (
+    "copilot",
+    "github-copilot[bot]",
+    "copilot[bot]",
+    "copilot-swe-agent",
+    "copilot-swe-agent[bot]",
+)
+
 
 class PRState(StrEnum):
     OPEN = "open"
@@ -104,12 +112,7 @@ class PullRequest(BaseModel):
 
     @property
     def is_copilot_pr(self) -> bool:
-        return self.user.login in (
-            "copilot",
-            "github-copilot[bot]",
-            "copilot[bot]",
-            "copilot-swe-agent[bot]",
-        )
+        return self.user.login in COPILOT_LOGINS
 
     @property
     def is_dependabot_pr(self) -> bool:
@@ -141,6 +144,10 @@ class Issue(BaseModel):
     @property
     def is_maintainer_issue(self) -> bool:
         return self.title.startswith("[Maintainer]") or self.has_label("maintainer:internal")
+
+    @property
+    def is_copilot_assigned(self) -> bool:
+        return any(assignee.login in COPILOT_LOGINS for assignee in self.assignees)
 
 
 class Repository(BaseModel):
