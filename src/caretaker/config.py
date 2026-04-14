@@ -89,7 +89,7 @@ class LLMConfig(StrictBaseModel):
 
 
 class OrchestratorConfig(StrictBaseModel):
-    schedule: Literal["weekly", "daily", "manual"] = "weekly"
+    schedule: Literal["hourly", "daily", "weekly", "manual"] = "daily"
     summary_issue: bool = True
     dry_run: bool = False
 

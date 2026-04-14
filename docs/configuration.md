@@ -43,7 +43,7 @@ caretaker validate-config --config .github/maintainer/config.yml
 version: v1
 
 orchestrator:
-  schedule: weekly
+  schedule: daily
   summary_issue: true
 
 pr_agent:
