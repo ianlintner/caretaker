@@ -99,7 +99,9 @@ class Orchestrator:
 
         try:
             # Event-driven mode — route to specific agent
-            if mode == "event" and event_type:
+            if mode == "self-heal":
+                await self._run_self_heal_agent(state, summary, event_payload=event_payload)
+            elif mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
             else:
                 # Scheduled / full mode

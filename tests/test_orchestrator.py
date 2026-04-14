@@ -136,3 +136,35 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_routes_to_self_heal_agent(self) -> None:
+        """self-heal mode must invoke _run_self_heal_agent and nothing else."""
+        orchestrator = make_orchestrator()
+        event_payload = {
+            "workflow_run": {
+                "id": 123,
+                "name": "Caretaker",
+                "conclusion": "failure",
+                "head_branch": "main",
+            }
+        }
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_self_heal_agent") as mock_self_heal,
+            patch.object(orchestrator, "_run_pr_agent") as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent") as mock_issue,
+        ):
+            await orchestrator.run(
+                mode="self-heal",
+                event_type="workflow_run",
+                event_payload=event_payload,
+            )
+
+        mock_self_heal.assert_awaited_once()
+        mock_pr.assert_not_awaited()
+        mock_issue.assert_not_awaited()
