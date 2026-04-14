@@ -119,7 +119,7 @@ block:
 ## Caretaker
 
 This repo uses the [caretaker](https://github.com/ianlintner/caretaker) autonomous
-maintenance system. The orchestrator runs weekly via GitHub Actions and assigns tasks to
+maintenance system. The orchestrator runs daily via GitHub Actions and assigns tasks to
 `@copilot` via structured issue and PR comments.
 
 Agent instruction files live in `.github/agents/`:

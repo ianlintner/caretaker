@@ -15,7 +15,7 @@
       "properties": {
         "schedule": {
           "type": "string",
-          "enum": ["weekly", "daily", "manual"]
+          "enum": ["hourly", "daily", "weekly", "manual"]
         },
         "summary_issue": { "type": "boolean" },
         "dry_run": { "type": "boolean" }
