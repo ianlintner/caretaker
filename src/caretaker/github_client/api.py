@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -21,6 +21,9 @@ from .models import (
     User,
     is_copilot_login,
 )
+
+if TYPE_CHECKING:
+    from caretaker.tools.github import GitHubRepositoryTools
 
 logger = logging.getLogger(__name__)
 
@@ -256,21 +259,33 @@ class GitHubClient:
         issue_number: int,
         assignment: CopilotAgentAssignment | None = None,
     ) -> None:
-        """Assign GitHub Copilot to an issue via the supported assignees endpoint."""
+        """Assign GitHub Copilot to an issue via the supported assignees endpoint.
+
+        Logs a warning and returns without raising if the API rejects the request
+        (e.g. 403 when a COPILOT_PAT with the required scope is not configured).
+        """
         agent_assignment = assignment or CopilotAgentAssignment(target_repo=f"{owner}/{repo}")
         payload: dict[str, Any] = {
             "assignees": [COPILOT_ASSIGNEE_LOGIN],
             "agent_assignment": agent_assignment.to_api_payload(),
         }
-        result = await self._copilot_post(
-            f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
-            json=payload,
-        )
-        if result is None:
-            raise GitHubAPIError(
-                404,
-                f"Unable to assign Copilot to issue #{issue_number} in {owner}/{repo}",
+        try:
+            await self._copilot_post(
+                f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                json=payload,
             )
+        except GitHubAPIError as exc:
+            if exc.status_code in (403, 422):
+                logger.warning(
+                    "Unable to assign Copilot to issue #%d in %s/%s (HTTP %d). "
+                    "Ensure COPILOT_PAT is configured with the required scope.",
+                    issue_number,
+                    owner,
+                    repo,
+                    exc.status_code,
+                )
+                return
+            raise
 
     async def update_issue(
         self,

@@ -61,7 +61,7 @@ class GitHubIssueTools:
             model=model,
         )
 
-    async def list(self, state: str = "open", labels: str | None = None) -> list[Issue]:
+    async def get_all(self, state: str = "open", labels: str | None = None) -> list[Issue]:
         return await self._github.list_issues(self._owner, self._repo, state=state, labels=labels)
 
     async def create(
@@ -115,7 +115,7 @@ class GitHubPullRequestTools:
         self._owner = owner
         self._repo = repo
 
-    async def list(self, state: str = "open") -> list[PullRequest]:
+    async def get_all(self, state: str = "open") -> list[PullRequest]:
         return await self._github.list_pull_requests(self._owner, self._repo, state=state)
 
     async def get(self, number: int) -> PullRequest | None:
