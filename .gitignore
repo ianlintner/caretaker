@@ -38,3 +38,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# MkDocs build output
+site/
