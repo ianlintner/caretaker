@@ -111,9 +111,7 @@ class TestIssueAgent:
             github.reset_mock()
             github.list_issues.return_value = [issue]
             github.list_pull_requests.return_value = []
-            _report, tracked = await agent.run(
-                {4: TrackedIssue(number=4, state=initial_state)}
-            )
+            _report, tracked = await agent.run({4: TrackedIssue(number=4, state=initial_state)})
             # PR list is fetched once at the start of each run
             github.list_pull_requests.assert_awaited_once()
             # No comment or update should have been posted
