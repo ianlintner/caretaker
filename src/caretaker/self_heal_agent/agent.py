@@ -409,14 +409,29 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
 
 
 def _extract_first_error(log_text: str) -> str:
-    """Return the first non-trivial error-looking line from the log."""
-    for line in log_text.splitlines():
+    """Return the first non-trivial error-looking line from the log.
+
+    Prioritises GitHub Actions ``##[error]`` annotations (strongest signal),
+    then falls back to a keyword scan.
+    """
+    lines = log_text.splitlines()
+
+    # Pass 1: prefer ##[error] annotations — these are GitHub Actions' own
+    # markers and almost always describe the real failure.
+    for line in lines:
+        stripped = line.strip()
+        if "##[error]" in stripped and len(stripped) > 20:
+            return stripped[:300]
+
+    # Pass 2: generic keyword scan
+    for line in lines:
         stripped = line.strip()
         if len(stripped) > 20 and any(
             kw in stripped
             for kw in ("Error", "error", "Exception", "FAILED", "invalid", "required")
         ):
             return stripped[:300]
+
     return log_text.strip()[:200]
 
 
