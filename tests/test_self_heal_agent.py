@@ -1,8 +1,13 @@
 """Tests for self-heal failure classification."""
 
+import gzip
+import io
+import zipfile
+
 from caretaker.self_heal_agent.agent import (
     FailureKind,
     _classify_failure,
+    _decode_job_log_payload,
     _extract_first_error,
 )
 
@@ -60,3 +65,30 @@ class TestClassifyFailureUnknown:
         assert "Process completed with exit code 1" in details
         assert "Python_ROOT_DIR" not in title
         assert "dependabot" not in title
+
+
+class TestDecodeJobLogPayload:
+    def test_decodes_zip_payload(self) -> None:
+        log = (
+            "2026-04-14T23:22:52Z ##[error]Process completed with exit code 1.\n"
+            "2026-04-14T23:22:53Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64\n"
+        )
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, mode="w") as archive:
+            archive.writestr("maintain/5_Run.txt", log)
+
+        decoded = _decode_job_log_payload(payload.getvalue(), fallback_text="garbled")
+
+        kind, title, details = _classify_failure("maintain", decoded)
+        assert kind == FailureKind.UNKNOWN
+        assert "Process completed with exit code 1" in title
+        assert "Process completed with exit code 1" in details
+        assert "Python_ROOT_DIR" not in title
+
+    def test_decodes_gzip_payload(self) -> None:
+        log = "2026-04-14T23:22:52Z ##[error]Process completed with exit code 1.\n"
+        payload = gzip.compress(log.encode("utf-8"))
+
+        decoded = _decode_job_log_payload(payload, fallback_text="garbled")
+
+        assert "Process completed with exit code 1" in decoded
