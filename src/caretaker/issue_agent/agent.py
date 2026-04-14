@@ -77,8 +77,13 @@ class IssueAgent:
 
                 tracking = self._reconcile_issue_progress(issue, pull_requests, tracking)
 
-                # Skip already-processed issues
+                # Skip issues that are already actioned or in-flight
                 if tracking.state in (
+                    IssueTrackingState.ASSIGNED,
+                    IssueTrackingState.IN_PROGRESS,
+                    IssueTrackingState.PR_OPENED,
+                    IssueTrackingState.ESCALATED,
+                    IssueTrackingState.STALE,
                     IssueTrackingState.COMPLETED,
                     IssueTrackingState.CLOSED,
                 ):

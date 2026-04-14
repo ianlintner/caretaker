@@ -84,6 +84,45 @@ class TestIssueAgent:
         assert 2 in report.closed
         assert tracked[2].state == IssueTrackingState.CLOSED
 
+    async def test_assigned_issue_is_not_re_dispatched(self) -> None:
+        """Issues already in ASSIGNED/IN_PROGRESS state must not be dispatched again."""
+        github = AsyncMock()
+        issue = make_issue(
+            4,
+            "Fix the bug",
+            "there is a bug",
+            assignees=[User(login="copilot", id=22, type="Bot")],
+        )
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(auto_assign_bugs=True),
+        )
+
+        for initial_state in (
+            IssueTrackingState.ASSIGNED,
+            IssueTrackingState.IN_PROGRESS,
+            IssueTrackingState.ESCALATED,
+        ):
+            github.reset_mock()
+            github.list_issues.return_value = [issue]
+            github.list_pull_requests.return_value = []
+            _report, tracked = await agent.run(
+                {4: TrackedIssue(number=4, state=initial_state)}
+            )
+            # PR list is fetched once at the start of each run
+            github.list_pull_requests.assert_awaited_once()
+            # No comment or update should have been posted
+            github.add_issue_comment.assert_not_awaited()
+            github.update_issue.assert_not_awaited()
+            github.create_issue.assert_not_awaited()
+            # State should remain unchanged
+            assert tracked[4].state == initial_state
+
     async def test_linked_pr_sets_pr_opened(self) -> None:
         github = AsyncMock()
         issue = make_issue(
