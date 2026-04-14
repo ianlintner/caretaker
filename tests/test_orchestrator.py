@@ -7,7 +7,10 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from caretaker.config import MaintainerConfig
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.orchestrator import Orchestrator
 from caretaker.state.models import (
     IssueTrackingState,
@@ -172,3 +175,38 @@ class TestOrchestratorReportPath:
         run_docs.assert_not_awaited()
         run_stale.assert_not_awaited()
         run_escalation.assert_not_awaited()
+
+
+class TestOrchestratorRateLimitHandling:
+    """Orchestrator should handle rate-limit errors at startup gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_at_startup_returns_zero(self) -> None:
+        """When state_tracker.load() raises a 429 the run exits 0 (transient)."""
+        orchestrator = make_orchestrator()
+
+        with patch.object(
+            orchestrator._state_tracker,
+            "load",
+            side_effect=GitHubAPIError(429, "Rate limited. Retry after 60s"),
+        ):
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_non_rate_limit_api_error_at_startup_propagates(self) -> None:
+        """Non-rate-limit GitHubAPIErrors at startup still propagate."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(
+                orchestrator._state_tracker,
+                "load",
+                side_effect=GitHubAPIError(500, "Internal Server Error"),
+            ),
+            pytest.raises(GitHubAPIError) as exc_info,
+        ):
+            await orchestrator.run(mode="full")
+
+        assert exc_info.value.status_code == 500

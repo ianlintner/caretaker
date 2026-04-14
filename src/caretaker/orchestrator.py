@@ -15,7 +15,7 @@ from caretaker.dependency_agent.agent import DependencyAgent
 from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
-from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.api import GitHubAPIError, GitHubClient
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
@@ -94,7 +94,15 @@ class Orchestrator:
         )
 
         # Load persisted state
-        state = await self._state_tracker.load()
+        try:
+            state = await self._state_tracker.load()
+        except GitHubAPIError as e:
+            if e.status_code == 429:
+                logger.warning(
+                    "GitHub API rate limit hit at startup — skipping run (will retry next cycle)"
+                )
+                return 0
+            raise
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
         has_errors = False
 
