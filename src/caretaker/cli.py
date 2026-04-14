@@ -19,6 +19,7 @@ class RunMode(StrEnum):
     PR_ONLY = "pr-only"
     ISSUE_ONLY = "issue-only"
     UPGRADE_ONLY = "upgrade"
+    SELF_HEAL = "self-heal"
     DRY_RUN = "dry-run"
     EVENT = "event"
 
