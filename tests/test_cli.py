@@ -19,6 +19,8 @@ class TestRunMode:
         assert RunMode.SELF_HEAL == "self-heal"
         assert "self-heal" in [m.value for m in RunMode]
 
+
+class TestCLI:
     def test_validate_config_success(self) -> None:
         runner = CliRunner()
         with runner.isolated_filesystem():
