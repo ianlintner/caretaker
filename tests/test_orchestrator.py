@@ -85,6 +85,32 @@ class TestOrchestratorReconciliation:
         assert summary.stale_assignments_escalated == 1
 
 
+class TestOrchestratorSelfHealMode:
+    async def test_self_heal_mode_runs_only_self_heal_agent(self) -> None:
+        """self-heal mode invokes only the self-heal agent, not other agents."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 123, "name": "Caretaker", "conclusion": "failure"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(
+                orchestrator, "_run_self_heal_agent", new_callable=AsyncMock
+            ) as mock_self_heal,
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as mock_issue,
+        ):
+            await orchestrator.run(mode="self-heal", event_payload=payload)
+
+        mock_self_heal.assert_called_once()
+        # Verify event_payload was forwarded to the self-heal agent
+        _, kwargs = mock_self_heal.call_args
+        assert kwargs.get("event_payload") == payload
+        mock_pr.assert_not_called()
+        mock_issue.assert_not_called()
+
+
 class TestOrchestratorReportPath:
     async def test_run_writes_json_report(self, tmp_path: pathlib.Path) -> None:
         """Orchestrator.run writes a JSON report when report_path is provided."""
