@@ -23,6 +23,8 @@ The orchestrator uses Copilot as its execution engine — it observes your repo 
 
 ### 1. Create a new issue in your repo:
 
+> **Tip:** Visit the [Getting Started docs](https://ianlintner.github.io/caretaker/getting-started/) and use the **copy** button on the code block below to copy the issue template in one click.
+
 ```markdown
 ## Setup Caretaker
 

@@ -13,7 +13,7 @@ The fastest path is the setup guide shipped with this repository:
 
 The guide is designed to be used from a GitHub issue assigned to `@copilot`.
 
-A minimal issue looks like this:
+Use the template below — click the **copy** button on the right to copy it, then paste it as the body of a new issue in your repository:
 
 ```markdown
 ## Setup Caretaker
