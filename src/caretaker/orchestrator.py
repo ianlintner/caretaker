@@ -134,6 +134,9 @@ class Orchestrator:
                 if mode in ("full", "escalation"):
                     await self._run_escalation_agent(state, summary)
 
+                if mode == "self-heal":
+                    await self._run_self_heal_agent(state, summary, event_payload=event_payload)
+
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
 

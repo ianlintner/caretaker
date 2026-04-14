@@ -92,6 +92,19 @@ class GitHubClient:
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After", "60")
             raise GitHubAPIError(429, f"Rate limited. Retry after {retry_after}s")
+        if resp.status_code == 403:
+            # GitHub may return 403 (not 429) for primary/secondary rate limits
+            try:
+                body = resp.json()
+            except ValueError:
+                body = {}
+            msg = body.get("message", "")
+            if "rate limit" in msg.lower():
+                retry_after = resp.headers.get("Retry-After", "60")
+                raise GitHubAPIError(
+                    403,
+                    f"Rate limited (403). Retry after {retry_after}s: {msg}",
+                )
         if resp.status_code >= 400:
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code == 204:

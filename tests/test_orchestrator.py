@@ -172,3 +172,33 @@ class TestOrchestratorReportPath:
         run_docs.assert_not_awaited()
         run_stale.assert_not_awaited()
         run_escalation.assert_not_awaited()
+
+    async def test_self_heal_mode_runs_only_self_heal_agent(self) -> None:
+        """Self-heal mode invokes only the self-heal agent, not the full cycle."""
+        orchestrator = make_orchestrator()
+        payload = {"workflow_run": {"id": 123, "conclusion": "failure", "head_branch": "main"}}
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as run_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as run_issue,
+            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock) as run_devops,
+            patch.object(
+                orchestrator, "_run_self_heal_agent", new_callable=AsyncMock
+            ) as run_self_heal,
+        ):
+            exit_code = await orchestrator.run(
+                mode="self-heal",
+                event_type="workflow_run",
+                event_payload=payload,
+            )
+
+        assert exit_code == 0
+        run_self_heal.assert_awaited_once()
+        # Verify payload was passed through
+        assert run_self_heal.call_args.kwargs.get("event_payload") == payload
+        run_pr.assert_not_awaited()
+        run_issue.assert_not_awaited()
+        run_devops.assert_not_awaited()
