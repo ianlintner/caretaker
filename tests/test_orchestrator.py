@@ -133,16 +133,9 @@ class TestOrchestratorReportPath:
         ):
             await orchestrator.run(mode="charlie")
 
-        run_charlie.assert_awaited_once()
-        run_pr.assert_not_awaited()
-        run_issue.assert_not_awaited()
-        run_upgrade.assert_not_awaited()
-        run_devops.assert_not_awaited()
-        run_security.assert_not_awaited()
-        run_deps.assert_not_awaited()
-        run_docs.assert_not_awaited()
-        run_stale.assert_not_awaited()
-        run_escalation.assert_not_awaited()
+        mock_run_all.assert_awaited_once()
+        call_kwargs = mock_run_all.call_args
+        assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
 
 
 class TestOrchestratorStateLoadFailure:
