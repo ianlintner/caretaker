@@ -5,6 +5,6 @@ name: "Caretaker CodeQL Configuration"
 # workflow and must not be scanned — it contains bundled third-party JavaScript
 # libraries that produce noisy results and inflate SARIF upload costs.
 paths-ignore:
-  - site/
+  - site/**
   - "**/*.min.js"
   - "**/*.min.js.map"
