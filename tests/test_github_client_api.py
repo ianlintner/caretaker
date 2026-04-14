@@ -9,13 +9,16 @@ import respx
 from caretaker.github_client.api import API_BASE, GitHubAPIError, GitHubClient
 from caretaker.github_client.models import COPILOT_ASSIGNEE_LOGIN
 
+OWNER = "ianlintner"
+REPO = "caretaker"
+
 
 @pytest.mark.asyncio
 class TestGitHubClient:
     async def test_assign_copilot_to_issue_uses_rest_assignees_api(self) -> None:
         async with GitHubClient(token="test-token") as github:
             with respx.mock(base_url=API_BASE) as router:
-                assignees = router.post("/repos/ianlintner/caretaker/issues/24/assignees").mock(
+                assignees = router.post(f"/repos/{OWNER}/{REPO}/issues/24/assignees").mock(
                     return_value=httpx.Response(
                         201,
                         json={
@@ -29,7 +32,7 @@ class TestGitHubClient:
                     ),
                 )
 
-                await github.assign_copilot_to_issue("ianlintner", "caretaker", 24)
+                await github.assign_copilot_to_issue(OWNER, REPO, 24)
 
                 assert assignees.called
                 assert assignees.calls[0].request.content == (
@@ -39,7 +42,7 @@ class TestGitHubClient:
     async def test_assign_copilot_to_issue_propagates_rest_errors(self) -> None:
         async with GitHubClient(token="test-token") as github:
             with respx.mock(base_url=API_BASE) as router:
-                router.post("/repos/ianlintner/caretaker/issues/24/assignees").mock(
+                router.post(f"/repos/{OWNER}/{REPO}/issues/24/assignees").mock(
                     return_value=httpx.Response(
                         422,
                         text="Validation Failed",
@@ -47,4 +50,4 @@ class TestGitHubClient:
                 )
 
                 with pytest.raises(GitHubAPIError, match="Validation Failed"):
-                    await github.assign_copilot_to_issue("ianlintner", "caretaker", 24)
+                    await github.assign_copilot_to_issue(OWNER, REPO, 24)

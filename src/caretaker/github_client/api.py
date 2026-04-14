@@ -59,7 +59,7 @@ class GitHubClient:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         resp = await self._client.request(method, path, **kwargs)
-        if resp.status_code == 404 and method == "GET":
+        if resp.status_code == 404:
             return None
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After", "60")
