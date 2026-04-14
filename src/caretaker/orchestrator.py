@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -80,6 +81,7 @@ class Orchestrator:
         mode: str = "full",
         event_type: str | None = None,
         event_payload: dict[str, Any] | None = None,
+        report_path: str | None = None,
     ) -> int:
         """Run the orchestrator. Returns 0 on success, 1 on errors."""
         logger.info(
@@ -151,6 +153,16 @@ class Orchestrator:
             logger.warning("Run completed with %d errors", len(summary.errors))
         else:
             logger.info("Run completed successfully")
+
+        # Write JSON run report if a path was provided
+        if report_path:
+            try:
+                report_data = summary.model_dump(mode="json")
+                with open(report_path, "w", encoding="utf-8") as fh:
+                    json.dump(report_data, fh, indent=2, default=str)
+                logger.info("Run report written to %s", report_path)
+            except Exception as e:
+                logger.warning("Failed to write run report: %s", e)
 
         return 1 if has_errors else 0
 

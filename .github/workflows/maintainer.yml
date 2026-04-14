@@ -69,12 +69,32 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
+          CARETAKER_LOG_FILE: caretaker-run.log
+          CARETAKER_REPORT_FILE: caretaker-report.json
         run: |
           caretaker run \
             --config .github/maintainer/config.yml \
             --mode "${{ github.event.inputs.mode || (github.event_name == 'workflow_run' && 'event') || 'full' }}" \
             --event-type "${{ github.event_name }}" \
             --event-payload "$CARETAKER_EVENT_PAYLOAD"
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caretaker-run-log-${{ github.run_id }}
+          path: caretaker-run.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caretaker-run-report-${{ github.run_id }}
+          path: caretaker-report.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   # When the caretaker run itself fails, trigger the self-heal agent
   self-heal-on-failure:
@@ -100,6 +120,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
+          CARETAKER_LOG_FILE: caretaker-self-heal.log
+          CARETAKER_REPORT_FILE: caretaker-self-heal-report.json
           CARETAKER_EVENT_PAYLOAD: >-
             {
               "workflow_run": {
@@ -115,3 +137,21 @@ jobs:
             --mode self-heal \
             --event-type workflow_run \
             --event-payload "$CARETAKER_EVENT_PAYLOAD"
+
+      - name: Upload self-heal log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caretaker-self-heal-log-${{ github.run_id }}
+          path: caretaker-self-heal.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload self-heal report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caretaker-self-heal-report-${{ github.run_id }}
+          path: caretaker-self-heal-report.json
+          if-no-files-found: ignore
+          retention-days: 30
