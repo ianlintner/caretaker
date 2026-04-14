@@ -12,11 +12,23 @@ from caretaker.llm.copilot import (
     CopilotTask,
     TaskType,
 )
+from caretaker.pr_agent.ci_triage import FailureType
 
 if TYPE_CHECKING:
     from caretaker.github_client.models import PullRequest
     from caretaker.pr_agent.ci_triage import TriageResult
     from caretaker.pr_agent.review import ReviewAnalysis
+
+# Map FailureType values to the closest TaskType; unmapped types fall back to CI_FAILURE.
+_FAILURE_TYPE_TO_TASK_TYPE: dict[FailureType, TaskType] = {
+    FailureType.TEST_FAILURE: TaskType.TEST_FAILURE,
+    FailureType.LINT_FAILURE: TaskType.LINT_FAILURE,
+    FailureType.BUILD_FAILURE: TaskType.BUILD_FAILURE,
+    FailureType.TYPE_ERROR: TaskType.BUILD_FAILURE,
+    FailureType.TIMEOUT: TaskType.CI_FAILURE,
+    FailureType.BACKLOG: TaskType.CI_FAILURE,
+    FailureType.UNKNOWN: TaskType.CI_FAILURE,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +58,7 @@ class PRCopilotBridge:
     ) -> CopilotInteractionResult:
         """Post a CI fix request to Copilot via PR comment."""
         task = CopilotTask(
-            task_type=TaskType(triage.failure_type.value),
+            task_type=_FAILURE_TYPE_TO_TASK_TYPE.get(triage.failure_type, TaskType.CI_FAILURE),
             job_name=triage.job_name,
             error_output=triage.error_summary,
             instructions=triage.instructions,
