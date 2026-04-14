@@ -37,6 +37,10 @@ class GitHubAPIError(Exception):
         super().__init__(f"GitHub API error {status_code}: {message}")
 
 
+class RateLimitError(GitHubAPIError):
+    """Raised when the GitHub API rate limit is exceeded (HTTP 429 or 403)."""
+
+
 class GitHubClient:
     """Async GitHub REST API client."""
 
@@ -91,7 +95,16 @@ class GitHubClient:
             return None
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After", "60")
-            raise GitHubAPIError(429, f"Rate limited. Retry after {retry_after}s")
+            raise RateLimitError(429, f"Rate limited. Retry after {retry_after}s")
+        if resp.status_code == 403:
+            try:
+                body = resp.json()
+                message = body.get("message", "")
+            except (ValueError, KeyError):
+                message = resp.text
+            if "rate limit" in message.lower():
+                raise RateLimitError(403, message)
+            raise GitHubAPIError(403, resp.text)
         if resp.status_code >= 400:
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code == 204:

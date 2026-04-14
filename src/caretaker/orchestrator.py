@@ -14,7 +14,7 @@ from caretaker.dependency_agent.agent import DependencyAgent
 from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
-from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.api import GitHubClient, RateLimitError
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
@@ -92,12 +92,14 @@ class Orchestrator:
             self._repo,
         )
 
-        # Load persisted state
-        state = await self._state_tracker.load()
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
         has_errors = False
+        state = OrchestratorState()
 
         try:
+            # Load persisted state
+            state = await self._state_tracker.load()
+
             # Event-driven mode — route to specific agent
             if mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
@@ -133,13 +135,25 @@ class Orchestrator:
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
 
+        except RateLimitError as e:
+            logger.warning(
+                "GitHub API rate limit exceeded — skipping this run (will retry next schedule): %s",
+                e,
+            )
+            return 0
+
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)
             summary.errors.append(str(e))
             has_errors = True
 
         # Persist state (save also appends summary to history)
-        await self._state_tracker.save(summary)
+        try:
+            await self._state_tracker.save(summary)
+        except RateLimitError as e:
+            logger.warning("GitHub API rate limit exceeded while saving state: %s", e)
+        except Exception as e:
+            logger.warning("Failed to save state: %s", e)
 
         # Post summary if configured
         if self._config.orchestrator.summary_issue and mode != "dry-run":

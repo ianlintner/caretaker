@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 from caretaker.config import MaintainerConfig
+from caretaker.github_client.api import RateLimitError
 from caretaker.orchestrator import Orchestrator
 from caretaker.state.models import (
     IssueTrackingState,
@@ -136,3 +137,57 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+
+class TestOrchestratorRateLimitHandling:
+    async def test_run_returns_zero_when_load_is_rate_limited(self) -> None:
+        """If state loading is rate-limited, the run exits cleanly with code 0."""
+        orchestrator = make_orchestrator()
+
+        with patch.object(
+            orchestrator._state_tracker,
+            "load",
+            side_effect=RateLimitError(403, "API rate limit exceeded for installation"),
+        ):
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 0
+
+    async def test_run_returns_zero_when_save_is_rate_limited(self) -> None:
+        """If state saving is rate-limited, the run still completes with code 0."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(
+                orchestrator._state_tracker,
+                "save",
+                side_effect=RateLimitError(403, "API rate limit exceeded for installation"),
+            ),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent"),
+            patch.object(orchestrator, "_run_issue_agent"),
+            patch.object(orchestrator, "_run_upgrade_agent"),
+            patch.object(orchestrator, "_run_devops_agent"),
+            patch.object(orchestrator, "_run_security_agent"),
+            patch.object(orchestrator, "_run_dependency_agent"),
+            patch.object(orchestrator, "_run_docs_agent"),
+            patch.object(orchestrator, "_run_stale_agent"),
+            patch.object(orchestrator, "_run_escalation_agent"),
+        ):
+            exit_code = await orchestrator.run(mode="full")
+
+        assert exit_code == 0
+
+
+class TestRateLimitError:
+    def test_rate_limit_error_is_github_api_error_subclass(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        err = RateLimitError(403, "rate limit exceeded")
+        assert isinstance(err, GitHubAPIError)
+        assert err.status_code == 403
+
+    def test_rate_limit_error_429(self) -> None:
+        err = RateLimitError(429, "Rate limited. Retry after 60s")
+        assert err.status_code == 429
