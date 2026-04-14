@@ -2,116 +2,49 @@
 
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 import respx
 
 from caretaker.github_client.api import API_BASE, GitHubAPIError, GitHubClient
+from caretaker.github_client.models import COPILOT_ASSIGNEE_LOGIN
 
 
 @pytest.mark.asyncio
 class TestGitHubClient:
-    async def test_assign_copilot_to_issue_uses_graphql_assignable_ids(self) -> None:
+    async def test_assign_copilot_to_issue_uses_rest_assignees_api(self) -> None:
         async with GitHubClient(token="test-token") as github:
             with respx.mock(base_url=API_BASE) as router:
-                graphql = router.post("/graphql")
-                graphql.side_effect = [
-                    httpx.Response(
-                        200,
+                assignees = router.post("/repos/ianlintner/caretaker/issues/24/assignees").mock(
+                    return_value=httpx.Response(
+                        201,
                         json={
-                            "data": {
-                                "repository": {
-                                    "issue": {"id": "ISSUE_1"},
-                                    "suggestedActors": {
-                                        "nodes": [
-                                            {"login": "copilot-swe-agent", "id": "BOT_1"},
-                                            {"login": "ianlintner", "id": "USER_1"},
-                                        ]
-                                    },
+                            "assignees": [
+                                {
+                                    "login": COPILOT_ASSIGNEE_LOGIN,
+                                    "id": 1,
                                 }
-                            }
+                            ]
                         },
                     ),
-                    httpx.Response(
-                        200,
-                        json={
-                            "data": {
-                                "addAssigneesToAssignable": {
-                                    "assignable": {
-                                        "assignees": {
-                                            "nodes": [{"login": "copilot-swe-agent", "id": "BOT_1"}]
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                    ),
-                ]
+                )
 
                 await github.assign_copilot_to_issue("ianlintner", "caretaker", 24)
 
-                assert graphql.call_count == 2
-                query_payload = json.loads(graphql.calls[0].request.content)
-                mutation_payload = json.loads(graphql.calls[1].request.content)
-                assert query_payload["variables"]["number"] == 24
-                assert mutation_payload["variables"] == {
-                    "issueId": "ISSUE_1",
-                    "assigneeIds": ["BOT_1"],
-                }
+                assert assignees.called
+                assert assignees.calls[0].request.content == (
+                    b'{"assignees":["copilot-swe-agent"]}'
+                )
 
-    async def test_assign_copilot_to_issue_raises_when_copilot_not_assignable(self) -> None:
+    async def test_assign_copilot_to_issue_propagates_rest_errors(self) -> None:
         async with GitHubClient(token="test-token") as github:
             with respx.mock(base_url=API_BASE) as router:
-                router.post("/graphql").mock(
+                router.post("/repos/ianlintner/caretaker/issues/24/assignees").mock(
                     return_value=httpx.Response(
-                        200,
-                        json={
-                            "data": {
-                                "repository": {
-                                    "issue": {"id": "ISSUE_1"},
-                                    "suggestedActors": {
-                                        "nodes": [{"login": "ianlintner", "id": "USER_1"}]
-                                    },
-                                }
-                            }
-                        },
+                        422,
+                        text="Validation Failed",
                     )
                 )
 
-                with pytest.raises(GitHubAPIError, match="Copilot is not assignable"):
-                    await github.assign_copilot_to_issue("ianlintner", "caretaker", 24)
-
-    async def test_assign_copilot_to_issue_raises_when_assignment_does_not_stick(self) -> None:
-        async with GitHubClient(token="test-token") as github:
-            with respx.mock(base_url=API_BASE) as router:
-                graphql = router.post("/graphql")
-                graphql.side_effect = [
-                    httpx.Response(
-                        200,
-                        json={
-                            "data": {
-                                "repository": {
-                                    "issue": {"id": "ISSUE_1"},
-                                    "suggestedActors": {
-                                        "nodes": [{"login": "copilot-swe-agent", "id": "BOT_1"}]
-                                    },
-                                }
-                            }
-                        },
-                    ),
-                    httpx.Response(
-                        200,
-                        json={
-                            "data": {
-                                "addAssigneesToAssignable": {
-                                    "assignable": {"assignees": {"nodes": []}}
-                                }
-                            }
-                        },
-                    ),
-                ]
-
-                with pytest.raises(GitHubAPIError, match="did not stick"):
+                with pytest.raises(GitHubAPIError, match="Validation Failed"):
                     await github.assign_copilot_to_issue("ianlintner", "caretaker", 24)

@@ -8,7 +8,17 @@ from typing import Any, cast
 
 import httpx
 
-from .models import COPILOT_LOGINS, CheckRun, Comment, Issue, Label, PullRequest, Repository, Review, User
+from .models import (
+    COPILOT_ASSIGNEE_LOGIN,
+    CheckRun,
+    Comment,
+    Issue,
+    Label,
+    PullRequest,
+    Repository,
+    Review,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,26 +81,6 @@ class GitHubClient:
 
     async def _put(self, path: str, **kwargs: Any) -> Any:
         return await self._request("PUT", path, **kwargs)
-
-    async def _graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
-        data = await self._post("/graphql", json={"query": query, "variables": variables or {}})
-        if not isinstance(data, dict):
-            raise GitHubAPIError(500, "Invalid GraphQL response")
-
-        errors = data.get("errors")
-        if errors:
-            status_code = 400
-            if any(err.get("type") == "FORBIDDEN" for err in errors):
-                status_code = 403
-            elif any(err.get("type") == "NOT_FOUND" for err in errors):
-                status_code = 404
-            messages = "; ".join(str(err.get("message", "Unknown GraphQL error")) for err in errors)
-            raise GitHubAPIError(status_code, messages)
-
-        payload = data.get("data")
-        if not isinstance(payload, dict):
-            raise GitHubAPIError(500, "Invalid GraphQL payload")
-        return cast(dict[str, Any], payload)
 
     # ── Repository ──────────────────────────────────────────────
 
@@ -196,7 +186,7 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
     ) -> Issue:
-        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
+        # Keep supporting the internal "copilot" alias via a follow-up assignee call.
         assign_copilot = assignees and "copilot" in assignees
         real_assignees = [a for a in (assignees or []) if a != "copilot"]
 
@@ -214,82 +204,11 @@ class GitHubClient:
         return issue
 
     async def assign_copilot_to_issue(self, owner: str, repo: str, issue_number: int) -> None:
-        """Assign GitHub Copilot to an issue via GraphQL assignable IDs."""
-        query = """
-        query($owner: String!, $repo: String!, $number: Int!) {
-          repository(owner: $owner, name: $repo) {
-            issue(number: $number) {
-              id
-            }
-            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
-              nodes {
-                __typename
-                ... on User {
-                  id
-                  login
-                }
-                ... on Bot {
-                  id
-                  login
-                }
-              }
-            }
-          }
-        }
-        """
-        data = await self._graphql(
-            query,
-            {"owner": owner, "repo": repo, "number": issue_number},
+        """Assign GitHub Copilot to an issue via the supported REST assignees API."""
+        await self._post(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+            json={"assignees": [COPILOT_ASSIGNEE_LOGIN]},
         )
-        repository = data.get("repository") or {}
-        issue = repository.get("issue")
-        if not issue or not issue.get("id"):
-            raise GitHubAPIError(404, f"Issue #{issue_number} not found")
-
-        actor = next(
-            (
-                node
-                for node in repository.get("suggestedActors", {}).get("nodes", [])
-                if node.get("login") in COPILOT_LOGINS
-            ),
-            None,
-        )
-        if not actor or not actor.get("id"):
-            raise GitHubAPIError(404, f"Copilot is not assignable in {owner}/{repo}")
-
-        mutation = """
-        mutation($issueId: ID!, $assigneeIds: [ID!]!) {
-          addAssigneesToAssignable(
-            input: {assignableId: $issueId, assigneeIds: $assigneeIds}
-          ) {
-            assignable {
-              ... on Issue {
-                assignees(first: 10) {
-                  nodes {
-                    login
-                    id
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        result = await self._graphql(
-            mutation,
-            {"issueId": issue["id"], "assigneeIds": [actor["id"]]},
-        )
-        assignees = (
-            result.get("addAssigneesToAssignable", {})
-            .get("assignable", {})
-            .get("assignees", {})
-            .get("nodes", [])
-        )
-        if not any(assignee.get("login") in COPILOT_LOGINS for assignee in assignees):
-            raise GitHubAPIError(
-                500,
-                f"Copilot assignment did not stick for issue #{issue_number}",
-            )
 
     async def update_issue(
         self,
@@ -298,7 +217,7 @@ class GitHubClient:
         number: int,
         **kwargs: Any,
     ) -> Issue:
-        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
+        # Keep supporting the internal "copilot" alias via a follow-up assignee call.
         assignees: list[str] | None = kwargs.get("assignees")
         assign_copilot = assignees is not None and "copilot" in assignees
         if assign_copilot and assignees is not None:

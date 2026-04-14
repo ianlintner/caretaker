@@ -7,11 +7,13 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+COPILOT_ASSIGNEE_LOGIN = "copilot-swe-agent"
+
 COPILOT_LOGINS = (
     "copilot",
     "github-copilot[bot]",
     "copilot[bot]",
-    "copilot-swe-agent",
+    COPILOT_ASSIGNEE_LOGIN,
     "copilot-swe-agent[bot]",
 )
 
