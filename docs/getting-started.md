@@ -66,6 +66,7 @@ Alternatively, `GITHUB_REPOSITORY` can be provided in `owner/repo` format.
 
 Optional:
 
+- `COPILOT_PAT` for API-based assignment of issues to GitHub Copilot from workflows or local runs
 - `ANTHROPIC_API_KEY` for enhanced Claude-backed reasoning features
 
 ## Key installed files

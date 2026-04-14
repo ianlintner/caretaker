@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.tools.github import GitHubIssueTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.upgrade_agent.release_checker import Release
@@ -84,6 +86,7 @@ class UpgradePlanner:
         self._github = github
         self._owner = owner
         self._repo = repo
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def create_upgrade_issue(
         self,
@@ -92,7 +95,7 @@ class UpgradePlanner:
     ) -> int:
         """Create an upgrade issue and return its number."""
         # Check if an upgrade issue already exists for this version
-        issues = await self._github.list_issues(self._owner, self._repo)
+        issues = await self._issues.list()
         for issue in issues:
             if f"Upgrade to v{target.version}" in issue.title and issue.is_maintainer_issue:
                 logger.info(
@@ -107,13 +110,12 @@ class UpgradePlanner:
         if target.breaking:
             labels.append("breaking")
 
-        issue = await self._github.create_issue(
-            self._owner,
-            self._repo,
+        issue = await self._issues.create(
             title=f"[Maintainer] Upgrade to v{target.version}",
             body=body,
             labels=labels,
             assignees=["copilot"] if not target.breaking else [],
+            copilot_assignment=self._issues.default_copilot_assignment(),
         )
         logger.info("Created upgrade issue #%d for v%s", issue.number, target.version)
         return issue.number

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from caretaker.tools.github import GitHubIssueTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
@@ -130,6 +132,7 @@ class SecurityAgent:
         self._include_dependabot = include_dependabot
         self._include_code_scanning = include_code_scanning
         self._include_secret_scanning = include_secret_scanning
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     _SEVERITY_ORDER = {
         Severity.CRITICAL: 4,
@@ -313,9 +316,7 @@ class SecurityAgent:
         return findings
 
     async def _get_existing_issue_signatures(self) -> set[str]:
-        existing = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=SECURITY_LABEL
-        )
+        existing = await self._issues.list(state="open", labels=SECURITY_LABEL)
         sigs: set[str] = set()
         for issue in existing:
             body = issue.body or ""
@@ -388,21 +389,18 @@ class SecurityAgent:
 ---
 {SECURITY_AGENT_MARKER} sig:{sig} -->"""
 
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             SECURITY_LABEL,
             color="e11d48",
             description="Security finding requiring remediation",
         )
 
-        return await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        return await self._issues.create(
             title=f"[Security] {finding.title}",
             body=body,
             labels=[SECURITY_LABEL],
             assignees=["copilot"],
+            copilot_assignment=self._issues.default_copilot_assignment(),
         )
 
 

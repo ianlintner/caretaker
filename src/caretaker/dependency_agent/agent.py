@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from caretaker.tools.github import GitHubIssueTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
@@ -74,6 +76,7 @@ class DependencyAgent:
         self._auto_merge_minor = auto_merge_minor
         self._merge_method = merge_method
         self._post_digest = post_digest
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self) -> DependencyReport:
         report = DependencyReport()
@@ -158,9 +161,7 @@ class DependencyAgent:
 
     async def _get_existing_major_issue_prs(self) -> set[int]:
         """Return PR numbers that already have open major-upgrade tracking issues."""
-        issues = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=DEPENDENCY_MAJOR_LABEL
-        )
+        issues = await self._issues.list(state="open", labels=DEPENDENCY_MAJOR_LABEL)
         pr_numbers: set[int] = set()
         for issue in issues:
             body = issue.body or ""
@@ -174,16 +175,12 @@ class DependencyAgent:
         return pr_numbers
 
     async def _create_major_upgrade_issue(self, bump: DependencyBump) -> Issue:
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             DEPENDENCY_MAJOR_LABEL,
             color="f97316",
             description="Major dependency version upgrade requiring review",
         )
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             DEPENDENCY_DIGEST_LABEL,
             color="8b5cf6",
             description="Dependency update digest",
@@ -216,9 +213,7 @@ This upgrade may contain **breaking changes**. @copilot, please:
 ---
 {DEPENDENCY_AGENT_MARKER} pr:{str(bump.pr_number)} -->"""
 
-        return await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        return await self._issues.create(
             title=(
                 f"[Dependencies] Major upgrade: {bump.package}"
                 f" {bump.from_version} → {bump.to_version}"
@@ -226,6 +221,7 @@ This upgrade may contain **breaking changes**. @copilot, please:
             body=body,
             labels=[DEPENDENCY_MAJOR_LABEL],
             assignees=["copilot"],
+            copilot_assignment=self._issues.default_copilot_assignment(),
         )
 
     async def _post_dependency_digest(
@@ -233,31 +229,20 @@ This upgrade may contain **breaking changes**. @copilot, please:
     ) -> int | None:
         """Open (or update) a weekly digest issue listing all pending dependency updates."""
         # Check if a recent open digest issue exists
-        existing = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=DEPENDENCY_DIGEST_LABEL
-        )
+        existing = await self._issues.list(state="open", labels=DEPENDENCY_DIGEST_LABEL)
         digest_issues = [i for i in existing if DEPENDENCY_AGENT_MARKER in (i.body or "")]
         if digest_issues:
             # Only one digest at a time — update the existing one
             issue = digest_issues[0]
-            await self._github.update_issue(
-                self._owner,
-                self._repo,
-                issue.number,
-                body=self._build_digest_body(bumps, report),
-            )
+            await self._issues.update(issue.number, body=self._build_digest_body(bumps, report))
             return issue.number
 
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             DEPENDENCY_DIGEST_LABEL,
             color="8b5cf6",
             description="Dependency update digest",
         )
-        issue = await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        issue = await self._issues.create(
             title=f"[Dependencies] Weekly digest — {datetime.now(UTC).strftime('%Y-%m-%d')}",
             body=self._build_digest_body(bumps, report),
             labels=[DEPENDENCY_DIGEST_LABEL],
