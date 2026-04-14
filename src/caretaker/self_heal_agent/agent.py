@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
+import io
 import logging
 import re
+import zipfile
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -246,7 +249,7 @@ class SelfHealAgent:
                 follow_redirects=True,
             )
             if resp.status_code == 200:
-                return resp.text
+                return _decode_job_log_payload(resp.content, resp.text)
         except Exception as e:
             logger.debug("Self-heal: could not fetch job log %s: %s", job_id, e)
         return ""
@@ -355,6 +358,28 @@ _TRANSIENT_PATTERNS = [
     re.compile(r"network.*error|connection.*reset", re.IGNORECASE),
     re.compile(r"secondary rate limit", re.IGNORECASE),
 ]
+
+
+def _decode_job_log_payload(content: bytes, fallback_text: str) -> str:
+    """Decode Actions job log payload from zip/gzip/plain text."""
+    if content.startswith(b"PK\x03\x04"):
+        with contextlib.suppress(Exception), zipfile.ZipFile(io.BytesIO(content)) as archive:
+            parts = [
+                archive.read(name).decode("utf-8", errors="replace")
+                for name in archive.namelist()
+                if not name.endswith("/")
+            ]
+            decoded = "\n".join(parts).strip()
+            if decoded:
+                return decoded
+
+    if content.startswith(b"\x1f\x8b"):
+        with contextlib.suppress(Exception):
+            decoded = gzip.decompress(content).decode("utf-8", errors="replace").strip()
+            if decoded:
+                return decoded
+
+    return fallback_text
 
 
 def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, str]:
