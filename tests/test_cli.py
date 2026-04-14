@@ -8,13 +8,17 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from caretaker.cli import _configure_logging, main
+from caretaker.cli import RunMode, _configure_logging, main
 
 if TYPE_CHECKING:
     import pathlib
 
 
-class TestCLI:
+class TestRunMode:
+    def test_self_heal_mode_is_valid(self) -> None:
+        assert RunMode.SELF_HEAL == "self-heal"
+        assert "self-heal" in [m.value for m in RunMode]
+
     def test_validate_config_success(self) -> None:
         runner = CliRunner()
         with runner.isolated_filesystem():
