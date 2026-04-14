@@ -14,7 +14,7 @@ from caretaker.dependency_agent.agent import DependencyAgent
 from caretaker.devops_agent.agent import DevOpsAgent
 from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
-from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.api import GitHubClient, RateLimitError
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.llm.router import LLMRouter
 from caretaker.pr_agent.agent import PRAgent
@@ -93,13 +93,19 @@ class Orchestrator:
         )
 
         # Load persisted state
-        state = await self._state_tracker.load()
+        try:
+            state = await self._state_tracker.load()
+        except RateLimitError as e:
+            logger.warning(
+                "GitHub API rate limit reached during state load — skipping run: %s", e
+            )
+            return 0
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
         has_errors = False
 
         try:
             # Event-driven mode — route to specific agent
-            if mode == "event" and event_type:
+            if mode in ("event", "self-heal") and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
             else:
                 # Scheduled / full mode
