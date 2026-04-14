@@ -31,7 +31,7 @@ The orchestrator uses Copilot as its execution engine — it observes your repo 
 ### Instructions
 
 1. Read the setup guide at:
-   https://github.com/your-org/caretaker/blob/main/dist/SETUP_AGENT.md
+   https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md
 
 2. Follow the instructions in that guide exactly.
 
@@ -41,7 +41,7 @@ The orchestrator uses Copilot as its execution engine — it observes your repo 
 ### Context
 
 This repo uses the caretaker system for automated repo management.
-See: https://github.com/your-org/caretaker
+See: https://github.com/ianlintner/caretaker
 ```
 
 ### 2. Assign the issue to `@copilot`
@@ -157,7 +157,7 @@ The orchestrator **never writes code**. It manages Copilot, which does.
 
 ```bash
 # Clone and install
-git clone https://github.com/your-org/caretaker.git
+git clone https://github.com/ianlintner/caretaker.git
 cd caretaker
 pip install -e ".[dev]"
 
