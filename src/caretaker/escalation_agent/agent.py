@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.tools.github import GitHubIssueTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
 
@@ -53,6 +55,7 @@ class EscalationAgent:
         self._owner = owner
         self._repo = repo
         self._notify_assignees = notify_assignees or []
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self) -> EscalationReport:
         report = EscalationReport()
@@ -61,9 +64,7 @@ class EscalationAgent:
         buckets: dict[str, list[Any]] = {}
         for label, _description in _ACTION_LABELS.items():
             try:
-                items = await self._github.list_issues(
-                    self._owner, self._repo, state="open", labels=label
-                )
+                items = await self._issues.list(state="open", labels=label)
                 if items:
                     buckets[label] = items
             except Exception as e:
@@ -91,29 +92,23 @@ class EscalationAgent:
         return report
 
     async def _upsert_digest(self, body: str) -> int:
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             ESCALATION_DIGEST_LABEL,
             color="b91c1c",
             description="Weekly human-action-required digest",
         )
 
-        existing = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=ESCALATION_DIGEST_LABEL
-        )
+        existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
         digest_issues = [i for i in existing if ESCALATION_AGENT_MARKER in (i.body or "")]
 
         if digest_issues:
             issue = digest_issues[0]
-            await self._github.update_issue(self._owner, self._repo, issue.number, body=body)
+            await self._issues.update(issue.number, body=body)
             logger.info("Escalation agent: updated digest issue #%d", issue.number)
             return issue.number
 
         assignees = self._notify_assignees or []
-        issue = await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        issue = await self._issues.create(
             title=f"[Caretaker] Human action required — {datetime.now(UTC).strftime('%Y-W%V')}",
             body=body,
             labels=[ESCALATION_DIGEST_LABEL],
@@ -126,14 +121,10 @@ class EscalationAgent:
     async def _close_resolved_digest(self) -> None:
         """Close any existing digest if all items are resolved."""
         try:
-            existing = await self._github.list_issues(
-                self._owner, self._repo, state="open", labels=ESCALATION_DIGEST_LABEL
-            )
+            existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
             for issue in existing:
                 if ESCALATION_AGENT_MARKER in (issue.body or ""):
-                    await self._github.update_issue(
-                        self._owner,
-                        self._repo,
+                    await self._issues.update(
                         issue.number,
                         state="closed",
                         state_reason="completed",

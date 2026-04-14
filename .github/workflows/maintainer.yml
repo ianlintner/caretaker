@@ -67,6 +67,7 @@ jobs:
         id: caretaker_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
           CARETAKER_LOG_FILE: caretaker-run.log
@@ -117,6 +118,7 @@ jobs:
       - name: Self-heal — analyse own failure
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}

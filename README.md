@@ -50,7 +50,7 @@ See: https://github.com/ianlintner/caretaker
 
 ### 3. Review and merge the PR that Copilot opens
 
-### 4. (Optional) Add `ANTHROPIC_API_KEY` to repo secrets for enhanced AI features
+### 4. (Optional) Add `COPILOT_PAT` for API-based Copilot issue assignment, and `ANTHROPIC_API_KEY` for enhanced AI features
 
 ---
 

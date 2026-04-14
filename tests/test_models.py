@@ -12,6 +12,14 @@ from tests.conftest import make_comment, make_pr
 
 class TestPullRequest:
     def test_is_copilot_pr(self) -> None:
+        pr = make_pr(user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"))
+        assert pr.is_copilot_pr is True
+
+    def test_case_variant_copilot_login_is_recognized(self) -> None:
+        pr = make_pr(user=User(login="Copilot", id=1, type="Bot"))
+        assert pr.is_copilot_pr is True
+
+    def test_legacy_copilot_login_is_still_recognized(self) -> None:
         pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
         assert pr.is_copilot_pr is True
 
@@ -81,3 +89,30 @@ class TestIssue:
             user=User(login="user", id=1, type="User"),
         )
         assert issue.is_maintainer_issue is False
+
+    def test_is_copilot_assigned(self) -> None:
+        issue = Issue(
+            number=2,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="copilot-swe-agent[bot]", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True
+
+    def test_legacy_copilot_assignment_is_still_recognized(self) -> None:
+        issue = Issue(
+            number=3,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="copilot", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True
+
+    def test_case_variant_copilot_assignment_is_recognized(self) -> None:
+        issue = Issue(
+            number=4,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="Copilot", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True

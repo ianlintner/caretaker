@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
 from caretaker.state.models import IssueTrackingState, TrackedIssue
+from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
     from caretaker.config import IssueAgentConfig
@@ -46,6 +47,8 @@ class IssueAgent:
         self._repo = repo
         self._config = config
         self._llm = llm_router
+        self._issues = GitHubIssueTools(github, owner, repo)
+        self._pull_requests = GitHubPullRequestTools(github, owner, repo)
         self._dispatcher = IssueDispatcher(github, owner, repo)
 
     async def run(
@@ -54,8 +57,8 @@ class IssueAgent:
         """Run the issue agent — triage all open issues."""
         report = IssueAgentReport()
 
-        issues = await self._github.list_issues(self._owner, self._repo, state="all")
-        pull_requests = await self._github.list_pull_requests(self._owner, self._repo, state="all")
+        issues = await self._issues.list(state="all")
+        pull_requests = await self._pull_requests.list(state="all")
 
         for issue in issues:
             try:
@@ -150,44 +153,32 @@ class IssueAgent:
 
             case IssueClassification.QUESTION:
                 if self._config.auto_close_questions:
-                    await self._github.add_issue_comment(
-                        self._owner,
-                        self._repo,
+                    await self._issues.comment(
                         issue.number,
                         "This issue has been classified as a question. "
                         "Please check the project documentation and README for guidance. "
                         "If this needs further attention, please reopen.",
                     )
-                    await self._github.update_issue(
-                        self._owner, self._repo, issue.number, state="closed"
-                    )
+                    await self._issues.update(issue.number, state="closed")
                     tracking.state = IssueTrackingState.CLOSED
                     report.closed.append(issue.number)
 
             case IssueClassification.DUPLICATE:
-                await self._github.add_issue_comment(
-                    self._owner,
-                    self._repo,
+                await self._issues.comment(
                     issue.number,
                     "This issue appears to be a duplicate. "
                     "If needed, please reference the original tracking issue.",
                 )
-                await self._github.update_issue(
-                    self._owner, self._repo, issue.number, state="closed"
-                )
+                await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.CLOSED
                 report.closed.append(issue.number)
 
             case IssueClassification.STALE:
-                await self._github.add_issue_comment(
-                    self._owner,
-                    self._repo,
+                await self._issues.comment(
                     issue.number,
                     "Closing as stale due to inactivity. Please reopen if this is still relevant.",
                 )
-                await self._github.update_issue(
-                    self._owner, self._repo, issue.number, state="closed"
-                )
+                await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.STALE
                 report.closed.append(issue.number)
 
@@ -212,9 +203,7 @@ class IssueAgent:
         tracking: TrackedIssue,
     ) -> TrackedIssue:
         """Update issue tracking state based on assignees and linked PRs."""
-        is_copilot = any(
-            a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees
-        )
+        is_copilot = issue.is_copilot_assigned
         if is_copilot and tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
             tracking.state = IssueTrackingState.IN_PROGRESS
 
@@ -256,12 +245,8 @@ class IssueAgent:
 
     async def _escalate(self, issue: Issue, reason: str) -> None:
         """Escalate an issue to the repo owner."""
-        await self._github.add_labels(
-            self._owner, self._repo, issue.number, ["maintainer:escalated"]
-        )
-        await self._github.add_issue_comment(
-            self._owner,
-            self._repo,
+        await self._issues.add_labels(issue.number, ["maintainer:escalated"])
+        await self._issues.comment(
             issue.number,
             f"⚠️ **Caretaker Escalation**\n\n"
             f"**Reason:** {reason}\n\n"

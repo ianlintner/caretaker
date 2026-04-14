@@ -58,7 +58,7 @@ class TestIssueDispatcher:
         github.update_issue.assert_not_called()
 
     async def test_bug_simple_assigns_copilot_via_update_issue(self) -> None:
-        """update_issue is called with assignees=["copilot"] — verify it reaches the API."""
+        """Dispatcher forwards both the logical Copilot assignee and repo routing metadata."""
         github = AsyncMock()
         github.update_issue.return_value = make_issue()
         dispatcher = IssueDispatcher(github=github, owner="o", repo="r")
@@ -69,3 +69,6 @@ class TestIssueDispatcher:
         github.update_issue.assert_awaited_once()
         call_kwargs = github.update_issue.call_args.kwargs
         assert "copilot" in call_kwargs.get("assignees", [])
+        assignment = call_kwargs.get("copilot_assignment")
+        assert assignment is not None
+        assert assignment.to_api_payload()["target_repo"] == "o/r"

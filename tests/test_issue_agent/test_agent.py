@@ -38,7 +38,7 @@ def make_pr(number: int, title: str, body: str) -> PullRequest:
         title=title,
         body=body,
         state=PRState.OPEN,
-        user=User(login="copilot[bot]", id=1, type="Bot"),
+        user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"),
     )
 
 
@@ -91,7 +91,7 @@ class TestIssueAgent:
             4,
             "Fix the bug",
             "there is a bug",
-            assignees=[User(login="copilot", id=22, type="Bot")],
+            assignees=[User(login="copilot-swe-agent[bot]", id=22, type="Bot")],
         )
         github.list_issues.return_value = [issue]
         github.list_pull_requests.return_value = []
@@ -150,7 +150,7 @@ class TestIssueAgent:
             3,
             "Feature request",
             "please add a small feature",
-            assignees=[User(login="copilot", id=22, type="Bot")],
+            assignees=[User(login="copilot-swe-agent[bot]", id=22, type="Bot")],
         )
         github.list_issues.return_value = [issue]
         github.list_pull_requests.return_value = [

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
@@ -58,6 +60,8 @@ class DocsAgent:
         self._lookback_days = lookback_days
         self._changelog_path = changelog_path
         self._update_readme = update_readme
+        self._issues = GitHubIssueTools(github, owner, repo)
+        self._pull_requests = GitHubPullRequestTools(github, owner, repo)
 
     async def run(self) -> DocsReport:
         report = DocsReport()
@@ -126,18 +130,14 @@ class DocsAgent:
                 sha=current_sha,
             )
 
-            await self._github.ensure_label(
-                self._owner,
-                self._repo,
+            await self._issues.ensure_label(
                 DOCS_LABEL,
                 color="0075ca",
                 description="Documentation updates",
             )
 
             pr_body = _build_pr_body(merged_prs, changelog_entry)
-            pr = await self._github.create_pull_request(
-                owner=self._owner,
-                repo=self._repo,
+            pr = await self._pull_requests.create(
                 title=f"docs: reconcile CHANGELOG — {week_str}",
                 body=pr_body,
                 head=branch_name,
@@ -173,7 +173,7 @@ class DocsAgent:
         return merged
 
     async def _find_open_docs_prs(self) -> list[int]:
-        prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
+        prs = await self._pull_requests.list(state="open")
         return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
 
     async def _get_file(self, path: str) -> tuple[str, str | None]:

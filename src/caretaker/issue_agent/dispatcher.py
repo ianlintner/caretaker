@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from caretaker.issue_agent.classifier import IssueClassification
+from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -48,6 +49,7 @@ class IssueDispatcher:
         self._github = github
         self._owner = owner
         self._repo = repo
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def dispatch(
         self,
@@ -65,6 +67,7 @@ class IssueDispatcher:
             return None
 
         body = build_assignment_body(issue, classification)
+        copilot_assignment = self._issues.default_copilot_assignment()
 
         # For simple bugs, just update the existing issue and assign to Copilot
         if classification == IssueClassification.BUG_SIMPLE:
@@ -77,15 +80,12 @@ class IssueDispatcher:
                 "PRIORITY: medium\n"
                 "<!-- /caretaker:assignment -->"
             )
-            await self._github.add_issue_comment(
-                self._owner, self._repo, issue.number, comment_body
-            )
-            await self._github.update_issue(
-                self._owner,
-                self._repo,
+            await self._issues.comment(issue.number, comment_body)
+            await self._issues.update(
                 issue.number,
                 assignees=["copilot"],
                 labels=[lbl.name for lbl in issue.labels] + ["maintainer:assigned"],
+                copilot_assignment=copilot_assignment,
             )
             logger.info("Issue #%d assigned to Copilot as %s", issue.number, classification.value)
             return issue
@@ -95,18 +95,15 @@ class IssueDispatcher:
             IssueClassification.FEATURE_SMALL,
             IssueClassification.BUG_COMPLEX,
         ):
-            new_issue = await self._github.create_issue(
-                self._owner,
-                self._repo,
+            new_issue = await self._issues.create(
                 title=f"[Maintainer] {issue.title}",
                 body=body,
                 labels=["maintainer:internal", "maintainer:assigned"],
                 assignees=["copilot"],
+                copilot_assignment=copilot_assignment,
             )
             # Link back to original
-            await self._github.add_issue_comment(
-                self._owner,
-                self._repo,
+            await self._issues.comment(
                 issue.number,
                 f"This issue has been picked up by the caretaker. Tracking in #{new_issue.number}.",
             )

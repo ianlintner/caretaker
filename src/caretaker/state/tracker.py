@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.tools.github import GitHubIssueTools
+
 from .models import OrchestratorState, RunSummary
 
 if TYPE_CHECKING:
@@ -25,6 +27,7 @@ class StateTracker:
         self._github = github
         self._owner = owner
         self._repo = repo
+        self._issues = GitHubIssueTools(github, owner, repo)
         self._tracking_issue_number: int | None = None
         self._state: OrchestratorState = OrchestratorState()
 
@@ -74,9 +77,7 @@ class StateTracker:
 
         state_json = self._state.model_dump_json(indent=2)
         body = self._build_state_comment(state_json, summary)
-        await self._github.add_issue_comment(
-            self._owner, self._repo, self._tracking_issue_number, body
-        )
+        await self._issues.comment(self._tracking_issue_number, body)
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
 
     async def post_run_summary(self, summary: RunSummary) -> None:
@@ -86,21 +87,17 @@ class StateTracker:
         assert self._tracking_issue_number is not None
 
         body = self._format_summary(summary)
-        await self._github.add_issue_comment(
-            self._owner, self._repo, self._tracking_issue_number, body
-        )
+        await self._issues.comment(self._tracking_issue_number, body)
 
     async def _find_tracking_issue(self) -> int | None:
-        issues = await self._github.list_issues(self._owner, self._repo, labels=TRACKING_LABEL)
+        issues = await self._issues.list(labels=TRACKING_LABEL)
         for issue in issues:
             if issue.title == TRACKING_ISSUE_TITLE:
                 return issue.number
         return None
 
     async def _create_tracking_issue(self) -> None:
-        issue = await self._github.create_issue(
-            self._owner,
-            self._repo,
+        issue = await self._issues.create(
             title=TRACKING_ISSUE_TITLE,
             body=(
                 "This issue is used by the caretaker orchestrator "
