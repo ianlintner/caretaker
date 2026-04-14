@@ -237,11 +237,9 @@ class TestOrchestratorWorkflowRunEvent:
         state = OrchestratorState()
         summary = RunSummary(mode="event")
 
-        with (
-            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
-            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock) as mock_devops,
-            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock) as mock_heal,
-        ):
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
             await orchestrator._handle_event(
                 "workflow_run",
                 {"workflow_run": {"head_branch": "main", "conclusion": "failure"}},
@@ -249,9 +247,11 @@ class TestOrchestratorWorkflowRunEvent:
                 summary,
             )
 
-        mock_pr.assert_awaited_once()
-        mock_devops.assert_awaited_once()
-        mock_heal.assert_awaited_once()
+        # All three agents (pr, devops, self-heal) should run for workflow_run events
+        called_names = [call.args[0].name for call in mock_run_one.call_args_list]
+        assert "pr" in called_names
+        assert "devops" in called_names
+        assert "self-heal" in called_names
 
     async def test_workflow_run_event_forwards_head_branch(self) -> None:
         """head_branch from workflow_run payload must be forwarded to the PR agent."""
@@ -266,11 +266,9 @@ class TestOrchestratorWorkflowRunEvent:
         state = OrchestratorState()
         summary = RunSummary(mode="event")
 
-        with (
-            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
-            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock),
-            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock),
-        ):
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
             await orchestrator._handle_event(
                 "workflow_run",
                 {"workflow_run": {"head_branch": "copilot/my-feature", "conclusion": "failure"}},
@@ -278,8 +276,11 @@ class TestOrchestratorWorkflowRunEvent:
                 summary,
             )
 
-        # The PR agent must receive the specific branch so only that PR is scanned
-        mock_pr.assert_awaited_once_with(state, summary, head_branch="copilot/my-feature")
+        # Find the PR agent call and verify head_branch was forwarded
+        pr_calls = [call for call in mock_run_one.call_args_list if call.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        pr_call = pr_calls[0]
+        assert pr_call.kwargs.get("event_payload") == {"_head_branch": "copilot/my-feature"}
 
     async def test_pr_agent_run_filters_by_head_branch(self) -> None:
         """When head_branch is provided, only PRs on that branch should be processed."""
