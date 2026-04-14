@@ -117,6 +117,22 @@
         "auto_merge_non_breaking": { "type": "boolean" }
       }
     },
+    "charlie_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "stale_days": { "type": "integer", "minimum": 1 },
+        "close_duplicate_issues": { "type": "boolean" },
+        "close_duplicate_prs": { "type": "boolean" },
+        "close_stale_issues": { "type": "boolean" },
+        "close_stale_prs": { "type": "boolean" },
+        "exempt_labels": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "escalation": {
       "type": "object",
       "additionalProperties": false,

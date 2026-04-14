@@ -169,6 +169,25 @@ class StateTracker:
                     "",
                 ]
             )
+        if any(
+            (
+                summary.charlie_managed_issues,
+                summary.charlie_managed_prs,
+                summary.charlie_issues_closed,
+                summary.charlie_prs_closed,
+            )
+        ):
+            lines.extend(
+                [
+                    "### Charlie Agent",
+                    f"- {summary.charlie_managed_issues} managed issues reviewed",
+                    f"- {summary.charlie_managed_prs} managed PRs reviewed",
+                    f"- {summary.charlie_issues_closed} issues closed",
+                    f"- {summary.charlie_prs_closed} PRs closed",
+                    f"- {summary.charlie_duplicates_closed} duplicate items cleaned up",
+                    "",
+                ]
+            )
         if summary.errors:
             lines.extend(
                 [

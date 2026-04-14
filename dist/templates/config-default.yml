@@ -38,7 +38,7 @@ issue_agent:
 
 upgrade_agent:
   enabled: true
-  strategy: auto-minor  # auto-minor | auto-patch | latest | pinned
+  strategy: auto-minor # auto-minor | auto-patch | latest | pinned
 
 devops_agent:
   enabled: true
@@ -71,6 +71,18 @@ docs_agent:
   lookback_days: 7
   changelog_path: CHANGELOG.md
   update_readme: false
+
+charlie_agent:
+  enabled: true
+  stale_days: 14
+  close_duplicate_issues: true
+  close_duplicate_prs: true
+  close_stale_issues: true
+  close_stale_prs: true
+  exempt_labels:
+    - pinned
+    - maintainer:escalated
+    - maintainer:escalation-digest
 
 stale_agent:
   enabled: true

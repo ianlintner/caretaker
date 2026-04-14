@@ -136,3 +136,39 @@ class TestOrchestratorReportPath:
 
         # No unexpected JSON files in tmp_path
         assert list(tmp_path.glob("*.json")) == []
+
+    async def test_charlie_mode_runs_only_charlie_agent(self) -> None:
+        """Charlie mode invokes janitorial cleanup without running the broader cycle."""
+        orchestrator = make_orchestrator()
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as run_pr,
+            patch.object(orchestrator, "_run_issue_agent", new_callable=AsyncMock) as run_issue,
+            patch.object(orchestrator, "_run_upgrade_agent", new_callable=AsyncMock) as run_upgrade,
+            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock) as run_devops,
+            patch.object(
+                orchestrator, "_run_security_agent", new_callable=AsyncMock
+            ) as run_security,
+            patch.object(orchestrator, "_run_dependency_agent", new_callable=AsyncMock) as run_deps,
+            patch.object(orchestrator, "_run_docs_agent", new_callable=AsyncMock) as run_docs,
+            patch.object(orchestrator, "_run_charlie_agent", new_callable=AsyncMock) as run_charlie,
+            patch.object(orchestrator, "_run_stale_agent", new_callable=AsyncMock) as run_stale,
+            patch.object(
+                orchestrator, "_run_escalation_agent", new_callable=AsyncMock
+            ) as run_escalation,
+        ):
+            await orchestrator.run(mode="charlie")
+
+        run_charlie.assert_awaited_once()
+        run_pr.assert_not_awaited()
+        run_issue.assert_not_awaited()
+        run_upgrade.assert_not_awaited()
+        run_devops.assert_not_awaited()
+        run_security.assert_not_awaited()
+        run_deps.assert_not_awaited()
+        run_docs.assert_not_awaited()
+        run_stale.assert_not_awaited()
+        run_escalation.assert_not_awaited()

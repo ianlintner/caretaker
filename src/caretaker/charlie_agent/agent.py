@@ -1,0 +1,354 @@
+"""Charlie Agent — janitorial cleanup for caretaker-managed work."""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import Issue, PullRequest
+
+logger = logging.getLogger(__name__)
+
+TRACKING_ISSUE_TITLE = "[Maintainer] Orchestrator State"
+
+_MANAGED_ISSUE_LABELS = frozenset(
+    {
+        "maintainer:assigned",
+        "maintainer:internal",
+        "devops:build-failure",
+        "caretaker:self-heal",
+        "maintainer:escalation-digest",
+    }
+)
+_MANAGED_ISSUE_MARKERS = (
+    "<!-- caretaker:assignment -->",
+    "<!-- caretaker:devops-build-failure",
+    "<!-- caretaker:self-heal -->",
+    "<!-- caretaker:escalation-digest",
+    "<!-- maintainer-state:",
+)
+_MANAGED_PR_MARKERS = _MANAGED_ISSUE_MARKERS
+_DEFAULT_EXEMPT_LABELS = frozenset(
+    {
+        "pinned",
+        "maintainer:escalated",
+        "maintainer:escalation-digest",
+    }
+)
+
+_SOURCE_ISSUE_RE = re.compile(r"\bSOURCE_ISSUE:\s*(?:[\w.-]+/[\w.-]+)?#(\d+)\b", re.IGNORECASE)
+_FIXES_RE = re.compile(r"\bfixes\s+(?:[\w.-]+/[\w.-]+)?#(\d+)\b", re.IGNORECASE)
+_DEVOPS_SIG_RE = re.compile(r"caretaker:devops-build-failure\s+sig:([0-9a-f]+)", re.IGNORECASE)
+_ESCALATION_WEEK_RE = re.compile(
+    r"caretaker:escalation-digest\s+week:([0-9]{4}-W\d+)", re.IGNORECASE
+)
+
+
+@dataclass
+class CharlieReport:
+    """Results from a single Charlie agent run."""
+
+    managed_issues_seen: int = 0
+    managed_prs_seen: int = 0
+    issues_closed: int = 0
+    prs_closed: int = 0
+    duplicate_issues_closed: int = 0
+    duplicate_prs_closed: int = 0
+    stale_issues_closed: int = 0
+    stale_prs_closed: int = 0
+    comments_posted: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+class CharlieAgent:
+    """Janitorial cleanup for caretaker-managed issues and pull requests."""
+
+    def __init__(
+        self,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+        stale_days: int = 14,
+        close_duplicate_issues: bool = True,
+        close_duplicate_prs: bool = True,
+        close_stale_issues: bool = True,
+        close_stale_prs: bool = True,
+        exempt_labels: list[str] | None = None,
+    ) -> None:
+        self._github = github
+        self._owner = owner
+        self._repo = repo
+        self._stale_days = stale_days
+        self._close_duplicate_issues = close_duplicate_issues
+        self._close_duplicate_prs = close_duplicate_prs
+        self._close_stale_issues = close_stale_issues
+        self._close_stale_prs = close_stale_prs
+        self._exempt_labels = _DEFAULT_EXEMPT_LABELS | set(exempt_labels or [])
+
+    async def run(self) -> CharlieReport:
+        """Run Charlie cleanup against caretaker-managed work."""
+        report = CharlieReport()
+
+        try:
+            issues = await self._github.list_issues(self._owner, self._repo, state="open")
+            prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
+        except Exception as exc:
+            logger.error("Charlie agent failed to load repo state: %s", exc)
+            report.errors.append(str(exc))
+            return report
+
+        managed_issues = [issue for issue in issues if self._is_managed_issue(issue)]
+        managed_prs = [pr for pr in prs if self._is_managed_pr(pr)]
+        report.managed_issues_seen = len(managed_issues)
+        report.managed_prs_seen = len(managed_prs)
+
+        logger.info(
+            "Charlie agent: managing %d issues and %d PRs",
+            report.managed_issues_seen,
+            report.managed_prs_seen,
+        )
+
+        closed_issue_numbers: set[int] = set()
+        closed_pr_numbers: set[int] = set()
+
+        if self._close_duplicate_issues:
+            closed_issue_numbers |= await self._close_duplicate_issues_in_place(
+                managed_issues, report
+            )
+        if self._close_duplicate_prs:
+            closed_pr_numbers |= await self._close_duplicate_prs_in_place(managed_prs, report)
+        if self._close_stale_issues:
+            closed_issue_numbers |= await self._close_stale_issues_in_place(
+                managed_issues, closed_issue_numbers, report
+            )
+        if self._close_stale_prs:
+            closed_pr_numbers |= await self._close_stale_prs_in_place(
+                managed_prs, closed_pr_numbers, report
+            )
+
+        return report
+
+    async def _close_duplicate_issues_in_place(
+        self, issues: list[Issue], report: CharlieReport
+    ) -> set[int]:
+        groups = self._group_issues_by_work_key(issues)
+        closed: set[int] = set()
+
+        for work_key, grouped_issues in groups.items():
+            if len(grouped_issues) < 2:
+                continue
+
+            canonical = min(grouped_issues, key=self._issue_preference_key)
+            for issue in grouped_issues:
+                if issue.number == canonical.number:
+                    continue
+                await self._comment_and_close_issue(
+                    issue.number,
+                    (
+                        "🧹 Charlie work: closing this duplicate caretaker-managed issue in "
+                        f"favor of #{canonical.number} (`{work_key}`)."
+                    ),
+                    report,
+                )
+                report.duplicate_issues_closed += 1
+                closed.add(issue.number)
+
+        return closed
+
+    async def _close_duplicate_prs_in_place(
+        self, prs: list[PullRequest], report: CharlieReport
+    ) -> set[int]:
+        groups = self._group_prs_by_work_key(prs)
+        closed: set[int] = set()
+
+        for work_key, grouped_prs in groups.items():
+            if len(grouped_prs) < 2:
+                continue
+
+            canonical = min(grouped_prs, key=self._pr_preference_key)
+            for pr in grouped_prs:
+                if pr.number == canonical.number:
+                    continue
+                await self._comment_and_close_pr(
+                    pr.number,
+                    (
+                        "🧹 Charlie work: closing this duplicate caretaker-managed PR in "
+                        f"favor of #{canonical.number} (`{work_key}`)."
+                    ),
+                    report,
+                )
+                report.duplicate_prs_closed += 1
+                closed.add(pr.number)
+
+        return closed
+
+    async def _close_stale_issues_in_place(
+        self,
+        issues: list[Issue],
+        already_closed: set[int],
+        report: CharlieReport,
+    ) -> set[int]:
+        closed: set[int] = set()
+        now = datetime.now(UTC)
+
+        for issue in issues:
+            if issue.number in already_closed or self._is_exempt(issue):
+                continue
+            if issue.title == TRACKING_ISSUE_TITLE or issue.is_copilot_assigned:
+                continue
+
+            updated_at = _item_timestamp(issue)
+            age_days = (now - updated_at).days
+            if age_days < self._stale_days:
+                continue
+
+            await self._comment_and_close_issue(
+                issue.number,
+                (
+                    "🧹 Charlie work: closing this caretaker-managed issue after "
+                    f"{age_days} days without meaningful activity. Reopen if it still matters."
+                ),
+                report,
+            )
+            report.stale_issues_closed += 1
+            closed.add(issue.number)
+
+        return closed
+
+    async def _close_stale_prs_in_place(
+        self,
+        prs: list[PullRequest],
+        already_closed: set[int],
+        report: CharlieReport,
+    ) -> set[int]:
+        closed: set[int] = set()
+        now = datetime.now(UTC)
+
+        for pr in prs:
+            if pr.number in already_closed or self._is_exempt(pr):
+                continue
+
+            updated_at = _item_timestamp(pr)
+            age_days = (now - updated_at).days
+            if age_days < self._stale_days:
+                continue
+
+            await self._comment_and_close_pr(
+                pr.number,
+                (
+                    "🧹 Charlie work: closing this caretaker-managed PR after "
+                    f"{age_days} days without meaningful activity. Reopen or recreate if needed."
+                ),
+                report,
+            )
+            report.stale_prs_closed += 1
+            closed.add(pr.number)
+
+        return closed
+
+    async def _comment_and_close_issue(self, number: int, body: str, report: CharlieReport) -> None:
+        try:
+            await self._github.add_issue_comment(self._owner, self._repo, number, body)
+            report.comments_posted += 1
+            await self._github.update_issue(self._owner, self._repo, number, state="closed")
+            report.issues_closed += 1
+            logger.info("Charlie agent: closed issue #%d", number)
+        except Exception as exc:
+            logger.warning("Charlie agent: issue #%d cleanup failed: %s", number, exc)
+            report.errors.append(f"issue #{number}: {exc}")
+
+    async def _comment_and_close_pr(self, number: int, body: str, report: CharlieReport) -> None:
+        try:
+            await self._github.add_issue_comment(self._owner, self._repo, number, body)
+            report.comments_posted += 1
+            await self._github.update_issue(self._owner, self._repo, number, state="closed")
+            report.prs_closed += 1
+            logger.info("Charlie agent: closed PR #%d", number)
+        except Exception as exc:
+            logger.warning("Charlie agent: PR #%d cleanup failed: %s", number, exc)
+            report.errors.append(f"PR #{number}: {exc}")
+
+    def _is_managed_issue(self, issue: Issue) -> bool:
+        if issue.title == TRACKING_ISSUE_TITLE:
+            return False
+
+        label_names = {label.name for label in issue.labels}
+        body = issue.body or ""
+        if issue.title.startswith("[Maintainer]"):
+            return True
+        if any(marker in body for marker in _MANAGED_ISSUE_MARKERS):
+            return True
+        return issue.user.login == "app/github-actions" and bool(
+            label_names & _MANAGED_ISSUE_LABELS
+        )
+
+    def _is_managed_pr(self, pr: PullRequest) -> bool:
+        body = pr.body or ""
+        return (
+            pr.is_copilot_pr
+            or pr.is_maintainer_pr
+            or any(marker in body for marker in _MANAGED_PR_MARKERS)
+        )
+
+    def _is_exempt(self, item: Issue | PullRequest) -> bool:
+        label_names = {label.name for label in item.labels}
+        return bool(label_names & self._exempt_labels)
+
+    @staticmethod
+    def _group_issues_by_work_key(items: list[Issue]) -> dict[str, list[Issue]]:
+        grouped: dict[str, list[Issue]] = {}
+        for item in items:
+            work_key = _extract_work_key(item.title, item.body or "")
+            if work_key is None:
+                continue
+            grouped.setdefault(work_key, []).append(item)
+        return grouped
+
+    @staticmethod
+    def _group_prs_by_work_key(items: list[PullRequest]) -> dict[str, list[PullRequest]]:
+        grouped: dict[str, list[PullRequest]] = {}
+        for item in items:
+            work_key = _extract_work_key(item.title, item.body or "")
+            if work_key is None:
+                continue
+            grouped.setdefault(work_key, []).append(item)
+        return grouped
+
+    @staticmethod
+    def _issue_preference_key(issue: Issue) -> tuple[int, datetime, int]:
+        has_assignee = 0 if issue.assignees else 1
+        return (has_assignee, _item_timestamp(issue), issue.number)
+
+    @staticmethod
+    def _pr_preference_key(pr: PullRequest) -> tuple[int, datetime, int]:
+        is_draft = 1 if pr.draft else 0
+        return (is_draft, _item_timestamp(pr), pr.number)
+
+
+def _extract_work_key(title: str, body: str) -> str | None:
+    for prefix, pattern in (
+        ("source_issue", _SOURCE_ISSUE_RE),
+        ("fixes", _FIXES_RE),
+        ("devops_sig", _DEVOPS_SIG_RE),
+        ("escalation_week", _ESCALATION_WEEK_RE),
+    ):
+        match = pattern.search(body)
+        if match:
+            return f"{prefix}:{match.group(1)}"
+
+    normalized_title = title.casefold().strip()
+    if normalized_title.startswith("[wip] fix ci failure on main"):
+        return f"wip_ci:{normalized_title}"
+    return None
+
+
+def _item_timestamp(item: Issue | PullRequest) -> datetime:
+    timestamp = item.updated_at or item.created_at or datetime.now(UTC)
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)

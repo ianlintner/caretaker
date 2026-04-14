@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from caretaker import __version__
+from caretaker.charlie_agent.agent import CharlieAgent
 from caretaker.config import MaintainerConfig
 from caretaker.dependency_agent.agent import DependencyAgent
 from caretaker.devops_agent.agent import DevOpsAgent
@@ -123,6 +124,9 @@ class Orchestrator:
 
                 if mode in ("full", "docs"):
                     await self._run_docs_agent(state, summary)
+
+                if mode in ("full", "charlie"):
+                    await self._run_charlie_agent(state, summary)
 
                 if mode in ("full", "stale"):
                     await self._run_stale_agent(state, summary)
@@ -522,6 +526,39 @@ class Orchestrator:
         summary.stale_issues_warned = report.issues_warned
         summary.stale_issues_closed = report.issues_closed
         summary.stale_branches_deleted = report.branches_deleted
+        summary.errors.extend(report.errors)
+
+    async def _run_charlie_agent(self, state: OrchestratorState, summary: RunSummary) -> None:
+        """Run the Charlie agent to clean caretaker-managed duplicate or abandoned work."""
+        cfg = self._config.charlie_agent
+        if not cfg.enabled:
+            logger.info("Charlie agent is disabled")
+            return
+
+        if self._config.orchestrator.dry_run:
+            logger.info("[DRY RUN] Charlie agent would run")
+            return
+
+        agent = CharlieAgent(
+            github=self._github,
+            owner=self._owner,
+            repo=self._repo,
+            stale_days=cfg.stale_days,
+            close_duplicate_issues=cfg.close_duplicate_issues,
+            close_duplicate_prs=cfg.close_duplicate_prs,
+            close_stale_issues=cfg.close_stale_issues,
+            close_stale_prs=cfg.close_stale_prs,
+            exempt_labels=list(cfg.exempt_labels),
+        )
+        report = await agent.run()
+
+        summary.charlie_managed_issues = report.managed_issues_seen
+        summary.charlie_managed_prs = report.managed_prs_seen
+        summary.charlie_issues_closed = report.issues_closed
+        summary.charlie_prs_closed = report.prs_closed
+        summary.charlie_duplicates_closed = (
+            report.duplicate_issues_closed + report.duplicate_prs_closed
+        )
         summary.errors.extend(report.errors)
 
     async def _run_escalation_agent(self, state: OrchestratorState, summary: RunSummary) -> None:

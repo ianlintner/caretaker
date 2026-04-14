@@ -32,6 +32,11 @@ class TestClassifyIssue:
         result = classify_issue(issue, IssueAgentConfig())
         assert result == IssueClassification.MAINTAINER_INTERNAL
 
+    def test_assignment_marker_is_maintainer_internal(self) -> None:
+        issue = make_issue(body="<!-- caretaker:assignment -->\nTYPE: BUG_SIMPLE")
+        result = classify_issue(issue, IssueAgentConfig())
+        assert result == IssueClassification.MAINTAINER_INTERNAL
+
     def test_duplicate_by_label(self) -> None:
         issue = make_issue(labels=[Label(name="duplicate")])
         result = classify_issue(issue, IssueAgentConfig())

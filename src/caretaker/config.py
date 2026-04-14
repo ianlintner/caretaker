@@ -146,6 +146,16 @@ class StaleAgentConfig(StrictBaseModel):
     exempt_labels: list[str] = Field(default_factory=list)
 
 
+class CharlieAgentConfig(StrictBaseModel):
+    enabled: bool = True
+    stale_days: int = 14
+    close_duplicate_issues: bool = True
+    close_duplicate_prs: bool = True
+    close_stale_issues: bool = True
+    close_stale_prs: bool = True
+    exempt_labels: list[str] = Field(default_factory=list)
+
+
 class HumanEscalationConfig(StrictBaseModel):
     enabled: bool = True
     post_digest_issue: bool = True
@@ -163,6 +173,7 @@ class MaintainerConfig(StrictBaseModel):
     security_agent: SecurityAgentConfig = Field(default_factory=SecurityAgentConfig)
     dependency_agent: DependencyAgentConfig = Field(default_factory=DependencyAgentConfig)
     docs_agent: DocsAgentConfig = Field(default_factory=DocsAgentConfig)
+    charlie_agent: CharlieAgentConfig = Field(default_factory=CharlieAgentConfig)
     stale_agent: StaleAgentConfig = Field(default_factory=StaleAgentConfig)
     human_escalation: HumanEscalationConfig = Field(default_factory=HumanEscalationConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)

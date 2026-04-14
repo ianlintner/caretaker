@@ -14,6 +14,7 @@ Caretaker is organized as a set of focused agents coordinated by the orchestrato
 | Security agent   | triages Dependabot, code scanning, and secret scanning alerts                 |
 | Dependency agent | reviews Dependabot PRs, auto-merges safe bumps, posts digests                 |
 | Docs agent       | reconciles merged PRs into changelog/docs updates                             |
+| Charlie agent    | closes duplicate or abandoned caretaker-managed issues and PRs                |
 | Stale agent      | warns/closes stale work and prunes merged branches                            |
 | Escalation agent | creates a digest for work requiring human attention                           |
 
@@ -23,6 +24,7 @@ Caretaker is organized as a set of focused agents coordinated by the orchestrato
 - the **GitHub client** is the shared integration layer for repo state and mutations
 - the **state tracker** persists issue/PR tracking data in GitHub comments
 - the **LLM layer** adds higher-quality reasoning where configured
+- the **Charlie agent** handles short-horizon cleanup for caretaker-managed operational clutter
 
 ## Event mapping
 
