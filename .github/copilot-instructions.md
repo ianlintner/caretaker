@@ -19,6 +19,18 @@ This IS the central caretaker repository. It uses its own system for maintenance
 - Always ensure CI passes before considering work complete
 - Reference the agent file for your role: `.github/agents/maintainer-pr.md` or `maintainer-issue.md`
 
+### Pre-push checklist
+
+Before pushing any commits, **always** run the full CI validation locally and confirm every step passes:
+
+1. `ruff check src/ tests/` — lint
+2. `ruff format --check src/ tests/` — format check
+3. `mypy src/` — type check
+4. `pytest tests/ -q` — tests
+5. `mkdocs build --strict` — docs build (if docs changed)
+
+If any step fails, fix it before committing/pushing. Do not push code that has not passed all checks.
+
 ### Conventions
 
 - Branch naming: `maintainer/{type}-{description}`
