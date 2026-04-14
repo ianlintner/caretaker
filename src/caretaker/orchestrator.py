@@ -55,9 +55,9 @@ class Orchestrator:
         """Create an orchestrator from a YAML config file path."""
         config = MaintainerConfig.from_yaml(path)
 
-        token = os.environ.get("GITHUB_TOKEN", "")
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
         if not token:
-            raise RuntimeError("GITHUB_TOKEN environment variable is required")
+            raise RuntimeError("GITHUB_TOKEN or COPILOT_PAT environment variable is required")
 
         owner = os.environ.get("GITHUB_REPOSITORY_OWNER", "")
         repo_name = os.environ.get("GITHUB_REPOSITORY_NAME", "")
@@ -73,7 +73,7 @@ class Orchestrator:
                     "GITHUB_REPOSITORY_NAME environment variables are required"
                 )
 
-        github = GitHubClient(token=token)
+        github = GitHubClient(token=token, copilot_token=os.environ.get("COPILOT_PAT"))
         return cls(config=config, github=github, owner=owner, repo=repo_name)
 
     async def run(

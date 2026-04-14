@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from caretaker.devops_agent.log_analyzer import FailureSummary, analyze_job_log
+from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -47,6 +48,7 @@ class DevOpsAgent:
         self._repo = repo
         self._default_branch = default_branch
         self._max_issues_per_run = max_issues_per_run
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> DevOpsReport:
         """Inspect recent CI runs on the default branch and act on failures."""
@@ -163,9 +165,7 @@ class DevOpsAgent:
 
     async def _get_existing_failure_signatures(self) -> set[str]:
         """Return the set of failure signatures already tracked in open issues."""
-        issues = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=BUILD_FAILURE_LABEL
-        )
+        issues = await self._issues.list(state="open", labels=BUILD_FAILURE_LABEL)
         sigs: set[str] = set()
         for issue in issues:
             if DEVOPS_AGENT_MARKER in issue.body:
@@ -186,17 +186,18 @@ class DevOpsAgent:
         body = _build_issue_body(summary, sig, self._default_branch)
 
         # Ensure the label exists
-        await self._ensure_label(
+        await self._issues.ensure_label(
             BUILD_FAILURE_LABEL, "d93f0b", "CI build failure on default branch"
         )
 
-        return await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        return await self._issues.create(
             title=title,
             body=body,
             labels=[BUILD_FAILURE_LABEL, "bug"],
             assignees=["copilot"],
+            copilot_assignment=self._issues.default_copilot_assignment(
+                base_branch=self._default_branch,
+            ),
         )
 
     async def _ensure_label(self, name: str, color: str, description: str) -> None:

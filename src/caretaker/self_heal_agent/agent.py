@@ -14,6 +14,7 @@ from caretaker.self_heal_agent.upstream_reporter import (
     report_upstream_bug,
     report_upstream_feature,
 )
+from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -70,6 +71,7 @@ class SelfHealAgent:
         self._owner = owner
         self._repo = repo
         self._report_upstream = report_upstream
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
@@ -234,9 +236,7 @@ class SelfHealAgent:
         return ""
 
     async def _get_existing_self_heal_sigs(self) -> set[str]:
-        issues = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=SELF_HEAL_LABEL
-        )
+        issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
         sigs: set[str] = set()
         for issue in issues:
             for line in issue.body.splitlines():
@@ -260,13 +260,12 @@ class SelfHealAgent:
         full_title = f"🩺 Caretaker self-heal: {title}"
         body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig)
         await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
-        return await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        return await self._issues.create(
             title=full_title,
             body=body,
             labels=[SELF_HEAL_LABEL, "bug"],
             assignees=["copilot"],
+            copilot_assignment=self._issues.default_copilot_assignment(),
         )
 
     async def _create_local_tracking_issue(
@@ -288,9 +287,7 @@ class SelfHealAgent:
             f"<details><summary>Log snippet</summary>\n\n```\n{log_text[-2000:]}\n```\n\n</details>"
         )
         await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
-        return await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        return await self._issues.create(
             title=full_title,
             body=body,
             labels=[SELF_HEAL_LABEL],
@@ -368,6 +365,7 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
             f"Error: {msg}\n\n"
             f"Common fixes:\n"
             f"- Verify `GITHUB_TOKEN` has the required permissions\n"
+            f"- Verify `COPILOT_PAT` is set if caretaker assigns issues to Copilot via the API\n"
             f"- Verify `ANTHROPIC_API_KEY` is set if LLM features are enabled\n"
             f"- Check that repository secrets are configured correctly",
         )

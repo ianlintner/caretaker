@@ -207,6 +207,9 @@ class TestDependencyAgentAutoMerge:
         gh.create_issue.assert_awaited_once()
         call_kwargs = gh.create_issue.call_args.kwargs
         assert "copilot" in call_kwargs.get("assignees", [])
+        assignment = call_kwargs.get("copilot_assignment")
+        assert assignment is not None
+        assert assignment.to_api_payload()["target_repo"] == "o/r"
 
     @pytest.mark.asyncio
     async def test_ignores_non_dependabot_prs(self) -> None:

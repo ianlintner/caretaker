@@ -1,8 +1,11 @@
 """GitHub data models."""
 
+# ruff: noqa: I001
+
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003 - needed for Pydantic annotation resolution
+import datetime as dt  # noqa: TC003
+
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -21,7 +24,7 @@ COPILOT_LOGINS = frozenset(
 
 def is_copilot_login(login: str) -> bool:
     """Return whether *login* refers to a GitHub Copilot coding agent identity."""
-    return login in COPILOT_LOGINS
+    return login.casefold() in COPILOT_LOGINS
 
 
 class PRState(StrEnum):
@@ -71,8 +74,8 @@ class CheckRun(BaseModel):
     name: str
     status: CheckStatus
     conclusion: CheckConclusion | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
+    started_at: dt.datetime | None = None
+    completed_at: dt.datetime | None = None
     html_url: str = ""
     output_title: str | None = None
     output_summary: str | None = None
@@ -83,15 +86,15 @@ class Review(BaseModel):
     user: User
     state: ReviewState
     body: str = ""
-    submitted_at: datetime | None = None
+    submitted_at: dt.datetime | None = None
 
 
 class Comment(BaseModel):
     id: int
     user: User
     body: str
-    created_at: datetime
-    updated_at: datetime | None = None
+    created_at: dt.datetime
+    updated_at: dt.datetime | None = None
 
     @property
     def is_maintainer_task(self) -> bool:
@@ -114,8 +117,8 @@ class PullRequest(BaseModel):
     merged: bool = False
     draft: bool = False
     labels: list[Label] = Field(default_factory=list)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
     html_url: str = ""
 
     @property
@@ -142,8 +145,8 @@ class Issue(BaseModel):
     user: User
     labels: list[Label] = Field(default_factory=list)
     assignees: list[User] = Field(default_factory=list)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
     html_url: str = ""
 
     def has_label(self, name: str) -> bool:
