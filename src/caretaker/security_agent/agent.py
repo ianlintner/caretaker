@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
 
+from caretaker.github_client.api import GitHubAPIError
+
 logger = logging.getLogger(__name__)
 
 SECURITY_LABEL = "security:finding"
@@ -151,22 +153,31 @@ class SecurityAgent:
             try:
                 findings.extend(await self._collect_dependabot_alerts())
             except Exception as e:
-                logger.warning("Security agent: dependabot alerts unavailable: %s", e)
-                report.errors.append(f"dependabot: {e}")
+                if _is_feature_unavailable(e):
+                    logger.info("Security agent: dependabot alerts unavailable: %s", e)
+                else:
+                    logger.warning("Security agent: dependabot alerts error: %s", e)
+                    report.errors.append(f"dependabot: {e}")
 
         if self._include_code_scanning:
             try:
                 findings.extend(await self._collect_code_scanning_alerts())
             except Exception as e:
-                logger.warning("Security agent: code scanning unavailable: %s", e)
-                report.errors.append(f"code_scanning: {e}")
+                if _is_feature_unavailable(e):
+                    logger.info("Security agent: code scanning unavailable: %s", e)
+                else:
+                    logger.warning("Security agent: code scanning error: %s", e)
+                    report.errors.append(f"code_scanning: {e}")
 
         if self._include_secret_scanning:
             try:
                 findings.extend(await self._collect_secret_scanning_alerts())
             except Exception as e:
-                logger.warning("Security agent: secret scanning unavailable: %s", e)
-                report.errors.append(f"secret_scanning: {e}")
+                if _is_feature_unavailable(e):
+                    logger.info("Security agent: secret scanning unavailable: %s", e)
+                else:
+                    logger.warning("Security agent: secret scanning error: %s", e)
+                    report.errors.append(f"secret_scanning: {e}")
 
         # Filter to actionable findings
         findings = [f for f in findings if self._is_actionable(f)]
@@ -398,3 +409,8 @@ class SecurityAgent:
 def _finding_signature(finding: SecurityFinding) -> str:
     raw = f"{finding.kind.value}:{finding.alert_number}:{finding.package}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def _is_feature_unavailable(exc: Exception) -> bool:
+    """Return True when the error indicates a GitHub feature is disabled or inaccessible."""
+    return isinstance(exc, GitHubAPIError) and exc.status_code in (403, 404)

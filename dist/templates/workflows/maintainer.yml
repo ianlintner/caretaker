@@ -13,11 +13,6 @@ on:
     types: [opened, labeled]
   issue_comment:
     types: [created]
-  # Triggered when ANY workflow run completes — used by devops + self-heal agents
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-  # Security agent runs during the scheduled cycle (no webhook event for Dependabot alerts)
   workflow_dispatch:
     inputs:
       mode:
@@ -25,21 +20,7 @@ on:
         required: false
         default: "full"
         type: choice
-        options:
-          [
-            full,
-            pr-only,
-            issue-only,
-            upgrade-only,
-            devops,
-            self-heal,
-            security,
-            deps,
-            docs,
-            stale,
-            escalation,
-            dry-run,
-          ]
+        options: [full, pr-only, issue-only, upgrade-only, dry-run]
 
 permissions:
   contents: write
@@ -59,12 +40,12 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install caretaker (dogfood)
+      - name: Install caretaker
         run: |
-          pip install .
+          VERSION=$(cat .github/maintainer/.version)
+          pip install "caretaker @ git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
 
       - name: Run
-        id: caretaker_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -72,7 +53,7 @@ jobs:
         run: |
           caretaker run \
             --config .github/maintainer/config.yml \
-            --mode "${{ github.event.inputs.mode || (github.event_name == 'workflow_run' && 'event') || 'full' }}" \
+            --mode "${{ github.event.inputs.mode || 'full' }}" \
             --event-type "${{ github.event_name }}" \
             --event-payload "$CARETAKER_EVENT_PAYLOAD"
 
@@ -91,14 +72,15 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install caretaker (dogfood)
-        run: pip install .
+      - name: Install caretaker
+        run: |
+          VERSION=$(cat .github/maintainer/.version)
+          pip install "caretaker @ git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
 
       - name: Self-heal — analyse own failure
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
           CARETAKER_EVENT_PAYLOAD: >-
             {
