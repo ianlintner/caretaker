@@ -400,7 +400,7 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
             f"Error: {msg}",
         )
 
-    msg = _extract_first_error(log_tail)
+    msg = _extract_first_error(log_text)
     return (
         FailureKind.UNKNOWN,
         f"Unknown caretaker failure: {msg[:80]}",
