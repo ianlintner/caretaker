@@ -46,6 +46,14 @@ permissions:
   issues: write
   pull-requests: write
 
+# Prevent duplicate runs for the same PR / branch.  Concurrent check_suite,
+# pull_request, and workflow_run events for the same head can fire within
+# seconds of each other; without this guard every run posts its own @copilot
+# comment (the root cause of the spam seen on PR #269).
+concurrency:
+  group: caretaker-${{ github.event.pull_request.number || github.event.check_suite.head_branch || github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   maintain:
     runs-on: ubuntu-latest
