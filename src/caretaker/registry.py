@@ -6,8 +6,10 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from caretaker.agent_protocol import AgentResult, BaseAgent
     from caretaker.state.models import OrchestratorState, RunSummary
+
+    BaseAgent = Any
+    AgentResult = Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +60,7 @@ class AgentRegistry:
     def agents_for_mode(self, mode: str) -> list[BaseAgent]:
         """Return the ordered list of agents that should run for *mode*."""
         return [
-            agent
-            for name, agent in self._agents.items()
-            if mode in self._mode_map.get(name, set())
+            agent for name, agent in self._agents.items() if mode in self._mode_map.get(name, set())
         ]
 
     async def run_all(
