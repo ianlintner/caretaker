@@ -174,3 +174,52 @@ class TestSecurityAgentCollectsAlerts:
 
         assert report.findings_found == 0
         gh.list_dependabot_alerts.assert_not_awaited()
+
+
+class TestSecurityAgentUnavailableFeatures:
+    """403 errors from disabled GitHub features should be warnings, not errors."""
+
+    @pytest.mark.asyncio
+    async def test_403_dependabot_is_not_an_error(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        gh = make_github()
+        gh.list_dependabot_alerts.side_effect = GitHubAPIError(403, "Dependabot disabled")
+        agent = SecurityAgent(github=gh, owner="o", repo="r")
+        report = await agent.run()
+
+        assert report.errors == []
+
+    @pytest.mark.asyncio
+    async def test_403_code_scanning_is_not_an_error(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        gh = make_github()
+        gh.list_code_scanning_alerts.side_effect = GitHubAPIError(403, "Not accessible")
+        agent = SecurityAgent(github=gh, owner="o", repo="r")
+        report = await agent.run()
+
+        assert report.errors == []
+
+    @pytest.mark.asyncio
+    async def test_403_secret_scanning_is_not_an_error(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        gh = make_github()
+        gh.list_secret_scanning_alerts.side_effect = GitHubAPIError(403, "Not accessible")
+        agent = SecurityAgent(github=gh, owner="o", repo="r")
+        report = await agent.run()
+
+        assert report.errors == []
+
+    @pytest.mark.asyncio
+    async def test_non_403_error_is_still_reported(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        gh = make_github()
+        gh.list_dependabot_alerts.side_effect = GitHubAPIError(500, "Server error")
+        agent = SecurityAgent(github=gh, owner="o", repo="r")
+        report = await agent.run()
+
+        assert len(report.errors) == 1
+        assert "500" in report.errors[0]

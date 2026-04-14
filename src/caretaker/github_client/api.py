@@ -213,8 +213,19 @@ class GitHubClient:
         number: int,
         **kwargs: Any,
     ) -> Issue:
+        # GitHub rejects "copilot" as a regular assignee — use the dedicated endpoint
+        assignees: list[str] | None = kwargs.get("assignees")
+        assign_copilot = assignees is not None and "copilot" in assignees
+        if assign_copilot and assignees is not None:
+            kwargs["assignees"] = [a for a in assignees if a != "copilot"]
+
         data = await self._patch(f"/repos/{owner}/{repo}/issues/{number}", json=kwargs)
-        return self._parse_issue(data)
+        issue = self._parse_issue(data)
+
+        if assign_copilot:
+            await self.assign_copilot_to_issue(owner, repo, number)
+
+        return issue
 
     async def add_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Comment:
         data = await self._post(
