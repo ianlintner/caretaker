@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class FailureType(StrEnum):
+    BACKLOG = "BACKLOG"
     TEST_FAILURE = "TEST_FAILURE"
     LINT_FAILURE = "LINT_FAILURE"
     BUILD_FAILURE = "BUILD_FAILURE"
@@ -35,6 +36,17 @@ class TriageResult:
 
 # Patterns for classifying CI failures by job name / output
 _PATTERNS: list[tuple[FailureType, list[str]]] = [
+    (
+        FailureType.BACKLOG,
+        [
+            r"(?i)queue-guard",
+            r"(?i)backpressure",
+            r"(?i)backlog",
+            r"(?i)queue pressure",
+            r"(?i)too many active pull_request ci runs",
+            r"(?i)failing this run early",
+        ],
+    ),
     (
         FailureType.TEST_FAILURE,
         [
@@ -101,6 +113,12 @@ def build_fix_instructions(failure_type: FailureType, check_run: CheckRun) -> st
     base = f"The `{check_run.name}` job failed."
 
     instructions = {
+        FailureType.BACKLOG: (
+            f"{base} — the repository backlog guard tripped.\n"
+            "1. Do not change application code for this failure alone\n"
+            "2. Wait for CI capacity to recover or for caretaker to clean up managed PRs\n"
+            "3. Re-run CI once the queue has cleared if the PR should stay open"
+        ),
         FailureType.TEST_FAILURE: (
             f"{base}\n"
             "1. Read the test failure output carefully\n"

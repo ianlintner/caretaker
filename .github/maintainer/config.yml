@@ -21,6 +21,9 @@ pr_agent:
   ci:
     flaky_retries: 1
     ignore_jobs: []
+    # When the repo-wide PR CI backlog guard trips, close caretaker-managed PRs
+    # instead of asking Copilot to "fix" queue pressure.
+    close_managed_prs_on_backlog: true
   review:
     auto_approve_copilot: false
     nitpick_threshold: low

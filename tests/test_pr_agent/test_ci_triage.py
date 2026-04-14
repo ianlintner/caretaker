@@ -15,6 +15,10 @@ from tests.conftest import make_check_run
 
 
 class TestClassifyFailure:
+    def test_backlog_failure_by_queue_guard_name(self) -> None:
+        cr = make_check_run(name="queue-guard", conclusion=CheckConclusion.FAILURE)
+        assert classify_failure(cr) == FailureType.BACKLOG
+
     def test_test_failure_by_name(self) -> None:
         cr = make_check_run(name="test-unit", conclusion=CheckConclusion.FAILURE)
         assert classify_failure(cr) == FailureType.TEST_FAILURE
@@ -61,6 +65,12 @@ class TestClassifyFailure:
 
 
 class TestBuildFixInstructions:
+    def test_backlog_instructions(self) -> None:
+        cr = make_check_run(name="queue-guard")
+        instructions = build_fix_instructions(FailureType.BACKLOG, cr)
+        assert "backlog guard" in instructions
+        assert "Do not change application code" in instructions
+
     def test_test_failure_instructions(self) -> None:
         cr = make_check_run(name="test-unit")
         instructions = build_fix_instructions(FailureType.TEST_FAILURE, cr)
