@@ -17,9 +17,7 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-  # Triggered by Dependabot alerts — used by security agent
-  dependabot_alert:
-    types: [created]
+  # Security agent runs during the scheduled cycle (no webhook event for Dependabot alerts)
   workflow_dispatch:
     inputs:
       mode:
