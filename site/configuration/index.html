@@ -608,6 +608,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#charlie-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Charlie agent
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -844,6 +855,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#charlie-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Charlie agent
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -932,6 +954,10 @@
 <td>changelog/docs reconciliation</td>
 </tr>
 <tr>
+<td><code>charlie_agent</code></td>
+<td>janitorial cleanup for caretaker-managed work</td>
+</tr>
+<tr>
 <td><code>stale_agent</code></td>
 <td>stale issues, PRs, and merged branch cleanup</td>
 </tr>
@@ -973,6 +999,11 @@ issue_agent:
 security_agent:
   min_severity: medium
 
+charlie_agent:
+  stale_days: 14
+  close_duplicate_issues: true
+  close_duplicate_prs: true
+
 stale_agent:
   stale_days: 60
   close_after: 14
@@ -989,6 +1020,8 @@ stale_agent:
 </ul>
 <h3 id="docs-and-stale-agents">Docs and stale agents<a class="headerlink" href="#docs-and-stale-agents" title="Permanent link">&para;</a></h3>
 <p>The docs agent updates changelog-style documentation from recently merged PRs, while the stale agent warns and closes aged work based on repo policy.</p>
+<h3 id="charlie-agent">Charlie agent<a class="headerlink" href="#charlie-agent" title="Permanent link">&para;</a></h3>
+<p>The Charlie agent is a narrower janitor for caretaker-managed operational work. It closes duplicate assignment issues/PRs and short-lived abandoned automation after a smaller default window than the generic stale agent.</p>
 
 
 

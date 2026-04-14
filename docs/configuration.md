@@ -32,6 +32,7 @@ caretaker validate-config --config .github/maintainer/config.yml
 | `security_agent`   | Dependabot, code scanning, and secret scanning triage |
 | `dependency_agent` | dependency PR merging and digest generation           |
 | `docs_agent`       | changelog/docs reconciliation                         |
+| `charlie_agent`    | janitorial cleanup for caretaker-managed work         |
 | `stale_agent`      | stale issues, PRs, and merged branch cleanup          |
 | `human_escalation` | digest issue for work needing maintainer action       |
 | `escalation`       | escalation targets and stale-age policy               |
@@ -63,6 +64,11 @@ issue_agent:
 security_agent:
   min_severity: medium
 
+charlie_agent:
+  stale_days: 14
+  close_duplicate_issues: true
+  close_duplicate_prs: true
+
 stale_agent:
   stale_days: 60
   close_after: 14
@@ -85,3 +91,7 @@ These agents are intentionally conservative:
 ### Docs and stale agents
 
 The docs agent updates changelog-style documentation from recently merged PRs, while the stale agent warns and closes aged work based on repo policy.
+
+### Charlie agent
+
+The Charlie agent is a narrower janitor for caretaker-managed operational work. It closes duplicate assignment issues/PRs and short-lived abandoned automation after a smaller default window than the generic stale agent.

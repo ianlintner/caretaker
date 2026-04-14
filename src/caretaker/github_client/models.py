@@ -158,7 +158,13 @@ class Issue(BaseModel):
 
     @property
     def is_maintainer_issue(self) -> bool:
-        return self.title.startswith("[Maintainer]") or self.has_label("maintainer:internal")
+        return (
+            self.title.startswith("[Maintainer]")
+            or self.has_label("maintainer:internal")
+            or self.has_label("maintainer:assigned")
+            or "<!-- caretaker:assignment -->" in self.body
+            or "<!-- maintainer-state:" in self.body
+        )
 
 
 class Repository(BaseModel):

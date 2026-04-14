@@ -95,6 +95,12 @@ class RunSummary(BaseModel):
     # Docs agent metrics
     docs_prs_analyzed: int = 0
     docs_pr_opened: int | None = None
+    # Charlie agent metrics
+    charlie_managed_issues: int = 0
+    charlie_managed_prs: int = 0
+    charlie_issues_closed: int = 0
+    charlie_prs_closed: int = 0
+    charlie_duplicates_closed: int = 0
     # Stale agent metrics
     stale_issues_warned: int = 0
     stale_issues_closed: int = 0

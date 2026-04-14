@@ -813,6 +813,10 @@
 <td>reconciles merged PRs into changelog/docs updates</td>
 </tr>
 <tr>
+<td>Charlie agent</td>
+<td>closes duplicate or abandoned caretaker-managed issues and PRs</td>
+</tr>
+<tr>
 <td>Stale agent</td>
 <td>warns/closes stale work and prunes merged branches</td>
 </tr>
@@ -828,6 +832,7 @@
 <li>the <strong>GitHub client</strong> is the shared integration layer for repo state and mutations</li>
 <li>the <strong>state tracker</strong> persists issue/PR tracking data in GitHub comments</li>
 <li>the <strong>LLM layer</strong> adds higher-quality reasoning where configured</li>
+<li>the <strong>Charlie agent</strong> handles short-horizon cleanup for caretaker-managed operational clutter</li>
 </ul>
 <h2 id="event-mapping">Event mapping<a class="headerlink" href="#event-mapping" title="Permanent link">&para;</a></h2>
 <table>

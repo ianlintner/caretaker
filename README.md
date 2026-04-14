@@ -95,6 +95,12 @@ No Python. No Node. No vendored code. Just config and Copilot instructions.
 - Auto-closes answered questions (configurable)
 - Escalates complex issues to repo owner
 
+### Charlie Agent
+
+- Cleans up duplicate caretaker-managed issues and PRs
+- Closes abandoned caretaker-managed work after a shorter 14-day default window
+- Keeps agent-generated clutter from snowballing before the broader stale policy runs
+
 ### Upgrade Agent
 
 - Checks for new caretaker releases
@@ -130,6 +136,11 @@ pr_agent:
 issue_agent:
   auto_assign_bugs: true # Auto-assign simple bugs to Copilot
   auto_assign_features: false
+
+charlie_agent:
+  stale_days: 14 # Short janitorial window for caretaker-managed work
+  close_duplicate_issues: true
+  close_duplicate_prs: true
 
 upgrade_agent:
   strategy: auto-minor # auto-minor | auto-patch | latest | pinned

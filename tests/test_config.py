@@ -22,6 +22,8 @@ class TestMaintainerConfig:
         assert config.issue_agent.enabled is True
         assert config.issue_agent.auto_assign_bugs is True
         assert config.issue_agent.auto_assign_features is False
+        assert config.charlie_agent.enabled is True
+        assert config.charlie_agent.stale_days == 14
         assert config.upgrade_agent.enabled is True
         assert config.upgrade_agent.strategy == "auto-minor"
 
@@ -36,6 +38,9 @@ pr_agent:
     max_retries: 3
 issue_agent:
   auto_assign_features: true
+charlie_agent:
+    stale_days: 21
+    close_duplicate_prs: false
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
@@ -46,6 +51,8 @@ issue_agent:
         assert config.pr_agent.auto_merge.merge_method == "merge"
         assert config.pr_agent.copilot.max_retries == 3
         assert config.issue_agent.auto_assign_features is True
+        assert config.charlie_agent.stale_days == 21
+        assert config.charlie_agent.close_duplicate_prs is False
         # Defaults still apply for unspecified fields
         assert config.pr_agent.auto_merge.dependabot_prs is True
 

@@ -82,6 +82,33 @@ class TestIssue:
         )
         assert issue.is_maintainer_issue is True
 
+    def test_is_maintainer_issue_by_assigned_label(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            user=User(login="user", id=1, type="User"),
+            labels=[Label(name="maintainer:assigned")],
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_assignment_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            body="<!-- caretaker:assignment -->\nTYPE: BUG_SIMPLE",
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_state_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            body='<!-- maintainer-state:{"tracked_issues":{}}:maintainer-state -->',
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
     def test_not_maintainer_issue(self) -> None:
         issue = Issue(
             number=1,

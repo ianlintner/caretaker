@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -172,9 +173,9 @@ class DevOpsAgent:
                 # Extract the sig embedded in the marker
                 for line in issue.body.splitlines():
                     if line.startswith(DEVOPS_AGENT_MARKER):
-                        sig = line.replace(DEVOPS_AGENT_MARKER, "").replace("-->", "").strip()
-                        if sig:
-                            sigs.add(sig)
+                        match = re.search(r"\bsig:([0-9a-f]+)\b", line)
+                        if match:
+                            sigs.add(match.group(1))
         return sigs
 
     async def _create_fix_issue(self, summary: FailureSummary, sig: str) -> Issue:
