@@ -25,30 +25,30 @@ class TestMaintainerConfig:
         assert config.issue_agent.auto_assign_features is False
         assert config.charlie_agent.enabled is True
         assert config.charlie_agent.stale_days == 14
-        assert config.upgrade_agent.enabled is True
-        assert config.upgrade_agent.strategy == "auto-minor"
+                assert config.upgrade_agent.enabled is True
+                assert config.upgrade_agent.strategy == "auto-minor"
 
-    def test_from_yaml(self) -> None:
-        yaml_content = """
+        def test_from_yaml(self) -> None:
+                yaml_content = """
 version: v1
 pr_agent:
-  auto_merge:
-    copilot_prs: false
-    merge_method: merge
-  copilot:
-    max_retries: 3
+    auto_merge:
+        copilot_prs: false
+        merge_method: merge
+    copilot:
+        max_retries: 3
     ci:
         close_managed_prs_on_backlog: true
 issue_agent:
-  auto_assign_features: true
+    auto_assign_features: true
 charlie_agent:
     stale_days: 21
     close_duplicate_prs: false
 """
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-            f.write(yaml_content)
-            f.flush()
-            config = MaintainerConfig.from_yaml(f.name)
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+                        f.write(yaml_content)
+                        f.flush()
+                        config = MaintainerConfig.from_yaml(f.name)
 
         assert config.pr_agent.auto_merge.copilot_prs is False
         assert config.pr_agent.auto_merge.merge_method == "merge"
