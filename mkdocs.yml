@@ -34,6 +34,7 @@ nav:
   - Agents: agents.md
   - Architecture: architecture.md
   - Development: development.md
+  - Refactor Plan: refactor-plan.md
   - Release notes: release-notes.md
 
 plugins:

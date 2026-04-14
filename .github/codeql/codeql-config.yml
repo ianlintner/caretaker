@@ -1,0 +1,10 @@
+name: "Caretaker CodeQL Configuration"
+
+# Exclude generated/build artefacts and third-party vendored JS from analysis.
+# The site/ directory is a MkDocs build output deployed via GitHub Actions Pages
+# workflow and must not be scanned — it contains bundled third-party JavaScript
+# libraries that produce noisy results and inflate SARIF upload costs.
+paths-ignore:
+  - site/**
+  - "**/*.min.js"
+  - "**/*.min.js.map"

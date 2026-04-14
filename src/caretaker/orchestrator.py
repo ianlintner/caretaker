@@ -98,11 +98,12 @@ class Orchestrator:
         )
 
         # Load persisted state
-        state = await self._state_tracker.load()
+        state = OrchestratorState()
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
         has_errors = False
 
         try:
+            state = await self._state_tracker.load()
             # Event-driven mode — route to specific agent
             if mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)

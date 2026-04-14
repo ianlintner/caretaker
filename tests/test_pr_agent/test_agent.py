@@ -433,3 +433,111 @@ class TestProcessPRStatePersistence:
 
         # The handler sets FIX_REQUESTED — it must persist
         assert updated.state == PRTrackingState.FIX_REQUESTED
+
+
+@pytest.mark.asyncio
+class TestHandleMergeBranchProtection:
+    """Tests for _handle_merge when GitHub rejects merge due to branch-protection rules."""
+
+    async def _run_handle_merge(
+        self,
+        pr,
+        tracking: TrackedPR,
+        config: PRAgentConfig,
+        merge_side_effect=None,
+    ) -> tuple:
+        """Helper: invoke _handle_merge and return (tracking, report, agent)."""
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReviewEvaluation,
+        )
+
+        github = AsyncMock()
+        if merge_side_effect is not None:
+            github.merge_pull_request.side_effect = merge_side_effect
+        else:
+            github.merge_pull_request.return_value = True
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        ci_eval = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[make_check_run(name="lint", conclusion=CheckConclusion.SUCCESS)],
+            all_completed=True,
+        )
+        review_eval = ReviewEvaluation(
+            changes_requested=False,
+            approved=True,
+            pending=False,
+            blocking_reviews=[],
+            approving_reviews=[],
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=review_eval,
+            recommended_state=PRTrackingState.MERGE_READY,
+            recommended_action="merge",
+        )
+
+        report = PRAgentReport()
+        updated_tracking = await agent._handle_merge(pr, evaluation, tracking, report)
+        return updated_tracking, report, agent
+
+    async def test_405_branch_protection_adds_to_waiting_not_errors(self) -> None:
+        """A 405 from GitHub (branch protection) must not propagate as an error."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=10, user=copilot_user)
+        tracking = TrackedPR(number=10)
+        config = make_config()
+
+        exc = GitHubAPIError(
+            405,
+            '{"message":"Repository rule violations found'
+            '\\n\\nAt least 1 approving review is required."}',
+        )
+        updated, report, _ = await self._run_handle_merge(
+            pr, tracking, config, merge_side_effect=exc
+        )
+
+        assert 10 in report.waiting
+        assert report.errors == []
+
+    async def test_409_conflict_adds_to_waiting_not_errors(self) -> None:
+        """A 409 from GitHub (merge conflict) must not propagate as an error."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=11, user=copilot_user)
+        tracking = TrackedPR(number=11)
+        config = make_config()
+
+        exc = GitHubAPIError(409, '{"message":"Merge conflict"}')
+        updated, report, _ = await self._run_handle_merge(
+            pr, tracking, config, merge_side_effect=exc
+        )
+
+        assert 11 in report.waiting
+        assert report.errors == []
+
+    async def test_unexpected_api_error_is_re_raised(self) -> None:
+        """A GitHubAPIError with an unexpected status code must be re-raised."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=12, user=copilot_user)
+        tracking = TrackedPR(number=12)
+        config = make_config()
+
+        exc = GitHubAPIError(500, '{"message":"Internal Server Error"}')
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await self._run_handle_merge(pr, tracking, config, merge_side_effect=exc)
+
+        assert exc_info.value.status_code == 500
