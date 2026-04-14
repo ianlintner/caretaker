@@ -227,3 +227,72 @@ class TestEvaluatePR:
         result = evaluate_pr(pr, checks, reviews, PRTrackingState.CI_PASSING)
         assert result.recommended_state == PRTrackingState.REVIEW_CHANGES_REQUESTED
         assert result.recommended_action == "request_review_fix"
+
+    def test_ci_passing_automated_bot_comment_triggers_review_fix(self) -> None:
+        """A COMMENTED review from an automated reviewer bot must trigger request_review_fix."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider reconciling state before skipping. Also check API usage.",
+        )
+        result = evaluate_pr(pr, checks, [bot_review], PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.REVIEW_CHANGES_REQUESTED
+        assert result.recommended_action == "request_review_fix"
+        assert result.reviews.has_automated_comments
+
+    def test_ci_passing_bot_comment_empty_body_does_not_trigger(self) -> None:
+        """A COMMENTED review with no body from a bot must NOT trigger request_review_fix."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="",  # empty — no actionable content
+        )
+        result = evaluate_pr(pr, checks, [bot_review], PRTrackingState.CI_PASSING)
+        # Should be MERGE_READY (no reviews with content, CI passing)
+        assert result.recommended_action != "request_review_fix"
+        assert not result.reviews.has_automated_comments
+
+
+# ── evaluate_reviews — automated comment detection ────────────────
+
+
+class TestEvaluateReviewsAutomated:
+    def test_bot_commented_review_is_detected(self) -> None:
+        from caretaker.github_client.models import User
+
+        reviews = [
+            make_review(
+                user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+                state=ReviewState.COMMENTED,
+                body="Suggestion: fix the state handling",
+            )
+        ]
+        result = evaluate_reviews(reviews)
+        assert result.has_automated_comments
+        assert len(result.automated_review_comments) == 1
+
+    def test_human_commented_review_is_not_automated(self) -> None:
+        reviews = [make_review(state=ReviewState.COMMENTED, body="Looks fine")]
+        result = evaluate_reviews(reviews)
+        assert not result.has_automated_comments
+
+    def test_generic_bot_login_suffix_is_detected(self) -> None:
+        from caretaker.github_client.models import User
+
+        reviews = [
+            make_review(
+                user=User(login="some-custom-review[bot]", id=100, type="Bot"),
+                state=ReviewState.COMMENTED,
+                body="Please address this issue",
+            )
+        ]
+        result = evaluate_reviews(reviews)
+        assert result.has_automated_comments

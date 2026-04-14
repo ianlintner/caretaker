@@ -60,13 +60,27 @@ class PRAgent:
         )
 
     async def run(
-        self, tracked_prs: dict[int, TrackedPR]
+        self,
+        tracked_prs: dict[int, TrackedPR],
+        head_branch: str | None = None,
     ) -> tuple[PRAgentReport, dict[int, TrackedPR]]:
-        """Run the PR agent — evaluate all open PRs and take action."""
+        """Run the PR agent — evaluate all open PRs and take action.
+
+        Args:
+            tracked_prs: Current tracking state keyed by PR number.
+            head_branch: Optional branch name filter. When provided, only PRs
+                whose ``head_ref`` matches this value are evaluated (used to
+                limit work on ``workflow_run`` events to the relevant branch).
+        """
         report = PRAgentReport()
 
         # Discover open PRs
         open_prs = await self._github.list_pull_requests(self._owner, self._repo)
+
+        # Filter to branch of interest when provided (avoids full scan on workflow_run)
+        if head_branch:
+            open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
+
         report.monitored = len(open_prs)
 
         for pr in open_prs:

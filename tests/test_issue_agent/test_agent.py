@@ -121,6 +121,29 @@ class TestIssueAgent:
             # State should remain unchanged
             assert tracked[4].state == initial_state
 
+    async def test_assigned_issue_resets_to_triaged_when_copilot_unassigned(self) -> None:
+        """If Copilot is removed from assignees and no linked PR exists,
+        an ASSIGNED/IN_PROGRESS issue must downgrade to TRIAGED for re-dispatch."""
+        github = AsyncMock()
+        # Issue is open but Copilot is NOT in assignees anymore
+        issue = make_issue(5, "Re-open me", "copilot was unassigned")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(auto_assign_bugs=True),
+        )
+
+        for initial_state in (IssueTrackingState.ASSIGNED, IssueTrackingState.IN_PROGRESS):
+            _report, tracked = await agent.run({5: TrackedIssue(number=5, state=initial_state)})
+            assert tracked[5].state == IssueTrackingState.TRIAGED, (
+                f"Expected TRIAGED when Copilot unassigned (was {initial_state}), "
+                f"got {tracked[5].state}"
+            )
+
     async def test_linked_pr_sets_pr_opened(self) -> None:
         github = AsyncMock()
         issue = make_issue(

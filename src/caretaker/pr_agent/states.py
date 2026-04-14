@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from caretaker.github_client.models import (
@@ -14,6 +14,7 @@ from caretaker.github_client.models import (
     Review,
     ReviewState,
 )
+from caretaker.pr_agent._constants import is_automated_reviewer
 from caretaker.state.models import PRTrackingState
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,13 @@ class ReviewEvaluation:
     pending: bool
     approving_reviews: list[Review]
     blocking_reviews: list[Review]
+    # Reviews with COMMENTED state from automated reviewer bots that contain
+    # actionable feedback (e.g. copilot-pull-request-reviewer).
+    automated_review_comments: list[Review] = field(default_factory=list)
+
+    @property
+    def has_automated_comments(self) -> bool:
+        return len(self.automated_review_comments) > 0
 
 
 @dataclass
@@ -111,6 +119,13 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
 
     approvals = [r for r in latest_by_user.values() if r.state == ReviewState.APPROVED]
     blockers = [r for r in latest_by_user.values() if r.state == ReviewState.CHANGES_REQUESTED]
+    automated = [
+        r
+        for r in latest_by_user.values()
+        if r.state == ReviewState.COMMENTED
+        and is_automated_reviewer(r.user.login)
+        and r.body  # only reviews that carry a summary body
+    ]
 
     return ReviewEvaluation(
         approved=len(approvals) > 0 and len(blockers) == 0,
@@ -118,6 +133,7 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
         pending=len(latest_by_user) == 0,
         approving_reviews=approvals,
         blocking_reviews=blockers,
+        automated_review_comments=automated,
     )
 
 
@@ -174,6 +190,17 @@ def evaluate_pr(
 
     # CI passing — check reviews
     if review_eval.changes_requested:
+        return PRStateEvaluation(
+            pr=pr,
+            ci=ci,
+            reviews=review_eval,
+            recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
+            recommended_action="request_review_fix",
+        )
+
+    # Automated reviewer bots (e.g. copilot-pull-request-reviewer) posted comments
+    # that are not formal CHANGES_REQUESTED but still carry actionable feedback.
+    if review_eval.has_automated_comments:
         return PRStateEvaluation(
             pr=pr,
             ci=ci,

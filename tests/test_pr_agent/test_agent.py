@@ -187,3 +187,56 @@ class TestOrchestratorWorkflowRunEvent:
         mock_pr.assert_awaited_once()
         mock_devops.assert_awaited_once()
         mock_heal.assert_awaited_once()
+
+    async def test_workflow_run_event_forwards_head_branch(self) -> None:
+        """head_branch from workflow_run payload must be forwarded to the PR agent."""
+        from caretaker.config import MaintainerConfig
+        from caretaker.orchestrator import Orchestrator
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        github = AsyncMock()
+        config = MaintainerConfig()
+        orchestrator = Orchestrator(config=config, github=github, owner="o", repo="r")
+
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with (
+            patch.object(orchestrator, "_run_pr_agent", new_callable=AsyncMock) as mock_pr,
+            patch.object(orchestrator, "_run_devops_agent", new_callable=AsyncMock),
+            patch.object(orchestrator, "_run_self_heal_agent", new_callable=AsyncMock),
+        ):
+            await orchestrator._handle_event(
+                "workflow_run",
+                {"workflow_run": {"head_branch": "copilot/my-feature", "conclusion": "failure"}},
+                state,
+                summary,
+            )
+
+        # The PR agent must receive the specific branch so only that PR is scanned
+        mock_pr.assert_awaited_once_with(state, summary, head_branch="copilot/my-feature")
+
+    async def test_pr_agent_run_filters_by_head_branch(self) -> None:
+        """When head_branch is provided, only PRs on that branch should be processed."""
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        from tests.conftest import make_pr as make_test_pr
+
+        pr_target = make_test_pr(number=10)
+        pr_target.head_ref = "copilot/fix-something"  # type: ignore[attr-defined]
+
+        pr_other = make_test_pr(number=11)
+        pr_other.head_ref = "some-other-branch"  # type: ignore[attr-defined]
+
+        github.list_pull_requests.return_value = [pr_target, pr_other]
+        github.get_check_runs.return_value = []
+        github.get_pr_reviews.return_value = []
+
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        report, _ = await agent.run({}, head_branch="copilot/fix-something")
+
+        # Only the matching PR was evaluated
+        assert report.monitored == 1
