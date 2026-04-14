@@ -107,7 +107,7 @@ class TestOrchestratorSelfHealMode:
         mock_devops.assert_not_called()
 
 
-
+class TestOrchestratorReportPath:
     async def test_run_writes_json_report(self, tmp_path: pathlib.Path) -> None:
         """Orchestrator.run writes a JSON report when report_path is provided."""
         orchestrator = make_orchestrator()
