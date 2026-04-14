@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
@@ -157,12 +158,27 @@ class PRAgent:
         merge_decision = evaluate_merge(pr, evaluation.ci, evaluation.reviews, self._config)
 
         if merge_decision.should_merge:
-            success = await self._github.merge_pull_request(
-                self._owner,
-                self._repo,
-                pr.number,
-                method=merge_decision.method,
-            )
+            try:
+                success = await self._github.merge_pull_request(
+                    self._owner,
+                    self._repo,
+                    pr.number,
+                    method=merge_decision.method,
+                )
+            except GitHubAPIError as exc:
+                # 405 = branch-protection rules not met (missing review/status check)
+                # 409 = merge conflict
+                # 422 = unprocessable (e.g. head ref out of date)
+                if exc.status_code in (405, 409, 422):
+                    logger.warning(
+                        "PR #%d cannot be merged yet (HTTP %d): %s",
+                        pr.number,
+                        exc.status_code,
+                        exc,
+                    )
+                    report.waiting.append(pr.number)
+                    return tracking
+                raise
             if success:
                 logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
                 tracking.state = PRTrackingState.MERGED
