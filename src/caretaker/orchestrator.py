@@ -125,7 +125,11 @@ class Orchestrator:
 
             # ── Goal pre-evaluation ───────────────────────────
             pre_eval: GoalEvaluation | None = None
-            if self._goal_engine and mode != "event":
+            if (
+                self._goal_engine
+                and mode != "event"
+                and self._config.goal_engine.goal_driven_dispatch
+            ):
                 goal_ctx = GoalContext(
                     github=self._github,
                     owner=self._owner,

@@ -175,12 +175,10 @@ class TestOrchestratorReportPath:
         ):
             await orchestrator.run(mode="charlie")
 
-        # With goal-driven dispatch, run_one is used instead of run_all
-        if mock_run_all.await_count:
-            call_kwargs = mock_run_all.call_args
-            assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
-        else:
-            assert mock_run_one.await_count >= 1
+        # Goal engine is disabled by default; legacy run_all path is taken
+        mock_run_all.assert_awaited_once()
+        assert mock_run_all.call_args.kwargs.get("mode") == "charlie"
+        mock_run_one.assert_not_awaited()
 
     async def test_dry_run_dispatches_full_mode(self) -> None:
         """Dry-run should evaluate the same agent set as full mode."""
@@ -202,11 +200,10 @@ class TestOrchestratorReportPath:
         ):
             await orchestrator.run(mode="dry-run")
 
-        # With goal-driven dispatch, agents_for_mode is called with 'full' (dry-run maps to full)
-        if mock_run_all.await_count:
-            assert mock_run_all.call_args.kwargs.get("mode") == "full"
-        else:
-            mock_afm.assert_called_once_with("full")
+        # Goal engine is disabled by default; legacy run_all path is taken with 'full' mode
+        mock_run_all.assert_awaited_once()
+        assert mock_run_all.call_args.kwargs.get("mode") == "full"
+        mock_afm.assert_not_called()
 
     async def test_self_heal_mode_forwards_event_payload(self) -> None:
         """Self-heal mode should pass event payload through to registry dispatch."""
@@ -225,15 +222,11 @@ class TestOrchestratorReportPath:
         ):
             await orchestrator.run(mode="self-heal", event_payload=payload)
 
-        # With goal-driven dispatch, run_one is used with event_payload forwarded
-        if mock_run_all.await_count:
-            assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
-            assert mock_run_all.call_args.kwargs.get("event_payload") == payload
-        else:
-            assert mock_run_one.await_count >= 1
-            # Verify event_payload was forwarded to at least one run_one call
-            payloads = [c.kwargs.get("event_payload") for c in mock_run_one.call_args_list]
-            assert payload in payloads
+        # Goal engine is disabled by default; legacy run_all path is taken with payload forwarded
+        mock_run_all.assert_awaited_once()
+        assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
+        assert mock_run_all.call_args.kwargs.get("event_payload") == payload
+        mock_run_one.assert_not_awaited()
 
 
 class TestOrchestratorStateLoadFailure:

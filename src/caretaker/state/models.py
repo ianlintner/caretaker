@@ -111,7 +111,7 @@ class RunSummary(BaseModel):
     escalation_items_found: int = 0
     escalation_digest_issue: int | None = None
     # Goal engine metrics
-    goal_health: float = 0.0
+    goal_health: float | None = None
     goal_escalation_count: int = 0
     errors: list[str] = Field(default_factory=list)
 

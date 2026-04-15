@@ -163,6 +163,11 @@ class GoalEngine:
         goals: list[Goal],
         config: GoalEngineConfig,
     ) -> None:
+        goal_ids = [g.goal_id for g in goals]
+        duplicate_goal_ids = sorted({gid for gid in goal_ids if goal_ids.count(gid) > 1})
+        if duplicate_goal_ids:
+            duplicates = ", ".join(duplicate_goal_ids)
+            raise ValueError(f"Duplicate goal_id values found: {duplicates}")
         self._goals: dict[str, Goal] = {g.goal_id: g for g in goals}
         self._config = config
         self._divergence = DivergenceDetector(
@@ -283,24 +288,45 @@ class GoalEngine:
         history: list[GoalSnapshot],
     ) -> GoalEscalation:
         """Build an escalation record for a troubled goal."""
-        consecutive = 0
-        for past in reversed(history):
-            if past.status in (
-                GoalStatus.CRITICAL,
-                GoalStatus.DIVERGING,
-                GoalStatus.STALE,
-            ):
-                consecutive += 1
-            else:
-                break
+        all_scores = [s.score for s in history] + [snapshot.score]
+
+        if snapshot.status == GoalStatus.DIVERGING:
+            # Count consecutive score declines from the end of history
+            consecutive = 1
+            for i in range(len(all_scores) - 2, -1, -1):
+                if all_scores[i] > all_scores[i + 1]:
+                    consecutive += 1
+                else:
+                    break
+        elif snapshot.status == GoalStatus.STALE:
+            # Count consecutive unchanged scores (by score value) from the end
+            consecutive = 1
+            ref = round(all_scores[-1], 3)
+            for i in range(len(all_scores) - 2, -1, -1):
+                if round(all_scores[i], 3) == ref:
+                    consecutive += 1
+                else:
+                    break
+        else:
+            # For CRITICAL and others, count consecutive bad-status entries from history
+            consecutive = 1
+            for past in reversed(history):
+                if past.status in (
+                    GoalStatus.CRITICAL,
+                    GoalStatus.DIVERGING,
+                    GoalStatus.STALE,
+                ):
+                    consecutive += 1
+                else:
+                    break
 
         reason_map = {
             GoalStatus.CRITICAL: (
                 f"Score {snapshot.score:.2f} below critical threshold {goal.critical_threshold}"
             ),
-            GoalStatus.DIVERGING: (f"Score declining for {consecutive + 1} consecutive runs"),
+            GoalStatus.DIVERGING: (f"Score declining for {consecutive} consecutive runs"),
             GoalStatus.STALE: (
-                f"Score unchanged at {snapshot.score:.2f} for {consecutive + 1} consecutive runs"
+                f"Score unchanged at {snapshot.score:.2f} for {consecutive} consecutive runs"
             ),
         }
 
@@ -315,6 +341,6 @@ class GoalEngine:
             status=snapshot.status,
             score=snapshot.score,
             reason=reason_map.get(snapshot.status, f"Goal unhealthy: {snapshot.status}"),
-            consecutive_runs=consecutive + 1,
+            consecutive_runs=consecutive,
             recommended_action=action_map.get(snapshot.status, "Review goal configuration"),
         )

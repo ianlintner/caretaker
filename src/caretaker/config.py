@@ -168,8 +168,8 @@ class HumanEscalationConfig(StrictBaseModel):
 
 
 class GoalEngineConfig(StrictBaseModel):
-    enabled: bool = True
-    goal_driven_dispatch: bool = True
+    enabled: bool = False
+    goal_driven_dispatch: bool = False
     divergence_threshold: int = 3
     stale_threshold: int = 5
     max_history: int = 20

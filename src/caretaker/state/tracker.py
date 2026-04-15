@@ -131,7 +131,7 @@ class StateTracker:
             lines.append(f"- Issues triaged: {summary.issues_triaged}")
             if summary.errors:
                 lines.append(f"- Errors: {len(summary.errors)}")
-            if summary.goal_health > 0:
+            if summary.goal_health is not None:
                 lines.append(f"- Goal health: {summary.goal_health:.2%}")
                 if summary.goal_escalation_count:
                     lines.append(f"- Goal escalations: {summary.goal_escalation_count}")
@@ -200,7 +200,7 @@ class StateTracker:
                     "",
                 ]
             )
-        if summary.goal_health > 0:
+        if summary.goal_health is not None:
             lines.extend(
                 [
                     "### Goal Health",
