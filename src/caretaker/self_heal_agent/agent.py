@@ -49,6 +49,8 @@ class SelfHealReport:
     upstream_features_requested: list[int] = field(default_factory=list)
     auto_fixed: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Sigs that were actioned this run — used to update persisted state dedup
+    actioned_sigs: list[str] = field(default_factory=list)
 
 
 class SelfHealAgent:
@@ -69,12 +71,15 @@ class SelfHealAgent:
         owner: str,
         repo: str,
         report_upstream: bool = True,
+        known_sigs: set[str] | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._report_upstream = report_upstream
         self._issues = GitHubIssueTools(github, owner, repo)
+        # Pre-seeded sigs from persisted state (survive issue close/reopen cycles)
+        self._known_sigs: set[str] = set(known_sigs or [])
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
@@ -93,7 +98,9 @@ class SelfHealAgent:
         report.failures_analyzed = len(failure_logs)
         logger.info("Self-heal agent: %d failure(s) to analyse", len(failure_logs))
 
+        # Merge open-issue sigs with pre-seeded state sigs for robust dedup
         existing_sigs = await self._get_existing_self_heal_sigs()
+        existing_sigs |= self._known_sigs
 
         for job_name, log_text in failure_logs:
             kind, title, details = _classify_failure(job_name, log_text)
@@ -116,6 +123,7 @@ class SelfHealAgent:
                         job_name, kind, title, details, log_text, sig, run_id=run_id
                     )
                     report.local_issues_created.append(issue.number)
+                    report.actioned_sigs.append(sig)
                 except Exception as e:
                     logger.error("Self-heal: failed to create local issue: %s", e)
                     report.errors.append(str(e))
@@ -131,6 +139,7 @@ class SelfHealAgent:
                 )
                 if not upstream.skipped and upstream.issue_number:
                     report.upstream_issues_opened.append(upstream.issue_number)
+                    report.actioned_sigs.append(sig)
                     # Also create a local tracking issue referencing upstream
                     try:
                         issue = await self._create_local_tracking_issue(
@@ -155,6 +164,7 @@ class SelfHealAgent:
                 )
                 if not upstream.skipped and upstream.issue_number:
                     report.upstream_features_requested.append(upstream.issue_number)
+                    report.actioned_sigs.append(sig)
 
             else:
                 # UNKNOWN — create a local investigation issue
@@ -169,6 +179,7 @@ class SelfHealAgent:
                         run_id=run_id,
                     )
                     report.local_issues_created.append(issue.number)
+                    report.actioned_sigs.append(sig)
                 except Exception as e:
                     report.errors.append(str(e))
 
