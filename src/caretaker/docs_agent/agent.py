@@ -172,6 +172,17 @@ class DocsAgent:
             report.doc_pr_opened = pr_number
             report.changelog_updated = True
             logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+        except GitHubAPIError as e:
+            if e.status_code == 403:
+                # GitHub Actions is not permitted to create PRs in this repo —
+                # this is a configuration/permission issue, not a caretaker bug.
+                # Log as a warning so the run does not fail with exit code 1.
+                logger.warning(
+                    "Docs agent: skipping docs PR — insufficient permissions (403): %s", e
+                )
+            else:
+                logger.error("Docs agent: failed to create docs PR: %s", e)
+                report.errors.append(str(e))
         except Exception as e:
             logger.error("Docs agent: failed to create docs PR: %s", e)
             report.errors.append(str(e))
