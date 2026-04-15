@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker import __version__
@@ -26,6 +26,13 @@ if TYPE_CHECKING:
     from caretaker.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _as_utc_naive(value: datetime) -> datetime:
+    """Normalize datetimes to naive UTC for safe subtraction."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 class Orchestrator:
@@ -198,7 +205,7 @@ class Orchestrator:
                 )
                 and tracked_issue.last_checked is not None
             ):
-                age_days = (now - tracked_issue.last_checked).days
+                age_days = (now - _as_utc_naive(tracked_issue.last_checked)).days
                 if age_days >= self._config.escalation.stale_days:
                     tracked_issue.state = IssueTrackingState.ESCALATED
                     tracked_issue.escalated = True
@@ -215,9 +222,9 @@ class Orchestrator:
         merged_durations_hours: list[float] = []
         for tracked_pr in state.tracked_prs.values():
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
-                merged_durations_hours.append(
-                    (tracked_pr.merged_at - tracked_pr.first_seen_at).total_seconds() / 3600.0
-                )
+                merged_at = _as_utc_naive(tracked_pr.merged_at)
+                first_seen_at = _as_utc_naive(tracked_pr.first_seen_at)
+                merged_durations_hours.append((merged_at - first_seen_at).total_seconds() / 3600.0)
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
                 merged_durations_hours
