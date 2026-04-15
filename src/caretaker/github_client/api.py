@@ -555,6 +555,7 @@ class GitHubClient:
             ],
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            merged_at=data.get("merged_at"),
             html_url=data.get("html_url", ""),
         )
 

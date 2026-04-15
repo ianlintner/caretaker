@@ -54,6 +54,7 @@ def make_pr(
     draft: bool = False,
     merged: bool = False,
     mergeable: bool | None = True,
+    head_ref: str = "feature",
 ) -> PullRequest:
     if user is None:
         user = User(login="dev-user", id=3, type="User")
@@ -63,7 +64,7 @@ def make_pr(
         body="",
         state=state,
         user=user,
-        head_ref="feature",
+        head_ref=head_ref,
         base_ref="main",
         mergeable=mergeable,
         merged=merged,

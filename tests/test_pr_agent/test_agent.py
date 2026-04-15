@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from caretaker.config import CIConfig, CopilotConfig, PRAgentConfig
 from caretaker.github_client.models import (
     CheckConclusion,
     Label,
+    PRState,
     ReviewState,
     User,
 )
@@ -289,11 +291,8 @@ class TestOrchestratorWorkflowRunEvent:
         github = AsyncMock()
         from tests.conftest import make_pr as make_test_pr
 
-        pr_target = make_test_pr(number=10)
-        pr_target.head_ref = "copilot/fix-something"  # type: ignore[attr-defined]
-
-        pr_other = make_test_pr(number=11)
-        pr_other.head_ref = "some-other-branch"  # type: ignore[attr-defined]
+        pr_target = make_test_pr(number=10, head_ref="copilot/fix-something")
+        pr_other = make_test_pr(number=11, head_ref="some-other-branch")
 
         github.list_pull_requests.return_value = [pr_target, pr_other]
         github.get_check_runs.return_value = []
@@ -306,6 +305,53 @@ class TestOrchestratorWorkflowRunEvent:
 
         # Only the matching PR was evaluated
         assert report.monitored == 1
+        github.get_pull_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestTrackedPRExternalSync:
+    async def test_externally_merged_pr_updates_state_and_merged_at(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        github.list_pull_requests.return_value = []
+
+        merged_at = datetime(2024, 2, 3, tzinfo=UTC)
+        closed_pr = make_test_pr(number=42, state=PRState.CLOSED, merged=True)
+        closed_pr.merged_at = merged_at
+        github.get_pull_request.return_value = closed_pr
+
+        tracked_prs = {
+            42: TrackedPR(number=42, state=PRTrackingState.CI_PENDING),
+        }
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        _, updated_tracked = await agent.run(tracked_prs)
+
+        assert updated_tracked[42].state == PRTrackingState.MERGED
+        assert updated_tracked[42].merged_at == merged_at
+        github.get_pull_request.assert_awaited_once_with("o", "r", 42)
+
+    async def test_head_branch_run_does_not_sync_unrelated_tracked_prs(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        branch_pr = make_test_pr(number=101, head_ref="copilot/branch-a")
+        github.list_pull_requests.return_value = [branch_pr]
+        github.get_check_runs.return_value = []
+        github.get_pr_reviews.return_value = []
+
+        tracked_prs = {
+            202: TrackedPR(number=202, state=PRTrackingState.CI_PENDING),
+        }
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        await agent.run(tracked_prs, head_branch="copilot/branch-a")
+
+        github.get_pull_request.assert_not_awaited()
+        assert tracked_prs[202].state == PRTrackingState.CI_PENDING
 
 
 # ── is_copilot_pr recognition ────────────────────────────────────────
