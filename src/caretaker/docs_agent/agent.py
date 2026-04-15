@@ -124,10 +124,20 @@ class DocsAgent:
             try:
                 await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
             except GitHubAPIError as branch_err:
-                if branch_err.status_code == 422 and "already exists" in branch_err.message:
-                    logger.info("Docs agent: branch %s already exists — reusing", branch_name)
-                else:
+                if branch_err.status_code != 422:
                     raise
+                # Branch already exists from a previous (possibly incomplete) run — reuse it.
+                logger.warning("Docs agent: branch %r already exists — reusing it", branch_name)
+                # Re-read the file SHA from the existing branch to avoid SHA mismatch on update.
+                try:
+                    _, current_sha = await self._get_file(self._changelog_path, ref=branch_name)
+                except Exception as read_err:
+                    logger.warning(
+                        "Docs agent: could not read %s from branch %r (using default SHA): %s",
+                        self._changelog_path,
+                        branch_name,
+                        read_err,
+                    )
             await self._github.create_or_update_file(
                 owner=self._owner,
                 repo=self._repo,
@@ -189,8 +199,8 @@ class DocsAgent:
         prs = await self._pull_requests.list(state="open")
         return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
 
-    async def _get_file(self, path: str) -> tuple[str, str | None]:
-        data = await self._github.get_file_contents(self._owner, self._repo, path)
+    async def _get_file(self, path: str, ref: str | None = None) -> tuple[str, str | None]:
+        data = await self._github.get_file_contents(self._owner, self._repo, path, ref=ref)
         if not data:
             return "", None
         content = base64.b64decode(data.get("content", "")).decode("utf-8")

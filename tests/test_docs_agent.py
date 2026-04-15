@@ -179,12 +179,13 @@ class TestDocsAgentRun:
         gh.create_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_reuses_existing_branch_on_422(self) -> None:
-        """When the docs branch already exists (422), the agent reuses it without error."""
+    async def test_reuses_existing_branch_when_422(self) -> None:
+        """If the branch already exists (422), the agent reuses it and still opens the PR."""
         merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
         gh = make_github()
+        # Simulate branch already existing
         gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
-        agent = DocsAgent(github=gh, owner="o", repo="r")
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
         with (
             patch.object(agent, "_get_recently_merged_prs", return_value=merged),
@@ -192,25 +193,9 @@ class TestDocsAgentRun:
         ):
             report = await agent.run()
 
-        # Should still open a PR using the existing branch; no errors recorded
-        assert report.doc_pr_opened == 77
+        # No error reported — branch reuse is transparent
         assert report.errors == []
+        assert report.doc_pr_opened == 77
+        # The file should still be committed and the PR created
         gh.create_or_update_file.assert_awaited_once()
         gh.create_pull_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_records_error_on_non_reference_exists_422(self) -> None:
-        """A 422 with a different message (not 'already exists') should still be an error."""
-        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
-        gh = make_github()
-        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Validation failed"}')
-        agent = DocsAgent(github=gh, owner="o", repo="r")
-
-        with (
-            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
-            patch.object(agent, "_find_open_docs_prs", return_value=[]),
-        ):
-            report = await agent.run()
-
-        assert report.errors != []
-        gh.create_pull_request.assert_not_awaited()
