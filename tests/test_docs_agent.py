@@ -197,3 +197,20 @@ class TestDocsAgentRun:
         assert report.errors == []
         gh.create_or_update_file.assert_awaited_once()
         gh.create_pull_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_records_error_on_non_reference_exists_422(self) -> None:
+        """A 422 with a different message (not 'already exists') should still be an error."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Validation failed"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        assert report.errors != []
+        gh.create_pull_request.assert_not_awaited()

@@ -124,7 +124,7 @@ class DocsAgent:
             try:
                 await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
             except GitHubAPIError as branch_err:
-                if branch_err.status_code == 422 and "already exists" in str(branch_err):
+                if branch_err.status_code == 422 and "already exists" in branch_err.message:
                     logger.info("Docs agent: branch %s already exists — reusing", branch_name)
                 else:
                     raise
