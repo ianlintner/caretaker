@@ -32,6 +32,7 @@ All notable changes to this project will be documented in this file.
 - [WIP] Fix unknown caretaker failure with exit code 1 (#308)
 - handle 403 "not permitted to create PRs" as warning, not error (#310)
 - Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- introduce goal-seeking subsystem with models and evaluation logic (#321)
 
 ## [0.1.0] - Unreleased
 
