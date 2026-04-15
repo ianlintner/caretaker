@@ -291,11 +291,8 @@ class TestOrchestratorWorkflowRunEvent:
         github = AsyncMock()
         from tests.conftest import make_pr as make_test_pr
 
-        pr_target = make_test_pr(number=10)
-        pr_target.head_ref = "copilot/fix-something"  # type: ignore[attr-defined]
-
-        pr_other = make_test_pr(number=11)
-        pr_other.head_ref = "some-other-branch"  # type: ignore[attr-defined]
+        pr_target = make_test_pr(number=10, head_ref="copilot/fix-something")
+        pr_other = make_test_pr(number=11, head_ref="some-other-branch")
 
         github.list_pull_requests.return_value = [pr_target, pr_other]
         github.get_check_runs.return_value = []
@@ -341,8 +338,7 @@ class TestTrackedPRExternalSync:
         from tests.conftest import make_pr as make_test_pr
 
         github = AsyncMock()
-        branch_pr = make_test_pr(number=101)
-        branch_pr.head_ref = "copilot/branch-a"  # type: ignore[attr-defined]
+        branch_pr = make_test_pr(number=101, head_ref="copilot/branch-a")
         github.list_pull_requests.return_value = [branch_pr]
         github.get_check_runs.return_value = []
         github.get_pr_reviews.return_value = []

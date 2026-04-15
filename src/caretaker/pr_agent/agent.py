@@ -107,7 +107,9 @@ class PRAgent:
                         if closed_pr is not None:
                             if closed_pr.merged:
                                 tracked.state = PRTrackingState.MERGED
-                                if tracked.merged_at is None and closed_pr.merged_at is not None:
+                                # Prefer GitHub's true merge timestamp when we don't already
+                                # have one persisted from a prior cycle.
+                                if tracked.merged_at is None:
                                     tracked.merged_at = closed_pr.merged_at
                                 logger.info(
                                     "PR #%d: externally merged — updated tracked state", pr_number
