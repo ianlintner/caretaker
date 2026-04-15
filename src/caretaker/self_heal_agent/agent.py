@@ -436,26 +436,48 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
 def _extract_first_error(log_text: str) -> str:
     """Return the first non-trivial error-looking line from the log.
 
-    Prioritises GitHub Actions ``##[error]`` annotations (strongest signal),
-    then falls back to a keyword scan.
+    Extraction order:
+    1. GitHub Actions ``##[error]`` annotations (strongest signal)
+    2. Non-zero ``Process completed with exit code N`` lines
+    3. Generic keyword scan
+
+    Returned lines are normalized by removing leading timestamps and
+    ``##[error]`` marker noise.
     """
     lines = log_text.splitlines()
+
+    def _normalize_error_line(line: str) -> str:
+        normalized = re.sub(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*", "", line).strip()
+        normalized = normalized.replace("##[error]", "", 1).strip()
+        return normalized[:300]
 
     # Pass 1: prefer ##[error] annotations — these are GitHub Actions' own
     # markers and almost always describe the real failure.
     for line in lines:
         stripped = line.strip()
         if "##[error]" in stripped and len(stripped) > 20:
-            return stripped[:300]
+            return _normalize_error_line(stripped)
 
-    # Pass 2: generic keyword scan
+    # Pass 2: common Actions failure line when annotation markers are absent.
+    # Ignore exit code 0 so successful step lines are not treated as failures.
+    for line in lines:
+        stripped = line.strip()
+        match = re.search(
+            r"process completed with exit code\s+(\d+)",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match and int(match.group(1)) != 0:
+            return _normalize_error_line(stripped)
+
+    # Pass 3: generic keyword scan
     for line in lines:
         stripped = line.strip()
         if len(stripped) > 20 and any(
             kw in stripped
             for kw in ("Error", "error", "Exception", "FAILED", "invalid", "required")
         ):
-            return stripped[:300]
+            return _normalize_error_line(stripped)
 
     return log_text.strip()[:200]
 

@@ -20,7 +20,26 @@ class TestExtractFirstError:
             "2026-04-14T23:22:53Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64\n"
         )
         result = _extract_first_error(log)
-        assert "Process completed with exit code 1" in result
+        assert result == "Process completed with exit code 1."
+
+    def test_detects_exit_code_line_without_annotation(self) -> None:
+        log = (
+            "2026-04-14T23:22:53Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64\n"
+            "2026-04-14T23:22:54Z Process completed with exit code 1.\n"
+            "2026-04-14T23:22:55Z Post job cleanup.\n"
+        )
+        result = _extract_first_error(log)
+        assert result == "Process completed with exit code 1."
+
+    def test_prefers_non_zero_exit_code_when_success_line_appears_first(self) -> None:
+        log = (
+            "2026-04-14T23:22:53Z Process completed with exit code 0.\n"
+            "2026-04-14T23:22:54Z Uploading artifacts\n"
+            "2026-04-14T23:22:55Z Process completed with exit code 1.\n"
+            "2026-04-14T23:22:56Z Post job cleanup.\n"
+        )
+        result = _extract_first_error(log)
+        assert result == "Process completed with exit code 1."
 
     def test_falls_back_to_keyword_scan_when_no_annotation(self) -> None:
         log = (
