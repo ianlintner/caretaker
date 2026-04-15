@@ -205,8 +205,7 @@ class Orchestrator:
                 )
                 and tracked_issue.last_checked is not None
             ):
-                last_checked = _as_utc(tracked_issue.last_checked)
-                age_days = (now - last_checked).days
+                age_days = (now - _as_utc(tracked_issue.last_checked)).days
                 if age_days >= self._config.escalation.stale_days:
                     tracked_issue.state = IssueTrackingState.ESCALATED
                     tracked_issue.escalated = True
