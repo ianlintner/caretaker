@@ -87,8 +87,20 @@ class GitHubIssueTools:
     async def update(self, number: int, **kwargs: Any) -> Issue:
         return await self._github.update_issue(self._owner, self._repo, number, **kwargs)
 
-    async def comment(self, number: int, body: str) -> Comment:
-        return await self._github.add_issue_comment(self._owner, self._repo, number, body)
+    async def comment(
+        self,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            number,
+            body,
+            use_copilot_token=use_copilot_token,
+        )
 
     async def add_labels(self, number: int, labels: builtins.list[str]) -> builtins.list[Label]:
         return await self._github.add_labels(self._owner, self._repo, number, labels)
@@ -151,8 +163,20 @@ class GitHubPullRequestTools:
             method=method,
         )
 
-    async def comment(self, number: int, body: str) -> Comment:
-        return await self._github.add_issue_comment(self._owner, self._repo, number, body)
+    async def comment(
+        self,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            number,
+            body,
+            use_copilot_token=use_copilot_token,
+        )
 
     async def add_labels(self, number: int, labels: builtins.list[str]) -> builtins.list[Label]:
         return await self._github.add_labels(self._owner, self._repo, number, labels)

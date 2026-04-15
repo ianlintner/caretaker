@@ -11,6 +11,7 @@ from caretaker.docs_agent.agent import (
     DOCS_AGENT_MARKER,
     DocsAgent,
     _build_changelog_entry,
+    _build_copilot_review_comment,
     _clean_title,
 )
 from caretaker.github_client.models import PullRequest, User
@@ -127,6 +128,26 @@ class TestDocsAgentRun:
 
         call_kwargs = gh.create_pull_request.call_args.kwargs
         assert "copilot" in call_kwargs.get("assignees", [])
+
+    @pytest.mark.asyncio
+    async def test_posts_follow_up_copilot_comment_with_pat_identity(self) -> None:
+        merged = [_pr(10, "fix: something", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            await agent.run()
+
+        gh.add_issue_comment.assert_awaited_once_with(
+            "o",
+            "r",
+            77,
+            _build_copilot_review_comment(),
+            use_copilot_token=True,
+        )
 
     @pytest.mark.asyncio
     async def test_skips_when_no_merged_prs(self) -> None:

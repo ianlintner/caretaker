@@ -50,7 +50,13 @@ See: https://github.com/ianlintner/caretaker
 
 ### 3. Review and merge the PR that Copilot opens
 
-### 4. (Optional) Add `COPILOT_PAT` for API-based Copilot issue assignment, and `ANTHROPIC_API_KEY` for enhanced AI features
+### 4. Add `COPILOT_PAT` from a write-capable user for Copilot hand-offs, and `ANTHROPIC_API_KEY` for enhanced AI features
+
+`COPILOT_PAT` should be a fine-grained PAT that belongs to a real user or machine user with write access to the repository.
+Caretaker uses that token for:
+
+- API-based assignment of issues to GitHub Copilot
+- PR comments that `@copilot` must see as coming from a write-capable identity rather than `github-actions[bot]`
 
 ---
 
@@ -82,7 +88,7 @@ No Python. No Node. No vendored code. Just config and Copilot instructions.
 
 - Monitors all open PRs
 - Detects CI failures and triages them (test, lint, build, type errors)
-- Requests fixes from Copilot via structured comments
+- Requests fixes from Copilot via structured comments authored through the `COPILOT_PAT` identity
 - Retry loop with escalation after max attempts
 - Auto-merge for Copilot and Dependabot PRs (configurable)
 - Handles flaky test detection and CI re-runs
@@ -158,7 +164,7 @@ Orchestrator (Python, runs in GitHub Actions)
   ├── Decides what needs to happen
   │
   ├── For code changes → creates/updates issues → assigns to @copilot
-  ├── For PR fixes → posts structured comments → @mentions copilot
+  ├── For PR fixes → posts structured comments as the `COPILOT_PAT` identity → @mentions copilot
   └── For escalation → labels + tags repo owner
 ```
 
