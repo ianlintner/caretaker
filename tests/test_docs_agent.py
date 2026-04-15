@@ -14,6 +14,7 @@ from caretaker.docs_agent.agent import (
     _build_copilot_review_comment,
     _clean_title,
 )
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PullRequest, User
 
 
@@ -176,3 +177,23 @@ class TestDocsAgentRun:
         # should return the existing PR number, not create a new one
         assert report.doc_pr_opened == 55
         gh.create_pull_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reuses_existing_branch_on_422(self) -> None:
+        """When the docs branch already exists (422), the agent reuses it without error."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        # Should still open a PR using the existing branch; no errors recorded
+        assert report.doc_pr_opened == 77
+        assert report.errors == []
+        gh.create_or_update_file.assert_awaited_once()
+        gh.create_pull_request.assert_awaited_once()
