@@ -103,6 +103,8 @@ class DevOpsAgentConfig(StrictBaseModel):
     max_issues_per_run: int = 3
     # Re-open or skip if a similar open issue already exists
     dedup_open_issues: bool = True
+    # Cooldown (hours) before creating another issue for the same job+category
+    cooldown_hours: int = 6
 
 
 class SelfHealAgentConfig(StrictBaseModel):
@@ -111,6 +113,8 @@ class SelfHealAgentConfig(StrictBaseModel):
     report_upstream: bool = True
     # Suppress upstream reporting if this repo IS the upstream (set true for ianlintner/caretaker)
     is_upstream_repo: bool = False
+    # Cooldown (hours) before creating another issue for the same job+kind
+    cooldown_hours: int = 6
 
 
 class SecurityAgentConfig(StrictBaseModel):

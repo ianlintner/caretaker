@@ -9,6 +9,7 @@ import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,8 @@ class SelfHealReport:
     errors: list[str] = field(default_factory=list)
     # Sigs that were actioned this run — used to update persisted state dedup
     actioned_sigs: list[str] = field(default_factory=list)
+    # Updated cooldown map to persist back to state
+    updated_cooldowns: dict[str, str] = field(default_factory=dict)
 
 
 class SelfHealAgent:
@@ -72,6 +75,8 @@ class SelfHealAgent:
         repo: str,
         report_upstream: bool = True,
         known_sigs: set[str] | None = None,
+        cooldown_hours: int = 6,
+        issue_cooldowns: dict[str, str] | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -80,6 +85,9 @@ class SelfHealAgent:
         self._issues = GitHubIssueTools(github, owner, repo)
         # Pre-seeded sigs from persisted state (survive issue close/reopen cycles)
         self._known_sigs: set[str] = set(known_sigs or [])
+        self._cooldown_hours = cooldown_hours
+        # Mutable copy — callers read back updated_cooldowns after run()
+        self._issue_cooldowns: dict[str, str] = dict(issue_cooldowns or {})
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
@@ -102,12 +110,24 @@ class SelfHealAgent:
         existing_sigs = await self._get_existing_self_heal_sigs()
         existing_sigs |= self._known_sigs
 
+        # Cross-agent run_id dedup: if a devops issue already exists for
+        # this workflow run, skip creating self-heal issues entirely.
+        if run_id and await self._run_id_already_tracked(run_id):
+            logger.info("Self-heal: run_id %d already tracked by another agent, skipping", run_id)
+            return report
+
         for job_name, log_text in failure_logs:
             kind, title, details = _classify_failure(job_name, log_text)
             sig = _sig(job_name, kind, title)
 
             if sig in existing_sigs:
                 logger.debug("Self-heal: skipping duplicate for %s", job_name)
+                continue
+
+            # Cooldown: same job+kind recently actioned → skip even with a different sig
+            coarse_key = f"self-heal:{job_name}:{kind.value}"
+            if self._is_on_cooldown(coarse_key):
+                logger.info("Self-heal: cooldown active for %s, skipping", coarse_key)
                 continue
 
             logger.info("Self-heal: job=%s kind=%s", job_name, kind.value)
@@ -124,6 +144,7 @@ class SelfHealAgent:
                     )
                     report.local_issues_created.append(issue.number)
                     report.actioned_sigs.append(sig)
+                    self._record_cooldown(coarse_key)
                 except Exception as e:
                     logger.error("Self-heal: failed to create local issue: %s", e)
                     report.errors.append(str(e))
@@ -140,6 +161,7 @@ class SelfHealAgent:
                 if not upstream.skipped and upstream.issue_number:
                     report.upstream_issues_opened.append(upstream.issue_number)
                     report.actioned_sigs.append(sig)
+                    self._record_cooldown(coarse_key)
                     # Also create a local tracking issue referencing upstream
                     try:
                         issue = await self._create_local_tracking_issue(
@@ -165,6 +187,7 @@ class SelfHealAgent:
                 if not upstream.skipped and upstream.issue_number:
                     report.upstream_features_requested.append(upstream.issue_number)
                     report.actioned_sigs.append(sig)
+                    self._record_cooldown(coarse_key)
 
             else:
                 # UNKNOWN — create a local investigation issue
@@ -180,12 +203,32 @@ class SelfHealAgent:
                     )
                     report.local_issues_created.append(issue.number)
                     report.actioned_sigs.append(sig)
+                    self._record_cooldown(coarse_key)
                 except Exception as e:
                     report.errors.append(str(e))
 
+        report.updated_cooldowns = dict(self._issue_cooldowns)
         return report
 
     # ── Private helpers ─────────────────────────────────────────────────────
+
+    def _is_on_cooldown(self, coarse_key: str) -> bool:
+        """Return True if an issue was recently created for this coarse key."""
+        ts_str = self._issue_cooldowns.get(coarse_key)
+        if not ts_str:
+            return False
+        try:
+            last_created = datetime.fromisoformat(ts_str)
+            if last_created.tzinfo is None:
+                last_created = last_created.replace(tzinfo=UTC)
+            elapsed_hours = (datetime.now(UTC) - last_created).total_seconds() / 3600
+            return elapsed_hours < self._cooldown_hours
+        except (ValueError, TypeError):
+            return False
+
+    def _record_cooldown(self, coarse_key: str) -> None:
+        """Record that an issue was just created for this coarse key."""
+        self._issue_cooldowns[coarse_key] = datetime.now(UTC).isoformat()
 
     async def _collect_failure_logs(
         self, event_payload: dict[str, Any] | None
@@ -277,6 +320,10 @@ class SelfHealAgent:
                 if m:
                     sigs.add(m.group(1))
         return sigs
+
+    async def _run_id_already_tracked(self, run_id: int) -> bool:
+        """Check if any open issue (any agent) already references this run_id."""
+        return await self._issues.run_id_tracked(run_id, [SELF_HEAL_LABEL, "devops:build-failure"])
 
     async def _create_local_fix_issue(
         self,

@@ -7,6 +7,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.devops_agent.log_analyzer import FailureSummary, analyze_job_log
@@ -31,6 +32,10 @@ class DevOpsReport:
     issues_created: list[int] = field(default_factory=list)
     issues_skipped: int = 0  # duplicate detection
     errors: list[str] = field(default_factory=list)
+    # Sigs actioned this run — used to update persisted state dedup
+    actioned_sigs: list[str] = field(default_factory=list)
+    # Updated cooldown map to persist back to state
+    updated_cooldowns: dict[str, str] = field(default_factory=dict)
 
 
 class DevOpsAgent:
@@ -43,6 +48,9 @@ class DevOpsAgent:
         repo: str,
         default_branch: str = "main",
         max_issues_per_run: int = 3,
+        known_sigs: set[str] | None = None,
+        cooldown_hours: int = 6,
+        issue_cooldowns: dict[str, str] | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -50,6 +58,11 @@ class DevOpsAgent:
         self._default_branch = default_branch
         self._max_issues_per_run = max_issues_per_run
         self._issues = GitHubIssueTools(github, owner, repo)
+        # Pre-seeded sigs from persisted state (survive issue close/reopen cycles)
+        self._known_sigs: set[str] = set(known_sigs or [])
+        self._cooldown_hours = cooldown_hours
+        # Mutable copy — callers read back updated_cooldowns after run()
+        self._issue_cooldowns: dict[str, str] = dict(issue_cooldowns or {})
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> DevOpsReport:
         """Inspect recent CI runs on the default branch and act on failures."""
@@ -76,6 +89,17 @@ class DevOpsAgent:
 
         # Fetch existing open devops issues to avoid duplicates
         existing_signatures = await self._get_existing_failure_signatures()
+        # Merge open-issue sigs with pre-seeded state sigs for robust dedup
+        existing_signatures |= self._known_sigs
+
+        # Cross-agent run_id dedup: if a self-heal issue already exists for
+        # this workflow run, skip creating devops issues entirely.
+        if run_id and await self._run_id_already_tracked(run_id):
+            logger.info(
+                "DevOps agent: run_id %d already tracked by another agent, skipping", run_id
+            )
+            report.issues_skipped = len(failing_jobs)
+            return report
 
         created = 0
         for summary in failing_jobs:
@@ -89,9 +113,18 @@ class DevOpsAgent:
                 report.issues_skipped += 1
                 continue
 
+            # Cooldown: same job+category recently actioned → skip even with a different sig
+            coarse_key = f"devops:{summary.job_name}:{summary.category}"
+            if self._is_on_cooldown(coarse_key):
+                logger.info("DevOps agent: cooldown active for %s, skipping", coarse_key)
+                report.issues_skipped += 1
+                continue
+
             try:
                 issue = await self._create_fix_issue(summary, sig, run_id=run_id)
                 report.issues_created.append(issue.number)
+                report.actioned_sigs.append(sig)
+                self._record_cooldown(coarse_key)
                 created += 1
                 logger.info(
                     "DevOps agent: created fix issue #%d for job '%s'",
@@ -102,9 +135,28 @@ class DevOpsAgent:
                 logger.error("DevOps agent: failed to create issue: %s", e)
                 report.errors.append(str(e))
 
+        report.updated_cooldowns = dict(self._issue_cooldowns)
         return report
 
     # ── Private helpers ─────────────────────────────────────────────────────
+
+    def _is_on_cooldown(self, coarse_key: str) -> bool:
+        """Return True if an issue was recently created for this coarse key."""
+        ts_str = self._issue_cooldowns.get(coarse_key)
+        if not ts_str:
+            return False
+        try:
+            last_created = datetime.fromisoformat(ts_str)
+            if last_created.tzinfo is None:
+                last_created = last_created.replace(tzinfo=UTC)
+            elapsed_hours = (datetime.now(UTC) - last_created).total_seconds() / 3600
+            return elapsed_hours < self._cooldown_hours
+        except (ValueError, TypeError):
+            return False
+
+    def _record_cooldown(self, coarse_key: str) -> None:
+        """Record that an issue was just created for this coarse key."""
+        self._issue_cooldowns[coarse_key] = datetime.now(UTC).isoformat()
 
     async def _discover_failing_jobs(
         self, event_payload: dict[str, Any] | None
@@ -182,6 +234,12 @@ class DevOpsAgent:
                         if match:
                             sigs.add(match.group(1))
         return sigs
+
+    async def _run_id_already_tracked(self, run_id: int) -> bool:
+        """Check if any open issue (any agent) already references this run_id."""
+        return await self._issues.run_id_tracked(
+            run_id, [BUILD_FAILURE_LABEL, "caretaker:self-heal"]
+        )
 
     async def _create_fix_issue(
         self, summary: FailureSummary, sig: str, *, run_id: int | None = None

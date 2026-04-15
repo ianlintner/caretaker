@@ -130,6 +130,7 @@ class TestSelfHealActionedSigs:
                 AsyncMock(return_value=[("maintain", "transient log")]),
             ),
             patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
             patch(
                 "caretaker.self_heal_agent.agent._classify_failure",
                 return_value=(FailureKind.TRANSIENT, "Transient timeout", "retry later"),
@@ -138,3 +139,134 @@ class TestSelfHealActionedSigs:
             report = await agent.run()
 
         assert report.actioned_sigs == []
+
+
+@pytest.mark.asyncio
+class TestSelfHealCrossAgentDedup:
+    async def test_skips_when_run_id_already_tracked_by_devops(self) -> None:
+        github = AsyncMock()
+        agent = SelfHealAgent(github=github, owner="o", repo="r", report_upstream=False)
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "some error log")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=True)),
+        ):
+            payload = {"workflow_run": {"id": 99999, "conclusion": "failure"}}
+            report = await agent.run(event_payload=payload)
+
+        assert report.failures_analyzed == 1
+        assert report.local_issues_created == []
+        assert report.actioned_sigs == []
+
+    async def test_proceeds_when_no_cross_agent_duplicate(self) -> None:
+        github = AsyncMock()
+        agent = SelfHealAgent(github=github, owner="o", repo="r", report_upstream=False)
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "some error log")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.TRANSIENT, "Transient timeout", "retry later"),
+            ),
+        ):
+            payload = {"workflow_run": {"id": 99999, "conclusion": "failure"}}
+            report = await agent.run(event_payload=payload)
+
+        # Transient failures still get analyzed but not actioned
+        assert report.failures_analyzed == 1
+        assert report.actioned_sigs == []
+
+
+@pytest.mark.asyncio
+class TestSelfHealCooldown:
+    async def test_cooldown_skips_same_job_kind_within_window(self) -> None:
+        from datetime import UTC, datetime
+
+        recent_ts = datetime.now(UTC).isoformat()
+        cooldowns = {"self-heal:maintain:config_error": recent_ts}
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            cooldown_hours=6,
+            issue_cooldowns=cooldowns,
+        )
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(
+                    FailureKind.CONFIG_ERROR,
+                    "Config error in caretaker: pydantic ValidationError",
+                    "details",
+                ),
+            ),
+        ):
+            report = await agent.run()
+
+        assert report.local_issues_created == []
+        assert report.actioned_sigs == []
+
+    async def test_cooldown_allows_after_window_expires(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        old_ts = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+        cooldowns = {"self-heal:maintain:config_error": old_ts}
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            cooldown_hours=6,
+            issue_cooldowns=cooldowns,
+        )
+
+        mock_issue = AsyncMock()
+        mock_issue.number = 42
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(
+                    FailureKind.CONFIG_ERROR,
+                    "Config error in caretaker: pydantic ValidationError",
+                    "details",
+                ),
+            ),
+            patch.object(agent, "_create_local_fix_issue", AsyncMock(return_value=mock_issue)),
+        ):
+            report = await agent.run()
+
+        assert report.local_issues_created == [42]
+        assert len(report.actioned_sigs) == 1
+        assert "self-heal:maintain:config_error" in report.updated_cooldowns
