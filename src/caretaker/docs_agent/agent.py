@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
@@ -120,7 +121,16 @@ class DocsAgent:
         try:
             # Get the SHA of the default branch tip
             base_sha = await self._get_branch_sha(self._default_branch)
-            await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+            try:
+                await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+            except GitHubAPIError as branch_err:
+                if branch_err.status_code == 422 and "already exists" in str(branch_err):
+                    # Stale branch from a previous run — delete and recreate
+                    logger.info("Docs agent: branch %s already exists — recreating", branch_name)
+                    await self._github.delete_branch(self._owner, self._repo, branch_name)
+                    await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+                else:
+                    raise
             await self._github.create_or_update_file(
                 owner=self._owner,
                 repo=self._repo,

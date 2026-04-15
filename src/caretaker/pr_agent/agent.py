@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.github_client.api import GitHubAPIError
+from caretaker.github_client.models import PRState
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
@@ -114,7 +115,7 @@ class PRAgent:
                                 logger.info(
                                     "PR #%d: externally merged — updated tracked state", pr_number
                                 )
-                            elif closed_pr.state == "closed":
+                            elif closed_pr.state == PRState.CLOSED:
                                 tracked.state = PRTrackingState.CLOSED
                                 logger.info(
                                     "PR #%d: externally closed — updated tracked state", pr_number
