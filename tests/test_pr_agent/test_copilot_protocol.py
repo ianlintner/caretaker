@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from caretaker.llm.copilot import (
@@ -10,6 +13,7 @@ from caretaker.llm.copilot import (
     TASK_CLOSE,
     TASK_OPEN,
     CopilotResult,
+    CopilotProtocol,
     CopilotTask,
     ResultStatus,
     TaskType,
@@ -151,3 +155,23 @@ class TestFailureTypeToTaskTypeMapping:
         """Every FailureType must have an entry in the mapping."""
         for ft in FailureType:
             assert ft in _FAILURE_TYPE_TO_TASK_TYPE, f"FailureType.{ft.name} missing from mapping"
+
+
+@pytest.mark.asyncio
+async def test_post_task_uses_copilot_token_for_pr_comment() -> None:
+    github = AsyncMock()
+    github.add_issue_comment.return_value = SimpleNamespace(id=99)
+    protocol = CopilotProtocol(github, "o", "r")
+    task = CopilotTask(
+        task_type=TaskType.CI_FAILURE,
+        job_name="ci",
+        error_output="boom",
+        instructions="fix it",
+        attempt=1,
+        max_attempts=2,
+    )
+
+    await protocol.post_task(42, task)
+
+    github.add_issue_comment.assert_awaited_once()
+    assert github.add_issue_comment.call_args.kwargs["use_copilot_token"] is True

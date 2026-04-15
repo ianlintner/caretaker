@@ -64,9 +64,9 @@ Caretaker expects a GitHub token when it runs against a repository:
 
 Alternatively, `GITHUB_REPOSITORY` can be provided in `owner/repo` format.
 
-Optional:
+Optional, but strongly recommended for hands-free Copilot iteration:
 
-- `COPILOT_PAT` for API-based assignment of issues to GitHub Copilot from workflows or local runs
+- `COPILOT_PAT` from a write-capable user or machine user; caretaker uses it for API-based Copilot issue assignment and for workflow-authored `@copilot` PR comments so they are attributed to that identity instead of `github-actions[bot]`
 - `ANTHROPIC_API_KEY` for enhanced Claude-backed reasoning features
 
 ## Key installed files
