@@ -172,6 +172,18 @@ class DocsAgent:
             report.doc_pr_opened = pr_number
             report.changelog_updated = True
             logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+        except GitHubAPIError as e:
+            _not_permitted = "not permitted to create or approve pull requests"
+            if e.status_code == 403 and _not_permitted in e.message:
+                logger.warning(
+                    "Docs agent: skipping PR creation — GitHub Actions does not have "
+                    "permission to create pull requests (enable it in repo Settings → "
+                    "Actions → General → 'Allow GitHub Actions to create and approve "
+                    "pull requests')"
+                )
+            else:
+                logger.error("Docs agent: failed to create docs PR: %s", e)
+                report.errors.append(str(e))
         except Exception as e:
             logger.error("Docs agent: failed to create docs PR: %s", e)
             report.errors.append(str(e))
