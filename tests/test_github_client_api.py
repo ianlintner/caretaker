@@ -22,6 +22,16 @@ def _make_response(status_code: int, json_body: dict | None = None, text: str = 
     return resp
 
 
+def _comment_payload(login: str = "maintainer") -> dict[str, object]:
+    return {
+        "id": 123,
+        "user": {"login": login, "id": 1},
+        "body": "comment body",
+        "created_at": "2026-04-14T12:00:00Z",
+        "updated_at": "2026-04-14T12:00:00Z",
+    }
+
+
 @pytest.mark.asyncio
 async def test_403_rate_limit_raises_githubapieerror() -> None:
     """A 403 response with 'rate limit exceeded' message is treated as rate-limiting."""
@@ -112,3 +122,47 @@ async def test_429_raises_githubapieerror_with_retry_after() -> None:
     assert error.status_code == 429
     assert "Rate limited" in str(error)
     assert "60" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_add_issue_comment_routes_copilot_mentions_through_copilot_client() -> None:
+    default_client = AsyncMock()
+    default_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("bot")))
+    copilot_client = AsyncMock()
+    copilot_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("me")))
+
+    with patch.object(
+        GitHubClient,
+        "_build_client",
+        side_effect=[default_client, copilot_client],
+    ):
+        gh = GitHubClient(token="default-token", copilot_token="user-pat")
+
+    comment = await gh.add_issue_comment("o", "r", 7, "@copilot please fix this")
+
+    copilot_client.request.assert_awaited_once()
+    default_client.request.assert_not_awaited()
+    assert comment.user.login == "me"
+
+
+@pytest.mark.asyncio
+async def test_add_issue_comment_uses_default_client_for_regular_comments() -> None:
+    default_client = AsyncMock()
+    default_client.request = AsyncMock(
+        return_value=_make_response(201, _comment_payload("github-actions[bot]"))
+    )
+    copilot_client = AsyncMock()
+    copilot_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("me")))
+
+    with patch.object(
+        GitHubClient,
+        "_build_client",
+        side_effect=[default_client, copilot_client],
+    ):
+        gh = GitHubClient(token="default-token", copilot_token="user-pat")
+
+    comment = await gh.add_issue_comment("o", "r", 7, "Regular maintainer note")
+
+    default_client.request.assert_awaited_once()
+    copilot_client.request.assert_not_awaited()
+    assert comment.user.login == "github-actions[bot]"

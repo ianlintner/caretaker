@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.github.com"
 COPILOT_ASSIGNEE_LOGIN = "copilot-swe-agent[bot]"
+COPILOT_COMMENT_MARKERS = (
+    "@copilot",
+    "<!-- caretaker:task -->",
+)
 
 
 class GitHubAPIError(Exception):
@@ -130,6 +134,11 @@ class GitHubClient:
 
     async def _copilot_post(self, path: str, **kwargs: Any) -> Any:
         return await self._copilot_request("POST", path, **kwargs)
+
+    @staticmethod
+    def _should_use_copilot_comment_client(body: str) -> bool:
+        body_casefolded = body.casefold()
+        return any(marker in body_casefolded for marker in COPILOT_COMMENT_MARKERS)
 
     def for_repo(self, owner: str, repo: str) -> GitHubRepositoryTools:
         """Return a repo-bound toolset for issue and pull-request operations."""
@@ -319,8 +328,29 @@ class GitHubClient:
 
         return issue
 
-    async def add_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Comment:
-        data = await self._post(
+    async def add_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        """Add an issue or PR comment.
+
+        When ``use_copilot_token`` is left as ``None``, comments that summon
+        ``@copilot`` (or carry a maintainer task marker) are routed through the
+        PAT-backed client so GitHub attributes them to the configured write-capable
+        identity instead of the default workflow bot.
+        """
+        post = self._post
+        if use_copilot_token is True or (
+            use_copilot_token is None and self._should_use_copilot_comment_client(body)
+        ):
+            post = self._copilot_post
+
+        data = await post(
             f"/repos/{owner}/{repo}/issues/{number}/comments",
             json={"body": body},
         )

@@ -40,7 +40,8 @@ class DocsAgent:
     1. Finds merged PRs since the last docs-agent run.
     2. Generates a CHANGELOG entry for the current week from the PR titles/bodies.
     3. Opens a pull request updating CHANGELOG.md (and optionally README.md).
-    4. Assigns the PR to @copilot for final review / merge.
+    4. Posts a follow-up PR comment via the PAT-backed identity so @copilot can
+       review / merge from a write-capable user mention.
     """
 
     def __init__(
@@ -146,6 +147,11 @@ class DocsAgent:
                 assignees=["copilot"],
             )
             pr_number = pr["number"] if isinstance(pr, dict) else pr.number
+            await self._pull_requests.comment(
+                pr_number,
+                _build_copilot_review_comment(),
+                use_copilot_token=True,
+            )
             report.doc_pr_opened = pr_number
             report.changelog_updated = True
             logger.info("Docs agent: opened docs-update PR #%d", pr_number)
@@ -233,8 +239,12 @@ This PR updates `CHANGELOG.md` to capture the following merged pull requests:
 {changelog_entry}
 ```
 
-@copilot — please review the generated entry for accuracy,
-expand any cryptic titles, and merge when ready.
-
 ---
 {DOCS_AGENT_MARKER} -->"""
+
+
+def _build_copilot_review_comment() -> str:
+    return """@copilot Please review this generated documentation update for accuracy,
+expand any cryptic titles if needed, and merge when ready.
+
+<!-- caretaker:docs-review -->"""
