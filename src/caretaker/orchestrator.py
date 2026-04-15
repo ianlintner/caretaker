@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker import __version__
@@ -26,6 +26,13 @@ if TYPE_CHECKING:
     from caretaker.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Return a UTC-aware datetime, attaching UTC if the datetime is naive."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 class Orchestrator:
@@ -156,7 +163,7 @@ class Orchestrator:
 
     def _reconcile_state(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Reconcile cross-agent tracked PR/issue state and derive reconciliation metrics."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         issue_to_pr: dict[int, int] = {
             issue_number: tracked_issue.assigned_pr
@@ -198,7 +205,8 @@ class Orchestrator:
                 )
                 and tracked_issue.last_checked is not None
             ):
-                age_days = (now - tracked_issue.last_checked).days
+                last_checked = _as_utc(tracked_issue.last_checked)
+                age_days = (now - last_checked).days
                 if age_days >= self._config.escalation.stale_days:
                     tracked_issue.state = IssueTrackingState.ESCALATED
                     tracked_issue.escalated = True
@@ -216,7 +224,10 @@ class Orchestrator:
         for tracked_pr in state.tracked_prs.values():
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
                 merged_durations_hours.append(
-                    (tracked_pr.merged_at - tracked_pr.first_seen_at).total_seconds() / 3600.0
+                    (
+                        _as_utc(tracked_pr.merged_at) - _as_utc(tracked_pr.first_seen_at)
+                    ).total_seconds()
+                    / 3600.0
                 )
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(

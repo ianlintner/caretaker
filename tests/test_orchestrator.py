@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
@@ -80,7 +82,7 @@ class TestOrchestratorReconciliation:
 
     def test_escalates_stale_assignments(self) -> None:
         orchestrator = make_orchestrator()
-        old = datetime.utcnow() - timedelta(days=14)
+        old = datetime.now(UTC) - timedelta(days=14)
         state = OrchestratorState(
             tracked_issues={
                 3: TrackedIssue(
@@ -97,6 +99,28 @@ class TestOrchestratorReconciliation:
         assert state.tracked_issues[3].state == IssueTrackingState.ESCALATED
         assert state.tracked_issues[3].escalated is True
         assert summary.stale_assignments_escalated == 1
+
+    def test_avg_merge_time_tolerates_mixed_naive_and_aware_datetimes(self) -> None:
+        """merged_at from GitHub is timezone-aware; first_seen_at is naive UTC.
+        _reconcile_state must not raise TypeError when computing avg_time_to_merge_hours."""
+        orchestrator = make_orchestrator()
+        naive_first_seen = datetime(2024, 1, 1, 0, 0, 0)
+        aware_merged_at = datetime(2024, 1, 1, 2, 0, 0, tzinfo=UTC)
+        state = OrchestratorState(
+            tracked_prs={
+                30: TrackedPR(
+                    number=30,
+                    state=PRTrackingState.MERGED,
+                    first_seen_at=naive_first_seen,
+                    merged_at=aware_merged_at,
+                ),
+            },
+        )
+        summary = RunSummary(mode="full")
+
+        orchestrator._reconcile_state(state, summary)
+
+        assert summary.avg_time_to_merge_hours == pytest.approx(2.0)
 
 
 class TestOrchestratorReportPath:
