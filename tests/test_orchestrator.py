@@ -163,49 +163,70 @@ class TestOrchestratorReportPath:
         """Charlie mode invokes janitorial cleanup without running the broader cycle."""
         orchestrator = make_orchestrator()
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "charlie"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(orchestrator._registry, "agents_for_mode", return_value=[mock_agent]),
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock) as mock_run_one,
         ):
             await orchestrator.run(mode="charlie")
 
+        # Goal engine is disabled by default; legacy run_all path is taken
         mock_run_all.assert_awaited_once()
-        call_kwargs = mock_run_all.call_args
-        assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
+        assert mock_run_all.call_args.kwargs.get("mode") == "charlie"
+        mock_run_one.assert_not_awaited()
 
     async def test_dry_run_dispatches_full_mode(self) -> None:
         """Dry-run should evaluate the same agent set as full mode."""
         orchestrator = make_orchestrator()
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "pr"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(
+                orchestrator._registry,
+                "agents_for_mode",
+                return_value=[mock_agent],
+            ) as mock_afm,
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock),
         ):
             await orchestrator.run(mode="dry-run")
 
+        # Goal engine is disabled by default; legacy run_all path is taken with 'full' mode
         mock_run_all.assert_awaited_once()
         assert mock_run_all.call_args.kwargs.get("mode") == "full"
+        mock_afm.assert_not_called()
 
     async def test_self_heal_mode_forwards_event_payload(self) -> None:
         """Self-heal mode should pass event payload through to registry dispatch."""
         orchestrator = make_orchestrator()
         payload = {"workflow_run": {"id": 123}}
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "self-heal"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(orchestrator._registry, "agents_for_mode", return_value=[mock_agent]),
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock) as mock_run_one,
         ):
             await orchestrator.run(mode="self-heal", event_payload=payload)
 
+        # Goal engine is disabled by default; legacy run_all path is taken with payload forwarded
         mock_run_all.assert_awaited_once()
         assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
         assert mock_run_all.call_args.kwargs.get("event_payload") == payload
+        mock_run_one.assert_not_awaited()
 
 
 class TestOrchestratorStateLoadFailure:

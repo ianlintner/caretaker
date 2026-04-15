@@ -13,6 +13,8 @@ from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
 from caretaker.github_client.api import GitHubClient
+from caretaker.goals.definitions import build_goals
+from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
 from caretaker.state.models import (
     IssueTrackingState,
@@ -23,6 +25,7 @@ from caretaker.state.models import (
 from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
+    from caretaker.goals.models import GoalEvaluation
     from caretaker.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,14 @@ class Orchestrator:
             dry_run=config.orchestrator.dry_run,
         )
         self._registry: AgentRegistry = build_registry(ctx)
+
+        # Goal-seeking engine
+        self._goal_engine: GoalEngine | None = None
+        if config.goal_engine.enabled:
+            self._goal_engine = GoalEngine(build_goals(), config.goal_engine)
+            issues = self._goal_engine.validate(self._registry)
+            for issue in issues:
+                logger.warning(issue)
 
     @classmethod
     def from_config_path(cls, path: str) -> Orchestrator:
@@ -111,9 +122,48 @@ class Orchestrator:
 
         try:
             state = await self._state_tracker.load()
+
+            # ── Goal pre-evaluation ───────────────────────────
+            pre_eval: GoalEvaluation | None = None
+            if (
+                self._goal_engine
+                and mode != "event"
+                and self._config.goal_engine.goal_driven_dispatch
+            ):
+                goal_ctx = GoalContext(
+                    github=self._github,
+                    owner=self._owner,
+                    repo=self._repo,
+                    config=self._config,
+                )
+                pre_eval = await self._goal_engine.evaluate_all(state, goal_ctx)
+                logger.info(
+                    "Goal pre-evaluation: health=%.2f, escalations=%d, plan=%s",
+                    pre_eval.overall_health,
+                    len(pre_eval.escalations),
+                    pre_eval.dispatch_plan,
+                )
+                for esc in pre_eval.escalations:
+                    logger.warning(
+                        "Goal escalation: %s — %s (action: %s)",
+                        esc.goal_id,
+                        esc.reason,
+                        esc.recommended_action,
+                    )
+
+            # ── Agent dispatch ────────────────────────────────
             # Event-driven mode — route to specific agent
             if mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
+            elif (
+                self._goal_engine
+                and self._config.goal_engine.goal_driven_dispatch
+                and pre_eval is not None
+            ):
+                dispatch_mode = "full" if mode == "dry-run" else mode
+                await self._run_goal_driven(
+                    pre_eval, state, summary, dispatch_mode, event_payload or {}
+                )
             else:
                 # Dry-run evaluates full mode with read-only behavior controlled by context.
                 dispatch_mode = "full" if mode == "dry-run" else mode
@@ -127,6 +177,25 @@ class Orchestrator:
 
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
+
+            # ── Goal post-evaluation ──────────────────────────
+            if self._goal_engine:
+                goal_ctx = GoalContext(
+                    github=self._github,
+                    owner=self._owner,
+                    repo=self._repo,
+                    config=self._config,
+                    current_summary=summary,
+                )
+                post_eval = await self._goal_engine.evaluate_all(state, goal_ctx)
+                self._goal_engine.record_evaluation(state, post_eval)
+                summary.goal_health = post_eval.overall_health
+                summary.goal_escalation_count = len(post_eval.escalations)
+                logger.info(
+                    "Goal post-evaluation: health=%.2f (escalations=%d)",
+                    post_eval.overall_health,
+                    len(post_eval.escalations),
+                )
 
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)
@@ -235,6 +304,34 @@ class Orchestrator:
 
         if summary.prs_monitored > 0:
             summary.copilot_success_rate = summary.prs_merged / summary.prs_monitored
+
+    async def _run_goal_driven(
+        self,
+        evaluation: GoalEvaluation,
+        state: OrchestratorState,
+        summary: RunSummary,
+        mode: str,
+        event_payload: dict[str, Any],
+    ) -> None:
+        """Dispatch agents in goal-priority order, then remaining mode agents.
+
+        All mode-eligible agents still run — goal evaluation only affects the
+        order so that the most urgent work happens first.
+        """
+        mode_agents = self._registry.agents_for_mode(mode)
+        mode_agent_names = {a.name for a in mode_agents}
+
+        ran: set[str] = set()
+        for agent_name in evaluation.dispatch_plan:
+            if agent_name in mode_agent_names and agent_name not in ran:
+                agent = self._registry.get(agent_name)
+                if agent:
+                    await self._registry.run_one(agent, state, summary, event_payload=event_payload)
+                    ran.add(agent_name)
+
+        for agent in mode_agents:
+            if agent.name not in ran:
+                await self._registry.run_one(agent, state, summary, event_payload=event_payload)
 
     async def _handle_event(
         self,

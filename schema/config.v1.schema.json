@@ -162,6 +162,17 @@
           "items": { "type": "string" }
         }
       }
+    },
+    "goal_engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "goal_driven_dispatch": { "type": "boolean" },
+        "divergence_threshold": { "type": "integer", "minimum": 1 },
+        "stale_threshold": { "type": "integer", "minimum": 1 },
+        "max_history": { "type": "integer", "minimum": 1 }
+      }
     }
   }
 }

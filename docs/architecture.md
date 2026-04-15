@@ -30,14 +30,29 @@ It:
 
 Each concern lives in its own package under `src/caretaker/`, which keeps the policy boundaries crisp and the testing surface manageable.
 
+### Goal engine
+
+[`src/caretaker/goals/`](https://github.com/ianlintner/caretaker/tree/main/src/caretaker/goals) adds a quantitative goal-seeking layer on top of agent execution.
+
+It:
+
+- evaluates repository health across measurable goals (for example CI health, PR lifecycle, security posture, and self-health)
+- assigns each goal a score from `0.0` to `1.0`
+- detects unhealthy trends (critical, diverging, stale)
+- produces a goal-driven dispatch plan that prioritizes agents with the highest expected impact
+- records per-goal history for trend analysis and escalation
+
+The orchestrator still runs the mode-eligible agents, but the goal engine can reorder execution so urgent work is handled first.
+
 ## Workflow model
 
 1. GitHub emits an event or a schedule fires.
 2. The workflow runs the `caretaker` CLI.
-3. The orchestrator selects an agent or full maintenance pass.
-4. The chosen agent reads repository state through the GitHub client.
-5. The agent creates labels, comments, issues, or PR actions as needed.
-6. Run state and summaries are persisted for the next execution.
+3. The orchestrator evaluates quantitative goals and computes urgency.
+4. The orchestrator selects an agent or full maintenance pass (goal-prioritized when enabled).
+5. The chosen agent reads repository state through the GitHub client.
+6. The agent creates labels, comments, issues, or PR actions as needed.
+7. Run state, goal history, and summaries are persisted for the next execution.
 
 ## Why this design works
 
