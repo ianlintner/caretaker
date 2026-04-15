@@ -30,6 +30,7 @@ All notable changes to this project will be documented in this file.
 - handle 422 "Reference already exists" gracefully in DocsAgent (#304)
 - handle 422 branch-already-exists gracefully (#306)
 - [WIP] Fix unknown caretaker failure with exit code 1 (#308)
+- handle 403 "not permitted to create PRs" as warning, not error (#310)
 
 ## [0.1.0] - Unreleased
 
