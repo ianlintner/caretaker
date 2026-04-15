@@ -441,12 +441,23 @@ def _extract_first_error(log_text: str) -> str:
     """
     lines = log_text.splitlines()
 
+    def _normalize_error_line(line: str) -> str:
+        normalized = re.sub(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*", "", line).strip()
+        normalized = normalized.replace("##[error]", "", 1).strip()
+        return normalized[:300]
+
     # Pass 1: prefer ##[error] annotations — these are GitHub Actions' own
     # markers and almost always describe the real failure.
     for line in lines:
         stripped = line.strip()
         if "##[error]" in stripped and len(stripped) > 20:
-            return stripped[:300]
+            return _normalize_error_line(stripped)
+
+    # Pass 1b: common Actions failure line when annotation markers are absent.
+    for line in lines:
+        stripped = line.strip()
+        if "process completed with exit code" in stripped.lower():
+            return _normalize_error_line(stripped)
 
     # Pass 2: generic keyword scan
     for line in lines:
@@ -455,7 +466,7 @@ def _extract_first_error(log_text: str) -> str:
             kw in stripped
             for kw in ("Error", "error", "Exception", "FAILED", "invalid", "required")
         ):
-            return stripped[:300]
+            return _normalize_error_line(stripped)
 
     return log_text.strip()[:200]
 
