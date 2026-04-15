@@ -32,6 +32,7 @@ async def test_self_heal_adapter_persists_actioned_sigs_in_stable_order() -> Non
         upstream_issues_opened=[],
         upstream_features_requested=[],
         actioned_sigs=["old-2", "new-1", "new-2"],
+        updated_cooldowns={},
     )
 
     with patch("caretaker.agents.SelfHealAgent") as mock_agent_cls:
@@ -61,6 +62,7 @@ async def test_self_heal_adapter_caps_to_latest_500_while_preserving_order() -> 
         upstream_issues_opened=[],
         upstream_features_requested=[],
         actioned_sigs=["sig-10", "sig-500", "sig-501"],
+        updated_cooldowns={},
     )
 
     with patch("caretaker.agents.SelfHealAgent") as mock_agent_cls:

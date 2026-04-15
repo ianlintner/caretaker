@@ -118,5 +118,7 @@ class OrchestratorState(BaseModel):
     reported_build_sigs: list[str] = Field(default_factory=list)
     # Signatures of self-heal issues already filed
     reported_self_heal_sigs: list[str] = Field(default_factory=list)
+    # Cooldown tracking: maps coarse key (job:kind) → ISO datetime of last issue creation
+    issue_cooldowns: dict[str, str] = Field(default_factory=dict)
     last_run: RunSummary | None = None
     run_history: list[RunSummary] = Field(default_factory=list)
