@@ -217,8 +217,19 @@ class SelfHealAgentAdapter(BaseAgent):
             owner=self._ctx.owner,
             repo=self._ctx.repo,
             report_upstream=report_upstream,
+            known_sigs=set(state.reported_self_heal_sigs),
         )
         report = await agent.run(event_payload=event_payload)
+        # Persist actioned sigs so closed/resolved issues don't spawn duplicates
+        if report.actioned_sigs:
+            existing = list(state.reported_self_heal_sigs)
+            known_sigs = set(existing)
+            for sig in report.actioned_sigs:
+                if sig not in known_sigs:
+                    existing.append(sig)
+                    known_sigs.add(sig)
+            # Cap at 500 entries to avoid unbounded growth
+            state.reported_self_heal_sigs = existing[-500:]
         return AgentResult(
             processed=report.failures_analyzed,
             errors=report.errors,

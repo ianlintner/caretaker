@@ -28,11 +28,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _as_utc_naive(value: datetime) -> datetime:
-    """Normalize datetimes to naive UTC for safe subtraction."""
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+def _as_utc(dt: datetime) -> datetime:
+    """Return a UTC-aware datetime, attaching UTC if the datetime is naive."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 class Orchestrator:
@@ -163,7 +163,7 @@ class Orchestrator:
 
     def _reconcile_state(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Reconcile cross-agent tracked PR/issue state and derive reconciliation metrics."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         issue_to_pr: dict[int, int] = {
             issue_number: tracked_issue.assigned_pr
@@ -172,9 +172,14 @@ class Orchestrator:
         }
 
         linked_pr_numbers = set(issue_to_pr.values())
+        _terminal_pr_states = {
+            PRTrackingState.MERGED,
+            PRTrackingState.CLOSED,
+            PRTrackingState.ESCALATED,
+        }
         orphaned_prs = 0
         for pr_number, tracked_pr in state.tracked_prs.items():
-            if tracked_pr.state in (PRTrackingState.MERGED, PRTrackingState.CLOSED):
+            if tracked_pr.state in _terminal_pr_states:
                 continue
             if pr_number not in linked_pr_numbers:
                 orphaned_prs += 1
@@ -200,7 +205,7 @@ class Orchestrator:
                 )
                 and tracked_issue.last_checked is not None
             ):
-                age_days = (now - _as_utc_naive(tracked_issue.last_checked)).days
+                age_days = (now - _as_utc(tracked_issue.last_checked)).days
                 if age_days >= self._config.escalation.stale_days:
                     tracked_issue.state = IssueTrackingState.ESCALATED
                     tracked_issue.escalated = True
@@ -217,9 +222,12 @@ class Orchestrator:
         merged_durations_hours: list[float] = []
         for tracked_pr in state.tracked_prs.values():
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
-                merged_at = _as_utc_naive(tracked_pr.merged_at)
-                first_seen_at = _as_utc_naive(tracked_pr.first_seen_at)
-                merged_durations_hours.append((merged_at - first_seen_at).total_seconds() / 3600.0)
+                merged_durations_hours.append(
+                    (
+                        _as_utc(tracked_pr.merged_at) - _as_utc(tracked_pr.first_seen_at)
+                    ).total_seconds()
+                    / 3600.0
+                )
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
                 merged_durations_hours

@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
 from caretaker.state.models import (
@@ -64,9 +66,23 @@ class TestOrchestratorReconciliation:
 
         assert summary.orphaned_prs == 1
 
+    def test_does_not_count_escalated_pr_as_orphan(self) -> None:
+        orchestrator = make_orchestrator()
+        state = OrchestratorState(
+            tracked_prs={
+                22: TrackedPR(number=22, state=PRTrackingState.ESCALATED),
+            },
+            tracked_issues={},
+        )
+        summary = RunSummary(mode="full")
+
+        orchestrator._reconcile_state(state, summary)
+
+        assert summary.orphaned_prs == 0
+
     def test_escalates_stale_assignments(self) -> None:
         orchestrator = make_orchestrator()
-        old = datetime.utcnow() - timedelta(days=14)
+        old = datetime.now(UTC) - timedelta(days=14)
         state = OrchestratorState(
             tracked_issues={
                 3: TrackedIssue(
@@ -84,23 +100,27 @@ class TestOrchestratorReconciliation:
         assert state.tracked_issues[3].escalated is True
         assert summary.stale_assignments_escalated == 1
 
-    def test_handles_mixed_timezone_datetimes_in_merge_duration(self) -> None:
+    def test_avg_merge_time_tolerates_mixed_naive_and_aware_datetimes(self) -> None:
+        """merged_at from GitHub is timezone-aware; first_seen_at is naive UTC.
+        _reconcile_state must not raise TypeError when computing avg_time_to_merge_hours."""
         orchestrator = make_orchestrator()
+        naive_first_seen = datetime(2024, 1, 1, 0, 0, 0)
+        aware_merged_at = datetime(2024, 1, 1, 2, 0, 0, tzinfo=UTC)
         state = OrchestratorState(
             tracked_prs={
                 30: TrackedPR(
                     number=30,
                     state=PRTrackingState.MERGED,
-                    first_seen_at=datetime(2026, 4, 1, 10, 0, 0),
-                    merged_at=datetime(2026, 4, 1, 13, 0, 0, tzinfo=UTC),
+                    first_seen_at=naive_first_seen,
+                    merged_at=aware_merged_at,
                 ),
-            }
+            },
         )
         summary = RunSummary(mode="full")
 
         orchestrator._reconcile_state(state, summary)
 
-        assert summary.avg_time_to_merge_hours == 3.0
+        assert summary.avg_time_to_merge_hours == pytest.approx(2.0)
 
 
 class TestOrchestratorReportPath:

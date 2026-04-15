@@ -3,9 +3,13 @@
 import gzip
 import io
 import zipfile
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from caretaker.self_heal_agent.agent import (
     FailureKind,
+    SelfHealAgent,
     _classify_failure,
     _decode_job_log_payload,
     _extract_first_error,
@@ -111,3 +115,26 @@ class TestDecodeJobLogPayload:
         decoded = _decode_job_log_payload(payload, fallback_text="garbled")
 
         assert "Process completed with exit code 1" in decoded
+
+
+@pytest.mark.asyncio
+class TestSelfHealActionedSigs:
+    async def test_transient_failures_are_not_recorded_as_actioned(self) -> None:
+        github = AsyncMock()
+        agent = SelfHealAgent(github=github, owner="o", repo="r", report_upstream=False)
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "transient log")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.TRANSIENT, "Transient timeout", "retry later"),
+            ),
+        ):
+            report = await agent.run()
+
+        assert report.actioned_sigs == []
