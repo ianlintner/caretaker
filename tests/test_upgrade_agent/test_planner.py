@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from caretaker.github_client.models import Issue, User
-from caretaker.upgrade_agent.planner import UpgradePlanner, build_upgrade_issue_body
+from caretaker.upgrade_agent.planner import (
+    SYNC_FILES,
+    UpgradePlanner,
+    build_sync_issue_body,
+    build_upgrade_issue_body,
+)
 from caretaker.upgrade_agent.release_checker import Release
 
 
@@ -83,4 +88,59 @@ class TestUpgradePlanner:
         number = await planner.create_upgrade_issue("1.4.0", target)
 
         assert number == 42
+        github.create_issue.assert_awaited_once()
+
+
+class TestBuildSyncIssueBody:
+    def test_body_contains_version_and_marker(self) -> None:
+        body = build_sync_issue_body("1.5.0")
+        assert "Sync installation files to v1.5.0" in body
+        assert "VERSION: 1.5.0" in body
+        assert "<!-- caretaker:sync -->" in body
+        assert "<!-- /caretaker:sync -->" in body
+
+    def test_body_lists_all_sync_files(self) -> None:
+        body = build_sync_issue_body("1.5.0")
+        for local_path, _template_path in SYNC_FILES:
+            assert local_path in body
+
+    def test_body_contains_template_urls_with_tag(self) -> None:
+        body = build_sync_issue_body("2.0.0")
+        assert "v2.0.0" in body
+        for _local_path, template_path in SYNC_FILES:
+            assert template_path in body
+
+    def test_body_contains_copilot_mention(self) -> None:
+        body = build_sync_issue_body("1.0.0")
+        assert "@copilot" in body
+
+    def test_body_contains_acceptance_criteria(self) -> None:
+        body = build_sync_issue_body("1.0.0")
+        assert "Acceptance criteria" in body
+        assert "All tests pass" in body
+
+
+@pytest.mark.asyncio
+class TestUpgradePlannerSync:
+    async def test_reuses_existing_sync_issue(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_issues.return_value = [
+            make_issue(20, "Sync installation files to v1.5.0", maintainer=True),
+        ]
+
+        number = await planner.create_sync_issue("1.5.0")
+
+        assert number == 20
+        github.create_issue.assert_not_called()
+
+    async def test_creates_new_sync_issue(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_issues.return_value = []
+        github.create_issue.return_value = make_issue(55, "Sync installation files to v1.5.0")
+
+        number = await planner.create_sync_issue("1.5.0")
+
+        assert number == 55
         github.create_issue.assert_awaited_once()
