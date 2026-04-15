@@ -167,6 +167,14 @@ class HumanEscalationConfig(StrictBaseModel):
     notify_assignees: list[str] = Field(default_factory=list)
 
 
+class GoalEngineConfig(StrictBaseModel):
+    enabled: bool = True
+    goal_driven_dispatch: bool = True
+    divergence_threshold: int = 3
+    stale_threshold: int = 5
+    max_history: int = 20
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -183,6 +191,7 @@ class MaintainerConfig(StrictBaseModel):
     human_escalation: HumanEscalationConfig = Field(default_factory=HumanEscalationConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

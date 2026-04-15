@@ -170,6 +170,10 @@ class TestCIFixLifecycle:
 
         assert updated.state == PRTrackingState.ESCALATED
         assert 5 in report.escalated
+        comment_body = github.add_issue_comment.call_args.args[3]
+        assert "Escalation debug dump" in comment_body
+        assert '"type": "pr_escalation"' in comment_body
+        assert '"max_retries": 2' in comment_body
 
     async def test_managed_pr_with_backlog_failure_is_closed_when_enabled(self) -> None:
         """A backlog-guard failure should close managed PRs when configured."""

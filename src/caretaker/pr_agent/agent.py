@@ -19,6 +19,7 @@ from caretaker.pr_agent.states import (
     evaluate_pr,
 )
 from caretaker.state.models import PRTrackingState, TrackedPR
+from caretaker.tools.debug_dump import render_debug_dump
 
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
@@ -288,7 +289,15 @@ class PRAgent:
                 pr.number,
                 tracking.copilot_attempts,
             )
-            await self._escalate(pr, "Max CI fix retries exceeded")
+            await self._escalate(
+                pr,
+                "Max CI fix retries exceeded",
+                debug_data={
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "max_retries": self._config.copilot.max_retries,
+                    "failed_runs": [run.name for run in evaluation.ci.failed_runs],
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -381,7 +390,15 @@ class PRAgent:
             report.waiting.append(pr.number)
         elif result.status == ResultStatus.BLOCKED:
             logger.warning("PR #%d: Copilot blocked — %s", pr.number, result.blocker)
-            await self._escalate(pr, f"Copilot blocked: {result.blocker}")
+            await self._escalate(
+                pr,
+                f"Copilot blocked: {result.blocker}",
+                debug_data={
+                    "blocker": result.blocker,
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "last_task_comment_id": tracking.last_task_comment_id,
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -410,7 +427,15 @@ class PRAgent:
 
         attempt = tracking.copilot_attempts + 1
         if attempt > self._config.copilot.max_retries:
-            await self._escalate(pr, "Max review fix retries exceeded")
+            await self._escalate(
+                pr,
+                "Max review fix retries exceeded",
+                debug_data={
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "max_retries": self._config.copilot.max_retries,
+                    "review_count": len(reviews),
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -436,10 +461,37 @@ class PRAgent:
 
         return tracking
 
-    async def _escalate(self, pr: PullRequest, reason: str) -> None:
+    async def _escalate(
+        self,
+        pr: PullRequest,
+        reason: str,
+        *,
+        debug_data: dict[str, Any] | None = None,
+    ) -> None:
         """Escalate a PR to the repo owner."""
         labels = ["maintainer:escalated"]
         await self._github.add_labels(self._owner, self._repo, pr.number, labels)
+        payload: dict[str, Any] = {
+            "type": "pr_escalation",
+            "owner": self._owner,
+            "repo": self._repo,
+            "pull_request": {
+                "number": pr.number,
+                "title": pr.title,
+                "state": pr.state,
+                "head_ref": pr.head_ref,
+                "base_ref": pr.base_ref,
+                "is_copilot_pr": pr.is_copilot_pr,
+                "is_maintainer_pr": pr.is_maintainer_pr,
+                "mergeable": pr.mergeable,
+                "draft": pr.draft,
+                "html_url": pr.html_url,
+            },
+            "reason": reason,
+        }
+        if debug_data:
+            payload["debug"] = debug_data
+
         body = (
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
@@ -447,5 +499,6 @@ class PRAgent:
             f"The automated system has exhausted its ability to resolve this. "
             f"Please review and take appropriate action."
         )
+        body += render_debug_dump(payload, title="Escalation debug dump")
         await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
         logger.info("PR #%d escalated: %s", pr.number, reason)

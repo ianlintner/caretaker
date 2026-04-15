@@ -131,6 +131,10 @@ class StateTracker:
             lines.append(f"- Issues triaged: {summary.issues_triaged}")
             if summary.errors:
                 lines.append(f"- Errors: {len(summary.errors)}")
+            if summary.goal_health > 0:
+                lines.append(f"- Goal health: {summary.goal_health:.2%}")
+                if summary.goal_escalation_count:
+                    lines.append(f"- Goal escalations: {summary.goal_escalation_count}")
             lines.append("")
         lines.append(f"{STATE_MARKER_OPEN}\n{state_json}\n{STATE_MARKER_CLOSE}")
         return "\n".join(lines)
@@ -193,6 +197,15 @@ class StateTracker:
                 [
                     "### Errors",
                     *[f"- {e}" for e in summary.errors],
+                    "",
+                ]
+            )
+        if summary.goal_health > 0:
+            lines.extend(
+                [
+                    "### Goal Health",
+                    f"- Overall health: {summary.goal_health:.2%}",
+                    f"- Goal escalations: {summary.goal_escalation_count}",
                     "",
                 ]
             )

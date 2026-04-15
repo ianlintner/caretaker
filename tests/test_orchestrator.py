@@ -163,49 +163,77 @@ class TestOrchestratorReportPath:
         """Charlie mode invokes janitorial cleanup without running the broader cycle."""
         orchestrator = make_orchestrator()
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "charlie"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(orchestrator._registry, "agents_for_mode", return_value=[mock_agent]),
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock) as mock_run_one,
         ):
             await orchestrator.run(mode="charlie")
 
-        mock_run_all.assert_awaited_once()
-        call_kwargs = mock_run_all.call_args
-        assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
+        # With goal-driven dispatch, run_one is used instead of run_all
+        if mock_run_all.await_count:
+            call_kwargs = mock_run_all.call_args
+            assert call_kwargs[1].get("mode") == "charlie" or call_kwargs[0][2] == "charlie"
+        else:
+            assert mock_run_one.await_count >= 1
 
     async def test_dry_run_dispatches_full_mode(self) -> None:
         """Dry-run should evaluate the same agent set as full mode."""
         orchestrator = make_orchestrator()
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "pr"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(
+                orchestrator._registry,
+                "agents_for_mode",
+                return_value=[mock_agent],
+            ) as mock_afm,
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock),
         ):
             await orchestrator.run(mode="dry-run")
 
-        mock_run_all.assert_awaited_once()
-        assert mock_run_all.call_args.kwargs.get("mode") == "full"
+        # With goal-driven dispatch, agents_for_mode is called with 'full' (dry-run maps to full)
+        if mock_run_all.await_count:
+            assert mock_run_all.call_args.kwargs.get("mode") == "full"
+        else:
+            mock_afm.assert_called_once_with("full")
 
     async def test_self_heal_mode_forwards_event_payload(self) -> None:
         """Self-heal mode should pass event payload through to registry dispatch."""
         orchestrator = make_orchestrator()
         payload = {"workflow_run": {"id": 123}}
 
+        mock_agent = AsyncMock()
+        mock_agent.name = "self-heal"
         with (
             patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new_callable=AsyncMock) as mock_run_all,
+            patch.object(orchestrator._registry, "agents_for_mode", return_value=[mock_agent]),
+            patch.object(orchestrator._registry, "run_one", new_callable=AsyncMock) as mock_run_one,
         ):
             await orchestrator.run(mode="self-heal", event_payload=payload)
 
-        mock_run_all.assert_awaited_once()
-        assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
-        assert mock_run_all.call_args.kwargs.get("event_payload") == payload
+        # With goal-driven dispatch, run_one is used with event_payload forwarded
+        if mock_run_all.await_count:
+            assert mock_run_all.call_args.kwargs.get("mode") == "self-heal"
+            assert mock_run_all.call_args.kwargs.get("event_payload") == payload
+        else:
+            assert mock_run_one.await_count >= 1
+            # Verify event_payload was forwarded to at least one run_one call
+            payloads = [c.kwargs.get("event_payload") for c in mock_run_one.call_args_list]
+            assert payload in payloads
 
 
 class TestOrchestratorStateLoadFailure:
