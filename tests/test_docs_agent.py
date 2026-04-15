@@ -179,12 +179,17 @@ class TestDocsAgentRun:
         gh.create_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_403_on_create_pr_is_not_a_fatal_error(self) -> None:
-        """A 403 'not permitted to create PRs' should be a warning, not a fatal error."""
+    async def test_no_error_when_actions_not_permitted_to_create_prs(self) -> None:
+        """A 403 'not permitted to create PRs' should warn, not fail."""
         merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
         gh = make_github()
         gh.create_pull_request.side_effect = GitHubAPIError(
-            403, '{"message":"GitHub Actions is not permitted to create or approve pull requests."}'
+            403,
+            (
+                '{"message":"GitHub Actions is not permitted to create or approve pull requests.",'
+                '"documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request",'
+                '"status":"403"}'
+            ),
         )
         agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
@@ -194,17 +199,18 @@ class TestDocsAgentRun:
         ):
             report = await agent.run()
 
-        # Should NOT be treated as an error that causes the workflow to fail
+        # Should NOT add the 403 permission error to report.errors
         assert report.errors == []
         assert report.doc_pr_opened is None
 
     @pytest.mark.asyncio
-    async def test_non_403_api_error_on_create_pr_is_fatal(self) -> None:
-        """A non-403 API error when creating a PR should be recorded as an error."""
+    async def test_error_reported_for_other_403(self) -> None:
+        """A 403 with a different message should still be recorded as an error."""
         merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
         gh = make_github()
         gh.create_pull_request.side_effect = GitHubAPIError(
-            500, '{"message":"Internal Server Error"}'
+            403,
+            '{"message":"Resource not accessible by integration","status":"403"}',
         )
         agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
@@ -215,7 +221,7 @@ class TestDocsAgentRun:
             report = await agent.run()
 
         assert len(report.errors) == 1
-        assert "500" in report.errors[0]
+        assert "403" in report.errors[0]
 
     @pytest.mark.asyncio
     async def test_reuses_existing_branch_when_422(self) -> None:
