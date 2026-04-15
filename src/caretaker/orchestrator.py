@@ -165,9 +165,14 @@ class Orchestrator:
         }
 
         linked_pr_numbers = set(issue_to_pr.values())
+        _terminal_pr_states = {
+            PRTrackingState.MERGED,
+            PRTrackingState.CLOSED,
+            PRTrackingState.ESCALATED,
+        }
         orphaned_prs = 0
         for pr_number, tracked_pr in state.tracked_prs.items():
-            if tracked_pr.state in (PRTrackingState.MERGED, PRTrackingState.CLOSED):
+            if tracked_pr.state in _terminal_pr_states:
                 continue
             if pr_number not in linked_pr_numbers:
                 orphaned_prs += 1

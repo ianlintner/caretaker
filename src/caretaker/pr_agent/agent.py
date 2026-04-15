@@ -84,6 +84,36 @@ class PRAgent:
 
         report.monitored = len(open_prs)
 
+        # Sync tracked PRs that are no longer open — they were merged or closed
+        # externally (e.g. manually) while the orchestrator wasn't watching.
+        open_pr_numbers = {pr.number for pr in open_prs}
+        _terminal = {
+            PRTrackingState.MERGED,
+            PRTrackingState.CLOSED,
+            PRTrackingState.ESCALATED,
+        }
+        for pr_number, tracked in list(tracked_prs.items()):
+            if pr_number not in open_pr_numbers and tracked.state not in _terminal:
+                try:
+                    closed_pr = await self._github.get_pull_request(
+                        self._owner, self._repo, pr_number
+                    )
+                    if closed_pr is not None:
+                        if closed_pr.merged:
+                            tracked.state = PRTrackingState.MERGED
+                            if tracked.merged_at is None:
+                                tracked.merged_at = datetime.utcnow()
+                            logger.info(
+                                "PR #%d: externally merged — updated tracked state", pr_number
+                            )
+                        elif closed_pr.state == "closed":
+                            tracked.state = PRTrackingState.CLOSED
+                            logger.info(
+                                "PR #%d: externally closed — updated tracked state", pr_number
+                            )
+                except Exception as exc:
+                    logger.debug("Could not sync state for PR #%d: %s", pr_number, exc)
+
         for pr in open_prs:
             try:
                 tracking = tracked_prs.get(pr.number, TrackedPR(number=pr.number))
