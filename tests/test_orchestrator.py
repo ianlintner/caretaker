@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -83,6 +83,24 @@ class TestOrchestratorReconciliation:
         assert state.tracked_issues[3].state == IssueTrackingState.ESCALATED
         assert state.tracked_issues[3].escalated is True
         assert summary.stale_assignments_escalated == 1
+
+    def test_handles_mixed_timezone_datetimes_in_merge_duration(self) -> None:
+        orchestrator = make_orchestrator()
+        state = OrchestratorState(
+            tracked_prs={
+                30: TrackedPR(
+                    number=30,
+                    state=PRTrackingState.MERGED,
+                    first_seen_at=datetime(2026, 4, 1, 10, 0, 0),
+                    merged_at=datetime(2026, 4, 1, 13, 0, 0, tzinfo=timezone.utc),
+                ),
+            }
+        )
+        summary = RunSummary(mode="full")
+
+        orchestrator._reconcile_state(state, summary)
+
+        assert summary.avg_time_to_merge_hours == 3.0
 
 
 class TestOrchestratorReportPath:
