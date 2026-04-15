@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker import __version__
@@ -32,7 +32,7 @@ def _as_utc_naive(value: datetime) -> datetime:
     """Normalize datetimes to naive UTC for safe subtraction."""
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 class Orchestrator:
@@ -219,9 +219,7 @@ class Orchestrator:
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
                 merged_at = _as_utc_naive(tracked_pr.merged_at)
                 first_seen_at = _as_utc_naive(tracked_pr.first_seen_at)
-                merged_durations_hours.append(
-                    (merged_at - first_seen_at).total_seconds() / 3600.0
-                )
+                merged_durations_hours.append((merged_at - first_seen_at).total_seconds() / 3600.0)
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
                 merged_durations_hours

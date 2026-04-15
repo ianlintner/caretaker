@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -92,7 +92,7 @@ class TestOrchestratorReconciliation:
                     number=30,
                     state=PRTrackingState.MERGED,
                     first_seen_at=datetime(2026, 4, 1, 10, 0, 0),
-                    merged_at=datetime(2026, 4, 1, 13, 0, 0, tzinfo=timezone.utc),
+                    merged_at=datetime(2026, 4, 1, 13, 0, 0, tzinfo=UTC),
                 ),
             }
         )
