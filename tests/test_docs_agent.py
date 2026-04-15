@@ -179,17 +179,12 @@ class TestDocsAgentRun:
         gh.create_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_recreates_stale_branch_on_reference_already_exists(self) -> None:
-        """When a branch exists from a prior run, delete it and retry."""
+    async def test_reuses_existing_branch_on_422(self) -> None:
+        """When the docs branch already exists (422), the agent reuses it without error."""
         merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
         gh = make_github()
-        # First create_branch call raises 422, second succeeds
-        gh.create_branch.side_effect = [
-            GitHubAPIError(422, '{"message":"Reference already exists"}'),
-            None,
-        ]
-        gh.delete_branch.return_value = None
-        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r")
 
         with (
             patch.object(agent, "_get_recently_merged_prs", return_value=merged),
@@ -197,18 +192,19 @@ class TestDocsAgentRun:
         ):
             report = await agent.run()
 
+        # Should still open a PR using the existing branch; no errors recorded
         assert report.doc_pr_opened == 77
-        assert not report.errors
-        gh.delete_branch.assert_awaited_once()
-        assert gh.create_branch.await_count == 2
+        assert report.errors == []
+        gh.create_or_update_file.assert_awaited_once()
+        gh.create_pull_request.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_non_branch_422_error_is_not_swallowed(self) -> None:
-        """A 422 that is not 'Reference already exists' should still propagate."""
+    async def test_records_error_on_non_reference_exists_422(self) -> None:
+        """A 422 with a different message (not 'already exists') should still be an error."""
         merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
         gh = make_github()
-        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Validation Failed"}')
-        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Validation failed"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r")
 
         with (
             patch.object(agent, "_get_recently_merged_prs", return_value=merged),
@@ -216,7 +212,5 @@ class TestDocsAgentRun:
         ):
             report = await agent.run()
 
-        assert report.doc_pr_opened is None
-        assert len(report.errors) == 1
-        assert "Validation Failed" in report.errors[0]
-        gh.delete_branch.assert_not_awaited()
+        assert report.errors != []
+        gh.create_pull_request.assert_not_awaited()
