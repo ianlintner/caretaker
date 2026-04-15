@@ -25,7 +25,10 @@ All notable changes to this project will be documented in this file.
 - Self-heal: extract actionable unknown-failure messages from Actions logs (#293)
 - Add sync issue builder for client workflow/file reconciliation (#295)
 - [WIP] Add installation of Claude agent from improvement repo (#297)
+- address agent/orchestrator missed-goal patterns from workflow analysis (#298)
 - Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- handle 422 "Reference already exists" gracefully in DocsAgent (#304)
+- handle 422 branch-already-exists gracefully (#306)
 
 ## [0.1.0] - Unreleased
 
