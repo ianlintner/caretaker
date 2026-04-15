@@ -185,9 +185,11 @@ class TestDocsAgentRun:
         gh = make_github()
         gh.create_pull_request.side_effect = GitHubAPIError(
             403,
-            '{"message":"GitHub Actions is not permitted to create or approve pull requests.",'
-            '"documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request",'
-            '"status":"403"}',
+            (
+                '{"message":"GitHub Actions is not permitted to create or approve pull requests.",'
+                '"documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request",'
+                '"status":"403"}'
+            ),
         )
         agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
 
