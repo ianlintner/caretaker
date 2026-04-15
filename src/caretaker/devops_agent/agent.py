@@ -237,12 +237,9 @@ class DevOpsAgent:
 
     async def _run_id_already_tracked(self, run_id: int) -> bool:
         """Check if any open issue (any agent) already references this run_id."""
-        for label in (BUILD_FAILURE_LABEL, "caretaker:self-heal"):
-            issues = await self._issues.list(state="open", labels=label)
-            for issue in issues:
-                if f"run_id:{run_id}" in issue.body:
-                    return True
-        return False
+        return await self._issues.run_id_tracked(
+            run_id, [BUILD_FAILURE_LABEL, "caretaker:self-heal"]
+        )
 
     async def _create_fix_issue(
         self, summary: FailureSummary, sig: str, *, run_id: int | None = None
