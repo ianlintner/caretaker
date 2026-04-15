@@ -37,3 +37,11 @@ If any step fails, fix it before committing/pushing. Do not push code that has n
 - Commit messages: `chore(maintainer): {description}`
 - Always run existing tests before pushing
 - Do not modify `.github/maintainer/` files unless explicitly instructed
+
+### Coding Guidelines
+
+Follow the behavioral guidelines in `.github/agents/karpathy-guidelines.md` to reduce common LLM coding mistakes:
+- Think before coding - state assumptions, surface tradeoffs
+- Simplicity first - minimum code, no speculative features
+- Surgical changes - touch only what's necessary
+- Goal-driven execution - define success criteria and verify
