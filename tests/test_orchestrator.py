@@ -64,6 +64,20 @@ class TestOrchestratorReconciliation:
 
         assert summary.orphaned_prs == 1
 
+    def test_does_not_count_escalated_pr_as_orphan(self) -> None:
+        orchestrator = make_orchestrator()
+        state = OrchestratorState(
+            tracked_prs={
+                22: TrackedPR(number=22, state=PRTrackingState.ESCALATED),
+            },
+            tracked_issues={},
+        )
+        summary = RunSummary(mode="full")
+
+        orchestrator._reconcile_state(state, summary)
+
+        assert summary.orphaned_prs == 0
+
     def test_escalates_stale_assignments(self) -> None:
         orchestrator = make_orchestrator()
         old = datetime.utcnow() - timedelta(days=14)

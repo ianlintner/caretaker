@@ -114,8 +114,6 @@ class SelfHealAgent:
 
             if kind == FailureKind.TRANSIENT:
                 logger.info("Self-heal: transient failure in %s — no action", job_name)
-                # Record transient sigs so they don't cause noisy re-evaluation next run
-                report.actioned_sigs.append(sig)
                 continue
 
             if kind in (FailureKind.CONFIG_ERROR, FailureKind.INTEGRATION_ERROR):

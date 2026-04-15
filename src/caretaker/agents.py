@@ -222,10 +222,14 @@ class SelfHealAgentAdapter(BaseAgent):
         report = await agent.run(event_payload=event_payload)
         # Persist actioned sigs so closed/resolved issues don't spawn duplicates
         if report.actioned_sigs:
-            existing = set(state.reported_self_heal_sigs)
-            existing.update(report.actioned_sigs)
+            existing = list(state.reported_self_heal_sigs)
+            known_sigs = set(existing)
+            for sig in report.actioned_sigs:
+                if sig not in known_sigs:
+                    existing.append(sig)
+                    known_sigs.add(sig)
             # Cap at 500 entries to avoid unbounded growth
-            state.reported_self_heal_sigs = list(existing)[-500:]
+            state.reported_self_heal_sigs = existing[-500:]
         return AgentResult(
             processed=report.failures_analyzed,
             errors=report.errors,

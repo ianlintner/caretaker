@@ -119,6 +119,7 @@ class PullRequest(BaseModel):
     labels: list[Label] = Field(default_factory=list)
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
+    merged_at: dt.datetime | None = None
     html_url: str = ""
 
     @property

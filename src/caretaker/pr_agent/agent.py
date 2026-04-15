@@ -86,33 +86,39 @@ class PRAgent:
 
         # Sync tracked PRs that are no longer open — they were merged or closed
         # externally (e.g. manually) while the orchestrator wasn't watching.
-        open_pr_numbers = {pr.number for pr in open_prs}
-        _terminal = {
-            PRTrackingState.MERGED,
-            PRTrackingState.CLOSED,
-            PRTrackingState.ESCALATED,
-        }
-        for pr_number, tracked in list(tracked_prs.items()):
-            if pr_number not in open_pr_numbers and tracked.state not in _terminal:
-                try:
-                    closed_pr = await self._github.get_pull_request(
-                        self._owner, self._repo, pr_number
-                    )
-                    if closed_pr is not None:
-                        if closed_pr.merged:
-                            tracked.state = PRTrackingState.MERGED
-                            if tracked.merged_at is None:
-                                tracked.merged_at = datetime.utcnow()
-                            logger.info(
-                                "PR #%d: externally merged — updated tracked state", pr_number
-                            )
-                        elif closed_pr.state == "closed":
-                            tracked.state = PRTrackingState.CLOSED
-                            logger.info(
-                                "PR #%d: externally closed — updated tracked state", pr_number
-                            )
-                except Exception as exc:
-                    logger.debug("Could not sync state for PR #%d: %s", pr_number, exc)
+        #
+        # Only do this during full-repository scans. On branch-filtered runs
+        # (for example workflow_run), open_prs only contains PRs for the
+        # matching branch, so using it as "all open PRs" would incorrectly
+        # classify unrelated tracked PRs as closed.
+        if head_branch is None:
+            open_pr_numbers = {pr.number for pr in open_prs}
+            _terminal = {
+                PRTrackingState.MERGED,
+                PRTrackingState.CLOSED,
+                PRTrackingState.ESCALATED,
+            }
+            for pr_number, tracked in list(tracked_prs.items()):
+                if pr_number not in open_pr_numbers and tracked.state not in _terminal:
+                    try:
+                        closed_pr = await self._github.get_pull_request(
+                            self._owner, self._repo, pr_number
+                        )
+                        if closed_pr is not None:
+                            if closed_pr.merged:
+                                tracked.state = PRTrackingState.MERGED
+                                if tracked.merged_at is None and closed_pr.merged_at is not None:
+                                    tracked.merged_at = closed_pr.merged_at
+                                logger.info(
+                                    "PR #%d: externally merged — updated tracked state", pr_number
+                                )
+                            elif closed_pr.state == "closed":
+                                tracked.state = PRTrackingState.CLOSED
+                                logger.info(
+                                    "PR #%d: externally closed — updated tracked state", pr_number
+                                )
+                    except Exception as exc:
+                        logger.debug("Could not sync state for PR #%d: %s", pr_number, exc)
 
         for pr in open_prs:
             try:
