@@ -153,6 +153,7 @@ class ReviewAgent(BaseAgent):
 
         json_path: Path | None = None
         md_path: Path | None = None
+
         if cfg.save_json:
             json_path = artifact_dir / f"{base_name}.json"
             scorecard.outputs.json_report_path = str(json_path)

@@ -175,7 +175,6 @@
         "max_history": { "type": "integer", "minimum": 1 }
       }
     },
-<<<<<<< ours
     "azure": {
       "type": "object",
       "additionalProperties": false,
