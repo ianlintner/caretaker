@@ -94,6 +94,7 @@ class ReviewAgent(BaseAgent):
         summary.reviews_completed = result.processed
         summary.review_artifacts_written = result.extra.get("artifacts_written", 0)
         summary.review_average_score = result.extra.get("average_score", 0.0)
+
     def _evaluate_run(
         self, state: OrchestratorState, target: TargetInfo, cfg: Any
     ) -> ReviewScorecard | None:
