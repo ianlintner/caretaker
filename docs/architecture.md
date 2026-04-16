@@ -16,19 +16,50 @@ It:
 - loads config
 - routes events to agents
 - runs scheduled maintenance passes
+- evaluates goals (when goal engine enabled)
 - records run summaries
 
 ### GitHub client
 
 [`src/caretaker/github_client/api.py`](https://github.com/ianlintner/caretaker/blob/main/src/caretaker/github_client/api.py) wraps the GitHub REST API and returns typed models for issues, PRs, comments, reviews, checks, and repository metadata.
 
+Features:
+
+- Async/await HTTP calls via httpx
+- Typed response models (Pydantic)
+- In-process read cache for GET requests
+- Fast-path PR number extraction from events
+- Automatic pagination handling
+
 ### State tracker
 
 [`src/caretaker/state/tracker.py`](https://github.com/ianlintner/caretaker/blob/main/src/caretaker/state/tracker.py) persists tracking state inside GitHub itself so runs can resume with context.
 
+State includes:
+
+- Tracked PRs with current state (CI passing, review approved, etc.)
+- Tracked issues with current state (triaged, assigned, etc.)
+- Known failure signatures for deduplication
+- Cooldown timers for rate-limited actions
+- Goal history snapshots (when goal engine enabled)
+
 ### Agent modules
 
 Each concern lives in its own package under `src/caretaker/`, which keeps the policy boundaries crisp and the testing surface manageable.
+
+Agent packages:
+
+- `pr_agent/` — PR monitoring and auto-merge
+- `issue_agent/` — Issue triage and dispatch
+- `devops_agent/` — Default-branch CI monitoring
+- `self_heal_agent/` — Caretaker self-diagnosis
+- `security_agent/` — Security alert triage
+- `dependency_agent/` — Dependency update management
+- `docs_agent/` — Changelog and docs reconciliation
+- `charlie_agent/` — Operational clutter cleanup
+- `stale_agent/` — Stale work closure
+- `upgrade_agent/` — Caretaker version upgrades
+- `escalation_agent/` — Human escalation digest
 
 ### Goal engine
 
@@ -36,13 +67,27 @@ Each concern lives in its own package under `src/caretaker/`, which keeps the po
 
 It:
 
-- evaluates repository health across measurable goals (for example CI health, PR lifecycle, security posture, and self-health)
+- evaluates repository health across measurable goals (CI health, PR lifecycle, security posture, and self-health)
 - assigns each goal a score from `0.0` to `1.0`
 - detects unhealthy trends (critical, diverging, stale)
 - produces a goal-driven dispatch plan that prioritizes agents with the highest expected impact
 - records per-goal history for trend analysis and escalation
 
 The orchestrator still runs the mode-eligible agents, but the goal engine can reorder execution so urgent work is handled first.
+
+See the [goals documentation](goals.md) for details.
+
+### Memory store
+
+[`src/caretaker/state/memory.py`](https://github.com/ianlintner/caretaker/tree/main/src/caretaker/state) provides persistent, disk-backed agent memory using SQLite.
+
+Features:
+
+- Namespaced key-value storage for different agent concerns
+- Deduplication signatures that persist across runs
+- Automatic snapshot generation for auditing
+- Bounded storage with configurable limits
+- Used by DevOps and Self-Heal agents for cooldown tracking
 
 ## Workflow model
 

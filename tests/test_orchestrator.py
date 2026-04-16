@@ -264,3 +264,58 @@ class TestOrchestratorStateLoadFailure:
             result = await orchestrator.run(mode="dry-run")
 
         assert result == 1
+
+
+class TestExtractPRNumber:
+    """Tests for _extract_pr_number helper."""
+
+    def test_pull_request_event_returns_number(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"pull_request": {"number": 42}}
+        assert _extract_pr_number("pull_request", payload) == 42
+
+    def test_pull_request_review_event_returns_number(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"pull_request": {"number": 55}, "review": {"state": "approved"}}
+        assert _extract_pr_number("pull_request_review", payload) == 55
+
+    def test_check_run_with_pr_returns_number(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"check_run": {"pull_requests": [{"number": 77}]}}
+        assert _extract_pr_number("check_run", payload) == 77
+
+    def test_check_run_empty_prs_returns_none(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"check_run": {"pull_requests": []}}
+        assert _extract_pr_number("check_run", payload) is None
+
+    def test_check_suite_with_pr_returns_number(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"check_suite": {"pull_requests": [{"number": 33}]}}
+        assert _extract_pr_number("check_suite", payload) == 33
+
+    def test_check_suite_empty_prs_returns_none(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        payload = {"check_suite": {"pull_requests": []}}
+        assert _extract_pr_number("check_suite", payload) is None
+
+    def test_missing_key_returns_none(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        assert _extract_pr_number("pull_request", {}) is None
+
+    def test_wrong_type_returns_none(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        assert _extract_pr_number("pull_request", {"pull_request": "bad"}) is None
+
+    def test_unknown_event_returns_none(self) -> None:
+        from caretaker.orchestrator import _extract_pr_number
+
+        assert _extract_pr_number("workflow_run", {"workflow_run": {}}) is None

@@ -16,6 +16,7 @@ from caretaker.github_client.api import GitHubClient
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
+from caretaker.state.memory import MemoryStore
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -38,6 +39,29 @@ def _as_utc(dt: datetime) -> datetime:
     return dt
 
 
+def _extract_pr_number(event_type: str, payload: dict[str, Any]) -> int | None:
+    """Extract a PR number from a GitHub event payload.
+
+    Returns the PR number when the payload reliably identifies a single PR,
+    or ``None`` when no PR can be determined (so the agent falls back to a
+    full scan).
+    """
+    try:
+        if event_type in ("pull_request", "pull_request_review"):
+            return int(payload["pull_request"]["number"])
+        if event_type == "check_run":
+            prs = payload.get("check_run", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+        if event_type == "check_suite":
+            prs = payload.get("check_suite", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
 class Orchestrator:
     """Central orchestrator that coordinates all agents."""
 
@@ -55,6 +79,15 @@ class Orchestrator:
         self._llm = LLMRouter(config.llm)
         self._state_tracker = StateTracker(github, owner, repo)
 
+        # Disk-backed memory store (SQLite)
+        self._memory: MemoryStore | None = None
+        if config.memory_store.enabled:
+            self._memory = MemoryStore(
+                db_path=config.memory_store.db_path,
+                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
+            )
+            logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -62,6 +95,7 @@ class Orchestrator:
             config=config,
             llm_router=self._llm,
             dry_run=config.orchestrator.dry_run,
+            memory=self._memory,
         )
         self._registry: AgentRegistry = build_registry(ctx)
 
@@ -204,6 +238,18 @@ class Orchestrator:
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
+
+        # Save memory store snapshot (for artifact upload / rollback)
+        if self._memory is not None:
+            self._memory.prune_expired()
+            snapshot_path = self._config.memory_store.snapshot_path
+            if snapshot_path:
+                try:
+                    with open(snapshot_path, "w", encoding="utf-8") as fh:
+                        fh.write(self._memory.snapshot_json())
+                    logger.info("Memory store snapshot written to %s", snapshot_path)
+                except Exception as e:
+                    logger.warning("Failed to write memory store snapshot: %s", e)
 
         # Post summary if configured
         if self._config.orchestrator.summary_issue and mode != "dry-run":
@@ -365,6 +411,23 @@ class Orchestrator:
                     state,
                     summary,
                     event_payload={"_head_branch": head_branch},
+                )
+            elif name == "pr" and event_type in (
+                "pull_request",
+                "pull_request_review",
+                "check_run",
+                "check_suite",
+            ):
+                pr_number = _extract_pr_number(event_type, payload)
+                event_pr_payload: dict[str, Any] = {}
+                if pr_number is not None:
+                    event_pr_payload["_pr_number"] = pr_number
+                    logger.info("Event %s — scoping PR agent to PR #%d", event_type, pr_number)
+                await self._registry.run_one(
+                    agent,
+                    state,
+                    summary,
+                    event_payload=event_pr_payload,
                 )
             elif name in ("devops", "self-heal"):
                 await self._registry.run_one(
