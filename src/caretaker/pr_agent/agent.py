@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -182,6 +183,7 @@ class PRAgent:
             reviews=reviews,
             current_state=tracking.state,
             ignore_jobs=self._config.ci.ignore_jobs,
+            auto_approve_workflows=self._config.ci.auto_approve_workflows,
         )
 
         logger.info(
@@ -198,6 +200,8 @@ class PRAgent:
 
         # Act on the recommendation
         match evaluation.recommended_action:
+            case "approve_workflows":
+                tracking = await self._handle_approve_workflows(pr, evaluation, tracking, report)
             case "merge":
                 tracking = await self._handle_merge(pr, evaluation, tracking, report)
             case "request_fix":
@@ -212,6 +216,54 @@ class PRAgent:
                 pass  # closed/merged, nothing to do
             case _:
                 report.waiting.append(pr.number)
+
+        return tracking
+
+    async def _handle_approve_workflows(
+        self,
+        pr: PullRequest,
+        evaluation: PRStateEvaluation,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Approve any workflow runs that require approval."""
+        approved_any = False
+        for run in evaluation.ci.action_required_runs:
+            match = re.search(r"/actions/runs/(\d+)", run.html_url)
+            if match:
+                run_id = int(match.group(1))
+                try:
+                    success = await self._github.approve_workflow_run(
+                        self._owner, self._repo, run_id
+                    )
+                    if success:
+                        logger.info(
+                            "PR #%d: Approved workflow run %d for check run %s",
+                            pr.number,
+                            run_id,
+                            run.name,
+                        )
+                        approved_any = True
+                    else:
+                        message = f"PR #{pr.number}: Failed to approve workflow run {run_id}"
+                        logger.warning(message)
+                        report.errors.append(message)
+                except GitHubAPIError as e:
+                    message = f"PR #{pr.number}: Error approving workflow run {run_id}: {e}"
+                    logger.error(message)
+                    report.errors.append(message)
+            else:
+                logger.warning(
+                    "PR #%d: Could not extract workflow run ID from %s", pr.number, run.html_url
+                )
+
+        if approved_any:
+            # We approved at least one workflow, meaning CI will resume/restart
+            tracking.state = PRTrackingState.CI_PENDING
+        else:
+            # We couldn't approve any, so just wait
+            tracking.state = PRTrackingState.CI_PENDING
+            report.waiting.append(pr.number)
 
         return tracking
 
