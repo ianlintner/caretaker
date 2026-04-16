@@ -26,7 +26,6 @@ caretaker validate-config --config .github/maintainer/config.yml
 | `orchestrator`     | schedule and summary behavior                         |
 | `pr_agent`         | PR monitoring, merge policy, CI retry behavior        |
 | `issue_agent`      | issue triage and auto-assignment                      |
-| `upgrade_agent`    | caretaker release upgrade strategy                    |
 | `devops_agent`     | CI failure detection on the default branch            |
 | `self_heal_agent`  | caretaker-on-caretaker failure diagnosis              |
 | `security_agent`   | Dependabot, code scanning, and secret scanning triage |
@@ -34,9 +33,12 @@ caretaker validate-config --config .github/maintainer/config.yml
 | `docs_agent`       | changelog/docs reconciliation                         |
 | `charlie_agent`    | janitorial cleanup for caretaker-managed work         |
 | `stale_agent`      | stale issues, PRs, and merged branch cleanup          |
+| `upgrade_agent`    | caretaker release upgrade strategy                    |
 | `human_escalation` | digest issue for work needing maintainer action       |
 | `escalation`       | escalation targets and stale-age policy               |
 | `llm`              | optional Claude feature toggles                       |
+| `goal_engine`      | experimental goal-driven agent dispatch               |
+| `memory_store`     | persistent agent memory configuration                 |
 
 ## Example
 
@@ -72,6 +74,19 @@ charlie_agent:
 stale_agent:
   stale_days: 60
   close_after: 14
+
+goal_engine:
+  enabled: false # Experimental feature
+  goal_driven_dispatch: false
+  divergence_threshold: 3
+  stale_threshold: 5
+  max_history: 20
+
+memory_store:
+  enabled: true
+  db_path: .caretaker-memory.db
+  snapshot_path: .caretaker-memory-snapshot.json
+  max_entries_per_namespace: 1000
 ```
 
 ## Notes on behavior
@@ -95,3 +110,25 @@ The docs agent updates changelog-style documentation from recently merged PRs, w
 ### Charlie agent
 
 The Charlie agent is a narrower janitor for caretaker-managed operational work. It closes duplicate assignment issues/PRs and short-lived abandoned automation after a smaller default window than the generic stale agent.
+
+### Goal engine
+
+The goal engine is an **experimental** feature that evaluates quantitative repository health goals and can reorder agent dispatch based on which goals need the most attention.
+
+When `enabled: true` but `goal_driven_dispatch: false`, it only evaluates and tracks goals without changing agent order.
+
+When both are `true`, agents are reordered to prioritize work that improves the worst-scoring goals.
+
+See the [goals documentation](goals.md) for details.
+
+### Memory store
+
+The memory store provides persistent, disk-backed storage for agent state that needs to survive across orchestrator runs.
+
+It's primarily used for:
+
+- Deduplication signatures that prevent creating duplicate issues
+- Cooldown timers for rate-limited actions
+- Agent-specific state that doesn't fit in the GitHub-backed state tracker
+
+The SQLite database file and JSON snapshot are typically excluded from git via `.gitignore`.
