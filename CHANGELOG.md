@@ -38,6 +38,7 @@ All notable changes to this project will be documented in this file.
 - Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
 - [WIP] Update docs and readme to reflect current features (#328)
 - implement workflow approval for action-required CI runs (#329)
+- implement ReviewAgent (#330)
 
 ## [0.1.0] - Current
 
