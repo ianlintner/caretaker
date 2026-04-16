@@ -70,7 +70,11 @@ async def call_tool(req: ToolCallRequest) -> ToolCallResponse:
         return ToolCallResponse(
             status="success",
             tool_name=req.tool_name,
-            result={"message": f"Hello from example_tool with args: {req.arguments}"},
+            result={
+                "message": "Hello from example_tool",
+                "argument_count": len(req.arguments),
+                "argument_names": sorted(req.arguments.keys()),
+            },
         )
 
     raise HTTPException(status_code=404, detail=f"Tool {req.tool_name} not found")
