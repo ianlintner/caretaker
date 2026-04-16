@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ app = FastAPI(
 
 class ToolCallRequest(BaseModel):
     tool_name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
 
 class ToolCallResponse(BaseModel):
@@ -34,13 +34,13 @@ class ToolCallResponse(BaseModel):
 
 
 @app.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Basic health probe for Kubernetes or Container Apps."""
     return {"status": "ok", "version": "0.1.0"}
 
 
 @app.get("/mcp/tools")
-async def list_tools() -> Dict[str, Any]:
+async def list_tools() -> dict[str, Any]:
     """Return the list of capabilities/tools exposed by this backend."""
     return {
         "tools": [
@@ -59,7 +59,7 @@ async def list_tools() -> Dict[str, Any]:
 @app.post("/mcp/tools/call", response_model=ToolCallResponse)
 async def call_tool(req: ToolCallRequest) -> ToolCallResponse:
     """Invoke a tool remotely."""
-    logger.info(f"Received tool call for {req.tool_name}")
+    logger.info("Received tool call for %s", req.tool_name)
 
     # Optional auth/governance check can go here
     auth_mode = os.environ.get("CARETAKER_MCP_AUTH_MODE", "none")

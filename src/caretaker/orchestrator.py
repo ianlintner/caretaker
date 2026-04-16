@@ -90,8 +90,11 @@ class Orchestrator:
             logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
 
         # Optional Telemetry & MCP clients
-        self._telemetry = TelemetryClient(config.telemetry)
-        self._mcp_client = MCPClient(config.mcp)
+        self._telemetry: TelemetryClient | None = None
+        self._mcp_client: MCPClient | None = None
+        if config.mcp.enabled:
+            self._telemetry = TelemetryClient(config.telemetry)
+            self._mcp_client = MCPClient(config.mcp)
 
         ctx = AgentContext(
             github=github,
@@ -165,7 +168,7 @@ class Orchestrator:
             state = await self._state_tracker.load()
 
             # Initialize optional remote dependencies
-            if self._mcp_client.config.enabled:
+            if self._mcp_client and self._mcp_client.config.enabled:
                 await self._mcp_client.connect()
 
             # ── Goal pre-evaluation ───────────────────────────
@@ -248,7 +251,7 @@ class Orchestrator:
             has_errors = True
         finally:
             # Clean up optional remote dependencies
-            if self._mcp_client.config.enabled:
+            if self._mcp_client is not None and self._mcp_client.config.enabled:
                 await self._mcp_client.disconnect()
 
         # Persist state (save also appends summary to history)

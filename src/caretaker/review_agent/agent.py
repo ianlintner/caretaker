@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from caretaker.agent_protocol import BaseAgent, AgentResult
+from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.review_agent.models import (
+    DimensionScore,
+    EvidenceCounters,
+    Findings,
+    OutputManifest,
+    OverallScore,
+    Retrospective,
+    ReviewDimensions,
+    ReviewReport,
     ReviewScorecard,
     TargetInfo,
     WindowInfo,
-    OverallScore,
-    ReviewDimensions,
-    DimensionScore,
-    Findings,
-    Retrospective,
-    EvidenceCounters,
-    OutputManifest,
-    ReviewReport,
 )
 
 if TYPE_CHECKING:
@@ -92,9 +91,9 @@ class ReviewAgent(BaseAgent):
         if not hasattr(summary, "review_average_score"):
             return
 
-        setattr(summary, "reviews_completed", result.processed)
-        setattr(summary, "review_artifacts_written", result.extra.get("artifacts_written", 0))
-        setattr(summary, "review_average_score", result.extra.get("average_score", 0.0))
+        summary.reviews_completed = result.processed
+        summary.review_artifacts_written = result.extra.get("artifacts_written", 0)
+        summary.review_average_score = result.extra.get("average_score", 0.0)
 
     def _evaluate_run(
         self, state: OrchestratorState, target: TargetInfo, cfg: Any

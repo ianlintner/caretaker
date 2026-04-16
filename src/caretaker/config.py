@@ -217,7 +217,7 @@ class MCPConfig(StrictBaseModel):
 
     enabled: bool = False
     endpoint: str | None = None
-    auth_mode: Literal["none", "managed_identity", "token"] = "none"
+    auth_mode: Literal["none", "managed_identity", "token"] = "managed_identity"
     timeout_seconds: int = 30
     allowed_tools: list[str] = Field(default_factory=list)
 

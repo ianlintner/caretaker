@@ -27,12 +27,15 @@ class TelemetryClient:
         """Track a custom metric."""
         if not self._enabled:
             return
-        logger.debug(f"[Telemetry] Metric: {name} = {value}", extra={"telemetry_props": properties})
+        logger.debug(
+            "[Telemetry] Metric: %s = %s", name, value, extra={"telemetry_props": properties}
+        )
 
     def track_dependency(self, name: str, target: str, success: bool, duration_ms: float) -> None:
         """Track an external dependency call (like an MCP tool call)."""
         if not self._enabled:
             return
         logger.debug(
-            f"[Telemetry] Dependency: {name} to {target} (success={success}, duration={duration_ms}ms)"
+            f"[Telemetry] Dependency: {name} to {target} "
+            f"(success={success}, duration={duration_ms}ms)"
         )

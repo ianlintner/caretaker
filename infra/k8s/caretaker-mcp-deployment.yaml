@@ -19,7 +19,8 @@ spec:
     spec:
       containers:
       - name: mcp-backend
-        image: your-acr.azurecr.io/caretaker-mcp:latest
+        # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
+        image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
