@@ -60,6 +60,9 @@ class GitHubClient:
             if self._copilot_token == self._token
             else self._build_client(self._copilot_token)
         )
+        # In-process read cache: avoids redundant GET calls within a single run.
+        # Keys are "path?param=value&..." strings; values are parsed JSON responses.
+        self._read_cache: dict[str, Any] = {}
 
     @staticmethod
     def _build_client(token: str) -> httpx.AsyncClient:
@@ -122,7 +125,30 @@ class GitHubClient:
         return await self._request_with_client(self._copilot_client, method, path, **kwargs)
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
-        return await self._request("GET", path, **kwargs)
+        cache_key = self._make_cache_key(path, kwargs)
+        if cache_key in self._read_cache:
+            logger.debug("read-cache hit: %s", cache_key)
+            return self._read_cache[cache_key]
+        result = await self._request("GET", path, **kwargs)
+        self._read_cache[cache_key] = result
+        return result
+
+    @staticmethod
+    def _make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
+        """Build a deterministic cache key from a path and optional request kwargs."""
+        params: dict[str, Any] | None = kwargs.get("params")
+        if not params:
+            return path
+        param_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        return f"{path}?{param_str}"
+
+    def clear_read_cache(self) -> None:
+        """Discard all cached GET responses.
+
+        Call this after a write operation when the next read must reflect the
+        mutation (e.g. after merging a PR or creating an issue).
+        """
+        self._read_cache.clear()
 
     async def _post(self, path: str, **kwargs: Any) -> Any:
         return await self._request("POST", path, **kwargs)

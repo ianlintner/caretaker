@@ -781,3 +781,207 @@ class TestCommentDeduplication:
         agent._copilot_bridge.request_ci_fix.assert_awaited_once()
         assert updated.copilot_attempts == 1
         assert 102 in report.fix_requested
+
+
+# ── PR-number single-PR fast path ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestPRNumberFastPath:
+    """Tests for the pr_number parameter that scopes a run to a single PR."""
+
+    async def test_pr_number_fetches_single_pr_instead_of_listing(self) -> None:
+        """When pr_number is given, list_pull_requests must not be called."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        target_pr = make_test_pr(number=5, head_ref="copilot/fix")
+        github.get_pull_request.return_value = target_pr
+        github.get_check_runs.return_value = []
+        github.get_pr_reviews.return_value = []
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        report, _ = await agent.run({}, pr_number=5)
+
+        github.list_pull_requests.assert_not_awaited()
+        github.get_pull_request.assert_awaited_once_with("o", "r", 5)
+        assert report.monitored == 1
+
+    async def test_pr_number_closed_pr_is_skipped(self) -> None:
+        """If the fetched PR is closed, return early without processing."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        closed_pr = make_test_pr(number=7, state=PRState.CLOSED)
+        github.get_pull_request.return_value = closed_pr
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        report, tracked = await agent.run({}, pr_number=7)
+
+        assert report.monitored == 0
+        github.get_check_runs.assert_not_awaited()
+
+    async def test_pr_number_not_found_returns_empty(self) -> None:
+        """If get_pull_request returns None, return early with no work done."""
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        github.get_pull_request.return_value = None
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        report, tracked = await agent.run({}, pr_number=99)
+
+        assert report.monitored == 0
+        github.get_check_runs.assert_not_awaited()
+
+    async def test_pr_number_skips_external_sync(self) -> None:
+        """Single-PR fast path must not sync state for unrelated tracked PRs."""
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        target_pr = make_test_pr(number=5, head_ref="copilot/fix")
+        github.get_pull_request.return_value = target_pr
+        github.get_check_runs.return_value = []
+        github.get_pr_reviews.return_value = []
+
+        tracked_prs = {
+            200: TrackedPR(number=200, state=PRTrackingState.CI_PENDING),
+        }
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        await agent.run(tracked_prs, pr_number=5)
+
+        # The unrelated tracked PR must not have been synced
+        assert tracked_prs[200].state == PRTrackingState.CI_PENDING
+        # get_pull_request should only have been called once (for the target PR)
+        github.get_pull_request.assert_awaited_once_with("o", "r", 5)
+
+
+# ── _handle_event PR number extraction ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestHandleEventPRNumberExtraction:
+    """Tests that _handle_event extracts and forwards PR numbers for PR events."""
+
+    def _make_orchestrator(self):
+        from caretaker.config import MaintainerConfig
+        from caretaker.orchestrator import Orchestrator
+
+        github = AsyncMock()
+        config = MaintainerConfig()
+        return Orchestrator(config=config, github=github, owner="o", repo="r")
+
+    async def test_pull_request_event_forwards_pr_number(self) -> None:
+        """pull_request event extracts pull_request.number into _pr_number."""
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        orchestrator = self._make_orchestrator()
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
+            await orchestrator._handle_event(
+                "pull_request",
+                {"pull_request": {"number": 42, "action": "opened"}},
+                state,
+                summary,
+            )
+
+        pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        assert pr_calls[0].kwargs.get("event_payload") == {"_pr_number": 42}
+
+    async def test_pull_request_review_event_forwards_pr_number(self) -> None:
+        """pull_request_review event extracts pull_request.number into _pr_number."""
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        orchestrator = self._make_orchestrator()
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
+            await orchestrator._handle_event(
+                "pull_request_review",
+                {"pull_request": {"number": 55}, "review": {"state": "approved"}},
+                state,
+                summary,
+            )
+
+        pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        assert pr_calls[0].kwargs.get("event_payload") == {"_pr_number": 55}
+
+    async def test_check_run_event_forwards_pr_number(self) -> None:
+        """check_run event extracts first PR number from check_run.pull_requests."""
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        orchestrator = self._make_orchestrator()
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
+            await orchestrator._handle_event(
+                "check_run",
+                {"check_run": {"pull_requests": [{"number": 77}]}},
+                state,
+                summary,
+            )
+
+        pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        assert pr_calls[0].kwargs.get("event_payload") == {"_pr_number": 77}
+
+    async def test_check_run_no_pr_falls_back_to_full_scan(self) -> None:
+        """check_run with no linked PR runs a full PR scan (empty event_payload)."""
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        orchestrator = self._make_orchestrator()
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
+            await orchestrator._handle_event(
+                "check_run",
+                {"check_run": {"pull_requests": []}},
+                state,
+                summary,
+            )
+
+        pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        # No PR number — full scan payload
+        assert pr_calls[0].kwargs.get("event_payload") == {}
+
+    async def test_check_suite_event_forwards_pr_number(self) -> None:
+        """check_suite event extracts first PR number from check_suite.pull_requests."""
+        from caretaker.state.models import OrchestratorState, RunSummary
+
+        orchestrator = self._make_orchestrator()
+        state = OrchestratorState()
+        summary = RunSummary(mode="event")
+
+        with patch.object(
+            orchestrator._registry, "run_one", new_callable=AsyncMock
+        ) as mock_run_one:
+            await orchestrator._handle_event(
+                "check_suite",
+                {"check_suite": {"pull_requests": [{"number": 33}]}},
+                state,
+                summary,
+            )
+
+        pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
+        assert len(pr_calls) == 1
+        assert pr_calls[0].kwargs.get("event_payload") == {"_pr_number": 33}

@@ -166,3 +166,95 @@ async def test_add_issue_comment_uses_default_client_for_regular_comments() -> N
     default_client.request.assert_awaited_once()
     copilot_client.request.assert_not_awaited()
     assert comment.user.login == "github-actions[bot]"
+
+
+# ── In-process read cache ─────────────────────────────────────────────────────
+
+
+def _repo_payload() -> dict[str, object]:
+    return {
+        "full_name": "o/r",
+        "name": "r",
+        "owner": {"login": "o"},
+        "default_branch": "main",
+        "private": False,
+    }
+
+
+def _pr_payload(number: int, title: str, state: str, merged: bool) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "user": {"login": "a", "id": 1},
+        "head": {"ref": "feat"},
+        "base": {"ref": "main"},
+        "labels": [],
+        "merged": merged,
+        "draft": False,
+        "html_url": "http://x",
+        "mergeable": None,
+        "merged_at": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_read_cache_returns_cached_response_on_second_call() -> None:
+    """A second identical GET should use the cached response, not call the network."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(200, _repo_payload()))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    # First call — goes to the network
+    await gh._get("/repos/o/r")
+    # Second call — should hit the cache
+    await gh._get("/repos/o/r")
+
+    # Network should only have been called once
+    assert mock_client.request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_cache_distinguishes_different_params() -> None:
+    """GET calls with different params must produce separate cache entries."""
+    open_payload = [_pr_payload(1, "open pr", "open", False)]
+    closed_payload = [_pr_payload(2, "closed pr", "closed", True)]
+
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            _make_response(200, open_payload),
+            _make_response(200, closed_payload),
+        ]
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result_open = await gh.list_pull_requests("o", "r", state="open")
+    result_closed = await gh.list_pull_requests("o", "r", state="closed")
+
+    assert len(result_open) == 1
+    assert len(result_closed) == 1
+    assert result_open[0].number == 1
+    assert result_closed[0].number == 2
+    assert mock_client.request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_cache_clear_invalidates_entries() -> None:
+    """clear_read_cache must cause the next GET to go to the network again."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(200, _repo_payload()))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    await gh._get("/repos/o/r")
+    gh.clear_read_cache()
+    await gh._get("/repos/o/r")
+
+    # Cache was cleared, so two network calls are expected
+    assert mock_client.request.await_count == 2
