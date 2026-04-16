@@ -35,6 +35,7 @@ All notable changes to this project will be documented in this file.
 - introduce goal-seeking subsystem with models and evaluation logic (#321)
 - [WIP] Implement simple memory storage for caretaker (#323)
 - Adjust image width in README (#324)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
 
 ## [0.1.0] - Unreleased
 
