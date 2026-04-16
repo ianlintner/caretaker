@@ -175,6 +175,20 @@ class GoalEngineConfig(StrictBaseModel):
     max_history: int = 20
 
 
+class MemoryStoreConfig(StrictBaseModel):
+    """Configuration for the disk-backed agent memory store."""
+
+    enabled: bool = True
+    # Path to the SQLite database file.  A relative path is resolved from the
+    # current working directory (i.e. the GitHub Actions workspace root).
+    db_path: str = ".caretaker-memory.db"
+    # Write a JSON snapshot of the store to this path after every save so it
+    # can be uploaded as a workflow artifact for auditing / rollback.
+    snapshot_path: str = ".caretaker-memory-snapshot.json"
+    # Hard cap on entries per namespace to prevent unbounded growth.
+    max_entries_per_namespace: int = 1000
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -192,6 +206,7 @@ class MaintainerConfig(StrictBaseModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
+    memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

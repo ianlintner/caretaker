@@ -16,6 +16,7 @@ from caretaker.github_client.api import GitHubClient
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
+from caretaker.state.memory import MemoryStore
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -55,6 +56,15 @@ class Orchestrator:
         self._llm = LLMRouter(config.llm)
         self._state_tracker = StateTracker(github, owner, repo)
 
+        # Disk-backed memory store (SQLite)
+        self._memory: MemoryStore | None = None
+        if config.memory_store.enabled:
+            self._memory = MemoryStore(
+                db_path=config.memory_store.db_path,
+                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
+            )
+            logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -62,6 +72,7 @@ class Orchestrator:
             config=config,
             llm_router=self._llm,
             dry_run=config.orchestrator.dry_run,
+            memory=self._memory,
         )
         self._registry: AgentRegistry = build_registry(ctx)
 
@@ -204,6 +215,18 @@ class Orchestrator:
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
+
+        # Save memory store snapshot (for artifact upload / rollback)
+        if self._memory is not None:
+            self._memory.prune_expired()
+            snapshot_path = self._config.memory_store.snapshot_path
+            if snapshot_path:
+                try:
+                    with open(snapshot_path, "w", encoding="utf-8") as fh:
+                        fh.write(self._memory.snapshot_json())
+                    logger.info("Memory store snapshot written to %s", snapshot_path)
+                except Exception as e:
+                    logger.warning("Failed to write memory store snapshot: %s", e)
 
         # Post summary if configured
         if self._config.orchestrator.summary_issue and mode != "dry-run":
