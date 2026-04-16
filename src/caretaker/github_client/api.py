@@ -408,7 +408,7 @@ class GitHubClient:
         """Approve a workflow run for a fork pull request."""
         try:
             result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
-            return result is None or (isinstance(result, dict) and result.get("id"))
+            return bool(result is None or (isinstance(result, dict) and result.get("id")))
         except GitHubAPIError as e:
             if e.status_code == 404:
                 return False
