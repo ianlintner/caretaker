@@ -139,8 +139,7 @@ def test_apply_summary():
 
 
 def test_apply_summary_no_attributes():
-    # apply_summary should set fields on RunSummary without crashing
-    from caretaker.state.models import RunSummary
+    # apply_summary should return without crashing when summary lacks expected attributes
 
     agent, _ = make_agent()
 
@@ -153,12 +152,14 @@ def test_apply_summary_no_attributes():
         },
     )
 
-    summary = RunSummary()
+    class MockRunSummaryNoAttr:
+        pass
+
+    summary = MockRunSummaryNoAttr()
     agent.apply_summary(result, summary)
 
-    assert summary.reviews_completed == 2
-    assert summary.review_artifacts_written == 4
-    assert summary.review_average_score == 90.0
+    # Should just return without setting
+    assert not hasattr(summary, "reviews_completed")
 
 
 def test_save_artifacts_disabled(tmp_path):

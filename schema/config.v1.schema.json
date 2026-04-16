@@ -175,6 +175,38 @@
         "max_history": { "type": "integer", "minimum": 1 }
       }
     },
+    "azure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "use_managed_identity": { "type": "boolean" }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "endpoint": { "type": ["string", "null"] },
+        "auth_mode": {
+          "type": "string",
+          "enum": ["none", "managed_identity", "token"]
+        },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "allowed_tools": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "application_insights_connection_string_env": { "type": "string" }
+      }
+    },
     "review_agent": {
       "type": "object",
       "additionalProperties": false,

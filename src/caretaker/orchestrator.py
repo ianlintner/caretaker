@@ -16,6 +16,7 @@ from caretaker.github_client.api import GitHubClient
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
+from caretaker.mcp import MCPClient, TelemetryClient
 from caretaker.state.memory import MemoryStore
 from caretaker.state.models import (
     IssueTrackingState,
@@ -88,6 +89,14 @@ class Orchestrator:
             )
             logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
 
+        # Optional Telemetry & MCP clients
+        self._telemetry: TelemetryClient | None = None
+        self._mcp_client: MCPClient | None = None
+        if config.telemetry.enabled:
+            self._telemetry = TelemetryClient(config.telemetry)
+        if config.mcp.enabled:
+            self._mcp_client = MCPClient(config.mcp)
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -96,6 +105,8 @@ class Orchestrator:
             llm_router=self._llm,
             dry_run=config.orchestrator.dry_run,
             memory=self._memory,
+            mcp_client=self._mcp_client,
+            telemetry=self._telemetry,
         )
         self._registry: AgentRegistry = build_registry(ctx)
 
@@ -156,6 +167,10 @@ class Orchestrator:
 
         try:
             state = await self._state_tracker.load()
+
+            # Initialize optional remote dependencies
+            if self._mcp_client and self._mcp_client.config.enabled:
+                await self._mcp_client.connect()
 
             # ── Goal pre-evaluation ───────────────────────────
             pre_eval: GoalEvaluation | None = None
@@ -235,6 +250,13 @@ class Orchestrator:
             logger.error("Orchestrator error: %s", e, exc_info=True)
             summary.errors.append(str(e))
             has_errors = True
+        finally:
+            # Clean up optional remote dependencies
+            if self._mcp_client is not None and self._mcp_client.config.enabled:
+                try:
+                    await self._mcp_client.disconnect()
+                except Exception as e:
+                    logger.warning("Failed to disconnect MCP client: %s", e)
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)

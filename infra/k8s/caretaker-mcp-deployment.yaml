@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caretaker-mcp
+  labels:
+    app: caretaker-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caretaker-mcp
+  template:
+    metadata:
+      labels:
+        app: caretaker-mcp
+    spec:
+      containers:
+      - name: mcp-backend
+        # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
+        image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: CARETAKER_MCP_AUTH_MODE
+          value: "none"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: caretaker-secrets
+              key: appinsights-conn-string
+              optional: true
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10

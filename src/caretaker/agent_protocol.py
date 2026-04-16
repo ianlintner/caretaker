@@ -28,6 +28,8 @@ class AgentContext:
     llm_router: LLMRouter
     dry_run: bool = False
     memory: MemoryStore | None = None
+    mcp_client: Any | None = None
+    telemetry: Any | None = None
 
 
 @dataclass

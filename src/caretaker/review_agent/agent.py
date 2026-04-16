@@ -87,6 +87,10 @@ class ReviewAgent(BaseAgent):
 
     def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         """Map review metrics into RunSummary."""
+        # Optional summary fields as per plan
+        if not hasattr(summary, "review_average_score"):
+            return
+
         summary.reviews_completed = result.processed
         summary.review_artifacts_written = result.extra.get("artifacts_written", 0)
         summary.review_average_score = result.extra.get("average_score", 0.0)
