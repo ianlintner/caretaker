@@ -1,9 +1,7 @@
 """Models and scorecard schemas for the Review Agent."""
 
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -98,9 +96,10 @@ class ReviewRequest(BaseModel):
     include_memory: bool = True
     publish_summary_comment: bool = False
 
+
 class ReviewReport(BaseModel):
     """Internal summary output returned by ReviewAgent.run()"""
-    
+
     reviews_completed: int = 0
     artifacts_written: int = 0
     summary_comment_targets: int = 0

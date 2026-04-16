@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from caretaker.agent_protocol import BaseAgent, AgentResult
+from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.review_agent.models import (
+    DimensionScore,
+    EvidenceCounters,
+    Findings,
+    OutputManifest,
+    OverallScore,
+    Retrospective,
+    ReviewDimensions,
+    ReviewReport,
     ReviewScorecard,
     TargetInfo,
     WindowInfo,
-    OverallScore,
-    ReviewDimensions,
-    DimensionScore,
-    Findings,
-    Retrospective,
-    EvidenceCounters,
-    OutputManifest,
-    ReviewReport,
 )
 
 if TYPE_CHECKING:
@@ -58,7 +57,7 @@ class ReviewAgent(BaseAgent):
 
         # Basic implementation of a scheduled review of the last run.
         # In a full implementation, we'd iterate over explicitly requested targets.
-        
+
         target = TargetInfo(
             kind="run",
             number=None,
@@ -66,11 +65,13 @@ class ReviewAgent(BaseAgent):
         )
 
         scorecard = self._evaluate_run(state, target, cfg)
-        
+
         if scorecard:
             self._save_artifacts(scorecard, cfg)
             report.reviews_completed += 1
-            report.artifacts_written += (1 if cfg.save_markdown else 0) + (1 if cfg.save_json else 0)
+            report.artifacts_written += (1 if cfg.save_markdown else 0) + (
+                1 if cfg.save_json else 0
+            )
             report.average_score = scorecard.overall.score
 
         return AgentResult(
@@ -86,24 +87,22 @@ class ReviewAgent(BaseAgent):
 
     def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         """Map review metrics into RunSummary."""
-        # Optional summary fields as per plan
-        if not hasattr(summary, "review_average_score"):
-            return
-            
-        setattr(summary, "reviews_completed", result.processed)
-        setattr(summary, "review_artifacts_written", result.extra.get("artifacts_written", 0))
-        setattr(summary, "review_average_score", result.extra.get("average_score", 0.0))
+        summary.reviews_completed = result.processed
+        summary.review_artifacts_written = result.extra.get("artifacts_written", 0)
+        summary.review_average_score = result.extra.get("average_score", 0.0)
 
-    def _evaluate_run(self, state: OrchestratorState, target: TargetInfo, cfg: Any) -> ReviewScorecard | None:
+    def _evaluate_run(
+        self, state: OrchestratorState, target: TargetInfo, cfg: Any
+    ) -> ReviewScorecard | None:
         """Evaluate a run based on the OrchestratorState."""
-        
+
         # Simple heuristic grading
         score = 85
         grade = "B"
-        
+
         # Lookback runs
         history_len = len(state.run_history) if hasattr(state, "run_history") else 0
-        
+
         return ReviewScorecard(
             reviewed_at=datetime.utcnow(),
             target=target,
@@ -144,10 +143,10 @@ class ReviewAgent(BaseAgent):
 
         artifact_dir = Path(cfg.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        
+
         timestamp = scorecard.reviewed_at.strftime("%Y%m%dT%H%M%SZ")
         base_name = f"run-{timestamp}"
-        
+
         if cfg.save_json:
             json_path = artifact_dir / f"{base_name}.json"
             json_path.write_text(scorecard.model_dump_json(indent=2))
@@ -161,37 +160,39 @@ class ReviewAgent(BaseAgent):
 
     def _generate_markdown(self, scorecard: ReviewScorecard) -> str:
         """Generate markdown representation of the scorecard."""
-        return f"""# Review Report: {scorecard.target.title or scorecard.target.kind}
 
-- Overall score: {scorecard.overall.score} `{scorecard.overall.grade}`
-- Confidence: {scorecard.overall.confidence}
-- Reviewed at: {scorecard.reviewed_at.isoformat()}
+        def _dim_row(name: str, dim: DimensionScore) -> str:
+            return f"| {name} | {dim.score} | {', '.join(dim.notes)} |"
 
-## Executive summary
+        def _retro_items(items: list[str]) -> str:
+            return "\n".join(f"- {i}" for i in items) if items else "- None"
 
-{", ".join(scorecard.findings.strengths)}
-
-## Scorecard
-
-| Dimension | Score | Notes |
-| --- | ---: | --- |
-| Outcome | {scorecard.dimensions.outcome.score} | {", ".join(scorecard.dimensions.outcome.notes)} |
-| Execution | {scorecard.dimensions.execution.score} | {", ".join(scorecard.dimensions.execution.notes)} |
-| Reliability | {scorecard.dimensions.reliability.score} | {", ".join(scorecard.dimensions.reliability.notes)} |
-| Maintainability | {scorecard.dimensions.maintainability.score} | {", ".join(scorecard.dimensions.maintainability.notes)} |
-| Communication | {scorecard.dimensions.communication.score} | {", ".join(scorecard.dimensions.communication.notes)} |
-
-## Retrospective
-
-### What went well
-{chr(10).join(f"- {item}" for item in scorecard.retro.went_well) if scorecard.retro.went_well else "- None"}
-
-### What failed
-{chr(10).join(f"- {item}" for item in scorecard.retro.failed) if scorecard.retro.failed else "- None"}
-
-### What to do better
-{chr(10).join(f"- {item}" for item in scorecard.retro.do_better) if scorecard.retro.do_better else "- None"}
-
-### What to stop or do less of
-{chr(10).join(f"- {item}" for item in scorecard.retro.stop_or_less) if scorecard.retro.stop_or_less else "- None"}
-"""
+        d = scorecard.dimensions
+        r = scorecard.retro
+        title = scorecard.target.title or scorecard.target.kind
+        strengths = ", ".join(scorecard.findings.strengths)
+        rows = "\n".join(
+            [
+                _dim_row("Outcome", d.outcome),
+                _dim_row("Execution", d.execution),
+                _dim_row("Reliability", d.reliability),
+                _dim_row("Maintainability", d.maintainability),
+                _dim_row("Communication", d.communication),
+            ]
+        )
+        return (
+            f"# Review Report: {title}\n\n"
+            f"- Overall score: {scorecard.overall.score} `{scorecard.overall.grade}`\n"
+            f"- Confidence: {scorecard.overall.confidence}\n"
+            f"- Reviewed at: {scorecard.reviewed_at.isoformat()}\n\n"
+            f"## Executive summary\n\n{strengths}\n\n"
+            f"## Scorecard\n\n"
+            f"| Dimension | Score | Notes |\n"
+            f"| --- | ---: | --- |\n"
+            f"{rows}\n\n"
+            f"## Retrospective\n\n"
+            f"### What went well\n{_retro_items(r.went_well)}\n\n"
+            f"### What failed\n{_retro_items(r.failed)}\n\n"
+            f"### What to do better\n{_retro_items(r.do_better)}\n\n"
+            f"### What to stop or do less of\n{_retro_items(r.stop_or_less)}\n"
+        )
