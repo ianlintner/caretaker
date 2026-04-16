@@ -96,9 +96,7 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
     ]
     all_completed = len(pending) == 0
 
-    if action_required:
-        status = CIStatus.PENDING
-    elif pending:
+    if action_required or pending:
         status = CIStatus.PENDING
     elif failed:
         status = CIStatus.FAILING if not passed else CIStatus.MIXED
