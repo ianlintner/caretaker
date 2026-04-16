@@ -113,6 +113,10 @@ class RunSummary(BaseModel):
     # Goal engine metrics
     goal_health: float | None = None
     goal_escalation_count: int = 0
+    # Review agent metrics
+    reviews_completed: int = 0
+    review_artifacts_written: int = 0
+    review_average_score: float = 0.0
     errors: list[str] = Field(default_factory=list)
 
 

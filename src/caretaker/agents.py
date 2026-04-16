@@ -13,6 +13,7 @@ from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.pr_agent.agent import PRAgent
+from caretaker.review_agent.agent import ReviewAgent
 from caretaker.security_agent.agent import SecurityAgent
 from caretaker.self_heal_agent.agent import SelfHealAgent
 from caretaker.stale_agent.agent import StaleAgent
@@ -554,6 +555,7 @@ ALL_ADAPTERS: list[type[BaseAgent]] = [
     CharlieAgentAdapter,
     StaleAgentAdapter,
     EscalationAgentAdapter,
+    ReviewAgent,
 ]
 
 # Maps agent name → set of run modes that include it
@@ -569,6 +571,7 @@ AGENT_MODES: dict[str, set[str]] = {
     "charlie": {"full", "charlie"},
     "stale": {"full", "stale"},
     "escalation": {"full", "escalation"},
+    "review": {"full"},
 }
 
 # Maps GitHub event types → list of agent names to run

@@ -176,6 +176,22 @@ class GoalEngineConfig(StrictBaseModel):
     max_history: int = 20
 
 
+class ReviewAgentConfig(StrictBaseModel):
+    enabled: bool = False
+    mode: Literal["scheduled", "targeted"] = "scheduled"
+    lookback_runs: int = 10
+    lookback_days: int = 30
+    artifact_dir: str = "artifacts/review"
+    save_markdown: bool = True
+    save_json: bool = True
+    save_manifest: bool = True
+    publish_summary_comments: bool = False
+    comment_on_prs: bool = True
+    comment_on_issues: bool = True
+    minimum_comment_score: int = 0
+    use_llm_for_retro: bool = True
+
+
 class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
@@ -207,6 +223,7 @@ class MaintainerConfig(StrictBaseModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
+    review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
 
     @classmethod
