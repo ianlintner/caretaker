@@ -206,6 +206,29 @@ class MemoryStoreConfig(StrictBaseModel):
     max_entries_per_namespace: int = 1000
 
 
+class AzureConfig(StrictBaseModel):
+    """Configuration for Azure-specific integrations."""
+
+    use_managed_identity: bool = False
+
+
+class MCPConfig(StrictBaseModel):
+    """Configuration for remote MCP servers."""
+
+    enabled: bool = False
+    endpoint: str | None = None
+    auth_mode: Literal["none", "managed_identity", "token"] = "none"
+    timeout_seconds: int = 30
+    allowed_tools: list[str] = Field(default_factory=list)
+
+
+class TelemetryConfig(StrictBaseModel):
+    """Configuration for remote observability."""
+
+    enabled: bool = False
+    application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -225,6 +248,9 @@ class MaintainerConfig(StrictBaseModel):
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
+    azure: AzureConfig = Field(default_factory=AzureConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

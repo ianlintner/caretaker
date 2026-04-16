@@ -98,9 +98,10 @@ class ReviewRequest(BaseModel):
     include_memory: bool = True
     publish_summary_comment: bool = False
 
+
 class ReviewReport(BaseModel):
     """Internal summary output returned by ReviewAgent.run()"""
-    
+
     reviews_completed: int = 0
     artifacts_written: int = 0
     summary_comment_targets: int = 0

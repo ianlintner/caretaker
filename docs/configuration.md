@@ -39,6 +39,9 @@ caretaker validate-config --config .github/maintainer/config.yml
 | `llm`              | optional Claude feature toggles                       |
 | `goal_engine`      | experimental goal-driven agent dispatch               |
 | `memory_store`     | persistent agent memory configuration                 |
+| `azure`            | azure environment settings (e.g. managed identity)    |
+| `mcp`              | optional remote mcp server connections                |
+| `telemetry`        | optional app insights instrumentation                 |
 
 ## Example
 
@@ -87,6 +90,20 @@ memory_store:
   db_path: .caretaker-memory.db
   snapshot_path: .caretaker-memory-snapshot.json
   max_entries_per_namespace: 1000
+
+azure:
+  use_managed_identity: false
+
+mcp:
+  enabled: false
+  endpoint: "http://caretaker-mcp.caretaker.svc.cluster.local:80"
+  auth_mode: "none"
+  timeout_seconds: 30
+  allowed_tools: ["example_tool"]
+
+telemetry:
+  enabled: false
+  application_insights_connection_string_env: "APPLICATIONINSIGHTS_CONNECTION_STRING"
 ```
 
 ## Notes on behavior
@@ -132,3 +149,11 @@ It's primarily used for:
 - Agent-specific state that doesn't fit in the GitHub-backed state tracker
 
 The SQLite database file and JSON snapshot are typically excluded from git via `.gitignore`.
+
+### Remote MCP and Azure Integrations
+
+Caretaker supports optional remote capability expansion via Model Context Protocol (MCP) and Azure. This allows caretaker to execute heavy, shared, or private-network capabilities remotely on an AKS cluster or Azure Container App while keeping the core orchestrator local or in GitHub Actions.
+
+- `mcp`: Configures connection to a remote MCP backend service. Must be enabled to route capabilities.
+- `azure`: Allows using Azure Managed Identity for secure access to remote backends and resources.
+- `telemetry`: Enables Azure Application Insights reporting for remote tool calls and latency.

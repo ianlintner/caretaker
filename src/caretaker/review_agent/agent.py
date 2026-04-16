@@ -58,7 +58,7 @@ class ReviewAgent(BaseAgent):
 
         # Basic implementation of a scheduled review of the last run.
         # In a full implementation, we'd iterate over explicitly requested targets.
-        
+
         target = TargetInfo(
             kind="run",
             number=None,
@@ -66,11 +66,13 @@ class ReviewAgent(BaseAgent):
         )
 
         scorecard = self._evaluate_run(state, target, cfg)
-        
+
         if scorecard:
             self._save_artifacts(scorecard, cfg)
             report.reviews_completed += 1
-            report.artifacts_written += (1 if cfg.save_markdown else 0) + (1 if cfg.save_json else 0)
+            report.artifacts_written += (1 if cfg.save_markdown else 0) + (
+                1 if cfg.save_json else 0
+            )
             report.average_score = scorecard.overall.score
 
         return AgentResult(
@@ -89,21 +91,23 @@ class ReviewAgent(BaseAgent):
         # Optional summary fields as per plan
         if not hasattr(summary, "review_average_score"):
             return
-            
+
         setattr(summary, "reviews_completed", result.processed)
         setattr(summary, "review_artifacts_written", result.extra.get("artifacts_written", 0))
         setattr(summary, "review_average_score", result.extra.get("average_score", 0.0))
 
-    def _evaluate_run(self, state: OrchestratorState, target: TargetInfo, cfg: Any) -> ReviewScorecard | None:
+    def _evaluate_run(
+        self, state: OrchestratorState, target: TargetInfo, cfg: Any
+    ) -> ReviewScorecard | None:
         """Evaluate a run based on the OrchestratorState."""
-        
+
         # Simple heuristic grading
         score = 85
         grade = "B"
-        
+
         # Lookback runs
         history_len = len(state.run_history) if hasattr(state, "run_history") else 0
-        
+
         return ReviewScorecard(
             reviewed_at=datetime.utcnow(),
             target=target,
@@ -144,10 +148,10 @@ class ReviewAgent(BaseAgent):
 
         artifact_dir = Path(cfg.artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        
+
         timestamp = scorecard.reviewed_at.strftime("%Y%m%dT%H%M%SZ")
         base_name = f"run-{timestamp}"
-        
+
         if cfg.save_json:
             json_path = artifact_dir / f"{base_name}.json"
             json_path.write_text(scorecard.model_dump_json(indent=2))
