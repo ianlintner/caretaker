@@ -37,6 +37,7 @@ All notable changes to this project will be documented in this file.
 - Adjust image width in README (#324)
 - Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
 - [WIP] Update docs and readme to reflect current features (#328)
+- implement workflow approval for action-required CI runs (#329)
 
 ## [0.1.0] - Current
 
