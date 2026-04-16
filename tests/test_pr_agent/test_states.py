@@ -204,7 +204,9 @@ class TestEvaluatePR:
         pr = make_pr()
         checks = [
             make_check_run(
-                name="test", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.ACTION_REQUIRED
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
             ),
         ]
         result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
