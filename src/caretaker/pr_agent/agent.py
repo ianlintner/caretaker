@@ -170,6 +170,8 @@ class PRAgent:
 
         # Act on the recommendation
         match evaluation.recommended_action:
+            case "approve_workflows":
+                tracking = await self._handle_approve_workflows(pr, evaluation, tracking, report)
             case "merge":
                 tracking = await self._handle_merge(pr, evaluation, tracking, report)
             case "request_fix":
@@ -185,6 +187,45 @@ class PRAgent:
             case _:
                 report.waiting.append(pr.number)
 
+        return tracking
+
+    async def _handle_approve_workflows(
+        self,
+        pr: PullRequest,
+        evaluation: PRStateEvaluation,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Approve any workflow runs that require approval."""
+        import re
+        
+        approved_any = False
+        for run in evaluation.ci.action_required_runs:
+            match = re.search(r"/actions/runs/(\d+)", run.html_url)
+            if match:
+                run_id = int(match.group(1))
+                try:
+                    success = await self._github.approve_workflow_run(
+                        self._owner, self._repo, run_id
+                    )
+                    if success:
+                        logger.info("PR #%d: Approved workflow run %d for check run %s", pr.number, run_id, run.name)
+                        approved_any = True
+                    else:
+                        logger.warning("PR #%d: Failed to approve workflow run %d", pr.number, run_id)
+                except Exception as e:
+                    logger.error("PR #%d: Error approving workflow run %d: %s", pr.number, run_id, e)
+            else:
+                logger.warning("PR #%d: Could not extract workflow run ID from %s", pr.number, run.html_url)
+                
+        if approved_any:
+            # We approved at least one workflow, meaning CI will resume/restart
+            tracking.state = PRTrackingState.CI_PENDING
+        else:
+            # We couldn't approve any, so just wait
+            tracking.state = PRTrackingState.CI_PENDING
+            report.waiting.append(pr.number)
+            
         return tracking
 
     async def _handle_merge(

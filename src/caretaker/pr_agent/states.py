@@ -33,6 +33,7 @@ class CIEvaluation:
     failed_runs: list[CheckRun]
     pending_runs: list[CheckRun]
     passed_runs: list[CheckRun]
+    action_required_runs: list[CheckRun]
     all_completed: bool
 
 
@@ -72,6 +73,7 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
             failed_runs=[],
             pending_runs=[],
             passed_runs=[],
+            action_required_runs=[],
             all_completed=True,
         )
 
@@ -87,9 +89,16 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
         for cr in relevant
         if cr.status == CheckStatus.COMPLETED and cr.conclusion == CheckConclusion.SUCCESS
     ]
+    action_required = [
+        cr
+        for cr in relevant
+        if cr.conclusion == CheckConclusion.ACTION_REQUIRED
+    ]
     all_completed = len(pending) == 0
 
-    if pending:
+    if action_required:
+        status = CIStatus.PENDING
+    elif pending:
         status = CIStatus.PENDING
     elif failed:
         status = CIStatus.FAILING if not passed else CIStatus.MIXED
@@ -101,6 +110,7 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
         failed_runs=failed,
         pending_runs=pending,
         passed_runs=passed,
+        action_required_runs=action_required,
         all_completed=all_completed,
     )
 
@@ -169,6 +179,14 @@ def evaluate_pr(
 
     # CI still running
     if ci.status == CIStatus.PENDING:
+        if ci.action_required_runs:
+            return PRStateEvaluation(
+                pr=pr,
+                ci=ci,
+                reviews=review_eval,
+                recommended_state=PRTrackingState.CI_PENDING,
+                recommended_action="approve_workflows",
+            )
         return PRStateEvaluation(
             pr=pr,
             ci=ci,

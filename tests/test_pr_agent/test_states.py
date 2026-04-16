@@ -87,6 +87,19 @@ class TestEvaluateCI:
         assert result.status == CIStatus.FAILING
         assert len(result.failed_runs) == 1
 
+    def test_action_required_is_pending(self) -> None:
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert len(result.action_required_runs) == 1
+        assert result.all_completed is True
+
     def test_queued_is_pending(self) -> None:
         runs = [
             make_check_run(
@@ -186,6 +199,17 @@ class TestEvaluatePR:
         result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
         assert result.recommended_state == PRTrackingState.CI_PENDING
         assert result.recommended_action == "wait"
+
+    def test_ci_action_required_approve_workflows(self) -> None:
+        pr = make_pr()
+        checks = [
+            make_check_run(
+                name="test", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.ACTION_REQUIRED
+            ),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "approve_workflows"
 
     def test_ci_failing_request_fix(self) -> None:
         pr = make_pr()

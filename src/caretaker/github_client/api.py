@@ -372,6 +372,16 @@ class GitHubClient:
         result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
         return result is None  # 204 = success
 
+    async def approve_workflow_run(self, owner: str, repo: str, run_id: int) -> bool:
+        """Approve a workflow run for a fork pull request."""
+        try:
+            result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
+            return result is None or (isinstance(result, dict) and result.get("id"))
+        except GitHubAPIError as e:
+            if e.status_code == 404:
+                return False
+            raise
+
     # ── Labels ──────────────────────────────────────────────────
 
     async def ensure_label(

@@ -58,6 +58,7 @@ class TestCIFixLifecycle:
             failed_runs=[failed_run],
             pending_runs=[],
             passed_runs=[],
+            action_required_runs=[],
             all_completed=True,
         )
         evaluation = PRStateEvaluation(
@@ -155,6 +156,7 @@ class TestCIFixLifecycle:
             failed_runs=[failed_run],
             pending_runs=[],
             passed_runs=[],
+            action_required_runs=[],
             all_completed=True,
         )
         evaluation = PRStateEvaluation(
@@ -385,6 +387,93 @@ class TestIsCopilotPR:
 
 
 @pytest.mark.asyncio
+class TestApproveWorkflows:
+    """Tests for _handle_approve_workflows."""
+
+    async def test_approve_workflow_run(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
+        from tests.conftest import make_check_run, make_pr
+
+        pr = make_pr(number=1)
+        tracking = TrackedPR(number=1)
+        config = make_config()
+
+        github = AsyncMock()
+        github.approve_workflow_run.return_value = True
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        run = make_check_run(
+            name="test",
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        run.html_url = "https://github.com/owner/repo/actions/runs/12345/jobs/6789"
+        ci_eval = CIEvaluation(
+            status=CIStatus.PENDING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[run],
+            all_completed=True,
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=AsyncMock(),
+            recommended_state=PRTrackingState.CI_PENDING,
+            recommended_action="approve_workflows",
+        )
+        report = PRAgentReport()
+
+        updated = await agent._handle_approve_workflows(pr, evaluation, tracking, report)
+
+        github.approve_workflow_run.assert_awaited_once_with("o", "r", 12345)
+        assert updated.state == PRTrackingState.CI_PENDING
+        assert len(report.waiting) == 0  # Not in waiting if we approved
+
+    async def test_approve_workflow_run_extract_failure(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
+        from tests.conftest import make_check_run, make_pr
+
+        pr = make_pr(number=1)
+        tracking = TrackedPR(number=1)
+        config = make_config()
+
+        github = AsyncMock()
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        run = make_check_run(
+            name="test",
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        run.html_url = "https://github.com/owner/repo/invalid/url"
+        ci_eval = CIEvaluation(
+            status=CIStatus.PENDING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[run],
+            all_completed=True,
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=AsyncMock(),
+            recommended_state=PRTrackingState.CI_PENDING,
+            recommended_action="approve_workflows",
+        )
+        report = PRAgentReport()
+
+        updated = await agent._handle_approve_workflows(pr, evaluation, tracking, report)
+
+        github.approve_workflow_run.assert_not_awaited()
+        assert updated.state == PRTrackingState.CI_PENDING
+        assert 1 in report.waiting
+
+@pytest.mark.asyncio
 class TestReviewFixLifecycle:
     """Tests for _handle_review_fix — review fix request for any PR."""
 
@@ -518,6 +607,7 @@ class TestHandleMergeBranchProtection:
             failed_runs=[],
             pending_runs=[],
             passed_runs=[make_check_run(name="lint", conclusion=CheckConclusion.SUCCESS)],
+            action_required_runs=[],
             all_completed=True,
         )
         review_eval = ReviewEvaluation(
@@ -679,6 +769,7 @@ class TestCommentDeduplication:
             failed_runs=[failed_run],
             pending_runs=[],
             passed_runs=[],
+            action_required_runs=[],
             all_completed=True,
         )
         evaluation = PRStateEvaluation(
@@ -760,6 +851,7 @@ class TestCommentDeduplication:
             failed_runs=[failed_run],
             pending_runs=[],
             passed_runs=[],
+            action_required_runs=[],
             all_completed=True,
         )
         evaluation = PRStateEvaluation(
