@@ -139,7 +139,7 @@ def test_apply_summary():
 
 
 def test_apply_summary_no_attributes():
-    # apply_summary should set fields on RunSummary without crashing
+    # apply_summary should return without crashing when summary lacks expected attributes
 
     agent, _ = make_agent()
 
