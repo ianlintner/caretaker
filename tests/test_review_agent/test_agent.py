@@ -1,13 +1,12 @@
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from caretaker.agent_protocol import AgentResult
 from caretaker.review_agent.agent import ReviewAgent
-from caretaker.review_agent.models import ReviewScorecard, TargetInfo
-from caretaker.state.models import OrchestratorState, RunSummary
+from caretaker.review_agent.models import TargetInfo
+from caretaker.state.models import OrchestratorState
 
 
 class MockConfig:
@@ -102,6 +101,9 @@ async def test_execute_with_config(tmp_path):
     assert data["schema_version"] == "v1"
     assert data["overall"]["score"] == 85
     assert data["evidence"]["run_summaries_considered"] == 2
+    # output paths must be recorded inside the JSON artifact itself
+    assert data["outputs"]["json_report_path"] is not None
+    assert data["outputs"]["markdown_report_path"] is not None
 
     # Check Markdown content
     md_content = md_files[0].read_text()
@@ -137,7 +139,8 @@ def test_apply_summary():
 
 
 def test_apply_summary_no_attributes():
-    # If the summary lacks the expected attributes, it shouldn't crash
+    # apply_summary should set fields on RunSummary without crashing
+
     agent, _ = make_agent()
 
     result = AgentResult(

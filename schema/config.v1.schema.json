@@ -175,6 +175,7 @@
         "max_history": { "type": "integer", "minimum": 1 }
       }
     },
+<<<<<<< ours
     "azure": {
       "type": "object",
       "additionalProperties": false,
@@ -205,6 +206,38 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "application_insights_connection_string_env": { "type": "string" }
+      }
+    },
+    "review_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": {
+          "type": "string",
+          "enum": ["scheduled", "targeted"]
+        },
+        "lookback_runs": { "type": "integer", "minimum": 1 },
+        "lookback_days": { "type": "integer", "minimum": 1 },
+        "artifact_dir": { "type": "string" },
+        "save_markdown": { "type": "boolean" },
+        "save_json": { "type": "boolean" },
+        "save_manifest": { "type": "boolean" },
+        "publish_summary_comments": { "type": "boolean" },
+        "comment_on_prs": { "type": "boolean" },
+        "comment_on_issues": { "type": "boolean" },
+        "minimum_comment_score": { "type": "integer", "minimum": 0 },
+        "use_llm_for_retro": { "type": "boolean" }
+      }
+    },
+    "memory_store": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "db_path": { "type": "string" },
+        "snapshot_path": { "type": "string" },
+        "max_entries_per_namespace": { "type": "integer", "minimum": 1 }
       }
     }
   }

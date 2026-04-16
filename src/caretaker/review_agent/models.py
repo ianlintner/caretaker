@@ -1,7 +1,5 @@
 """Models and scorecard schemas for the Review Agent."""
 
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Literal
 
