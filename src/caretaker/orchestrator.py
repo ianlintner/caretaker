@@ -39,6 +39,29 @@ def _as_utc(dt: datetime) -> datetime:
     return dt
 
 
+def _extract_pr_number(event_type: str, payload: dict[str, Any]) -> int | None:
+    """Extract a PR number from a GitHub event payload.
+
+    Returns the PR number when the payload reliably identifies a single PR,
+    or ``None`` when no PR can be determined (so the agent falls back to a
+    full scan).
+    """
+    try:
+        if event_type in ("pull_request", "pull_request_review"):
+            return int(payload["pull_request"]["number"])
+        if event_type == "check_run":
+            prs = payload.get("check_run", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+        if event_type == "check_suite":
+            prs = payload.get("check_suite", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
 class Orchestrator:
     """Central orchestrator that coordinates all agents."""
 
@@ -388,6 +411,23 @@ class Orchestrator:
                     state,
                     summary,
                     event_payload={"_head_branch": head_branch},
+                )
+            elif name == "pr" and event_type in (
+                "pull_request",
+                "pull_request_review",
+                "check_run",
+                "check_suite",
+            ):
+                pr_number = _extract_pr_number(event_type, payload)
+                event_pr_payload: dict[str, Any] = {}
+                if pr_number is not None:
+                    event_pr_payload["_pr_number"] = pr_number
+                    logger.info("Event %s — scoping PR agent to PR #%d", event_type, pr_number)
+                await self._registry.run_one(
+                    agent,
+                    state,
+                    summary,
+                    event_payload=event_pr_payload,
                 )
             elif name in ("devops", "self-heal"):
                 await self._registry.run_one(

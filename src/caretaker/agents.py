@@ -49,9 +49,13 @@ class PRAgentAdapter(BaseAgent):
             llm_router=self._ctx.llm_router,
         )
         head_branch: str | None = None
+        pr_number: int | None = None
         if event_payload:
             head_branch = event_payload.get("_head_branch")
-        report, tracked_prs = await agent.run(state.tracked_prs, head_branch=head_branch)
+            pr_number = event_payload.get("_pr_number")
+        report, tracked_prs = await agent.run(
+            state.tracked_prs, head_branch=head_branch, pr_number=pr_number
+        )
         state.tracked_prs = tracked_prs
         return AgentResult(
             processed=report.monitored,

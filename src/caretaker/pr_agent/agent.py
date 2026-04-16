@@ -66,6 +66,7 @@ class PRAgent:
         self,
         tracked_prs: dict[int, TrackedPR],
         head_branch: str | None = None,
+        pr_number: int | None = None,
     ) -> tuple[PRAgentReport, dict[int, TrackedPR]]:
         """Run the PR agent — evaluate all open PRs and take action.
 
@@ -74,26 +75,53 @@ class PRAgent:
             head_branch: Optional branch name filter. When provided, only PRs
                 whose ``head_ref`` matches this value are evaluated (used to
                 limit work on ``workflow_run`` events to the relevant branch).
+            pr_number: Optional single PR number to evaluate. When provided,
+                only that PR is fetched and processed (used for ``pull_request``,
+                ``pull_request_review``, ``check_run``, and ``check_suite``
+                events to avoid a full repository scan).
+
+        Note:
+            ``pr_number`` and ``head_branch`` are mutually exclusive: they are
+            dispatched from different event types by the orchestrator and should
+            never both be set in production.  When both are supplied ``pr_number``
+            takes precedence and ``head_branch`` is ignored.
         """
         report = PRAgentReport()
 
-        # Discover open PRs
-        open_prs = await self._github.list_pull_requests(self._owner, self._repo)
+        if pr_number is not None:
+            if head_branch is not None:
+                logger.warning(
+                    "run() received both pr_number=%d and head_branch=%r; "
+                    "pr_number takes precedence, head_branch will be ignored",
+                    pr_number,
+                    head_branch,
+                )
+            # Fast path: fetch only the single PR identified by the event payload.
+            # This avoids a full list_pull_requests scan and the O(N) API calls
+            # that come with it.
+            pr = await self._github.get_pull_request(self._owner, self._repo, pr_number)
+            if pr is None or pr.state != PRState.OPEN:
+                # PR was closed/merged externally — nothing to do
+                return report, tracked_prs
+            open_prs = [pr]
+        else:
+            # Discover open PRs
+            open_prs = await self._github.list_pull_requests(self._owner, self._repo)
 
-        # Filter to branch of interest when provided (avoids full scan on workflow_run)
-        if head_branch:
-            open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
+            # Filter to branch of interest when provided (avoids full scan on workflow_run)
+            if head_branch:
+                open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
 
         report.monitored = len(open_prs)
 
         # Sync tracked PRs that are no longer open — they were merged or closed
         # externally (e.g. manually) while the orchestrator wasn't watching.
         #
-        # Only do this during full-repository scans. On branch-filtered runs
-        # (for example workflow_run), open_prs only contains PRs for the
-        # matching branch, so using it as "all open PRs" would incorrectly
-        # classify unrelated tracked PRs as closed.
-        if head_branch is None:
+        # Only do this during full-repository scans. On branch-filtered or
+        # single-PR runs, open_prs only contains a subset of all PRs, so using
+        # it as "all open PRs" would incorrectly classify unrelated tracked PRs
+        # as closed.
+        if head_branch is None and pr_number is None:
             open_pr_numbers = {pr.number for pr in open_prs}
             _terminal = {
                 PRTrackingState.MERGED,
