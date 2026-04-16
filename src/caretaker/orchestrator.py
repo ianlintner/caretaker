@@ -253,7 +253,10 @@ class Orchestrator:
         finally:
             # Clean up optional remote dependencies
             if self._mcp_client is not None and self._mcp_client.config.enabled:
-                await self._mcp_client.disconnect()
+                try:
+                    await self._mcp_client.disconnect()
+                except Exception as e:
+                    logger.warning("Failed to disconnect MCP client: %s", e)
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
