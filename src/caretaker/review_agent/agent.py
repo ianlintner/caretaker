@@ -147,16 +147,23 @@ class ReviewAgent(BaseAgent):
         timestamp = scorecard.reviewed_at.strftime("%Y%m%dT%H%M%SZ")
         base_name = f"run-{timestamp}"
 
+        json_path: Path | None = None
+        md_path: Path | None = None
+
         if cfg.save_json:
             json_path = artifact_dir / f"{base_name}.json"
-            json_path.write_text(scorecard.model_dump_json(indent=2))
             scorecard.outputs.json_report_path = str(json_path)
 
         if cfg.save_markdown:
             md_path = artifact_dir / f"{base_name}.md"
+            scorecard.outputs.markdown_report_path = str(md_path)
+
+        if json_path is not None:
+            json_path.write_text(scorecard.model_dump_json(indent=2))
+
+        if md_path is not None:
             md_content = self._generate_markdown(scorecard)
             md_path.write_text(md_content)
-            scorecard.outputs.markdown_report_path = str(md_path)
 
     def _generate_markdown(self, scorecard: ReviewScorecard) -> str:
         """Generate markdown representation of the scorecard."""

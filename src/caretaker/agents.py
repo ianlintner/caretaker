@@ -571,7 +571,7 @@ AGENT_MODES: dict[str, set[str]] = {
     "charlie": {"full", "charlie"},
     "stale": {"full", "stale"},
     "escalation": {"full", "escalation"},
-    "review": {"full", "review"},
+    "review": {"full"},
 }
 
 # Maps GitHub event types → list of agent names to run

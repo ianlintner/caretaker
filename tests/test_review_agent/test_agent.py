@@ -101,6 +101,9 @@ async def test_execute_with_config(tmp_path):
     assert data["schema_version"] == "v1"
     assert data["overall"]["score"] == 85
     assert data["evidence"]["run_summaries_considered"] == 2
+    # output paths must be recorded inside the JSON artifact itself
+    assert data["outputs"]["json_report_path"] is not None
+    assert data["outputs"]["markdown_report_path"] is not None
 
     # Check Markdown content
     md_content = md_files[0].read_text()
