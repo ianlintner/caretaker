@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2026-W16] — 2026-04-15
+## [2026-W16] — 2026-04-16
 
 - add Charlie agent for janitorial cleanup of caretaker-managed issues and PRs (#237)
 - Followup (#238)
