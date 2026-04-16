@@ -156,4 +156,4 @@ Caretaker supports optional remote capability expansion via Model Context Protoc
 
 - `mcp`: Configures connection to a remote MCP backend service. Must be enabled to route capabilities.
 - `azure`: Allows using Azure Managed Identity for secure access to remote backends and resources.
-- `telemetry`: Enables Azure Application Insights reporting for remote tool calls and latency.
+- `telemetry`: Enables telemetry scaffolding for remote tool calls and latency. At present this is stub/debug instrumentation and does not export data to Azure Application Insights.
