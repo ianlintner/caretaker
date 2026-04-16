@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
 
 import httpx
 
@@ -135,12 +136,16 @@ class GitHubClient:
 
     @staticmethod
     def _make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
-        """Build a deterministic cache key from a path and optional request kwargs."""
+        """Build a deterministic cache key from a path and optional request kwargs.
+
+        Only the ``params`` query-string values influence the key because all
+        ``_get`` calls in this client share the same auth headers (set at
+        build time) and never pass a request body.
+        """
         params: dict[str, Any] | None = kwargs.get("params")
         if not params:
             return path
-        param_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-        return f"{path}?{param_str}"
+        return f"{path}?{urlencode(sorted(params.items()))}"
 
     def clear_read_cache(self) -> None:
         """Discard all cached GET responses.
