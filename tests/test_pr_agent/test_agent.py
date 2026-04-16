@@ -473,6 +473,7 @@ class TestApproveWorkflows:
         assert updated.state == PRTrackingState.CI_PENDING
         assert 1 in report.waiting
 
+
 @pytest.mark.asyncio
 class TestReviewFixLifecycle:
     """Tests for _handle_review_fix — review fix request for any PR."""

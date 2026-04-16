@@ -89,11 +89,7 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
         for cr in relevant
         if cr.status == CheckStatus.COMPLETED and cr.conclusion == CheckConclusion.SUCCESS
     ]
-    action_required = [
-        cr
-        for cr in relevant
-        if cr.conclusion == CheckConclusion.ACTION_REQUIRED
-    ]
+    action_required = [cr for cr in relevant if cr.conclusion == CheckConclusion.ACTION_REQUIRED]
     all_completed = len(pending) == 0
 
     if action_required or pending:
