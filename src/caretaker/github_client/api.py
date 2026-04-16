@@ -131,7 +131,8 @@ class GitHubClient:
             logger.debug("read-cache hit: %s", cache_key)
             return self._read_cache[cache_key]
         result = await self._request("GET", path, **kwargs)
-        self._read_cache[cache_key] = result
+        if result is not None:
+            self._read_cache[cache_key] = result
         return result
 
     @staticmethod

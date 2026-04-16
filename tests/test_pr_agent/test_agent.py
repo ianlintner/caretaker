@@ -859,6 +859,38 @@ class TestPRNumberFastPath:
         # get_pull_request should only have been called once (for the target PR)
         github.get_pull_request.assert_awaited_once_with("o", "r", 5)
 
+    async def test_pr_number_takes_precedence_over_head_branch_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When both pr_number and head_branch are supplied, pr_number wins and a
+        warning is logged to alert the caller of the unexpected combination."""
+        import logging
+
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        target_pr = make_test_pr(number=5, head_ref="copilot/fix")
+        github.get_pull_request.return_value = target_pr
+        github.get_check_runs.return_value = []
+        github.get_pr_reviews.return_value = []
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+
+        with caplog.at_level(logging.WARNING, logger="caretaker.pr_agent.agent"):
+            report, _ = await agent.run({}, pr_number=5, head_branch="some-branch")
+
+        # pr_number path was used (list not called, single PR fetched)
+        github.list_pull_requests.assert_not_awaited()
+        github.get_pull_request.assert_awaited_once_with("o", "r", 5)
+        assert report.monitored == 1
+        # Warning was emitted about the unexpected combination
+        assert any(
+            "pr_number" in record.message and "head_branch" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
 
 # ── _handle_event PR number extraction ──────────────────────────────────────
 

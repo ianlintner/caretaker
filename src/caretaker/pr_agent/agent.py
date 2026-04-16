@@ -79,10 +79,23 @@ class PRAgent:
                 only that PR is fetched and processed (used for ``pull_request``,
                 ``pull_request_review``, ``check_run``, and ``check_suite``
                 events to avoid a full repository scan).
+
+        Note:
+            ``pr_number`` and ``head_branch`` are mutually exclusive: they are
+            dispatched from different event types by the orchestrator and should
+            never both be set in production.  When both are supplied ``pr_number``
+            takes precedence and ``head_branch`` is ignored.
         """
         report = PRAgentReport()
 
         if pr_number is not None:
+            if head_branch is not None:
+                logger.warning(
+                    "run() received both pr_number=%d and head_branch=%r; "
+                    "pr_number takes precedence, head_branch will be ignored",
+                    pr_number,
+                    head_branch,
+                )
             # Fast path: fetch only the single PR identified by the event payload.
             # This avoids a full list_pull_requests scan and the O(N) API calls
             # that come with it.

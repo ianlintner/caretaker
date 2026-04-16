@@ -258,3 +258,27 @@ async def test_read_cache_clear_invalidates_entries() -> None:
 
     # Cache was cleared, so two network calls are expected
     assert mock_client.request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_cache_does_not_cache_none_responses() -> None:
+    """404 (None) responses must not be stored in the cache — repeated GETs must
+    hit the network again so a resource created between calls is eventually found."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            _make_response(404),  # first call: not found
+            _make_response(200, _repo_payload()),  # second call: now exists
+        ]
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    first = await gh._get("/repos/o/r")
+    second = await gh._get("/repos/o/r")
+
+    assert first is None
+    assert second is not None
+    # Both calls went to the network (None was not cached)
+    assert mock_client.request.await_count == 2
