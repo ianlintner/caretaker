@@ -92,8 +92,9 @@ class Orchestrator:
         # Optional Telemetry & MCP clients
         self._telemetry: TelemetryClient | None = None
         self._mcp_client: MCPClient | None = None
-        if config.mcp.enabled:
+        if config.telemetry.enabled:
             self._telemetry = TelemetryClient(config.telemetry)
+        if config.mcp.enabled:
             self._mcp_client = MCPClient(config.mcp)
 
         ctx = AgentContext(
