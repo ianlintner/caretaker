@@ -282,3 +282,69 @@ async def test_read_cache_does_not_cache_none_responses() -> None:
     assert second is not None
     # Both calls went to the network (None was not cached)
     assert mock_client.request.await_count == 2
+
+
+# ── approve_workflow_run ──────────────────────────────────────────────────────
+
+
+def _make_httpx_response(
+    status_code: int,
+    json_body: dict | None = None,
+    text: str = "",
+    has_content: bool = True,
+) -> MagicMock:
+    """Build a mock that resembles an httpx Response (not routed through _request_with_client)."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.content = b"body" if has_content else b""
+    resp.is_success = 200 <= status_code < 300
+    if json_body is not None:
+        resp.json.return_value = json_body
+    else:
+        resp.json.side_effect = ValueError("no json")
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_204_returns_true() -> None:
+    """A 204 response (success, no content) returns True."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_make_httpx_response(204, has_content=False))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result = await gh.approve_workflow_run("o", "r", 42)
+    assert result is True
+    mock_client.post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_404_returns_false() -> None:
+    """A 404 response returns False (workflow run not found)."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_make_httpx_response(404, text="Not Found"))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result = await gh.approve_workflow_run("o", "r", 999)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_error_raises_githubapieerror() -> None:
+    """A non-success, non-404 response raises GitHubAPIError."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(
+        return_value=_make_httpx_response(422, text="Unprocessable Entity")
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    with pytest.raises(GitHubAPIError) as exc_info:
+        await gh.approve_workflow_run("o", "r", 55)
+
+    assert exc_info.value.status_code == 422

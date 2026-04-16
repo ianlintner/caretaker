@@ -57,7 +57,8 @@
               "type": "array",
               "items": { "type": "string" }
             },
-            "close_managed_prs_on_backlog": { "type": "boolean" }
+            "close_managed_prs_on_backlog": { "type": "boolean" },
+            "auto_approve_workflows": { "type": "boolean" }
           }
         },
         "review": {

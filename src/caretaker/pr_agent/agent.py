@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -182,6 +183,7 @@ class PRAgent:
             reviews=reviews,
             current_state=tracking.state,
             ignore_jobs=self._config.ci.ignore_jobs,
+            auto_approve_workflows=self._config.ci.auto_approve_workflows,
         )
 
         logger.info(
@@ -225,8 +227,6 @@ class PRAgent:
         report: PRAgentReport,
     ) -> TrackedPR:
         """Approve any workflow runs that require approval."""
-        import re
-
         approved_any = False
         for run in evaluation.ci.action_required_runs:
             match = re.search(r"/actions/runs/(\d+)", run.html_url)
@@ -245,13 +245,13 @@ class PRAgent:
                         )
                         approved_any = True
                     else:
-                        logger.warning(
-                            "PR #%d: Failed to approve workflow run %d", pr.number, run_id
-                        )
-                except Exception as e:
-                    logger.error(
-                        "PR #%d: Error approving workflow run %d: %s", pr.number, run_id, e
-                    )
+                        message = f"PR #{pr.number}: Failed to approve workflow run {run_id}"
+                        logger.warning(message)
+                        report.errors.append(message)
+                except GitHubAPIError as e:
+                    message = f"PR #{pr.number}: Error approving workflow run {run_id}: {e}"
+                    logger.error(message)
+                    report.errors.append(message)
             else:
                 logger.warning(
                     "PR #%d: Could not extract workflow run ID from %s", pr.number, run.html_url

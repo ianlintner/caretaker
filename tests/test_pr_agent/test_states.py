@@ -201,7 +201,43 @@ class TestEvaluatePR:
         assert result.recommended_action == "wait"
 
     def test_ci_action_required_approve_workflows(self) -> None:
-        pr = make_pr()
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "approve_workflows"
+
+    def test_ci_action_required_untrusted_pr_waits(self) -> None:
+        """Untrusted human PRs with action_required runs should wait, not auto-approve."""
+        pr = make_pr()  # default is human user
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_action_required_flag_off_waits(self) -> None:
+        """When auto_approve_workflows is False, always wait even for trusted PRs."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
         checks = [
             make_check_run(
                 name="test",
@@ -211,7 +247,7 @@ class TestEvaluatePR:
         ]
         result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
         assert result.recommended_state == PRTrackingState.CI_PENDING
-        assert result.recommended_action == "approve_workflows"
+        assert result.recommended_action == "wait"
 
     def test_ci_failing_request_fix(self) -> None:
         pr = make_pr()

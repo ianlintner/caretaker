@@ -147,6 +147,7 @@ def evaluate_pr(
     reviews: list[Review],
     current_state: PRTrackingState,
     ignore_jobs: list[str] | None = None,
+    auto_approve_workflows: bool = False,
 ) -> PRStateEvaluation:
     """Full PR evaluation — determines next state and action."""
     ci = evaluate_ci(check_runs, ignore_jobs)
@@ -173,7 +174,11 @@ def evaluate_pr(
 
     # CI still running
     if ci.status == CIStatus.PENDING:
-        if ci.action_required_runs:
+        if (
+            ci.action_required_runs
+            and auto_approve_workflows
+            and (pr.is_copilot_pr or pr.is_maintainer_pr)
+        ):
             return PRStateEvaluation(
                 pr=pr,
                 ci=ci,
