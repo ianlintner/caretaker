@@ -87,7 +87,7 @@ class MCPClient:
                 )
                 return False
             payload = response.json()
-            return payload.get("status") == "ok"
+            return bool(payload.get("status") == "ok")
         except Exception:
             logger.exception("MCP health check request failed for %s", url)
             return False
