@@ -89,7 +89,9 @@ class AuditLogWriter:
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
-    async def _ensure_collection(self) -> motor.motor_asyncio.AsyncIOMotorCollection[dict[str, Any]] | None:
+    async def _ensure_collection(  # noqa: E501
+        self,
+    ) -> motor.motor_asyncio.AsyncIOMotorCollection[dict[str, Any]] | None:
         """Return a live Motor collection handle, or None if unavailable."""
         if not self._enabled:
             return None
