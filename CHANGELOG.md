@@ -44,6 +44,7 @@ All notable changes to this project will be documented in this file.
 - implement authentication modes and update client logic (#333)
 - GitHub app (#334)
 - add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
+- [WIP] Update setup instructions for GitHub app and backend (#340)
 
 ## [2026-W16] - 2026-04-16
 
@@ -84,7 +85,7 @@ All notable changes to this project will be documented in this file.
 - Implement ReviewAgent (#330)
 - Add Azure and MCP configuration options (#331)
 
-## [0.1.0] - Current
+## [0.5.0] - Current
 
 ### Core Agents
 
