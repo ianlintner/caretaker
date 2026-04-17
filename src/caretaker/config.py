@@ -196,8 +196,12 @@ class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
     enabled: bool = True
+    # Storage backend: "sqlite" (default, zero-dependency) or "mongo" (Phase 1, requires
+    # MongoConfig.enabled=true and MONGODB_URL env var set).
+    backend: Literal["sqlite", "mongo"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
+    # Ignored when backend="mongo".
     db_path: str = ".caretaker-memory.db"
     # Write a JSON snapshot of the store to this path after every save so it
     # can be uploaded as a workflow artifact for auditing / rollback.
@@ -210,6 +214,74 @@ class AzureConfig(StrictBaseModel):
     """Configuration for Azure-specific integrations."""
 
     use_managed_identity: bool = False
+
+
+class MongoConfig(StrictBaseModel):
+    """Phase 1 — MongoDB / Cosmos DB for MongoDB durable state backend.
+
+    Use a free SaaS MongoDB:
+    - **Azure Cosmos DB for MongoDB** (https://azure.microsoft.com/free) —
+      always-free tier: 1,000 RU/s + 25 GB; no credit card required.
+    - **MongoDB Atlas** (https://www.mongodb.com/atlas) — M0 free cluster.
+
+    Set the connection URL via the env var named in ``mongodb_url_env``.
+
+    Example .caretaker.yml::
+
+        mongo:
+          enabled: true
+          mongodb_url_env: MONGODB_URL   # set in GitHub Actions / .env
+    """
+
+    enabled: bool = False
+    # Name of the env var holding a standard MongoDB connection URI.
+    # Works with Cosmos DB for MongoDB, Atlas, or local mongod.
+    # e.g. mongodb+srv://user:pass@cluster.cosmos.azure.com/?tls=true
+    mongodb_url_env: str = "MONGODB_URL"
+    # MongoDB database name.
+    database_name: str = "caretaker"
+    # Collection name for the agent memory store.
+    memory_collection: str = "agent_memory"
+    # Collection name for the audit log.
+    audit_collection: str = "audit_log"
+
+
+class RedisConfig(StrictBaseModel):
+    """Phase 1 — Redis cache / dedup backend.
+
+    Use a free SaaS Redis (e.g. Upstash https://upstash.com, Redis Cloud free).
+    Set the connection URL via the env var named in ``redis_url_env``.
+
+    Upstash free tier: 10 K commands/day, 256 MB — plenty for webhook dedup
+    and installation-token caching at hobby / small-team scale.
+
+    Example .caretaker.yml::
+
+        redis:
+          enabled: true
+          redis_url_env: REDIS_URL   # set in GitHub Actions / .env
+    """
+
+    enabled: bool = False
+    # Name of the env var holding a standard Redis URL.
+    # Works with Upstash, Redis Cloud, Railway, or local Redis.
+    # e.g. rediss://default:pass@host:port
+    redis_url_env: str = "REDIS_URL"
+    # TTL (seconds) for webhook delivery-id dedup keys.
+    dedup_ttl_seconds: int = 3600
+    # TTL (seconds) for cached GitHub App installation tokens (< 3600 s expiry).
+    token_cache_ttl_seconds: int = 3000
+
+
+class AuditLogConfig(StrictBaseModel):
+    """Phase 1 — structured audit-log writer.
+
+    Writes one document per agent decision to the MongoDB ``audit_log``
+    collection when MongoDB is enabled.  When MongoDB is disabled, audit
+    entries are emitted as structured log lines only.
+    """
+
+    enabled: bool = True
 
 
 class MCPConfig(StrictBaseModel):
@@ -282,6 +354,9 @@ class MaintainerConfig(StrictBaseModel):
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)
+    mongo: MongoConfig = Field(default_factory=MongoConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+    audit_log: AuditLogConfig = Field(default_factory=AuditLogConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)

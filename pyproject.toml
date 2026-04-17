@@ -42,6 +42,10 @@ dev = [
     "uvicorn>=0.23,<1",
     "httpx>=0.27,<1",
     "pyjwt[crypto]>=2.8,<3",
+    # Phase 1 backend deps (stubs + fake implementations used in tests)
+    "motor>=3.3,<4",
+    "redis[asyncio]>=5,<6",
+    "types-redis>=4.6,<5",
 ]
 docs = [
     "mkdocs>=1.6,<2",
@@ -53,6 +57,19 @@ github-app = [
     "pyjwt[crypto]>=2.8,<3",
     "fastapi>=0.100,<1",
     "uvicorn>=0.23,<1",
+]
+# Phase 1 — Durable state and cache (MongoDB + Redis; see docs/azure-backend-adoption-roadmap.md).
+# Free SaaS options:
+#   MongoDB: Azure Cosmos DB for MongoDB (https://azure.microsoft.com/free) — 1000 RU/s + 25 GB always free
+#            MongoDB Atlas M0 (https://www.mongodb.com/atlas) — free cluster
+#   Redis:   Upstash (https://upstash.com) or Redis Cloud free tier
+# Both accept standard MONGODB_URL / REDIS_URL connection strings — no vendor lock-in.
+backend = [
+    "motor>=3.3,<4",             # async MongoDB driver; motor also installs pymongo (sync)
+    "redis[asyncio]>=5,<6",      # async Redis; works with Upstash, Redis Cloud, local Redis
+    "fastapi>=0.100,<1",
+    "uvicorn>=0.23,<1",
+    "pyjwt[crypto]>=2.8,<3",
 ]
 
 [project.scripts]

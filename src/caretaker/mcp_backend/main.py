@@ -13,8 +13,6 @@ This FastAPI app hosts two logical surfaces:
 
 from __future__ import annotations
 
-import asyncio
-import collections
 import importlib.metadata
 import logging
 import os
@@ -29,6 +27,8 @@ from caretaker.github_app import (
     parse_webhook,
     verify_signature,
 )
+from caretaker.state.dedup import LocalDedup, RedisDedup, build_dedup
+from caretaker.state.token_broker import build_token_broker
 
 logger = logging.getLogger(__name__)
 
@@ -47,29 +47,38 @@ app = FastAPI(
 )
 
 
-# ── Delivery dedup -----------------------------------------------------
+# ── Delivery dedup ───────────────────────────────────────────────
+#
+# Uses Redis (via REDIS_URL) when available so dedup works correctly across
+# multiple replicas.  Falls back to an in-process LRU set for single-replica
+# deployments and local development.
+#
+# Free SaaS options: Upstash (upstash.com), Redis Cloud (redis.io/cloud).
+#
+# Lazily initialised on first webhook request so that importing this module
+# (e.g. during unit tests) never touches Redis.
 
-# Process-local LRU-ish set of recently-seen ``X-GitHub-Delivery`` ids.
-# GitHub retries failed webhook deliveries; dropping the retry here keeps
-# downstream handlers idempotent.  A multi-replica deployment will need
-# to upgrade this to Redis (see docs/azure-mcp-architecture-plan.md §2).
-_DELIVERY_DEDUP_CAPACITY = 2048
-_seen_deliveries: collections.deque[str] = collections.deque()
-_seen_deliveries_set: set[str] = set()
-_delivery_lock = asyncio.Lock()
+_dedup: RedisDedup | LocalDedup | None = None
+
+
+def _get_dedup() -> RedisDedup | LocalDedup:
+    """Return the module-level dedup singleton, building it on first call."""
+    global _dedup  # noqa: PLW0603
+    if _dedup is None:
+        _dedup = build_dedup()
+    return _dedup
 
 
 async def _remember_delivery(delivery_id: str) -> bool:
     """Return ``True`` if this delivery id is new, ``False`` if it is a retry."""
-    async with _delivery_lock:
-        if delivery_id in _seen_deliveries_set:
-            return False
-        if len(_seen_deliveries) >= _DELIVERY_DEDUP_CAPACITY:
-            evicted = _seen_deliveries.popleft()
-            _seen_deliveries_set.discard(evicted)
-        _seen_deliveries.append(delivery_id)
-        _seen_deliveries_set.add(delivery_id)
-        return True
+    return await _get_dedup().is_new(delivery_id)
+
+
+# ── Installation-token broker ─────────────────────────────────────────
+#
+# Lazily initialised; returns None when the GitHub App is not configured.
+
+_token_broker = build_token_broker()
 
 
 # ── Models -------------------------------------------------------------
@@ -315,6 +324,55 @@ async def oauth_callback(code: str | None = None, state: str | None = None) -> R
     return Response(
         content="caretaker: oauth callback received",
         media_type="text/plain",
+    )
+
+
+# ── Internal token-broker endpoint ------------------------------------
+
+
+class TokenResponse(BaseModel):
+    installation_id: int
+    token: str
+    expires_at: int
+
+
+@app.post("/internal/tokens/installation/{installation_id}", response_model=TokenResponse)
+async def get_installation_token(
+    installation_id: int,
+    authorization: str | None = Header(default=None),
+    x_ms_client_principal_id: str | None = Header(
+        default=None,
+        alias="x-ms-client-principal-id",
+    ),
+) -> TokenResponse:
+    """Return a cached GitHub App installation token.
+
+    This endpoint is **internal-only** and must be placed behind auth
+    (``CARETAKER_MCP_AUTH_MODE=token`` or ``apim``).  Agents call this
+    instead of minting their own tokens so that a shared Redis cache is
+    used effectively and API rate limits are respected.
+    """
+    _enforce_auth(authorization=authorization, principal_id=x_ms_client_principal_id)
+
+    if _token_broker is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitHub App is not configured: set CARETAKER_GITHUB_APP_ID and "
+                "CARETAKER_GITHUB_APP_PRIVATE_KEY (or _PATH) environment variables."
+            ),
+        )
+
+    if installation_id <= 0:
+        raise HTTPException(status_code=400, detail="installation_id must be a positive integer")
+
+    async with _token_broker as broker:
+        token = await broker.get_token(installation_id)
+
+    return TokenResponse(
+        installation_id=token.installation_id,
+        token=token.token,
+        expires_at=token.expires_at,
     )
 
 
