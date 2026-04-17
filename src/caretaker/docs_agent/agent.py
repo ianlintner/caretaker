@@ -99,6 +99,7 @@ class DocsAgent:
             return report
 
         # Build changelog entry
+        week_str = datetime.now(UTC).strftime("%Y-W%V")
         changelog_entry = _build_changelog_entry(merged_prs)
 
         # Get current CHANGELOG.md contents
@@ -109,13 +110,19 @@ class DocsAgent:
             current_content = ""
             current_sha = None
 
+        # Guard: if this week's heading is already committed, nothing to do.
+        if f"## [{week_str}]" in current_content:
+            logger.info(
+                "Docs agent: CHANGELOG already has entry for %s — skipping", week_str
+            )
+            return report
+
         new_content = _prepend_changelog_entry(current_content, changelog_entry)
         if new_content == current_content:
             logger.info("Docs agent: changelog already up to date")
             return report
 
         # Create a branch and commit the update
-        week_str = datetime.now(UTC).strftime("%Y-W%V")
         branch_name = f"docs/changelog-{week_str}"
 
         skip_file_write = False

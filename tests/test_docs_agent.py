@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -177,6 +179,31 @@ class TestDocsAgentRun:
 
         # should return the existing PR number, not create a new one
         assert report.doc_pr_opened == 55
+        gh.create_pull_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_changelog_already_has_week_entry(self) -> None:
+        """If CHANGELOG.md already contains this week's ## heading, no new PR is opened."""
+        week_str = datetime.now(UTC).strftime("%Y-W%V")
+        changelog_with_entry = f"# Changelog\n\n## [{week_str}] — 2026-01-01\n- some entry\n"
+
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        # Simulate the CHANGELOG already containing the week heading
+        gh.get_file_contents.return_value = {
+            "content": base64.b64encode(changelog_with_entry.encode()).decode(),
+            "sha": "existingsha",
+        }
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        assert report.doc_pr_opened is None
+        assert report.changelog_updated is False
         gh.create_pull_request.assert_not_awaited()
 
     @pytest.mark.asyncio

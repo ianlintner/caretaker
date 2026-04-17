@@ -191,8 +191,10 @@ class UpgradePlanner:
         target: Release,
     ) -> int:
         """Create an upgrade issue and return its number."""
-        # Check if an upgrade issue already exists for this version
-        issues = await self._issues.list()
+        # Check if an upgrade issue already exists for this version (open or closed).
+        # Using state="all" prevents re-creating the issue when a previous attempt was
+        # closed without completing the upgrade, which would spawn duplicate Copilot PRs.
+        issues = await self._issues.list(state="all")
         for issue in issues:
             if f"Upgrade to v{target.version}" in issue.title and issue.is_maintainer_issue:
                 logger.info(
