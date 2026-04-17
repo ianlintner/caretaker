@@ -41,6 +41,7 @@ All notable changes to this project will be documented in this file.
 - implement ReviewAgent (#330)
 - Add Azure and MCP configuration options (#331)
 - reconcile CHANGELOG — 2026-W16 (#332)
+- implement authentication modes and update client logic (#333)
 
 ## [2026-W16] - 2026-04-16
 
