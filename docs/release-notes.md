@@ -4,7 +4,7 @@ The canonical release history lives in [`CHANGELOG.md`](https://github.com/ianli
 
 ## Current highlights
 
-### 0.1.0 (unreleased)
+### 0.5.0
 
 - initial Python package and CLI
 - async GitHub REST client

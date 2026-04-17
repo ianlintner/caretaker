@@ -41,7 +41,7 @@ All notable changes to this project will be documented in this file.
 - Implement ReviewAgent (#330)
 - Add Azure and MCP configuration options (#331)
 
-## [0.1.0] - Current
+## [0.5.0] - Current
 
 ### Core Agents
 
