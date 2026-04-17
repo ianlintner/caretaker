@@ -201,7 +201,7 @@ class MemoryStoreConfig(StrictBaseModel):
     backend: Literal["sqlite", "mongo"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
-    # Ignored when backend="postgres".
+    # Ignored when backend="mongo".
     db_path: str = ".caretaker-memory.db"
     # Write a JSON snapshot of the store to this path after every save so it
     # can be uploaded as a workflow artifact for auditing / rollback.

@@ -72,7 +72,7 @@ class TestAuditLogWriterFromConfig:
 
     @pytest.mark.asyncio
     async def test_no_db_connection_without_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """AuditLogWriter should not crash when DATABASE_URL is absent."""
+        """AuditLogWriter should not crash when MONGODB_URL is absent."""
         monkeypatch.delenv("MONGODB_URL", raising=False)
         writer = AuditLogWriter(enabled=True, mongodb_url_env="MONGODB_URL")
         # _ensure_collection returns None when env var not set
