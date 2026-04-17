@@ -229,6 +229,39 @@ class TelemetryConfig(StrictBaseModel):
     application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
 
 
+class GitHubAppConfig(StrictBaseModel):
+    """Configuration for the optional GitHub App front-end.
+
+    When ``enabled`` is ``False`` (the default) caretaker keeps its current
+    ``GITHUB_TOKEN`` / ``COPILOT_PAT`` behavior unchanged.  When enabled, the
+    orchestrator and the MCP backend can mint short-lived installation tokens
+    and receive signed webhooks.
+
+    See ``docs/github-app-plan.md`` for the full design.
+    """
+
+    enabled: bool = False
+    # Numeric App ID registered on GitHub.  Kept as ``int | None`` so the
+    # default configuration can omit it without the YAML round-trip failing.
+    app_id: int | None = None
+    # Name of the env var that holds the PEM-encoded private key.  The key
+    # itself is never stored in config to keep it out of checked-in files.
+    private_key_env: str = "CARETAKER_GITHUB_APP_PRIVATE_KEY"
+    # Name of the env var that holds the webhook shared secret used for
+    # ``X-Hub-Signature-256`` verification.
+    webhook_secret_env: str = "CARETAKER_GITHUB_APP_WEBHOOK_SECRET"
+    # Optional OAuth client id/secret env vars (only required when user-to-
+    # server tokens are used for Copilot hand-off).
+    oauth_client_id_env: str = "CARETAKER_GITHUB_APP_CLIENT_ID"
+    oauth_client_secret_env: str = "CARETAKER_GITHUB_APP_CLIENT_SECRET"
+    # Public base URL where the webhook receiver is reachable, for OAuth
+    # redirects and install-flow links.
+    public_base_url: str | None = None
+    # Skew allowance (seconds) applied when refreshing installation tokens
+    # before their 1h expiry.
+    installation_token_refresh_skew_seconds: int = 300
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -251,6 +284,7 @@ class MaintainerConfig(StrictBaseModel):
     azure: AzureConfig = Field(default_factory=AzureConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

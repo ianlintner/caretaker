@@ -238,6 +238,23 @@
         "snapshot_path": { "type": "string" },
         "max_entries_per_namespace": { "type": "integer", "minimum": 1 }
       }
+    },
+    "github_app": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "app_id": { "type": ["integer", "null"], "minimum": 1 },
+        "private_key_env": { "type": "string" },
+        "webhook_secret_env": { "type": "string" },
+        "oauth_client_id_env": { "type": "string" },
+        "oauth_client_secret_env": { "type": "string" },
+        "public_base_url": { "type": ["string", "null"] },
+        "installation_token_refresh_skew_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     }
   }
 }
