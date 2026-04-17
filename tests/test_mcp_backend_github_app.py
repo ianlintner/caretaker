@@ -107,6 +107,7 @@ def test_health_returns_200():
 
 
 def test_webhook_returns_503_when_secret_not_configured(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CARETAKER_GITHUB_APP_WEBHOOK_SECRET_ENV", raising=False)
     monkeypatch.delenv("CARETAKER_GITHUB_APP_WEBHOOK_SECRET", raising=False)
     payload = json.dumps(_pr_payload()).encode()
     resp = client.post(
@@ -247,6 +248,7 @@ def test_webhook_no_installation_id_when_absent(with_webhook_secret):
 
 
 def test_oauth_callback_503_when_client_id_absent(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CARETAKER_GITHUB_APP_CLIENT_ID_ENV", raising=False)
     monkeypatch.delenv("CARETAKER_GITHUB_APP_CLIENT_ID", raising=False)
     resp = client.get("/oauth/callback", params={"code": "somecode"})
     assert resp.status_code == 503

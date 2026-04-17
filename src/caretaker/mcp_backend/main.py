@@ -13,6 +13,9 @@ This FastAPI app hosts two logical surfaces:
 
 from __future__ import annotations
 
+import asyncio
+import collections
+import importlib.metadata
 import logging
 import os
 from typing import Any
@@ -29,13 +32,18 @@ from caretaker.github_app import (
 
 logger = logging.getLogger(__name__)
 
+try:
+    _PKG_VERSION = importlib.metadata.version("caretaker")
+except importlib.metadata.PackageNotFoundError:
+    _PKG_VERSION = "0.0.0"
+
 app = FastAPI(
     title="Caretaker MCP Backend",
     description=(
         "Backend service for remote Caretaker capabilities.  Hosts the MCP "
         "tool interface and (optionally) the GitHub App webhook receiver."
     ),
-    version="0.2.0",
+    version=_PKG_VERSION,
 )
 
 
@@ -46,20 +54,22 @@ app = FastAPI(
 # downstream handlers idempotent.  A multi-replica deployment will need
 # to upgrade this to Redis (see docs/azure-mcp-architecture-plan.md §2).
 _DELIVERY_DEDUP_CAPACITY = 2048
-_seen_deliveries: list[str] = []
+_seen_deliveries: collections.deque[str] = collections.deque()
 _seen_deliveries_set: set[str] = set()
+_delivery_lock = asyncio.Lock()
 
 
-def _remember_delivery(delivery_id: str) -> bool:
+async def _remember_delivery(delivery_id: str) -> bool:
     """Return ``True`` if this delivery id is new, ``False`` if it is a retry."""
-    if delivery_id in _seen_deliveries_set:
-        return False
-    _seen_deliveries.append(delivery_id)
-    _seen_deliveries_set.add(delivery_id)
-    while len(_seen_deliveries) > _DELIVERY_DEDUP_CAPACITY:
-        evicted = _seen_deliveries.pop(0)
-        _seen_deliveries_set.discard(evicted)
-    return True
+    async with _delivery_lock:
+        if delivery_id in _seen_deliveries_set:
+            return False
+        if len(_seen_deliveries) >= _DELIVERY_DEDUP_CAPACITY:
+            evicted = _seen_deliveries.popleft()
+            _seen_deliveries_set.discard(evicted)
+        _seen_deliveries.append(delivery_id)
+        _seen_deliveries_set.add(delivery_id)
+        return True
 
 
 # ── Models -------------------------------------------------------------
@@ -247,7 +257,7 @@ async def github_webhook(request: Request) -> WebhookAck:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    is_new = _remember_delivery(parsed.delivery_id)
+    is_new = await _remember_delivery(parsed.delivery_id)
     agents = agents_for_event(parsed.event_type)
 
     logger.info(
@@ -296,7 +306,12 @@ async def oauth_callback(code: str | None = None, state: str | None = None) -> R
     if not code:
         raise HTTPException(status_code=400, detail="missing 'code' query parameter")
 
-    logger.info("received oauth callback code=<redacted len=%d> state=%s", len(code), state)
+    state_log = f"<redacted len={len(state)}>" if state else "<missing>"
+    logger.info(
+        "received oauth callback code=<redacted len=%d> state=%s",
+        len(code),
+        state_log,
+    )
     return Response(
         content="caretaker: oauth callback received",
         media_type="text/plain",

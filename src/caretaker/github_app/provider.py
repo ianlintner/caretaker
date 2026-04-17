@@ -50,11 +50,13 @@ class GitHubAppCredentialsProvider:
         self._user_token_supplier = user_token_supplier
 
     def _resolve_installation_id(self, installation_id: int | None) -> int:
-        resolved = installation_id or self._default_installation_id
+        resolved = installation_id if installation_id is not None else self._default_installation_id
         if resolved is None:
             raise ValueError(
                 "no installation_id supplied and no default_installation_id configured"
             )
+        if resolved <= 0:
+            raise ValueError("installation_id must be a positive integer")
         return resolved
 
     async def default_token(self, *, installation_id: int | None = None) -> str:

@@ -269,7 +269,7 @@ as one service:
 - same container image (FastAPI) with additional routes:
   - `POST /webhooks/github`
   - `GET /oauth/callback`
-  - `GET /healthz`
+  - `GET /health`
 - same AKS / Container Apps deployment unit
 - same managed identity
 - same App Insights instrumentation
@@ -283,7 +283,7 @@ top of the already-planned MCP backend is **near zero**.
 
 - Verify `X-Hub-Signature-256` on every webhook.
 - Dedup on `X-GitHub-Delivery`.
-- Enqueue and return 202 quickly; do work asynchronously.
+- Return 2xx quickly; do work asynchronously once queuing is added.
 - Persist last-processed delivery per installation for audit.
 - Idempotent handlers — every action keyed on the GitHub object ID.
 
