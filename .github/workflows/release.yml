@@ -144,7 +144,7 @@ jobs:
           # Prefer COPILOT_PAT (a real-user PAT) so that gh pr create succeeds
           # even when the repo has "Allow GitHub Actions to create and approve
           # pull requests" disabled (GITHUB_TOKEN is blocked by that setting).
-          GH_TOKEN: ${{ secrets.COPILOT_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.COPILOT_PAT != '' && secrets.COPILOT_PAT || github.token }}
         run: |
           BRANCH="chore/bump-version-${{ env.VERSION }}"
           git config user.name "github-actions[bot]"
