@@ -60,8 +60,8 @@ class EnvCredentialsProvider:
         default_token: str | None = None,
         copilot_token: str | None = None,
     ) -> None:
-        self._default = default_token or os.environ.get("GITHUB_TOKEN") or os.environ.get(
-            "COPILOT_PAT", ""
+        self._default = (
+            default_token or os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
         )
         if not self._default:
             raise ValueError("GITHUB_TOKEN or COPILOT_PAT is required")

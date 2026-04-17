@@ -172,10 +172,7 @@ class InstallationTokenMinter:
         token = data.get("token")
         expires_at_raw = data.get("expires_at")
         if not isinstance(token, str) or not isinstance(expires_at_raw, str):
-            raise RuntimeError(
-                "malformed installation-token response from GitHub: "
-                f"{data!r}"
-            )
+            raise RuntimeError(f"malformed installation-token response from GitHub: {data!r}")
         expires_at = _parse_expiry(expires_at_raw)
         logger.info(
             "minted installation token for installation_id=%d (expires in %ds)",

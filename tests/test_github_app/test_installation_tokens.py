@@ -73,9 +73,7 @@ def test_parse_expiry_rejects_garbage() -> None:
 @respx.mock
 async def test_minter_fetches_and_caches(rsa_private_pem: str) -> None:
     signer = AppJWTSigner(app_id=1, private_key_pem=rsa_private_pem)
-    route = respx.post(
-        "https://api.github.com/app/installations/42/access_tokens"
-    ).mock(
+    route = respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
         return_value=httpx.Response(
             201,
             json={"token": "ghs_abc", "expires_at": "2099-01-01T00:00:00Z"},
@@ -105,13 +103,11 @@ async def test_minter_remints_when_token_near_expiry(rsa_private_pem: str) -> No
             json={"token": "ghs_second", "expires_at": "2099-01-01T00:00:00Z"},
         ),
     ]
-    respx.post(
-        "https://api.github.com/app/installations/42/access_tokens"
-    ).mock(side_effect=responses)
+    respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
+        side_effect=responses
+    )
 
-    async with InstallationTokenMinter(
-        signer=signer, refresh_skew_seconds=60
-    ) as minter:
+    async with InstallationTokenMinter(signer=signer, refresh_skew_seconds=60) as minter:
         # Well before expiry — fresh token from first response.
         first = await minter.get_token(42, now=100)
         assert first.token == "ghs_first"
@@ -123,9 +119,9 @@ async def test_minter_remints_when_token_near_expiry(rsa_private_pem: str) -> No
 @respx.mock
 async def test_minter_raises_on_http_error(rsa_private_pem: str) -> None:
     signer = AppJWTSigner(app_id=1, private_key_pem=rsa_private_pem)
-    respx.post(
-        "https://api.github.com/app/installations/42/access_tokens"
-    ).mock(return_value=httpx.Response(401, text="bad creds"))
+    respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
+        return_value=httpx.Response(401, text="bad creds")
+    )
 
     async with InstallationTokenMinter(signer=signer) as minter:
         with pytest.raises(RuntimeError, match="failed to mint installation token"):
@@ -135,9 +131,9 @@ async def test_minter_raises_on_http_error(rsa_private_pem: str) -> None:
 @respx.mock
 async def test_minter_raises_on_malformed_response(rsa_private_pem: str) -> None:
     signer = AppJWTSigner(app_id=1, private_key_pem=rsa_private_pem)
-    respx.post(
-        "https://api.github.com/app/installations/42/access_tokens"
-    ).mock(return_value=httpx.Response(201, json={"token": "t"}))
+    respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
+        return_value=httpx.Response(201, json={"token": "t"})
+    )
 
     async with InstallationTokenMinter(signer=signer) as minter:
         with pytest.raises(RuntimeError, match="malformed installation-token"):

@@ -13,9 +13,7 @@ import pytest
 from caretaker.github_app.jwt_signer import AppJWTSigner
 
 
-def test_issue_produces_valid_rs256_jwt(
-    rsa_private_pem: str, rsa_public_pem: str
-) -> None:
+def test_issue_produces_valid_rs256_jwt(rsa_private_pem: str, rsa_public_pem: str) -> None:
     signer = AppJWTSigner(app_id=12345, private_key_pem=rsa_private_pem)
     token = signer.issue(now=1_000_000)
 
