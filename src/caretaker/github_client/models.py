@@ -165,10 +165,13 @@ class Issue(BaseModel):
     def is_maintainer_issue(self) -> bool:
         return (
             self.title.startswith("[Maintainer]")
+            or self.title.startswith("[Caretaker]")
             or self.has_label("maintainer:internal")
             or self.has_label("maintainer:assigned")
+            or self.has_label("maintainer:escalation-digest")
             or "<!-- caretaker:assignment -->" in self.body
             or "<!-- maintainer-state:" in self.body
+            or "<!-- caretaker:escalation-digest" in self.body
         )
 
 

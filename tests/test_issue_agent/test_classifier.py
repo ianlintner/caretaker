@@ -32,6 +32,15 @@ class TestClassifyIssue:
         result = classify_issue(issue, IssueAgentConfig())
         assert result == IssueClassification.MAINTAINER_INTERNAL
 
+    def test_caretaker_escalation_digest_is_maintainer_internal(self) -> None:
+        issue = make_issue(
+            title="[Caretaker] Human action required — 2026-W16",
+            body="## CI failures\n\n<!-- caretaker:escalation-digest week:2026-W16 -->",
+            labels=[Label(name="maintainer:escalation-digest")],
+        )
+        result = classify_issue(issue, IssueAgentConfig())
+        assert result == IssueClassification.MAINTAINER_INTERNAL
+
     def test_assignment_marker_is_maintainer_internal(self) -> None:
         issue = make_issue(body="<!-- caretaker:assignment -->\nTYPE: BUG_SIMPLE")
         result = classify_issue(issue, IssueAgentConfig())
