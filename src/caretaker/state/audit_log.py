@@ -219,9 +219,7 @@ class AuditLogWriter:
             return cls(enabled=False)
 
         mongo_enabled = getattr(config, "mongo", None) is not None and config.mongo.enabled
-        audit_enabled = (
-            getattr(config, "audit_log", None) is not None and config.audit_log.enabled
-        )
+        audit_enabled = getattr(config, "audit_log", None) is not None and config.audit_log.enabled
         enabled = mongo_enabled and audit_enabled
 
         mongodb_url_env = config.mongo.mongodb_url_env if mongo_enabled else "MONGODB_URL"

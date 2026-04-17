@@ -67,9 +67,7 @@ class MongoMemoryBackend:
 
         self._max_entries = max_entries_per_namespace
         self._client: pymongo.MongoClient[Any] = _pymongo.MongoClient(mongodb_url)
-        self._col: pymongo.collection.Collection[Any] = (
-            self._client[database_name][collection_name]
-        )
+        self._col: pymongo.collection.Collection[Any] = self._client[database_name][collection_name]
         self._ensure_indexes()
         logger.info("MongoMemoryBackend connected (db=%s col=%s)", database_name, collection_name)
 

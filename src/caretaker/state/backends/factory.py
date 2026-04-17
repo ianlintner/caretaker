@@ -27,8 +27,7 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
     if config.memory_store.backend == "mongo":
         if not config.mongo.enabled:
             logger.warning(
-                "memory_store.backend='mongo' but mongo.enabled=false. "
-                "Falling back to SQLite."
+                "memory_store.backend='mongo' but mongo.enabled=false. Falling back to SQLite."
             )
         else:
             from caretaker.state.backends.mongo_backend import build_mongo_backend
@@ -51,4 +50,3 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
         max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
     )
     return SQLiteMemoryBackend(store)
-
