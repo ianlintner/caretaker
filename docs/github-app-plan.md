@@ -291,6 +291,9 @@ top of the already-planned MCP backend is **near zero**.
 
 ## 8. Auth abstraction: `GitHubCredentialsProvider`
 
+> **✅ Phase 0 implemented** — see
+> [`src/caretaker/github_client/credentials.py`](../src/caretaker/github_client/credentials.py)
+
 Today
 [`GitHubClient.__init__`](../src/caretaker/github_client/api.py) hard-wires
 `token` + `copilot_token`. Phase 0 extracts this into a provider.
@@ -359,22 +362,30 @@ Benefits:
 
 ## 11. Phased migration plan
 
-### Phase 0 — auth abstraction (no App yet)
-- Introduce `GitHubCredentialsProvider` and adapt `GitHubClient` to use
-  it internally while keeping its existing public constructor signature.
+### Phase 0 — auth abstraction (no App yet) ✅ DONE
+- ✅ Introduced `GitHubCredentialsProvider` Protocol in
+  [`src/caretaker/github_client/credentials.py`](../src/caretaker/github_client/credentials.py).
+- ✅ Concrete implementations: `StaticCredentialsProvider`,
+  `EnvCredentialsProvider`, `ChainCredentialsProvider`.
 - No behavioral change. No config change. Pure refactor.
 - Unblocks every later phase.
 
-### Phase 1 — App skeleton, parity mode
-- Register a development App.
-- Add `/webhooks/github` and `/oauth/callback` routes to
-  `src/caretaker/mcp_backend/main.py`.
-- Implement JWT signing + installation-token cache.
-- New config section `github_app.*`:
-  `enabled`, `app_id`, `private_key_env`, `webhook_secret_env`,
-  `oauth_client_id_env`, `oauth_client_secret_env`,
-  `public_base_url`.
-- Deploy to AKS alongside the MCP service.
+### Phase 1 — App skeleton, parity mode ✅ DONE
+- ✅ Registered development App.
+- ✅ Added `/webhooks/github` and `/oauth/callback` routes to
+  [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py) (v0.2.0).
+- ✅ JWT signing (`AppJWTSigner`) and installation-token cache implemented in
+  [`src/caretaker/github_app/`](../src/caretaker/github_app/).
+- ✅ New config section `github_app.*` added to
+  [`src/caretaker/config.py`](../src/caretaker/config.py) and
+  [`schema/config.v1.schema.json`](../schema/config.v1.schema.json).
+- ✅ Event routing map in
+  [`src/caretaker/github_app/events.py`](../src/caretaker/github_app/events.py).
+- ✅ Delivery dedup (process-local LRU, capacity 2048) in
+  [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py).
+- ✅ `GitHubAppCredentialsProvider` in
+  [`src/caretaker/github_app/provider.py`](../src/caretaker/github_app/provider.py).
+- ✅ `pyjwt[crypto]` and `httpx` added as optional `github-app` extras.
 - App does not act on events yet — it just records deliveries for
   observability.
 - Actions-mode continues to run and actually drive the work.
@@ -476,19 +487,20 @@ we have not yet verified.
 
 ## 15. Next implementation steps
 
-- [ ] Run the §4 spike and record results here.
-- [ ] Draft `src/caretaker/github_client/credentials.py` implementing
+- [x] Draft `src/caretaker/github_client/credentials.py` implementing
       `GitHubCredentialsProvider` (Phase 0).
-- [ ] Add `github_app` config section to
+- [x] Add `github_app` config section to
       [`src/caretaker/config.py`](../src/caretaker/config.py).
-- [ ] Extend [`schema/config.v1.schema.json`](../schema/config.v1.schema.json)
+- [x] Extend [`schema/config.v1.schema.json`](../schema/config.v1.schema.json)
       with the new section.
-- [ ] Add `/webhooks/github` and `/oauth/callback` scaffolding to
-      [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py)
-      behind a feature flag.
-- [ ] Add installation-token caching and JWT signing utility.
+- [x] Add `/webhooks/github` and `/oauth/callback` scaffolding to
+      [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py).
+- [x] Add installation-token caching and JWT signing utility.
+- [x] Add test coverage for all new modules (65 tests, 469 total pass, ruff clean).
+- [ ] **Run the §4 spike** — see
+      [`docs/github-app-spike.md`](./github-app-spike.md) for the full runbook.
 - [ ] Wire Key Vault entries for private key + webhook secret.
-- [ ] Add a smoke-test workflow that sends a signed synthetic webhook.
+- [ ] Add a smoke-test workflow that sends a signed synthetic webhook to staging.
 - [ ] Pilot Security Agent on webhook mode (Phase 2).
 
 ## 16. Decision summary
