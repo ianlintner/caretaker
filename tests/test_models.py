@@ -109,6 +109,32 @@ class TestIssue:
         )
         assert issue.is_maintainer_issue is True
 
+    def test_is_maintainer_issue_by_caretaker_title(self) -> None:
+        issue = Issue(
+            number=1,
+            title="[Caretaker] Human action required — 2026-W16",
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_escalation_digest_label(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Some issue",
+            user=User(login="user", id=1, type="User"),
+            labels=[Label(name="maintainer:escalation-digest")],
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_escalation_digest_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Some issue",
+            body="## CI failures\n\n<!-- caretaker:escalation-digest week:2026-W16 -->",
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
     def test_not_maintainer_issue(self) -> None:
         issue = Issue(
             number=1,
