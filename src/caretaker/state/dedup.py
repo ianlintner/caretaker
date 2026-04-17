@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    pass
+    import redis.asyncio
 
 
 class RedisDedup:
@@ -53,10 +53,10 @@ class RedisDedup:
         self._redis_url = redis_url
         self._ttl_seconds = ttl_seconds
         self._key_prefix = key_prefix
-        self._client: "redis.asyncio.Redis | None" = None  # type: ignore[type-arg]
+        self._client: redis.asyncio.Redis | None = None  # type: ignore[type-arg]
         self._lock = asyncio.Lock()
 
-    async def _get_client(self) -> "redis.asyncio.Redis":  # type: ignore[type-arg]
+    async def _get_client(self) -> redis.asyncio.Redis:  # type: ignore[type-arg]
         """Return a lazily-initialised Redis client."""
         if self._client is None:
             async with self._lock:
@@ -121,7 +121,7 @@ def build_dedup(
     ttl_seconds: int = 3600,
     key_prefix: str = "caretaker:dedup:",
     fallback_capacity: int = 2048,
-) -> "RedisDedup | LocalDedup":
+) -> RedisDedup | LocalDedup:
     """Build a dedup backend from the environment.
 
     Returns a ``RedisDedup`` when ``redis_url_env`` is set in the environment,

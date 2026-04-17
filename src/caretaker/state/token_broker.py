@@ -32,7 +32,7 @@ from caretaker.github_app.installation_tokens import (
 from caretaker.github_app.jwt_signer import AppJWTSigner
 
 if TYPE_CHECKING:
-    pass
+    import redis.asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,10 @@ class RedisTokenCache(InstallationTokenCache):
         self._redis_url = redis_url
         self._ttl_seconds = ttl_seconds
         self._key_prefix = key_prefix
-        self._redis: "redis.asyncio.Redis | None" = None  # type: ignore[type-arg]
+        self._redis: redis.asyncio.Redis | None = None  # type: ignore[type-arg]
         self._init_lock = asyncio.Lock()
 
-    async def _client(self) -> "redis.asyncio.Redis":  # type: ignore[type-arg]
+    async def _client(self) -> redis.asyncio.Redis:  # type: ignore[type-arg]
         if self._redis is None:
             async with self._init_lock:
                 if self._redis is None:
@@ -142,7 +142,7 @@ def build_token_broker(
     redis_url_env: str = "REDIS_URL",
     cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS,
     refresh_skew_seconds: int = _DEFAULT_SKEW_SECONDS,
-) -> "InstallationTokenMinter | None":
+) -> InstallationTokenMinter | None:
     """Build an ``InstallationTokenMinter`` with optional Redis cache.
 
     Returns ``None`` when the GitHub App is not configured (i.e. neither
