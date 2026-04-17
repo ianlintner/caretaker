@@ -50,27 +50,25 @@ class GitHubClient:
         self,
         token: str | None = None,
         copilot_token: str | None = None,
+        credentials_provider: GitHubCredentialsProvider | None = None,
     ) -> None:
-        self._token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
-        if not self._token:
-            raise ValueError("GITHUB_TOKEN or COPILOT_PAT is required")
-        self._copilot_token = copilot_token or os.environ.get("COPILOT_PAT") or self._token
-        self._client = self._build_client(self._token)
-        self._copilot_client = (
-            self._client
-            if self._copilot_token == self._token
-            else self._build_client(self._copilot_token)
-        )
+        if credentials_provider is not None:
+            self._creds: GitHubCredentialsProvider = credentials_provider
+        else:
+            # Backward-compat: wrap string tokens or fall back to env vars.
+            self._creds = EnvCredentialsProvider(
+                default_token=token, copilot_token=copilot_token
+            )
+        self._client = self._build_client()
         # In-process read cache: avoids redundant GET calls within a single run.
         # Keys are "path?param=value&..." strings; values are parsed JSON responses.
         self._read_cache: dict[str, Any] = {}
 
     @staticmethod
-    def _build_client(token: str) -> httpx.AsyncClient:
+    def _build_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=API_BASE,
             headers={
-                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
@@ -78,8 +76,6 @@ class GitHubClient:
         )
 
     async def close(self) -> None:
-        if self._copilot_client is not self._client:
-            await self._copilot_client.aclose()
         await self._client.aclose()
 
     async def __aenter__(self) -> GitHubClient:
