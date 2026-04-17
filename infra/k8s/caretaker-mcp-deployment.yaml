@@ -14,38 +14,49 @@ spec:
       labels:
         app: caretaker-mcp
     spec:
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
       containers:
-      - name: mcp-backend
-        # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
-        image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8000
-        env:
-        - name: CARETAKER_MCP_AUTH_MODE
-          value: "none"
-        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
-          valueFrom:
-            secretKeyRef:
-              name: caretaker-secrets
-              key: appinsights-conn-string
-              optional: true
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 10
-          periodSeconds: 15
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 10
+        - name: mcp-backend
+          # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
+          image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CARETAKER_MCP_AUTH_MODE
+              value: "apim"
+            - name: CARETAKER_MCP_ALLOWED_OBJECT_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: allowed-object-ids
+                  optional: true
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: appinsights-conn-string
+                  optional: true
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
