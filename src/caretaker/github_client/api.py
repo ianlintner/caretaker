@@ -116,10 +116,16 @@ class GitHubClient:
         return resp.json()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._client, method, path, **kwargs)
+        token = await self._creds.default_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(self._client, method, path, headers=headers, **kwargs)
 
     async def _copilot_request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._copilot_client, method, path, **kwargs)
+        token = await self._creds.copilot_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(self._client, method, path, headers=headers, **kwargs)
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
         cache_key = self._make_cache_key(path, kwargs)
