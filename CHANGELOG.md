@@ -41,7 +41,52 @@ All notable changes to this project will be documented in this file.
 - Implement ReviewAgent (#330)
 - Add Azure and MCP configuration options (#331)
 
-## [0.5.0] - Current
+## [0.5.2] - Current
+
+### Core Agents
+
+- **PR Agent**: Full-lifecycle PR management with CI triage, auto-merge, retry logic, and review analysis
+- **Issue Agent**: Intelligent issue triage with auto-assignment, lifecycle tracking, and escalation
+- **DevOps Agent**: Default-branch CI monitoring with automated fix issue creation and deduplication
+- **Self-Heal Agent**: Caretaker self-diagnosis with upstream bug reporting and cooldown management
+- **Security Agent**: Multi-source security triage (Dependabot, code scanning, secret scanning) with severity filtering
+- **Dependency Agent**: Dependabot PR review with smart auto-merge strategies and weekly digests
+- **Docs Agent**: Changelog reconciliation from merged PRs with configurable lookback and branch management
+- **Charlie Agent**: Operational clutter cleanup for caretaker-managed work with 14-day default window
+- **Stale Agent**: Comprehensive stale issue/PR closure with merged branch deletion and exempt labels
+- **Upgrade Agent**: Multi-strategy caretaker version upgrades (auto-minor, auto-patch, latest, pinned) with preview channel support
+- **Escalation Agent**: Human escalation digest aggregation with configurable notification
+- **Review Agent**: Automated code review dispatch with configurable triggers
+
+### Recent Changes (since 0.5.0)
+
+- Add Charlie agent for janitorial cleanup of caretaker-managed issues and PRs (#237)
+- Add CI backlog guard (close_managed_prs_on_backlog) and fix PR agent CI triage (#238)
+- Handle 403 rate-limit errors and guard state load against unhandled crash (#244)
+- Docs build no longer fails on configure-pages API errors (#256)
+- Remove committed site/ build artifacts; add CodeQL exclusion config (#259)
+- Guard FailureType → TaskType conversion against unmapped values (#263)
+- Treat 405/409/422 merge rejections as waiting, not errors (#265)
+- Replace dynamic CodeQL javascript-typescript scan with explicit Python-only workflow (#269)
+- Group related issues/PRs by workflow run_id (#272)
+- Introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
+- Prevent duplicate @copilot task comments from concurrent workflow runs (#276)
+- Self-heal: avoid env-noise "unknown error" titles by extracting from full job log (#286, #288, #290, #293)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Add sync issue builder for client workflow/file reconciliation (#295)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- Handle 422 "Reference already exists" gracefully in DocsAgent (#304, #306)
+- Handle 403 "not permitted to create PRs" as warning, not error (#310)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- Introduce goal-seeking subsystem with models and evaluation logic (#321)
+- Implement simple memory storage for caretaker (#323)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- Update docs and readme to reflect current features (#328)
+- Implement workflow approval for action-required CI runs (#329)
+- Implement ReviewAgent (#330)
+- Add Azure and MCP configuration options (#331)
+
+## [0.5.0]
 
 ### Core Agents
 

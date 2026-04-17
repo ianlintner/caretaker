@@ -4,6 +4,18 @@ The canonical release history lives in [`CHANGELOG.md`](https://github.com/ianli
 
 ## Current highlights
 
+### 0.5.2
+
+- ReviewAgent for automated code review dispatch
+- Goal engine and memory store stabilization
+- Multi-layer deduplication for CI failure issues
+- Workflow approval for action-required CI runs
+- Azure and MCP configuration options
+- Mixed datetime handling fixes in orchestrator
+- Graceful 422 handling in DocsAgent for existing branches
+- Agent protocol abstraction (BaseAgent, AgentContext, AgentResult)
+- PR-number fast path and in-process read cache for GitHub API
+
 ### 0.5.0
 
 - initial Python package and CLI
