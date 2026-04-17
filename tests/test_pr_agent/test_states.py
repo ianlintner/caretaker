@@ -112,6 +112,19 @@ class TestEvaluateCI:
         assert result.status == CIStatus.PENDING
         assert result.all_completed is False
 
+    def test_waiting_is_pending(self) -> None:
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.WAITING,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+        assert len(result.pending_runs) == 1
+
 
 # ── evaluate_reviews ─────────────────────────────────────────────────
 

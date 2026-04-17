@@ -37,6 +37,7 @@ class CheckStatus(StrEnum):
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    WAITING = "waiting"
 
 
 class CheckConclusion(StrEnum):

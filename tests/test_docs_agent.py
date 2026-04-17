@@ -244,3 +244,61 @@ class TestDocsAgentRun:
         # The file should still be committed and the PR created
         gh.create_or_update_file.assert_awaited_once()
         gh.create_pull_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_409_sha_mismatch_retries_and_succeeds(self) -> None:
+        """A 409 SHA mismatch on file write triggers a re-read and retry."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        # First write raises 409, second succeeds
+        gh.create_or_update_file.side_effect = [
+            GitHubAPIError(409, '{"message":"is at abc but expected def"}'),
+            {"content": {"sha": "newsha"}},
+        ]
+        # get_file_contents: returns content without this week's entry so retry proceeds
+        gh.get_file_contents.return_value = {"content": "", "sha": "branchsha123"}
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        # No error — the retry succeeded
+        assert report.errors == []
+        assert report.doc_pr_opened == 77
+        assert gh.create_or_update_file.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_file_write_when_branch_already_has_week_entry(self) -> None:
+        """If the branch already has this week's changelog entry, skip the file write."""
+        from unittest.mock import patch as _patch
+
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            from datetime import UTC, datetime
+
+            week_str = datetime.now(UTC).strftime("%Y-W%V")
+            branch_content = f"## [{week_str}] — 2026-04-17\n- cool feature (#10)\n"
+
+            async def _mock_get_file(path: str, ref: str | None = None) -> tuple[str, str | None]:
+                if ref is not None:
+                    # Branch read: content already has this week's entry
+                    return branch_content, "sha-already-updated"
+                return "", None
+
+            with _patch.object(agent, "_get_file", side_effect=_mock_get_file):
+                report = await agent.run()
+
+        # File write should be skipped because branch already has this week's entry
+        gh.create_or_update_file.assert_not_awaited()
+        # PR should still be opened
+        assert report.doc_pr_opened == 77
