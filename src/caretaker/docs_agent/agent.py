@@ -112,9 +112,7 @@ class DocsAgent:
 
         # Guard: if this week's heading is already committed, nothing to do.
         if f"## [{week_str}]" in current_content:
-            logger.info(
-                "Docs agent: CHANGELOG already has entry for %s — skipping", week_str
-            )
+            logger.info("Docs agent: CHANGELOG already has entry for %s — skipping", week_str)
             return report
 
         new_content = _prepend_changelog_entry(current_content, changelog_entry)
