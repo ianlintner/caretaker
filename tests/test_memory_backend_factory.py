@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from caretaker.config import MaintainerConfig
@@ -45,7 +47,8 @@ class TestBuildMemoryBackend:
 
         from caretaker.state.backends.mongo_backend import MongoMemoryBackend
 
-        backend = build_memory_backend(base_config)
+        with patch("pymongo.MongoClient", return_value=MagicMock()):
+            backend = build_memory_backend(base_config)
         assert isinstance(backend, MongoMemoryBackend)
 
     def test_sqlite_backend_is_functional(self, base_config: MaintainerConfig) -> None:
