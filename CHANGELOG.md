@@ -43,6 +43,7 @@ All notable changes to this project will be documented in this file.
 - reconcile CHANGELOG — 2026-W16 (#332)
 - implement authentication modes and update client logic (#333)
 - GitHub app (#334)
+- add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
 
 ## [2026-W16] - 2026-04-16
 
