@@ -25,10 +25,10 @@ State is a process-local LRU deque for webhook delivery dedup; there is no
 durable DB, no cache, no eventing. The orchestrator is single-process,
 config-driven, and most extension points are already in place:
 
-- `AgentContext` ([`src/caretaker/agent_protocol.py`](../src/caretaker/agent_protocol.py))
-- `MaintainerConfig` ([`src/caretaker/config.py`](../src/caretaker/config.py))
-- `LLMRouter` ([`src/caretaker/llm/router.py`](../src/caretaker/llm/router.py))
-- `MemoryStore` ([`src/caretaker/state/memory.py`](../src/caretaker/state/memory.py))
+- `AgentContext` (`src/caretaker/agent_protocol.py`)
+- `MaintainerConfig` (`src/caretaker/config.py`)
+- `LLMRouter` (`src/caretaker/llm/router.py`)
+- `MemoryStore` (`src/caretaker/state/memory.py`)
 - MCP client abstractions ([`src/caretaker/mcp/`](../src/caretaker/mcp/))
 
 Every recommendation below is designed to slot **behind** those seams, not

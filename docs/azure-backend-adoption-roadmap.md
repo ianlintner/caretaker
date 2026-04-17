@@ -60,7 +60,7 @@ new service dependencies.
 **Scope (rank 1–2):**
 
 - App Insights connection string wired through the existing
-  [`mcp/telemetry.py`](../src/caretaker/mcp/telemetry.py) stub.
+  `mcp/telemetry.py` stub.
 - OpenTelemetry instrumentation on:
   - FastAPI in `mcp_backend/main.py`
   - `Orchestrator.run()` and each `BaseAgent.run()`
