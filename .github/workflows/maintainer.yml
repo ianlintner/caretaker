@@ -45,6 +45,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  actions: read
 
 # Prevent duplicate runs for the same PR / branch.  Concurrent check_suite,
 # pull_request, and workflow_run events for the same head can fire within

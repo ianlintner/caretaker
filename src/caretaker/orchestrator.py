@@ -13,7 +13,11 @@ from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
 from caretaker.github_client.api import GitHubClient
+from caretaker.goals.definitions import build_goals
+from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
+from caretaker.mcp import MCPClient, TelemetryClient
+from caretaker.state.memory import MemoryStore
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -23,16 +27,40 @@ from caretaker.state.models import (
 from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
+    from caretaker.goals.models import GoalEvaluation
     from caretaker.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
 
-def _as_utc_naive(value: datetime) -> datetime:
-    """Normalize datetimes to naive UTC for safe subtraction."""
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+def _as_utc(dt: datetime) -> datetime:
+    """Return a UTC-aware datetime, attaching UTC if the datetime is naive."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _extract_pr_number(event_type: str, payload: dict[str, Any]) -> int | None:
+    """Extract a PR number from a GitHub event payload.
+
+    Returns the PR number when the payload reliably identifies a single PR,
+    or ``None`` when no PR can be determined (so the agent falls back to a
+    full scan).
+    """
+    try:
+        if event_type in ("pull_request", "pull_request_review"):
+            return int(payload["pull_request"]["number"])
+        if event_type == "check_run":
+            prs = payload.get("check_run", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+        if event_type == "check_suite":
+            prs = payload.get("check_suite", {}).get("pull_requests", [])
+            if prs:
+                return int(prs[0]["number"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
 
 
 class Orchestrator:
@@ -52,6 +80,23 @@ class Orchestrator:
         self._llm = LLMRouter(config.llm)
         self._state_tracker = StateTracker(github, owner, repo)
 
+        # Disk-backed memory store (SQLite)
+        self._memory: MemoryStore | None = None
+        if config.memory_store.enabled:
+            self._memory = MemoryStore(
+                db_path=config.memory_store.db_path,
+                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
+            )
+            logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
+
+        # Optional Telemetry & MCP clients
+        self._telemetry: TelemetryClient | None = None
+        self._mcp_client: MCPClient | None = None
+        if config.telemetry.enabled:
+            self._telemetry = TelemetryClient(config.telemetry)
+        if config.mcp.enabled:
+            self._mcp_client = MCPClient(config.mcp)
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -59,8 +104,19 @@ class Orchestrator:
             config=config,
             llm_router=self._llm,
             dry_run=config.orchestrator.dry_run,
+            memory=self._memory,
+            mcp_client=self._mcp_client,
+            telemetry=self._telemetry,
         )
         self._registry: AgentRegistry = build_registry(ctx)
+
+        # Goal-seeking engine
+        self._goal_engine: GoalEngine | None = None
+        if config.goal_engine.enabled:
+            self._goal_engine = GoalEngine(build_goals(), config.goal_engine)
+            issues = self._goal_engine.validate(self._registry)
+            for issue in issues:
+                logger.warning(issue)
 
     @classmethod
     def from_config_path(cls, path: str) -> Orchestrator:
@@ -111,9 +167,52 @@ class Orchestrator:
 
         try:
             state = await self._state_tracker.load()
+
+            # Initialize optional remote dependencies
+            if self._mcp_client and self._mcp_client.config.enabled:
+                await self._mcp_client.connect()
+
+            # ── Goal pre-evaluation ───────────────────────────
+            pre_eval: GoalEvaluation | None = None
+            if (
+                self._goal_engine
+                and mode != "event"
+                and self._config.goal_engine.goal_driven_dispatch
+            ):
+                goal_ctx = GoalContext(
+                    github=self._github,
+                    owner=self._owner,
+                    repo=self._repo,
+                    config=self._config,
+                )
+                pre_eval = await self._goal_engine.evaluate_all(state, goal_ctx)
+                logger.info(
+                    "Goal pre-evaluation: health=%.2f, escalations=%d, plan=%s",
+                    pre_eval.overall_health,
+                    len(pre_eval.escalations),
+                    pre_eval.dispatch_plan,
+                )
+                for esc in pre_eval.escalations:
+                    logger.warning(
+                        "Goal escalation: %s — %s (action: %s)",
+                        esc.goal_id,
+                        esc.reason,
+                        esc.recommended_action,
+                    )
+
+            # ── Agent dispatch ────────────────────────────────
             # Event-driven mode — route to specific agent
             if mode == "event" and event_type:
                 await self._handle_event(event_type, event_payload or {}, state, summary)
+            elif (
+                self._goal_engine
+                and self._config.goal_engine.goal_driven_dispatch
+                and pre_eval is not None
+            ):
+                dispatch_mode = "full" if mode == "dry-run" else mode
+                await self._run_goal_driven(
+                    pre_eval, state, summary, dispatch_mode, event_payload or {}
+                )
             else:
                 # Dry-run evaluates full mode with read-only behavior controlled by context.
                 dispatch_mode = "full" if mode == "dry-run" else mode
@@ -128,13 +227,51 @@ class Orchestrator:
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
 
+            # ── Goal post-evaluation ──────────────────────────
+            if self._goal_engine:
+                goal_ctx = GoalContext(
+                    github=self._github,
+                    owner=self._owner,
+                    repo=self._repo,
+                    config=self._config,
+                    current_summary=summary,
+                )
+                post_eval = await self._goal_engine.evaluate_all(state, goal_ctx)
+                self._goal_engine.record_evaluation(state, post_eval)
+                summary.goal_health = post_eval.overall_health
+                summary.goal_escalation_count = len(post_eval.escalations)
+                logger.info(
+                    "Goal post-evaluation: health=%.2f (escalations=%d)",
+                    post_eval.overall_health,
+                    len(post_eval.escalations),
+                )
+
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)
             summary.errors.append(str(e))
             has_errors = True
+        finally:
+            # Clean up optional remote dependencies
+            if self._mcp_client is not None and self._mcp_client.config.enabled:
+                try:
+                    await self._mcp_client.disconnect()
+                except Exception as e:
+                    logger.warning("Failed to disconnect MCP client: %s", e)
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
+
+        # Save memory store snapshot (for artifact upload / rollback)
+        if self._memory is not None:
+            self._memory.prune_expired()
+            snapshot_path = self._config.memory_store.snapshot_path
+            if snapshot_path:
+                try:
+                    with open(snapshot_path, "w", encoding="utf-8") as fh:
+                        fh.write(self._memory.snapshot_json())
+                    logger.info("Memory store snapshot written to %s", snapshot_path)
+                except Exception as e:
+                    logger.warning("Failed to write memory store snapshot: %s", e)
 
         # Post summary if configured
         if self._config.orchestrator.summary_issue and mode != "dry-run":
@@ -163,7 +300,7 @@ class Orchestrator:
 
     def _reconcile_state(self, state: OrchestratorState, summary: RunSummary) -> None:
         """Reconcile cross-agent tracked PR/issue state and derive reconciliation metrics."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         issue_to_pr: dict[int, int] = {
             issue_number: tracked_issue.assigned_pr
@@ -172,9 +309,14 @@ class Orchestrator:
         }
 
         linked_pr_numbers = set(issue_to_pr.values())
+        _terminal_pr_states = {
+            PRTrackingState.MERGED,
+            PRTrackingState.CLOSED,
+            PRTrackingState.ESCALATED,
+        }
         orphaned_prs = 0
         for pr_number, tracked_pr in state.tracked_prs.items():
-            if tracked_pr.state in (PRTrackingState.MERGED, PRTrackingState.CLOSED):
+            if tracked_pr.state in _terminal_pr_states:
                 continue
             if pr_number not in linked_pr_numbers:
                 orphaned_prs += 1
@@ -200,7 +342,7 @@ class Orchestrator:
                 )
                 and tracked_issue.last_checked is not None
             ):
-                age_days = (now - _as_utc_naive(tracked_issue.last_checked)).days
+                age_days = (now - _as_utc(tracked_issue.last_checked)).days
                 if age_days >= self._config.escalation.stale_days:
                     tracked_issue.state = IssueTrackingState.ESCALATED
                     tracked_issue.escalated = True
@@ -217,9 +359,12 @@ class Orchestrator:
         merged_durations_hours: list[float] = []
         for tracked_pr in state.tracked_prs.values():
             if tracked_pr.merged_at and tracked_pr.first_seen_at:
-                merged_at = _as_utc_naive(tracked_pr.merged_at)
-                first_seen_at = _as_utc_naive(tracked_pr.first_seen_at)
-                merged_durations_hours.append((merged_at - first_seen_at).total_seconds() / 3600.0)
+                merged_durations_hours.append(
+                    (
+                        _as_utc(tracked_pr.merged_at) - _as_utc(tracked_pr.first_seen_at)
+                    ).total_seconds()
+                    / 3600.0
+                )
         if merged_durations_hours:
             summary.avg_time_to_merge_hours = sum(merged_durations_hours) / len(
                 merged_durations_hours
@@ -227,6 +372,34 @@ class Orchestrator:
 
         if summary.prs_monitored > 0:
             summary.copilot_success_rate = summary.prs_merged / summary.prs_monitored
+
+    async def _run_goal_driven(
+        self,
+        evaluation: GoalEvaluation,
+        state: OrchestratorState,
+        summary: RunSummary,
+        mode: str,
+        event_payload: dict[str, Any],
+    ) -> None:
+        """Dispatch agents in goal-priority order, then remaining mode agents.
+
+        All mode-eligible agents still run — goal evaluation only affects the
+        order so that the most urgent work happens first.
+        """
+        mode_agents = self._registry.agents_for_mode(mode)
+        mode_agent_names = {a.name for a in mode_agents}
+
+        ran: set[str] = set()
+        for agent_name in evaluation.dispatch_plan:
+            if agent_name in mode_agent_names and agent_name not in ran:
+                agent = self._registry.get(agent_name)
+                if agent:
+                    await self._registry.run_one(agent, state, summary, event_payload=event_payload)
+                    ran.add(agent_name)
+
+        for agent in mode_agents:
+            if agent.name not in ran:
+                await self._registry.run_one(agent, state, summary, event_payload=event_payload)
 
     async def _handle_event(
         self,
@@ -260,6 +433,23 @@ class Orchestrator:
                     state,
                     summary,
                     event_payload={"_head_branch": head_branch},
+                )
+            elif name == "pr" and event_type in (
+                "pull_request",
+                "pull_request_review",
+                "check_run",
+                "check_suite",
+            ):
+                pr_number = _extract_pr_number(event_type, payload)
+                event_pr_payload: dict[str, Any] = {}
+                if pr_number is not None:
+                    event_pr_payload["_pr_number"] = pr_number
+                    logger.info("Event %s — scoping PR agent to PR #%d", event_type, pr_number)
+                await self._registry.run_one(
+                    agent,
+                    state,
+                    summary,
+                    event_payload=event_pr_payload,
                 )
             elif name in ("devops", "self-heal"):
                 await self._registry.run_one(

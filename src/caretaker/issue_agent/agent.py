@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
 from caretaker.state.models import IssueTrackingState, TrackedIssue
+from caretaker.tools.debug_dump import render_debug_dump
 from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
@@ -147,7 +148,11 @@ class IssueAgent:
                         tracking.state = IssueTrackingState.TRIAGED
 
             case IssueClassification.FEATURE_LARGE:
-                await self._escalate(issue, "Large feature — needs human decomposition")
+                await self._escalate(
+                    issue,
+                    "Large feature — needs human decomposition",
+                    debug_data={"classification": classification.value},
+                )
                 tracking.state = IssueTrackingState.ESCALATED
                 report.escalated.append(issue.number)
 
@@ -183,7 +188,11 @@ class IssueAgent:
                 report.closed.append(issue.number)
 
             case IssueClassification.INFRA_OR_CONFIG:
-                await self._escalate(issue, "Infrastructure/config issue — requires human access")
+                await self._escalate(
+                    issue,
+                    "Infrastructure/config issue — requires human access",
+                    debug_data={"classification": classification.value},
+                )
                 tracking.state = IssueTrackingState.ESCALATED
                 report.escalated.append(issue.number)
 
@@ -243,12 +252,40 @@ class IssueAgent:
 
         return None
 
-    async def _escalate(self, issue: Issue, reason: str) -> None:
+    async def _escalate(
+        self,
+        issue: Issue,
+        reason: str,
+        *,
+        debug_data: dict[str, Any] | None = None,
+    ) -> None:
         """Escalate an issue to the repo owner."""
         await self._issues.add_labels(issue.number, ["maintainer:escalated"])
-        await self._issues.comment(
-            issue.number,
+        payload: dict[str, Any] = {
+            "type": "issue_escalation",
+            "owner": self._owner,
+            "repo": self._repo,
+            "issue": {
+                "number": issue.number,
+                "title": issue.title,
+                "state": issue.state,
+                "labels": [label.name for label in issue.labels],
+                "assignees": [assignee.login for assignee in issue.assignees],
+                "updated_at": issue.updated_at,
+                "html_url": issue.html_url,
+            },
+            "reason": reason,
+        }
+        if debug_data:
+            payload["debug"] = debug_data
+
+        body = (
             f"⚠️ **Caretaker Escalation**\n\n"
             f"**Reason:** {reason}\n\n"
-            f"This issue needs human attention.",
+            f"This issue needs human attention."
+        )
+        body += render_debug_dump(payload, title="Escalation debug dump")
+        await self._issues.comment(
+            issue.number,
+            body,
         )

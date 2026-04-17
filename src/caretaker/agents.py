@@ -13,6 +13,7 @@ from caretaker.docs_agent.agent import DocsAgent
 from caretaker.escalation_agent.agent import EscalationAgent
 from caretaker.issue_agent.agent import IssueAgent
 from caretaker.pr_agent.agent import PRAgent
+from caretaker.review_agent.agent import ReviewAgent
 from caretaker.security_agent.agent import SecurityAgent
 from caretaker.self_heal_agent.agent import SelfHealAgent
 from caretaker.stale_agent.agent import StaleAgent
@@ -49,9 +50,13 @@ class PRAgentAdapter(BaseAgent):
             llm_router=self._ctx.llm_router,
         )
         head_branch: str | None = None
+        pr_number: int | None = None
         if event_payload:
             head_branch = event_payload.get("_head_branch")
-        report, tracked_prs = await agent.run(state.tracked_prs, head_branch=head_branch)
+            pr_number = event_payload.get("_pr_number")
+        report, tracked_prs = await agent.run(
+            state.tracked_prs, head_branch=head_branch, pr_number=pr_number
+        )
         state.tracked_prs = tracked_prs
         return AgentResult(
             processed=report.monitored,
@@ -179,8 +184,23 @@ class DevOpsAgentAdapter(BaseAgent):
             repo=self._ctx.repo,
             default_branch=cfg.target_branch,
             max_issues_per_run=cfg.max_issues_per_run,
+            known_sigs=set(state.reported_build_sigs),
+            cooldown_hours=cfg.cooldown_hours,
+            issue_cooldowns=state.issue_cooldowns,
         )
         report = await agent.run(event_payload=event_payload)
+        # Persist actioned sigs so closed/resolved issues don't spawn duplicates
+        if report.actioned_sigs:
+            existing = list(state.reported_build_sigs)
+            known_sigs = set(existing)
+            for sig in report.actioned_sigs:
+                if sig not in known_sigs:
+                    existing.append(sig)
+                    known_sigs.add(sig)
+            # Cap at 500 entries to avoid unbounded growth
+            state.reported_build_sigs = existing[-500:]
+        # Persist updated cooldowns
+        state.issue_cooldowns.update(report.updated_cooldowns)
         return AgentResult(
             processed=report.failures_detected,
             errors=report.errors,
@@ -217,8 +237,23 @@ class SelfHealAgentAdapter(BaseAgent):
             owner=self._ctx.owner,
             repo=self._ctx.repo,
             report_upstream=report_upstream,
+            known_sigs=set(state.reported_self_heal_sigs),
+            cooldown_hours=cfg.cooldown_hours,
+            issue_cooldowns=state.issue_cooldowns,
         )
         report = await agent.run(event_payload=event_payload)
+        # Persist actioned sigs so closed/resolved issues don't spawn duplicates
+        if report.actioned_sigs:
+            existing = list(state.reported_self_heal_sigs)
+            known_sigs = set(existing)
+            for sig in report.actioned_sigs:
+                if sig not in known_sigs:
+                    existing.append(sig)
+                    known_sigs.add(sig)
+            # Cap at 500 entries to avoid unbounded growth
+            state.reported_self_heal_sigs = existing[-500:]
+        # Persist updated cooldowns
+        state.issue_cooldowns.update(report.updated_cooldowns)
         return AgentResult(
             processed=report.failures_analyzed,
             errors=report.errors,
@@ -520,6 +555,7 @@ ALL_ADAPTERS: list[type[BaseAgent]] = [
     CharlieAgentAdapter,
     StaleAgentAdapter,
     EscalationAgentAdapter,
+    ReviewAgent,
 ]
 
 # Maps agent name → set of run modes that include it
@@ -535,6 +571,7 @@ AGENT_MODES: dict[str, set[str]] = {
     "charlie": {"full", "charlie"},
     "stale": {"full", "stale"},
     "escalation": {"full", "escalation"},
+    "review": {"full"},
 }
 
 # Maps GitHub event types → list of agent names to run

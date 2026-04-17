@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from caretaker.config import MaintainerConfig
     from caretaker.github_client.api import GitHubClient
     from caretaker.llm.router import LLMRouter
+    from caretaker.state.memory import MemoryStore
     from caretaker.state.models import OrchestratorState, RunSummary
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ class AgentContext:
     config: MaintainerConfig
     llm_router: LLMRouter
     dry_run: bool = False
+    memory: MemoryStore | None = None
+    mcp_client: Any | None = None
+    telemetry: Any | None = None
 
 
 @dataclass

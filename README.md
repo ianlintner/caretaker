@@ -4,6 +4,8 @@ Autonomous GitHub repository management powered by Copilot.
 
 Documentation: https://ianlintner.github.io/caretaker/
 
+<img width="450" alt="Gemini_Generated_Image_544abh544abh544a" src="https://github.com/user-attachments/assets/abd77a15-aa7f-41d3-b56c-ff8ec7f89542" />
+
 **One issue. No CLI. No tooling.** Paste a setup issue into your repo, assign it to `@copilot`, walk away. Your repo is now autonomously maintained.
 
 ---
@@ -84,44 +86,110 @@ No Python. No Node. No vendored code. Just config and Copilot instructions.
 
 ## Features
 
-### PR Agent (Phase 1)
+### Core Agents
 
-- Monitors all open PRs
-- Detects CI failures and triages them (test, lint, build, type errors)
-- Requests fixes from Copilot via structured comments authored through the `COPILOT_PAT` identity
+#### PR Agent
+- Monitors all open PRs in real-time
+- Detects and triages CI failures (test, lint, build, type errors)
+- Requests fixes from Copilot via structured comments
 - Retry loop with escalation after max attempts
-- Auto-merge for Copilot and Dependabot PRs (configurable)
+- Auto-merge for Copilot, Dependabot, and human PRs (configurable)
 - Handles flaky test detection and CI re-runs
+- Review state analysis and auto-approval (configurable)
 
-### Issue Agent
-
+#### Issue Agent
 - Triages incoming issues (bug, feature, question, duplicate, stale)
 - Dispatches implementable issues to Copilot
 - Tracks issue → PR → merge lifecycle
-- Auto-closes answered questions (configurable)
-- Escalates complex issues to repo owner
+- Auto-closes answered questions and stale issues (configurable)
+- Escalates complex issues to repo owners
 
-### Charlie Agent
+#### DevOps Agent
+- Monitors default-branch CI failures
+- Automatically creates fix issues for build/test failures
+- Deduplicates similar issues with cooldown periods
+- Assigns work to Copilot for resolution
 
+#### Self-Heal Agent
+- Detects caretaker's own workflow failures
+- Creates self-diagnosis issues
+- Reports bugs to upstream caretaker repository (configurable)
+- Ensures the system can maintain itself
+
+#### Security Agent
+- Triages Dependabot alerts
+- Monitors code scanning findings
+- Tracks secret scanning alerts
+- Filters by severity thresholds
+- Creates remediation issues with context
+
+#### Dependency Agent
+- Reviews Dependabot PRs
+- Auto-merges patch and minor updates (configurable)
+- Posts dependency update digests
+- Smart merge strategies by update type
+
+#### Docs Agent
+- Reconciles merged PRs into changelog updates
+- Maintains documentation freshness
+- Configurable lookback period
+- Optional README updates
+
+#### Charlie Agent
 - Cleans up duplicate caretaker-managed issues and PRs
-- Closes abandoned caretaker-managed work after a shorter 14-day default window
-- Keeps agent-generated clutter from snowballing before the broader stale policy runs
+- Closes abandoned work after 14-day default window
+- Prevents operational clutter accumulation
+- Exempt label support for critical work
 
-### Upgrade Agent
+#### Stale Agent
+- Warns and closes stale issues and PRs (60+ days default)
+- Deletes merged branches automatically
+- Configurable stale thresholds
+- Exempt labels for pinned or security work
 
-- Checks for new caretaker releases
-- Creates upgrade issues for Copilot to execute
+#### Escalation Agent
+- Creates human escalation digest issues
+- Aggregates work requiring maintainer attention
+- Configurable targets and notification
+- Tracks escalation age and priority
+
+#### Upgrade Agent
+- Detects new caretaker releases
+- Creates upgrade issues for Copilot execution
+- Supports multiple strategies: auto-minor, auto-patch, latest, pinned
 - Handles breaking vs. non-breaking upgrades
 - Version pinning via `.version` file
+- Preview channel support
+
+### Advanced Features
+
+#### Goal Engine (Experimental)
+- Quantitative goal-based agent dispatch
+- Measures repository health across dimensions:
+  - CI health (green builds on main and PRs)
+  - PR lifecycle velocity
+  - Security posture
+  - Self-health monitoring
+- Scores each goal from 0.0 (unmet) to 1.0 (satisfied)
+- Prioritizes agents based on goal impact
+- Detects divergence and critical states
+- Tracks goal history for trend analysis
+
+#### Memory Store
+- Disk-backed SQLite storage for agent memory
+- Persistent deduplication across runs
+- Namespaced memory for different agent concerns
+- Automatic snapshot generation for auditing
+- Bounded storage with configurable limits
 
 ### Optional: Claude Integration
 
-Add `ANTHROPIC_API_KEY` to unlock:
+Add `ANTHROPIC_API_KEY` to unlock enhanced AI features:
 
-- CI log analysis (better at parsing long logs)
-- Architectural review comment understanding
-- Issue decomposition for complex bugs
-- Upgrade impact analysis
+- **CI log analysis** — better at parsing long, noisy logs
+- **Architectural review** — understands complex code review comments
+- **Issue decomposition** — breaks down multi-faceted bugs
+- **Upgrade impact analysis** — assesses breaking change risk
 
 ---
 
@@ -143,13 +211,45 @@ issue_agent:
   auto_assign_bugs: true # Auto-assign simple bugs to Copilot
   auto_assign_features: false
 
+devops_agent:
+  target_branch: main # Monitor default branch CI
+  max_issues_per_run: 3 # Prevent issue spam
+  dedup_open_issues: true
+
+security_agent:
+  min_severity: medium # Filter by severity
+  include_dependabot: true
+  include_code_scanning: true
+  include_secret_scanning: true
+
+dependency_agent:
+  auto_merge_patch: true
+  auto_merge_minor: true
+  post_digest: true
+
 charlie_agent:
   stale_days: 14 # Short janitorial window for caretaker-managed work
   close_duplicate_issues: true
   close_duplicate_prs: true
 
+stale_agent:
+  stale_days: 60 # General stale threshold
+  close_after: 14
+  delete_merged_branches: true
+
 upgrade_agent:
   strategy: auto-minor # auto-minor | auto-patch | latest | pinned
+  channel: stable # stable | preview
+
+goal_engine:
+  enabled: false # Experimental: goal-driven dispatch
+  goal_driven_dispatch: false # Reorder agents by goal impact
+  divergence_threshold: 3 # Runs before triggering alerts
+
+memory_store:
+  enabled: true # Persistent agent memory
+  db_path: .caretaker-memory.db
+  max_entries_per_namespace: 1000
 ```
 
 ---

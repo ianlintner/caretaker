@@ -172,3 +172,25 @@ class TestIssueAgent:
 
         assert tracked[3].state == IssueTrackingState.PR_OPENED
         assert tracked[3].assigned_pr == 77
+
+    async def test_infra_escalation_comment_includes_debug_dump(self) -> None:
+        github = AsyncMock()
+        issue = make_issue(8, "Deploy pipeline issue", "workflow token missing in deploy step")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(auto_assign_features=False),
+        )
+
+        report, tracked = await agent.run({})
+
+        assert 8 in report.escalated
+        assert tracked[8].state == IssueTrackingState.ESCALATED
+        comment_body = github.add_issue_comment.call_args.args[3]
+        assert "Escalation debug dump" in comment_body
+        assert '"type": "issue_escalation"' in comment_body
+        assert '"classification": "INFRA_OR_CONFIG"' in comment_body

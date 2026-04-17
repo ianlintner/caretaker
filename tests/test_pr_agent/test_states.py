@@ -87,6 +87,19 @@ class TestEvaluateCI:
         assert result.status == CIStatus.FAILING
         assert len(result.failed_runs) == 1
 
+    def test_action_required_is_pending(self) -> None:
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert len(result.action_required_runs) == 1
+        assert result.all_completed is True
+
     def test_queued_is_pending(self) -> None:
         runs = [
             make_check_run(
@@ -182,6 +195,55 @@ class TestEvaluatePR:
         pr = make_pr()
         checks = [
             make_check_run(name="test", status=CheckStatus.IN_PROGRESS, conclusion=None),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_action_required_approve_workflows(self) -> None:
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "approve_workflows"
+
+    def test_ci_action_required_untrusted_pr_waits(self) -> None:
+        """Untrusted human PRs with action_required runs should wait, not auto-approve."""
+        pr = make_pr()  # default is human user
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_action_required_flag_off_waits(self) -> None:
+        """When auto_approve_workflows is False, always wait even for trusted PRs."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
         ]
         result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
         assert result.recommended_state == PRTrackingState.CI_PENDING

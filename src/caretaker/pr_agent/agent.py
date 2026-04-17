@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.github_client.api import GitHubAPIError
+from caretaker.github_client.models import PRState
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
@@ -18,6 +20,7 @@ from caretaker.pr_agent.states import (
     evaluate_pr,
 )
 from caretaker.state.models import PRTrackingState, TrackedPR
+from caretaker.tools.debug_dump import render_debug_dump
 
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
@@ -64,6 +67,7 @@ class PRAgent:
         self,
         tracked_prs: dict[int, TrackedPR],
         head_branch: str | None = None,
+        pr_number: int | None = None,
     ) -> tuple[PRAgentReport, dict[int, TrackedPR]]:
         """Run the PR agent — evaluate all open PRs and take action.
 
@@ -72,17 +76,82 @@ class PRAgent:
             head_branch: Optional branch name filter. When provided, only PRs
                 whose ``head_ref`` matches this value are evaluated (used to
                 limit work on ``workflow_run`` events to the relevant branch).
+            pr_number: Optional single PR number to evaluate. When provided,
+                only that PR is fetched and processed (used for ``pull_request``,
+                ``pull_request_review``, ``check_run``, and ``check_suite``
+                events to avoid a full repository scan).
+
+        Note:
+            ``pr_number`` and ``head_branch`` are mutually exclusive: they are
+            dispatched from different event types by the orchestrator and should
+            never both be set in production.  When both are supplied ``pr_number``
+            takes precedence and ``head_branch`` is ignored.
         """
         report = PRAgentReport()
 
-        # Discover open PRs
-        open_prs = await self._github.list_pull_requests(self._owner, self._repo)
+        if pr_number is not None:
+            if head_branch is not None:
+                logger.warning(
+                    "run() received both pr_number=%d and head_branch=%r; "
+                    "pr_number takes precedence, head_branch will be ignored",
+                    pr_number,
+                    head_branch,
+                )
+            # Fast path: fetch only the single PR identified by the event payload.
+            # This avoids a full list_pull_requests scan and the O(N) API calls
+            # that come with it.
+            pr = await self._github.get_pull_request(self._owner, self._repo, pr_number)
+            if pr is None or pr.state != PRState.OPEN:
+                # PR was closed/merged externally — nothing to do
+                return report, tracked_prs
+            open_prs = [pr]
+        else:
+            # Discover open PRs
+            open_prs = await self._github.list_pull_requests(self._owner, self._repo)
 
-        # Filter to branch of interest when provided (avoids full scan on workflow_run)
-        if head_branch:
-            open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
+            # Filter to branch of interest when provided (avoids full scan on workflow_run)
+            if head_branch:
+                open_prs = [pr for pr in open_prs if pr.head_ref == head_branch]
 
         report.monitored = len(open_prs)
+
+        # Sync tracked PRs that are no longer open — they were merged or closed
+        # externally (e.g. manually) while the orchestrator wasn't watching.
+        #
+        # Only do this during full-repository scans. On branch-filtered or
+        # single-PR runs, open_prs only contains a subset of all PRs, so using
+        # it as "all open PRs" would incorrectly classify unrelated tracked PRs
+        # as closed.
+        if head_branch is None and pr_number is None:
+            open_pr_numbers = {pr.number for pr in open_prs}
+            _terminal = {
+                PRTrackingState.MERGED,
+                PRTrackingState.CLOSED,
+                PRTrackingState.ESCALATED,
+            }
+            for pr_number, tracked in list(tracked_prs.items()):
+                if pr_number not in open_pr_numbers and tracked.state not in _terminal:
+                    try:
+                        closed_pr = await self._github.get_pull_request(
+                            self._owner, self._repo, pr_number
+                        )
+                        if closed_pr is not None:
+                            if closed_pr.merged:
+                                tracked.state = PRTrackingState.MERGED
+                                # Prefer GitHub's true merge timestamp when we don't already
+                                # have one persisted from a prior cycle.
+                                if tracked.merged_at is None:
+                                    tracked.merged_at = closed_pr.merged_at
+                                logger.info(
+                                    "PR #%d: externally merged — updated tracked state", pr_number
+                                )
+                            elif closed_pr.state == PRState.CLOSED:
+                                tracked.state = PRTrackingState.CLOSED
+                                logger.info(
+                                    "PR #%d: externally closed — updated tracked state", pr_number
+                                )
+                    except Exception as exc:
+                        logger.debug("Could not sync state for PR #%d: %s", pr_number, exc)
 
         for pr in open_prs:
             try:
@@ -114,6 +183,7 @@ class PRAgent:
             reviews=reviews,
             current_state=tracking.state,
             ignore_jobs=self._config.ci.ignore_jobs,
+            auto_approve_workflows=self._config.ci.auto_approve_workflows,
         )
 
         logger.info(
@@ -130,6 +200,8 @@ class PRAgent:
 
         # Act on the recommendation
         match evaluation.recommended_action:
+            case "approve_workflows":
+                tracking = await self._handle_approve_workflows(pr, evaluation, tracking, report)
             case "merge":
                 tracking = await self._handle_merge(pr, evaluation, tracking, report)
             case "request_fix":
@@ -144,6 +216,54 @@ class PRAgent:
                 pass  # closed/merged, nothing to do
             case _:
                 report.waiting.append(pr.number)
+
+        return tracking
+
+    async def _handle_approve_workflows(
+        self,
+        pr: PullRequest,
+        evaluation: PRStateEvaluation,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Approve any workflow runs that require approval."""
+        approved_any = False
+        for run in evaluation.ci.action_required_runs:
+            match = re.search(r"/actions/runs/(\d+)", run.html_url)
+            if match:
+                run_id = int(match.group(1))
+                try:
+                    success = await self._github.approve_workflow_run(
+                        self._owner, self._repo, run_id
+                    )
+                    if success:
+                        logger.info(
+                            "PR #%d: Approved workflow run %d for check run %s",
+                            pr.number,
+                            run_id,
+                            run.name,
+                        )
+                        approved_any = True
+                    else:
+                        message = f"PR #{pr.number}: Failed to approve workflow run {run_id}"
+                        logger.warning(message)
+                        report.errors.append(message)
+                except GitHubAPIError as e:
+                    message = f"PR #{pr.number}: Error approving workflow run {run_id}: {e}"
+                    logger.error(message)
+                    report.errors.append(message)
+            else:
+                logger.warning(
+                    "PR #%d: Could not extract workflow run ID from %s", pr.number, run.html_url
+                )
+
+        if approved_any:
+            # We approved at least one workflow, meaning CI will resume/restart
+            tracking.state = PRTrackingState.CI_PENDING
+        else:
+            # We couldn't approve any, so just wait
+            tracking.state = PRTrackingState.CI_PENDING
+            report.waiting.append(pr.number)
 
         return tracking
 
@@ -249,7 +369,15 @@ class PRAgent:
                 pr.number,
                 tracking.copilot_attempts,
             )
-            await self._escalate(pr, "Max CI fix retries exceeded")
+            await self._escalate(
+                pr,
+                "Max CI fix retries exceeded",
+                debug_data={
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "max_retries": self._config.copilot.max_retries,
+                    "failed_runs": [run.name for run in evaluation.ci.failed_runs],
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -342,7 +470,15 @@ class PRAgent:
             report.waiting.append(pr.number)
         elif result.status == ResultStatus.BLOCKED:
             logger.warning("PR #%d: Copilot blocked — %s", pr.number, result.blocker)
-            await self._escalate(pr, f"Copilot blocked: {result.blocker}")
+            await self._escalate(
+                pr,
+                f"Copilot blocked: {result.blocker}",
+                debug_data={
+                    "blocker": result.blocker,
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "last_task_comment_id": tracking.last_task_comment_id,
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -371,7 +507,15 @@ class PRAgent:
 
         attempt = tracking.copilot_attempts + 1
         if attempt > self._config.copilot.max_retries:
-            await self._escalate(pr, "Max review fix retries exceeded")
+            await self._escalate(
+                pr,
+                "Max review fix retries exceeded",
+                debug_data={
+                    "copilot_attempts": tracking.copilot_attempts,
+                    "max_retries": self._config.copilot.max_retries,
+                    "review_count": len(reviews),
+                },
+            )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
             report.escalated.append(pr.number)
@@ -397,10 +541,37 @@ class PRAgent:
 
         return tracking
 
-    async def _escalate(self, pr: PullRequest, reason: str) -> None:
+    async def _escalate(
+        self,
+        pr: PullRequest,
+        reason: str,
+        *,
+        debug_data: dict[str, Any] | None = None,
+    ) -> None:
         """Escalate a PR to the repo owner."""
         labels = ["maintainer:escalated"]
         await self._github.add_labels(self._owner, self._repo, pr.number, labels)
+        payload: dict[str, Any] = {
+            "type": "pr_escalation",
+            "owner": self._owner,
+            "repo": self._repo,
+            "pull_request": {
+                "number": pr.number,
+                "title": pr.title,
+                "state": pr.state,
+                "head_ref": pr.head_ref,
+                "base_ref": pr.base_ref,
+                "is_copilot_pr": pr.is_copilot_pr,
+                "is_maintainer_pr": pr.is_maintainer_pr,
+                "mergeable": pr.mergeable,
+                "draft": pr.draft,
+                "html_url": pr.html_url,
+            },
+            "reason": reason,
+        }
+        if debug_data:
+            payload["debug"] = debug_data
+
         body = (
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
@@ -408,5 +579,6 @@ class PRAgent:
             f"The automated system has exhausted its ability to resolve this. "
             f"Please review and take appropriate action."
         )
+        body += render_debug_dump(payload, title="Escalation debug dump")
         await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
         logger.info("PR #%d escalated: %s", pr.number, reason)

@@ -166,3 +166,185 @@ async def test_add_issue_comment_uses_default_client_for_regular_comments() -> N
     default_client.request.assert_awaited_once()
     copilot_client.request.assert_not_awaited()
     assert comment.user.login == "github-actions[bot]"
+
+
+# ── In-process read cache ─────────────────────────────────────────────────────
+
+
+def _repo_payload() -> dict[str, object]:
+    return {
+        "full_name": "o/r",
+        "name": "r",
+        "owner": {"login": "o"},
+        "default_branch": "main",
+        "private": False,
+    }
+
+
+def _pr_payload(number: int, title: str, state: str, merged: bool) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "user": {"login": "a", "id": 1},
+        "head": {"ref": "feat"},
+        "base": {"ref": "main"},
+        "labels": [],
+        "merged": merged,
+        "draft": False,
+        "html_url": "http://x",
+        "mergeable": None,
+        "merged_at": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_read_cache_returns_cached_response_on_second_call() -> None:
+    """A second identical GET should use the cached response, not call the network."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(200, _repo_payload()))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    # First call — goes to the network
+    await gh._get("/repos/o/r")
+    # Second call — should hit the cache
+    await gh._get("/repos/o/r")
+
+    # Network should only have been called once
+    assert mock_client.request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_cache_distinguishes_different_params() -> None:
+    """GET calls with different params must produce separate cache entries."""
+    open_payload = [_pr_payload(1, "open pr", "open", False)]
+    closed_payload = [_pr_payload(2, "closed pr", "closed", True)]
+
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            _make_response(200, open_payload),
+            _make_response(200, closed_payload),
+        ]
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result_open = await gh.list_pull_requests("o", "r", state="open")
+    result_closed = await gh.list_pull_requests("o", "r", state="closed")
+
+    assert len(result_open) == 1
+    assert len(result_closed) == 1
+    assert result_open[0].number == 1
+    assert result_closed[0].number == 2
+    assert mock_client.request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_cache_clear_invalidates_entries() -> None:
+    """clear_read_cache must cause the next GET to go to the network again."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(200, _repo_payload()))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    await gh._get("/repos/o/r")
+    gh.clear_read_cache()
+    await gh._get("/repos/o/r")
+
+    # Cache was cleared, so two network calls are expected
+    assert mock_client.request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_cache_does_not_cache_none_responses() -> None:
+    """404 (None) responses must not be stored in the cache — repeated GETs must
+    hit the network again so a resource created between calls is eventually found."""
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            _make_response(404),  # first call: not found
+            _make_response(200, _repo_payload()),  # second call: now exists
+        ]
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    first = await gh._get("/repos/o/r")
+    second = await gh._get("/repos/o/r")
+
+    assert first is None
+    assert second is not None
+    # Both calls went to the network (None was not cached)
+    assert mock_client.request.await_count == 2
+
+
+# ── approve_workflow_run ──────────────────────────────────────────────────────
+
+
+def _make_httpx_response(
+    status_code: int,
+    json_body: dict | None = None,
+    text: str = "",
+    has_content: bool = True,
+) -> MagicMock:
+    """Build a mock that resembles an httpx Response (not routed through _request_with_client)."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.content = b"body" if has_content else b""
+    resp.is_success = 200 <= status_code < 300
+    if json_body is not None:
+        resp.json.return_value = json_body
+    else:
+        resp.json.side_effect = ValueError("no json")
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_204_returns_true() -> None:
+    """A 204 response (success, no content) returns True."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_make_httpx_response(204, has_content=False))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result = await gh.approve_workflow_run("o", "r", 42)
+    assert result is True
+    mock_client.post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_404_returns_false() -> None:
+    """A 404 response returns False (workflow run not found)."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_make_httpx_response(404, text="Not Found"))
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    result = await gh.approve_workflow_run("o", "r", 999)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_run_error_raises_githubapieerror() -> None:
+    """A non-success, non-404 response raises GitHubAPIError."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(
+        return_value=_make_httpx_response(422, text="Unprocessable Entity")
+    )
+
+    with patch.object(GitHubClient, "_build_client", return_value=mock_client):
+        gh = GitHubClient(token="tok")
+
+    with pytest.raises(GitHubAPIError) as exc_info:
+        await gh.approve_workflow_run("o", "r", 55)
+
+    assert exc_info.value.status_code == 422

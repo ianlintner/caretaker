@@ -120,6 +120,15 @@ class GitHubIssueTools:
             assignment=assignment,
         )
 
+    async def run_id_tracked(self, run_id: int, labels: builtins.list[str]) -> bool:
+        """Check if any open issue with the given labels already references this run_id."""
+        for label in labels:
+            issues = await self.list(state="open", labels=label)
+            for issue in issues:
+                if f"run_id:{run_id}" in issue.body:
+                    return True
+        return False
+
 
 class GitHubPullRequestTools:
     """Repo-bound pull request tools for common caretaker workflows."""

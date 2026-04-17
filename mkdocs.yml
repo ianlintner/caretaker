@@ -32,9 +32,9 @@ nav:
   - Getting started: getting-started.md
   - Configuration: configuration.md
   - Agents: agents.md
+  - Goals: goals.md
   - Architecture: architecture.md
   - Development: development.md
-  - Refactor Plan: refactor-plan.md
   - Release notes: release-notes.md
 
 plugins:
@@ -49,3 +49,6 @@ markdown_extensions:
       permalink: true
 
 strict: true
+
+exclude_docs: |
+  *-plan.md

@@ -7,6 +7,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from caretaker.goals.models import GoalSnapshot  # noqa: TC001 (Pydantic needs runtime access)
+
 
 class PRTrackingState(StrEnum):
     DISCOVERED = "discovered"
@@ -108,6 +110,13 @@ class RunSummary(BaseModel):
     # Escalation agent metrics
     escalation_items_found: int = 0
     escalation_digest_issue: int | None = None
+    # Goal engine metrics
+    goal_health: float | None = None
+    goal_escalation_count: int = 0
+    # Review agent metrics
+    reviews_completed: int = 0
+    review_artifacts_written: int = 0
+    review_average_score: float = 0.0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -118,5 +127,9 @@ class OrchestratorState(BaseModel):
     reported_build_sigs: list[str] = Field(default_factory=list)
     # Signatures of self-heal issues already filed
     reported_self_heal_sigs: list[str] = Field(default_factory=list)
+    # Cooldown tracking: maps coarse key (job:kind) → ISO datetime of last issue creation
+    issue_cooldowns: dict[str, str] = Field(default_factory=dict)
+    # Goal engine: per-goal score history for divergence detection
+    goal_history: dict[str, list[GoalSnapshot]] = Field(default_factory=dict)
     last_run: RunSummary | None = None
     run_history: list[RunSummary] = Field(default_factory=list)

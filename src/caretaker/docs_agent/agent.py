@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
@@ -120,7 +121,23 @@ class DocsAgent:
         try:
             # Get the SHA of the default branch tip
             base_sha = await self._get_branch_sha(self._default_branch)
-            await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+            try:
+                await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+            except GitHubAPIError as branch_err:
+                if branch_err.status_code != 422:
+                    raise
+                # Branch already exists from a previous (possibly incomplete) run — reuse it.
+                logger.warning("Docs agent: branch %r already exists — reusing it", branch_name)
+                # Re-read the file SHA from the existing branch to avoid SHA mismatch on update.
+                try:
+                    _, current_sha = await self._get_file(self._changelog_path, ref=branch_name)
+                except Exception as read_err:
+                    logger.warning(
+                        "Docs agent: could not read %s from branch %r (using default SHA): %s",
+                        self._changelog_path,
+                        branch_name,
+                        read_err,
+                    )
             await self._github.create_or_update_file(
                 owner=self._owner,
                 repo=self._repo,
@@ -155,6 +172,18 @@ class DocsAgent:
             report.doc_pr_opened = pr_number
             report.changelog_updated = True
             logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+        except GitHubAPIError as e:
+            not_permitted_msg = "not permitted to create or approve pull requests"
+            if e.status_code == 403 and not_permitted_msg in e.message:
+                logger.warning(
+                    "Docs agent: skipping PR creation — GitHub Actions does not have "
+                    "permission to create pull requests (enable it in repo Settings → "
+                    "Actions → General → 'Allow GitHub Actions to create and approve "
+                    "pull requests')"
+                )
+            else:
+                logger.error("Docs agent: failed to create docs PR: %s", e)
+                report.errors.append(str(e))
         except Exception as e:
             logger.error("Docs agent: failed to create docs PR: %s", e)
             report.errors.append(str(e))
@@ -182,8 +211,8 @@ class DocsAgent:
         prs = await self._pull_requests.list(state="open")
         return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
 
-    async def _get_file(self, path: str) -> tuple[str, str | None]:
-        data = await self._github.get_file_contents(self._owner, self._repo, path)
+    async def _get_file(self, path: str, ref: str | None = None) -> tuple[str, str | None]:
+        data = await self._github.get_file_contents(self._owner, self._repo, path, ref=ref)
         if not data:
             return "", None
         content = base64.b64decode(data.get("content", "")).decode("utf-8")

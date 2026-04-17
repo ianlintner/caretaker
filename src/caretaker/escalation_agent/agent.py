@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.tools.debug_dump import render_debug_dump
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
@@ -156,6 +157,19 @@ class EscalationAgent:
         if self._notify_assignees:
             mention_str = " ".join(f"@{a}" for a in self._notify_assignees)
             lines.append(f"\n---\n📣 {mention_str} — please review the items above.")
+
+        debug_payload = {
+            "type": "escalation_digest",
+            "owner": self._owner,
+            "repo": self._repo,
+            "bucket_counts": {label: len(items) for label, items in sorted(buckets.items())},
+            "item_numbers_by_label": {
+                label: sorted(item.number for item in items)
+                for label, items in sorted(buckets.items())
+            },
+            "notify_assignees": self._notify_assignees,
+        }
+        lines.append(render_debug_dump(debug_payload, title="Digest debug dump"))
 
         lines.append(f"\n---\n{ESCALATION_AGENT_MARKER} week:{week} -->")
         return "\n".join(lines)

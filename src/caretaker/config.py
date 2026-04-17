@@ -34,6 +34,7 @@ class CIConfig(StrictBaseModel):
     flaky_retries: int = 1
     ignore_jobs: list[str] = Field(default_factory=list)
     close_managed_prs_on_backlog: bool = False
+    auto_approve_workflows: bool = False
 
 
 class ReviewConfig(StrictBaseModel):
@@ -103,6 +104,8 @@ class DevOpsAgentConfig(StrictBaseModel):
     max_issues_per_run: int = 3
     # Re-open or skip if a similar open issue already exists
     dedup_open_issues: bool = True
+    # Cooldown (hours) before creating another issue for the same job+category
+    cooldown_hours: int = 6
 
 
 class SelfHealAgentConfig(StrictBaseModel):
@@ -111,6 +114,8 @@ class SelfHealAgentConfig(StrictBaseModel):
     report_upstream: bool = True
     # Suppress upstream reporting if this repo IS the upstream (set true for ianlintner/caretaker)
     is_upstream_repo: bool = False
+    # Cooldown (hours) before creating another issue for the same job+kind
+    cooldown_hours: int = 6
 
 
 class SecurityAgentConfig(StrictBaseModel):
@@ -163,6 +168,67 @@ class HumanEscalationConfig(StrictBaseModel):
     notify_assignees: list[str] = Field(default_factory=list)
 
 
+class GoalEngineConfig(StrictBaseModel):
+    enabled: bool = False
+    goal_driven_dispatch: bool = False
+    divergence_threshold: int = 3
+    stale_threshold: int = 5
+    max_history: int = 20
+
+
+class ReviewAgentConfig(StrictBaseModel):
+    enabled: bool = False
+    mode: Literal["scheduled", "targeted"] = "scheduled"
+    lookback_runs: int = 10
+    lookback_days: int = 30
+    artifact_dir: str = "artifacts/review"
+    save_markdown: bool = True
+    save_json: bool = True
+    save_manifest: bool = True
+    publish_summary_comments: bool = False
+    comment_on_prs: bool = True
+    comment_on_issues: bool = True
+    minimum_comment_score: int = 0
+    use_llm_for_retro: bool = True
+
+
+class MemoryStoreConfig(StrictBaseModel):
+    """Configuration for the disk-backed agent memory store."""
+
+    enabled: bool = True
+    # Path to the SQLite database file.  A relative path is resolved from the
+    # current working directory (i.e. the GitHub Actions workspace root).
+    db_path: str = ".caretaker-memory.db"
+    # Write a JSON snapshot of the store to this path after every save so it
+    # can be uploaded as a workflow artifact for auditing / rollback.
+    snapshot_path: str = ".caretaker-memory-snapshot.json"
+    # Hard cap on entries per namespace to prevent unbounded growth.
+    max_entries_per_namespace: int = 1000
+
+
+class AzureConfig(StrictBaseModel):
+    """Configuration for Azure-specific integrations."""
+
+    use_managed_identity: bool = False
+
+
+class MCPConfig(StrictBaseModel):
+    """Configuration for remote MCP servers."""
+
+    enabled: bool = False
+    endpoint: str | None = None
+    auth_mode: Literal["none", "managed_identity", "token"] = "managed_identity"
+    timeout_seconds: int = 30
+    allowed_tools: list[str] = Field(default_factory=list)
+
+
+class TelemetryConfig(StrictBaseModel):
+    """Configuration for remote observability."""
+
+    enabled: bool = False
+    application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -179,6 +245,12 @@ class MaintainerConfig(StrictBaseModel):
     human_escalation: HumanEscalationConfig = Field(default_factory=HumanEscalationConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
+    review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
+    memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
+    azure: AzureConfig = Field(default_factory=AzureConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

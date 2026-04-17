@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
 
 import httpx
 
@@ -38,6 +39,7 @@ COPILOT_COMMENT_MARKERS = (
 class GitHubAPIError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         self.status_code = status_code
+        self.message = message
         super().__init__(f"GitHub API error {status_code}: {message}")
 
 
@@ -59,6 +61,9 @@ class GitHubClient:
             if self._copilot_token == self._token
             else self._build_client(self._copilot_token)
         )
+        # In-process read cache: avoids redundant GET calls within a single run.
+        # Keys are "path?param=value&..." strings; values are parsed JSON responses.
+        self._read_cache: dict[str, Any] = {}
 
     @staticmethod
     def _build_client(token: str) -> httpx.AsyncClient:
@@ -121,7 +126,35 @@ class GitHubClient:
         return await self._request_with_client(self._copilot_client, method, path, **kwargs)
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
-        return await self._request("GET", path, **kwargs)
+        cache_key = self._make_cache_key(path, kwargs)
+        if cache_key in self._read_cache:
+            logger.debug("read-cache hit: %s", cache_key)
+            return self._read_cache[cache_key]
+        result = await self._request("GET", path, **kwargs)
+        if result is not None:
+            self._read_cache[cache_key] = result
+        return result
+
+    @staticmethod
+    def _make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
+        """Build a deterministic cache key from a path and optional request kwargs.
+
+        Only the ``params`` query-string values influence the key because all
+        ``_get`` calls in this client share the same auth headers (set at
+        build time) and never pass a request body.
+        """
+        params: dict[str, Any] | None = kwargs.get("params")
+        if not params:
+            return path
+        return f"{path}?{urlencode(sorted(params.items()))}"
+
+    def clear_read_cache(self) -> None:
+        """Discard all cached GET responses.
+
+        Call this after a write operation when the next read must reflect the
+        mutation (e.g. after merging a PR or creating an issue).
+        """
+        self._read_cache.clear()
 
     async def _post(self, path: str, **kwargs: Any) -> Any:
         return await self._request("POST", path, **kwargs)
@@ -371,6 +404,32 @@ class GitHubClient:
         result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
         return result is None  # 204 = success
 
+    async def approve_workflow_run(self, owner: str, repo: str, run_id: int) -> bool:
+        """Approve a workflow run for a fork pull request."""
+        response = await self._client.post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
+        if response.status_code == 404:
+            return False
+        if response.status_code == 204:
+            return True
+        if response.is_success:
+            if response.content:
+                data = response.json()
+                return bool(isinstance(data, dict) and data.get("id"))
+            return True
+        message = response.text
+        if not message:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                message = str(payload.get("message", payload))
+            elif payload is not None:
+                message = str(payload)
+            else:
+                message = "Request failed"
+        raise GitHubAPIError(response.status_code, message)
+
     # ── Labels ──────────────────────────────────────────────────
 
     async def ensure_label(
@@ -555,6 +614,7 @@ class GitHubClient:
             ],
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            merged_at=data.get("merged_at"),
             html_url=data.get("html_url", ""),
         )
 
