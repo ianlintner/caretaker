@@ -47,20 +47,31 @@ app = FastAPI(
 )
 
 
-# ── Delivery dedup ───────────────────────────────────────────────────
+# ── Delivery dedup ───────────────────────────────────────────────
 #
 # Uses Redis (via REDIS_URL) when available so dedup works correctly across
 # multiple replicas.  Falls back to an in-process LRU set for single-replica
 # deployments and local development.
 #
 # Free SaaS options: Upstash (upstash.com), Redis Cloud (redis.io/cloud).
+#
+# Lazily initialised on first webhook request so that importing this module
+# (e.g. during unit tests) never touches Redis.
 
-_dedup: RedisDedup | LocalDedup = build_dedup()
+_dedup: RedisDedup | LocalDedup | None = None
+
+
+def _get_dedup() -> RedisDedup | LocalDedup:
+    """Return the module-level dedup singleton, building it on first call."""
+    global _dedup  # noqa: PLW0603
+    if _dedup is None:
+        _dedup = build_dedup()
+    return _dedup
 
 
 async def _remember_delivery(delivery_id: str) -> bool:
     """Return ``True`` if this delivery id is new, ``False`` if it is a retry."""
-    return await _dedup.is_new(delivery_id)
+    return await _get_dedup().is_new(delivery_id)
 
 
 # ── Installation-token broker ─────────────────────────────────────────

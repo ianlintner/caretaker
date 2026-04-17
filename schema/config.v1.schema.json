@@ -234,9 +234,41 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
+        "backend": {
+          "type": "string",
+          "enum": ["sqlite", "mongo"]
+        },
         "db_path": { "type": "string" },
         "snapshot_path": { "type": "string" },
         "max_entries_per_namespace": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mongo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mongodb_url_env": { "type": "string" },
+        "database_name": { "type": "string" },
+        "memory_collection": { "type": "string" },
+        "audit_collection": { "type": "string" }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "redis_url_env": { "type": "string" },
+        "dedup_ttl_seconds": { "type": "integer", "minimum": 1 },
+        "token_cache_ttl_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "audit_log": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
       }
     },
     "github_app": {

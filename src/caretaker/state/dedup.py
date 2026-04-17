@@ -74,14 +74,26 @@ class RedisDedup:
     async def is_new(self, delivery_id: str) -> bool:
         """Return ``True`` if this delivery id has not been seen before.
 
-        Uses ``SET key 1 NX PX <ms>`` for an atomic check-and-set.
+        Uses ``SET key 1 NX PX <ms>`` for an atomic check-and-set.  If Redis
+        is temporarily unavailable the method logs a warning and returns
+        ``True`` (treat as new) to keep the service available rather than
+        propagating the error to the caller.
         """
-        client = await self._get_client()
-        key = f"{self._key_prefix}{delivery_id}"
-        ttl_ms = self._ttl_seconds * 1000
-        # SET NX returns True when the key was newly set (delivery is new)
-        result = await client.set(key, "1", nx=True, px=ttl_ms)
-        return bool(result)
+        try:
+            client = await self._get_client()
+            key = f"{self._key_prefix}{delivery_id}"
+            ttl_ms = self._ttl_seconds * 1000
+            # SET NX returns True when the key was newly set (delivery is new)
+            result = await client.set(key, "1", nx=True, px=ttl_ms)
+            return bool(result)
+        except Exception:
+            logger.warning(
+                "RedisDedup.is_new: Redis unavailable — treating delivery %s as new",
+                delivery_id,
+                exc_info=True,
+            )
+            self._client = None  # force reconnect on next call
+            return True
 
     async def close(self) -> None:
         if self._client is not None:

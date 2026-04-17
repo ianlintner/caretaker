@@ -82,13 +82,13 @@ class Orchestrator:
         self._llm = LLMRouter(config.llm)
         self._state_tracker = StateTracker(github, owner, repo)
 
-        # Memory backend — SQLite (default) or Postgres (Phase 1 SaaS)
+        # Memory backend — configured persistence backend (MongoDB when enabled)
         self._memory = build_memory_backend(config)
         if self._memory is not None:
             backend_type = getattr(config.memory_store, "backend", "sqlite")
             logger.info("MemoryBackend enabled: backend=%s", backend_type)
 
-        # Audit log (writes to Postgres audit_log table + structured log)
+        # Audit log (writes to MongoDB audit_log collection + structured log)
         self._audit_log = AuditLogWriter.from_config(config)
 
         # Optional Telemetry & MCP clients
@@ -299,17 +299,21 @@ class Orchestrator:
                 tool=None,
                 extra={
                     "mode": mode,
-                    "processed": summary.processed,  # type: ignore[attr-defined]
-                    "actions": len(summary.actions),  # type: ignore[attr-defined]
+                    "prs_monitored": summary.prs_monitored,
+                    "prs_merged": summary.prs_merged,
+                    "issues_triaged": summary.issues_triaged,
                     "errors": len(summary.errors),
                 },
             )
         except Exception as _audit_err:
             logger.debug("Failed to write orchestrator audit record: %s", _audit_err)
 
-        # Close audit log connection
+        # Close audit log and memory backend connections
         with contextlib.suppress(Exception):
             await self._audit_log.close()
+        with contextlib.suppress(Exception):
+            if self._memory is not None:
+                self._memory.close()
 
         # Write JSON run report if a path was provided
         if report_path:

@@ -26,7 +26,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -233,8 +232,3 @@ class AuditLogWriter:
             database_name=database_name,
             collection_name=audit_collection,
         )
-
-
-def _now_ms() -> int:
-    """Return current time in milliseconds."""
-    return int(time.monotonic() * 1000)
