@@ -16,11 +16,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from caretaker.mcp_backend.main import (
-    _seen_deliveries,
-    _seen_deliveries_set,
-    app,
-)
+from caretaker.mcp_backend.main import app
+from caretaker.state.dedup import LocalDedup
 
 # ── helpers ---------------------------------------------------------------
 
@@ -71,13 +68,18 @@ client = TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture(autouse=True)
-def _clear_dedup():
-    """Reset the in-process delivery dedup state before each test."""
-    _seen_deliveries.clear()
-    _seen_deliveries_set.clear()
+def _clear_dedup(monkeypatch: pytest.MonkeyPatch):
+    """Force an in-process LocalDedup for every test so tests are hermetic.
+
+    Patches the module-level ``_dedup`` to a fresh ``LocalDedup`` regardless
+    of what ``REDIS_URL`` may be set to in the test environment, ensuring tests
+    never talk to a real Redis instance and always start with a clean state.
+    """
+    local = LocalDedup()
+    monkeypatch.setattr("caretaker.mcp_backend.main._dedup", local)
     yield
-    _seen_deliveries.clear()
-    _seen_deliveries_set.clear()
+    local._seen.clear()
+    local._seen_set.clear()
 
 
 @pytest.fixture()
