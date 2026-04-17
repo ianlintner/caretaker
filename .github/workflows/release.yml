@@ -171,6 +171,7 @@ jobs:
     # Only publish to PyPI when triggered by an actual GitHub Release, not
     # workflow_dispatch, to avoid accidental double-publishes.
     if: github.event_name == 'release'
+    environment: pypi
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     permissions:
