@@ -47,6 +47,7 @@ All notable changes to this project will be documented in this file.
 - [WIP] Update setup instructions for GitHub app and backend (#340)
 - point release manifest URL at ianlintner/caretaker (#341)
 - Update releases and docs to 0.5.2 (#343)
+- [WIP] Create a plan for enhancing coding tasks with skills and agents (#345)
 
 ## [2026-W16] - 2026-04-16
 
