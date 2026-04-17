@@ -73,6 +73,35 @@ class TestUpgradePlanner:
         assert number == 10
         github.create_issue.assert_not_called()
 
+    async def test_does_not_recreate_issue_when_previous_is_closed(self) -> None:
+        """A closed upgrade issue for this version must prevent a new one being opened.
+
+        This is the root cause of the duplicate-Copilot-PR problem: when an
+        upgrade issue was closed (e.g. the PR failed) caretaker previously
+        ignored it and created a fresh issue, causing @copilot to open yet
+        another PR.  With state="all" in the issues query the closed issue is
+        found and re-used instead.
+        """
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="1.5.0",
+            min_compatible="1.0.0",
+            changelog_url="https://example.com/changelog",
+        )
+        closed_issue = make_issue(10, "Upgrade to v1.5.0", maintainer=True)
+        closed_issue.state = "closed"
+        github.list_issues.return_value = [closed_issue]
+
+        number = await planner.create_upgrade_issue("1.4.0", target)
+
+        assert number == 10
+        github.create_issue.assert_not_called()
+        # Confirm the query was made with state="all"
+        github.list_issues.assert_awaited_once()
+        call_kwargs = github.list_issues.call_args.kwargs
+        assert call_kwargs.get("state") == "all"
+
     async def test_creates_new_issue_for_upgrade(self) -> None:
         github = AsyncMock()
         planner = UpgradePlanner(github=github, owner="o", repo="r")
