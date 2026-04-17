@@ -149,7 +149,7 @@ with the scenario that succeeded.
 If **S1 passes**:
 
 - The `GitHubAppCredentialsProvider.copilot_token()` fallback path in
-  [`src/caretaker/github_app/provider.py`](../src/caretaker/github_app/provider.py)
+  `src/caretaker/github_app/provider.py`
   already handles this — no code change required.
 - Close the spike; proceed to Phase 2 agent wiring.
 
@@ -157,7 +157,7 @@ If **only S2 passes**:
 
 - Implement the full OAuth device-flow or web-flow in the
   `GET /oauth/callback` stub in
-  [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py).
+  `src/caretaker/mcp_backend/main.py`.
 - Wire the resulting user token into `GitHubAppCredentialsProvider` via
   `user_token_supplier`.
 - This is the more complex path; budget an additional 1–2 days.
