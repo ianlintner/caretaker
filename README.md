@@ -1,6 +1,6 @@
 # Caretaker
 
-Autonomous GitHub repository management powered by Copilot.
+Autonomous GitHub repository management powered by Copilot and github app.
 
 Documentation: https://ianlintner.github.io/caretaker/
 
