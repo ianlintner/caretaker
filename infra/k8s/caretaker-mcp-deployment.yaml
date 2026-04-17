@@ -41,6 +41,24 @@ spec:
                   name: caretaker-secrets
                   key: appinsights-conn-string
                   optional: true
+            - name: CARETAKER_GITHUB_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: webhook-secret
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-id
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-private-key
+                  optional: true
           resources:
             requests:
               cpu: "10m"
