@@ -127,6 +127,7 @@ class TestEvaluateCI:
         assert len(result.pending_runs) == 1
 
     def test_requested_is_pending(self) -> None:
+        """GitHub 'requested' status must be treated as pending CI."""
         runs = [
             make_check_run(
                 name="test",
@@ -139,6 +140,7 @@ class TestEvaluateCI:
         assert result.all_completed is False
 
     def test_pending_status_is_pending(self) -> None:
+        """GitHub 'pending' status must be treated as pending CI."""
         runs = [
             make_check_run(
                 name="test",
