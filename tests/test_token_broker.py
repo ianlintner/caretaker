@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import pytest
-
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 from caretaker.state.token_broker import build_token_broker
 
