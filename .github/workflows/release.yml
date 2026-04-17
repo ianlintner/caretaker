@@ -171,7 +171,6 @@ jobs:
     # Only publish to PyPI when triggered by an actual GitHub Release, not
     # workflow_dispatch, to avoid accidental double-publishes.
     if: github.event_name == 'release'
-    environment: pypi
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     permissions:
@@ -214,4 +213,4 @@ jobs:
           # If PYPI_API_TOKEN secret is set it will be used for token-based auth;
           # when the secret is empty the action falls back to OIDC trusted publishing.
           password: ${{ secrets.PYPI_API_TOKEN }}
-          skip_existing: true
+          skip-existing: true
