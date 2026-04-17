@@ -129,23 +129,14 @@ class DocsAgent:
                     raise
                 # Branch already exists from a previous (possibly incomplete) run — reuse it.
                 logger.warning("Docs agent: branch %r already exists — reusing it", branch_name)
-                # Re-read the file content and SHA from the existing branch to avoid SHA
-                # mismatch on update and to prevent duplicate changelog entries.
+                # Re-read the file content and SHA from the existing branch so that
+                # new_content is always based on the branch state (not the default branch),
+                # avoiding both SHA mismatches and duplicate changelog entries.
                 try:
-                    branch_content, current_sha = await self._get_file(
-                        self._changelog_path, ref=branch_name
+                    new_content, current_sha, skip = await self._rebase_content_from_branch(
+                        branch_name, week_str, changelog_entry
                     )
-                    if f"## [{week_str}]" in branch_content:
-                        logger.info(
-                            "Docs agent: branch %r already has the %s changelog entry"
-                            " — skipping file write",
-                            branch_name,
-                            week_str,
-                        )
-                        needs_file_write = False
-                    else:
-                        # Rebase new_content on the branch's current state
-                        new_content = _prepend_changelog_entry(branch_content, changelog_entry)
+                    needs_file_write = not skip
                 except Exception as read_err:
                     logger.warning(
                         "Docs agent: could not read %s from branch %r (using default SHA): %s",
@@ -174,18 +165,10 @@ class DocsAgent:
                         self._changelog_path,
                         branch_name,
                     )
-                    branch_content, current_sha = await self._get_file(
-                        self._changelog_path, ref=branch_name
+                    new_content, current_sha, skip = await self._rebase_content_from_branch(
+                        branch_name, week_str, changelog_entry
                     )
-                    if f"## [{week_str}]" in branch_content:
-                        logger.info(
-                            "Docs agent: branch %r already has the %s changelog entry"
-                            " after re-read — skipping file write",
-                            branch_name,
-                            week_str,
-                        )
-                    else:
-                        new_content = _prepend_changelog_entry(branch_content, changelog_entry)
+                    if not skip:
                         await self._github.create_or_update_file(
                             owner=self._owner,
                             repo=self._repo,
@@ -258,6 +241,25 @@ class DocsAgent:
     async def _find_open_docs_prs(self) -> list[int]:
         prs = await self._pull_requests.list(state="open")
         return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
+
+    async def _rebase_content_from_branch(
+        self, branch_name: str, week_str: str, changelog_entry: str
+    ) -> tuple[str, str | None, bool]:
+        """Read the changelog from *branch_name* and prepare the updated content.
+
+        Returns ``(new_content, sha, skip_write)`` where *skip_write* is True
+        when the branch already contains an entry for *week_str* (no update
+        needed), False otherwise.
+        """
+        branch_content, sha = await self._get_file(self._changelog_path, ref=branch_name)
+        if f"## [{week_str}]" in branch_content:
+            logger.info(
+                "Docs agent: branch %r already has the %s changelog entry — skipping file write",
+                branch_name,
+                week_str,
+            )
+            return branch_content, sha, True
+        return _prepend_changelog_entry(branch_content, changelog_entry), sha, False
 
     async def _get_file(self, path: str, ref: str | None = None) -> tuple[str, str | None]:
         data = await self._github.get_file_contents(self._owner, self._repo, path, ref=ref)
