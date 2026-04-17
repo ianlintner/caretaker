@@ -1,0 +1,178 @@
+name: Release
+
+# Triggered either by publishing a GitHub Release (tag must be "vX.Y.Z")
+# or manually via workflow_dispatch for testing / hotfixes.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.6.0, without 'v' prefix)"
+        required: true
+        type: string
+      increment:
+        description: "Increment type (used only when version is empty)"
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 1. Determine the target version ────────────────────────────────────────
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            VERSION="${TAG#v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              # Auto-increment from the current pyproject.toml version
+              CURRENT=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+              INCR="${{ github.event.inputs.increment }}"
+              case "$INCR" in
+                major) VERSION="$((MAJOR + 1)).0.0" ;;
+                minor) VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+                *)     VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+              esac
+            fi
+            TAG="v${VERSION}"
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG#v}" >> /dev/null   # unused but left for clarity
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+  # ── 2. Bump version in source files and releases.json ──────────────────────
+  bump-version:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      TAG: ${{ needs.resolve-version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use a token with write access so the commit can be pushed to main.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump version in pyproject.toml
+        run: |
+          python - <<'PYEOF'
+          import re, pathlib
+          path = pathlib.Path("pyproject.toml")
+          content = path.read_text()
+          content = re.sub(
+              r'^(version\s*=\s*")[^"]*(")',
+              r'\g<1>${{ env.VERSION }}\g<2>',
+              content,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          path.write_text(content)
+          PYEOF
+
+      - name: Bump __version__ in src/caretaker/__init__.py
+        run: |
+          python - <<'PYEOF'
+          import re, pathlib
+          path = pathlib.Path("src/caretaker/__init__.py")
+          content = path.read_text()
+          content = re.sub(
+              r'^(__version__\s*=\s*")[^"]*(")',
+              r'\g<1>${{ env.VERSION }}\g<2>',
+              content,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          path.write_text(content)
+          PYEOF
+
+      - name: Update releases.json
+        run: |
+          python - <<'PYEOF'
+          import json, pathlib
+
+          version = "${{ env.VERSION }}"
+          tag = "v" + version
+          repo = "${{ github.repository }}"
+          changelog_url = f"https://github.com/{repo}/releases/tag/{tag}"
+
+          path = pathlib.Path("releases.json")
+          data = json.loads(path.read_text())
+          releases = data.setdefault("releases", [])
+
+          # Prepend only if this version is not already present.
+          if not any(r.get("version") == version for r in releases):
+              releases.insert(0, {
+                  "version": version,
+                  "min_compatible": version,
+                  "changelog_url": changelog_url,
+                  "upgrade_notes": f"Update to {version}.",
+                  "breaking": False,
+              })
+
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          PYEOF
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/caretaker/__init__.py releases.json
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — version files already up to date."
+          else
+            git commit -m "chore: bump version to ${{ env.VERSION }}"
+            git push origin HEAD:main
+          fi
+
+  # ── 3. Build and publish to PyPI (release events only) ────────────────────
+  publish:
+    needs: [resolve-version, bump-version]
+    runs-on: ubuntu-latest
+    # Only publish to PyPI when triggered by an actual GitHub Release, not
+    # workflow_dispatch, to avoid accidental double-publishes.
+    if: github.event_name == 'release'
+    permissions:
+      id-token: write  # required for trusted OIDC publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main  # use the commit that includes the version bump
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
