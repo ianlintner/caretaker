@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
@@ -14,6 +13,7 @@ from caretaker.tools.github import CopilotAgentAssignment
 if TYPE_CHECKING:
     from caretaker.tools.github import GitHubRepositoryTools
 
+from .credentials import EnvCredentialsProvider, GitHubCredentialsProvider
 from .models import (
     CheckRun,
     Comment,
