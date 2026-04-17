@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
@@ -14,6 +13,7 @@ from caretaker.tools.github import CopilotAgentAssignment
 if TYPE_CHECKING:
     from caretaker.tools.github import GitHubRepositoryTools
 
+from .credentials import EnvCredentialsProvider, GitHubCredentialsProvider
 from .models import (
     CheckRun,
     Comment,
@@ -50,27 +50,23 @@ class GitHubClient:
         self,
         token: str | None = None,
         copilot_token: str | None = None,
+        credentials_provider: GitHubCredentialsProvider | None = None,
     ) -> None:
-        self._token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
-        if not self._token:
-            raise ValueError("GITHUB_TOKEN or COPILOT_PAT is required")
-        self._copilot_token = copilot_token or os.environ.get("COPILOT_PAT") or self._token
-        self._client = self._build_client(self._token)
-        self._copilot_client = (
-            self._client
-            if self._copilot_token == self._token
-            else self._build_client(self._copilot_token)
-        )
+        if credentials_provider is not None:
+            self._creds: GitHubCredentialsProvider = credentials_provider
+        else:
+            # Backward-compat: wrap string tokens or fall back to env vars.
+            self._creds = EnvCredentialsProvider(default_token=token, copilot_token=copilot_token)
+        self._client = self._build_client()
         # In-process read cache: avoids redundant GET calls within a single run.
         # Keys are "path?param=value&..." strings; values are parsed JSON responses.
         self._read_cache: dict[str, Any] = {}
 
     @staticmethod
-    def _build_client(token: str) -> httpx.AsyncClient:
+    def _build_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=API_BASE,
             headers={
-                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
@@ -78,8 +74,6 @@ class GitHubClient:
         )
 
     async def close(self) -> None:
-        if self._copilot_client is not self._client:
-            await self._copilot_client.aclose()
         await self._client.aclose()
 
     async def __aenter__(self) -> GitHubClient:
@@ -120,10 +114,20 @@ class GitHubClient:
         return resp.json()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._client, method, path, **kwargs)
+        token = await self._creds.default_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(
+            self._client, method, path, headers=headers, **kwargs
+        )
 
     async def _copilot_request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._copilot_client, method, path, **kwargs)
+        token = await self._creds.copilot_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(
+            self._client, method, path, headers=headers, **kwargs
+        )
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
         cache_key = self._make_cache_key(path, kwargs)
@@ -406,7 +410,11 @@ class GitHubClient:
 
     async def approve_workflow_run(self, owner: str, repo: str, run_id: int) -> bool:
         """Approve a workflow run for a fork pull request."""
-        response = await self._client.post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
+        token = await self._creds.default_token()
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve",
+            headers={"Authorization": f"Bearer {token}"},
+        )
         if response.status_code == 404:
             return False
         if response.status_code == 204:

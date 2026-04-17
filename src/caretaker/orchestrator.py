@@ -13,7 +13,9 @@ from caretaker import __version__
 from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
+from caretaker.github_app import AppJWTSigner, GitHubAppCredentialsProvider, InstallationTokenMinter
 from caretaker.github_client.api import GitHubClient
+from caretaker.github_client.credentials import ChainCredentialsProvider, EnvCredentialsProvider
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
@@ -63,6 +65,72 @@ def _extract_pr_number(event_type: str, payload: dict[str, Any]) -> int | None:
     except (KeyError, TypeError, ValueError):
         pass
     return None
+
+
+def _build_credentials_provider(
+    config: MaintainerConfig,
+) -> EnvCredentialsProvider | ChainCredentialsProvider | GitHubAppCredentialsProvider:
+    """Build the appropriate credentials provider based on config and environment.
+
+    When ``config.github_app.enabled`` is ``True`` and the required env vars
+    are present, returns a :class:`GitHubAppCredentialsProvider` that mints
+    short-lived installation tokens on demand.  A :class:`ChainCredentialsProvider`
+    wraps the App provider with an :class:`EnvCredentialsProvider` fallback so
+    existing ``GITHUB_TOKEN`` / ``COPILOT_PAT`` workflows continue to work
+    during roll-out.
+
+    ``COPILOT_PAT`` is forwarded to the App provider as a ``user_token_supplier``
+    so that Copilot assignment (which still requires a user identity) keeps
+    working when the PAT is configured.
+    """
+    app_cfg = config.github_app
+    if not app_cfg.enabled:
+        return EnvCredentialsProvider()
+
+    # Resolve App ID: prefer env var override, fall back to config value.
+    app_id_str = os.environ.get("CARETAKER_GITHUB_APP_ID", "")
+    app_id: int | None = int(app_id_str) if app_id_str.isdigit() else app_cfg.app_id
+    private_key = os.environ.get(app_cfg.private_key_env, "")
+    installation_id_str = os.environ.get("CARETAKER_GITHUB_APP_INSTALLATION_ID", "")
+
+    if not app_id or not private_key or not installation_id_str.isdigit():
+        logger.warning(
+            "github_app.enabled=true but required env vars are missing "
+            "(CARETAKER_GITHUB_APP_ID / %s / CARETAKER_GITHUB_APP_INSTALLATION_ID). "
+            "Falling back to GITHUB_TOKEN / COPILOT_PAT.",
+            app_cfg.private_key_env,
+        )
+        return EnvCredentialsProvider()
+
+    installation_id = int(installation_id_str)
+    signer = AppJWTSigner(app_id=app_id, private_key_pem=private_key)
+    minter = InstallationTokenMinter(
+        signer=signer,
+        refresh_skew_seconds=app_cfg.installation_token_refresh_skew_seconds,
+    )
+
+    # Use COPILOT_PAT as a user-identity token for Copilot assignment when set.
+    async def _copilot_pat_supplier(_installation_id: int) -> str:
+        return os.environ.get("COPILOT_PAT", "")
+
+    app_provider = GitHubAppCredentialsProvider(
+        minter=minter,
+        default_installation_id=installation_id,
+        user_token_supplier=_copilot_pat_supplier,
+    )
+    logger.info(
+        "Using GitHub App credentials (app_id=%s, installation_id=%s)",
+        app_id,
+        installation_id,
+    )
+    # ChainCredentialsProvider falls back to env PAT if App minting fails.
+    # EnvCredentialsProvider construction is guarded — it's optional when App is the sole source.
+    try:
+        env_fallback = EnvCredentialsProvider()
+        return ChainCredentialsProvider([app_provider, env_fallback])
+    except ValueError:
+        # Neither GITHUB_TOKEN nor COPILOT_PAT is set; use App-only mode.
+        return app_provider
 
 
 class Orchestrator:
@@ -125,10 +193,6 @@ class Orchestrator:
         """Create an orchestrator from a YAML config file path."""
         config = MaintainerConfig.from_yaml(path)
 
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
-        if not token:
-            raise RuntimeError("GITHUB_TOKEN or COPILOT_PAT environment variable is required")
-
         owner = os.environ.get("GITHUB_REPOSITORY_OWNER", "")
         repo_name = os.environ.get("GITHUB_REPOSITORY_NAME", "")
 
@@ -143,7 +207,7 @@ class Orchestrator:
                     "GITHUB_REPOSITORY_NAME environment variables are required"
                 )
 
-        github = GitHubClient(token=token, copilot_token=os.environ.get("COPILOT_PAT"))
+        github = GitHubClient(credentials_provider=_build_credentials_provider(config))
         return cls(config=config, github=github, owner=owner, repo=repo_name)
 
     async def run(

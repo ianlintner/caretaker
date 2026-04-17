@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from caretaker.github_client.api import GitHubAPIError, GitHubClient
+from caretaker.github_client.credentials import StaticCredentialsProvider
 
 
 def _make_response(status_code: int, json_body: dict | None = None, text: str = "") -> MagicMock:
@@ -126,45 +127,39 @@ async def test_429_raises_githubapieerror_with_retry_after() -> None:
 
 @pytest.mark.asyncio
 async def test_add_issue_comment_routes_copilot_mentions_through_copilot_client() -> None:
-    default_client = AsyncMock()
-    default_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("bot")))
-    copilot_client = AsyncMock()
-    copilot_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("me")))
+    mock_creds = AsyncMock(spec=StaticCredentialsProvider)
+    mock_creds.default_token = AsyncMock(return_value="default-token")
+    mock_creds.copilot_token = AsyncMock(return_value="user-pat")
 
-    with patch.object(
-        GitHubClient,
-        "_build_client",
-        side_effect=[default_client, copilot_client],
-    ):
-        gh = GitHubClient(token="default-token", copilot_token="user-pat")
+    gh = GitHubClient(credentials_provider=mock_creds)
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("me")))
+    gh._client = mock_client
 
     comment = await gh.add_issue_comment("o", "r", 7, "@copilot please fix this")
 
-    copilot_client.request.assert_awaited_once()
-    default_client.request.assert_not_awaited()
+    mock_creds.copilot_token.assert_awaited_once()
+    mock_creds.default_token.assert_not_awaited()
     assert comment.user.login == "me"
 
 
 @pytest.mark.asyncio
 async def test_add_issue_comment_uses_default_client_for_regular_comments() -> None:
-    default_client = AsyncMock()
-    default_client.request = AsyncMock(
+    mock_creds = AsyncMock(spec=StaticCredentialsProvider)
+    mock_creds.default_token = AsyncMock(return_value="default-token")
+    mock_creds.copilot_token = AsyncMock(return_value="user-pat")
+
+    gh = GitHubClient(credentials_provider=mock_creds)
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
         return_value=_make_response(201, _comment_payload("github-actions[bot]"))
     )
-    copilot_client = AsyncMock()
-    copilot_client.request = AsyncMock(return_value=_make_response(201, _comment_payload("me")))
-
-    with patch.object(
-        GitHubClient,
-        "_build_client",
-        side_effect=[default_client, copilot_client],
-    ):
-        gh = GitHubClient(token="default-token", copilot_token="user-pat")
+    gh._client = mock_client
 
     comment = await gh.add_issue_comment("o", "r", 7, "Regular maintainer note")
 
-    default_client.request.assert_awaited_once()
-    copilot_client.request.assert_not_awaited()
+    mock_creds.default_token.assert_awaited_once()
+    mock_creds.copilot_token.assert_not_awaited()
     assert comment.user.login == "github-actions[bot]"
 
 

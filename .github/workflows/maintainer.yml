@@ -72,10 +72,17 @@ jobs:
         run: |
           pip install .
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CARETAKER_APP_ID }}
+          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
+
       - name: Run
         id: caretaker_run
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           # Fine-grained PAT for a real write-capable user or machine user.
           # Caretaker uses this for Copilot issue assignment and @copilot comments
           # that must not be authored as github-actions[bot].
@@ -127,9 +134,16 @@ jobs:
       - name: Install caretaker (dogfood)
         run: pip install .
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CARETAKER_APP_ID }}
+          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
+
       - name: Self-heal — analyse own failure
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           # Fine-grained PAT for a real write-capable user or machine user.
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
