@@ -138,15 +138,25 @@ class DocsAgent:
                         branch_name,
                         read_err,
                     )
-            await self._github.create_or_update_file(
-                owner=self._owner,
-                repo=self._repo,
-                path=self._changelog_path,
-                message=f"docs: update CHANGELOG for {week_str}",
-                content=new_content,
-                branch=branch_name,
-                sha=current_sha,
-            )
+            try:
+                await self._github.create_or_update_file(
+                    owner=self._owner,
+                    repo=self._repo,
+                    path=self._changelog_path,
+                    message=f"docs: update CHANGELOG for {week_str}",
+                    content=new_content,
+                    branch=branch_name,
+                    sha=current_sha,
+                )
+            except GitHubAPIError as file_err:
+                if file_err.status_code == 409:
+                    logger.warning(
+                        "Docs agent: concurrent update on CHANGELOG (409): %s",
+                        file_err,
+                    )
+                    # Handled by another agent
+                else:
+                    raise
 
             await self._issues.ensure_label(
                 DOCS_LABEL,
@@ -155,23 +165,29 @@ class DocsAgent:
             )
 
             pr_body = _build_pr_body(merged_prs, changelog_entry)
-            pr = await self._pull_requests.create(
-                title=f"docs: reconcile CHANGELOG — {week_str}",
-                body=pr_body,
-                head=branch_name,
-                base=self._default_branch,
-                labels=[DOCS_LABEL],
-                assignees=["copilot"],
-            )
-            pr_number = pr["number"] if isinstance(pr, dict) else pr.number
-            await self._pull_requests.comment(
-                pr_number,
-                _build_copilot_review_comment(),
-                use_copilot_token=True,
-            )
-            report.doc_pr_opened = pr_number
-            report.changelog_updated = True
-            logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+            try:
+                pr = await self._pull_requests.create(
+                    title=f"docs: reconcile CHANGELOG — {week_str}",
+                    body=pr_body,
+                    head=branch_name,
+                    base=self._default_branch,
+                    labels=[DOCS_LABEL],
+                    assignees=["copilot"],
+                )
+                pr_number = pr["number"] if isinstance(pr, dict) else pr.number
+                await self._pull_requests.comment(
+                    pr_number,
+                    _build_copilot_review_comment(),
+                    use_copilot_token=True,
+                )
+                report.doc_pr_opened = pr_number
+                report.changelog_updated = True
+                logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+            except GitHubAPIError as pr_err:
+                if pr_err.status_code == 422 and "already exists" in str(pr_err.message):
+                    logger.warning("Docs agent: PR already exists for %s", branch_name)
+                else:
+                    raise
         except GitHubAPIError as e:
             not_permitted_msg = "not permitted to create or approve pull requests"
             if e.status_code == 403 and not_permitted_msg in e.message:
