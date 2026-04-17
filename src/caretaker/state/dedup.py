@@ -85,7 +85,7 @@ class RedisDedup:
 
     async def close(self) -> None:
         if self._client is not None:
-            await self._client.aclose()
+            await self._client.close()
             self._client = None
 
 

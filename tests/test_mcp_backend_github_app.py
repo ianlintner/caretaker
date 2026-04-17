@@ -16,11 +16,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from caretaker.mcp_backend.main import (
-    _seen_deliveries,
-    _seen_deliveries_set,
-    app,
-)
+from caretaker.mcp_backend.main import _dedup, app
+from caretaker.state.dedup import LocalDedup
 
 # ── helpers ---------------------------------------------------------------
 
@@ -73,11 +70,13 @@ client = TestClient(app, raise_server_exceptions=False)
 @pytest.fixture(autouse=True)
 def _clear_dedup():
     """Reset the in-process delivery dedup state before each test."""
-    _seen_deliveries.clear()
-    _seen_deliveries_set.clear()
+    if isinstance(_dedup, LocalDedup):
+        _dedup._seen.clear()
+        _dedup._seen_set.clear()
     yield
-    _seen_deliveries.clear()
-    _seen_deliveries_set.clear()
+    if isinstance(_dedup, LocalDedup):
+        _dedup._seen.clear()
+        _dedup._seen_set.clear()
 
 
 @pytest.fixture()

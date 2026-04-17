@@ -299,8 +299,8 @@ class Orchestrator:
                 tool=None,
                 extra={
                     "mode": mode,
-                    "processed": summary.processed,
-                    "actions": len(summary.actions),
+                    "processed": summary.processed,  # type: ignore[attr-defined]
+                    "actions": len(summary.actions),  # type: ignore[attr-defined]
                     "errors": len(summary.errors),
                 },
             )
@@ -308,7 +308,7 @@ class Orchestrator:
             logger.debug("Failed to write orchestrator audit record: %s", _audit_err)
 
         # Close audit log connection
-        async with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception):
             await self._audit_log.close()
 
         # Write JSON run report if a path was provided

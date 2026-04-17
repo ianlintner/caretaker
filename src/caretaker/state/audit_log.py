@@ -84,12 +84,12 @@ class AuditLogWriter:
         self._mongodb_url_env = mongodb_url_env
         self._database_name = database_name
         self._collection_name = collection_name
-        self._client: motor.motor_asyncio.AsyncIOMotorClient[Any] | None = None  # type: ignore[type-arg]
+        self._client: motor.motor_asyncio.AsyncIOMotorClient[Any] | None = None
         self._index_created = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
-    async def _ensure_collection(self) -> motor.motor_asyncio.AsyncIOMotorCollection | None:  # type: ignore[type-arg]
+    async def _ensure_collection(self) -> motor.motor_asyncio.AsyncIOMotorCollection[dict[str, Any]] | None:
         """Return a live Motor collection handle, or None if unavailable."""
         if not self._enabled:
             return None
@@ -119,7 +119,7 @@ class AuditLogWriter:
 
                 await col.create_index([("id", pymongo.ASCENDING)], unique=True, name="idx_id")
                 self._index_created = True
-        return col  # type: ignore[return-value]
+        return col
 
     async def close(self) -> None:
         if self._client is not None:

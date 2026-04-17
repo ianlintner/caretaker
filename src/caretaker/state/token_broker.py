@@ -130,7 +130,7 @@ class RedisTokenCache(InstallationTokenCache):
 
     async def close(self) -> None:
         if self._redis is not None:
-            await self._redis.aclose()
+            await self._redis.close()
             self._redis = None
 
 
