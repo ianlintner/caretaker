@@ -5,10 +5,10 @@ Phase 1 of the Azure backend adoption roadmap introduces a pluggable
 back-ends without changing any agent code.
 
 Available back-ends:
-    sqlite   — default; zero dependency; single-process SQLite.
-               Works in GitHub Actions with ``actions/cache``.
-    postgres — Neon / Supabase / any standard Postgres SaaS (Phase 1).
-               Enabled via config: memory_store.backend = "postgres"
+    sqlite — default; zero dependency; single-process SQLite.
+             Works in GitHub Actions with ``actions/cache``.
+    mongo  — Azure Cosmos DB for MongoDB / Atlas / local mongod (Phase 1).
+             Enabled via config: memory_store.backend = "mongo"
 
 See docs/azure-backend-adoption-roadmap.md § Phase 1.
 """

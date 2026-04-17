@@ -1,14 +1,12 @@
 """Audit log writer for agent decisions.
 
 Writes structured audit records to:
-- A Postgres ``audit_log`` table when ``audit_log.enabled = true`` and
-  ``postgres.enabled = true`` (Phase 1 SaaS backend).
+- A MongoDB ``audit_log`` collection when ``audit_log.enabled = true`` and
+  ``mongo.enabled = true`` (Phase 1 SaaS backend).
 - A structured log line (JSON) in all cases for log-aggregation systems.
 
-The Postgres table is created on first write (idempotent ``CREATE TABLE IF
-NOT EXISTS``), so no separate migration is required for the writer to
-function — though Alembic migrations should be run in production for proper
-schema management.
+MongoDB creates the collection automatically on first write — no migrations
+required.  A unique index on ``id`` is created on first connection.
 
 Usage::
 
@@ -25,41 +23,19 @@ Usage::
 
 from __future__ import annotations
 
-import json
+import contextlib
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS audit_log (
-    id           UUID         PRIMARY KEY,
-    run_id       TEXT         NOT NULL,
-    recorded_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    agent_id     TEXT         NOT NULL,
-    tool         TEXT,
-    llm_model    TEXT,
-    latency_ms   INTEGER,
-    cost_usd     NUMERIC(12, 8),
-    outcome      TEXT         NOT NULL,
-    prompt_id    TEXT,
-    response_id  TEXT,
-    extra        JSONB
-)
-"""
-
-_INSERT_SQL = """
-INSERT INTO audit_log
-    (id, run_id, recorded_at, agent_id, tool, llm_model, latency_ms, cost_usd,
-     outcome, prompt_id, response_id, extra)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (id) DO NOTHING
-"""
+if TYPE_CHECKING:
+    import motor.motor_asyncio
 
 
 @dataclass
@@ -81,75 +57,75 @@ class AuditRecord:
 
 
 class AuditLogWriter:
-    """Write audit records to Postgres and/or structured logging.
+    """Write audit records to MongoDB and/or structured logging.
 
     Parameters
     ----------
     enabled:
-        When ``False`` only structured-log output is produced; no Postgres
+        When ``False`` only structured-log output is produced; no MongoDB
         writes are performed.
-    database_url_env:
-        Name of the environment variable containing the ``DATABASE_URL``.
+    mongodb_url_env:
+        Name of the environment variable containing the ``MONGODB_URL``.
+    database_name:
+        MongoDB database name.
+    collection_name:
+        MongoDB collection name for audit documents.
     """
 
     def __init__(
         self,
         *,
         enabled: bool = True,
-        database_url_env: str = "DATABASE_URL",
+        mongodb_url_env: str = "MONGODB_URL",
+        database_name: str = "caretaker",
+        collection_name: str = "audit_log",
     ) -> None:
         self._enabled = enabled
-        self._database_url_env = database_url_env
-        self._conn: "psycopg.AsyncConnection | None" = None  # type: ignore[type-arg]
-        self._schema_created = False
+        self._mongodb_url_env = mongodb_url_env
+        self._database_name = database_name
+        self._collection_name = collection_name
+        self._client: motor.motor_asyncio.AsyncIOMotorClient[Any] | None = None  # type: ignore[type-arg]
+        self._index_created = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
-    async def _ensure_connection(self) -> "psycopg.AsyncConnection | None":  # type: ignore[type-arg]
-        """Return a live async Postgres connection, or None if unavailable."""
+    async def _ensure_collection(self) -> motor.motor_asyncio.AsyncIOMotorCollection | None:  # type: ignore[type-arg]
+        """Return a live Motor collection handle, or None if unavailable."""
         if not self._enabled:
             return None
 
-        db_url = os.environ.get(self._database_url_env, "").strip()
-        if not db_url:
+        mongodb_url = os.environ.get(self._mongodb_url_env, "").strip()
+        if not mongodb_url:
             return None
 
-        if self._conn is None or self._conn.closed:
+        if self._client is None:
             try:
-                import psycopg
+                from motor.motor_asyncio import AsyncIOMotorClient
 
-                # Neon / Supabase return "postgresql+psycopg://" URLs; strip the driver tag.
-                clean_url = db_url.replace("postgresql+psycopg://", "postgresql://")
-                self._conn = await psycopg.AsyncConnection.connect(
-                    clean_url, autocommit=False
-                )
-                logger.debug("AuditLogWriter: connected to Postgres")
+                self._client = AsyncIOMotorClient(mongodb_url)
+                logger.debug("AuditLogWriter: connected to MongoDB")
             except Exception:
                 logger.warning(
-                    "AuditLogWriter: failed to connect to Postgres; "
+                    "AuditLogWriter: failed to connect to MongoDB; "
                     "audit records will not be persisted.",
                     exc_info=True,
                 )
                 return None
 
-        return self._conn
+        col = self._client[self._database_name][self._collection_name]
+        if not self._index_created:
+            with contextlib.suppress(Exception):
+                import pymongo
 
-    async def _ensure_schema(self, conn: "psycopg.AsyncConnection") -> None:  # type: ignore[type-arg]
-        if self._schema_created:
-            return
-        try:
-            await conn.execute(_CREATE_TABLE_SQL)
-            await conn.commit()
-            self._schema_created = True
-            logger.debug("AuditLogWriter: ensured audit_log table")
-        except Exception:
-            await conn.rollback()
-            logger.warning("AuditLogWriter: failed to create audit_log table", exc_info=True)
+                await col.create_index([("id", pymongo.ASCENDING)], unique=True, name="idx_id")
+                self._index_created = True
+        return col  # type: ignore[return-value]
 
     async def close(self) -> None:
-        if self._conn is not None and not self._conn.closed:
-            await self._conn.close()
-        self._conn = None
+        if self._client is not None:
+            with contextlib.suppress(Exception):
+                self._client.close()
+        self._client = None
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -169,7 +145,7 @@ class AuditLogWriter:
     ) -> None:
         """Write one audit record.
 
-        Always emits a structured log line.  Also persists to Postgres when
+        Always emits a structured log line.  Also persists to MongoDB when
         ``enabled=True`` and the database is reachable.
         """
         rec = AuditRecord(
@@ -207,58 +183,56 @@ class AuditLogWriter:
         )
 
     async def _persist(self, rec: AuditRecord) -> None:
-        conn = await self._ensure_connection()
-        if conn is None:
+        col = await self._ensure_collection()
+        if col is None:
             return
-        await self._ensure_schema(conn)
+        doc = {
+            "id": rec.id,
+            "run_id": rec.run_id,
+            "recorded_at": rec.recorded_at,
+            "agent_id": rec.agent_id,
+            "tool": rec.tool,
+            "llm_model": rec.llm_model,
+            "latency_ms": rec.latency_ms,
+            "cost_usd": rec.cost_usd,
+            "outcome": rec.outcome,
+            "prompt_id": rec.prompt_id,
+            "response_id": rec.response_id,
+            "extra": rec.extra,
+        }
         try:
-            extra_json = json.dumps(rec.extra) if rec.extra else None
-            await conn.execute(
-                _INSERT_SQL,
-                (
-                    rec.id,
-                    rec.run_id,
-                    rec.recorded_at,
-                    rec.agent_id,
-                    rec.tool,
-                    rec.llm_model,
-                    rec.latency_ms,
-                    rec.cost_usd,
-                    rec.outcome,
-                    rec.prompt_id,
-                    rec.response_id,
-                    extra_json,
-                ),
-            )
-            await conn.commit()
+            await col.update_one({"id": rec.id}, {"$setOnInsert": doc}, upsert=True)
         except Exception:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
             logger.warning("AuditLogWriter: failed to persist audit record", exc_info=True)
-            self._conn = None  # force reconnect next time
+            self._client = None  # force reconnect next time
 
     @classmethod
-    def from_config(cls, config: Any) -> "AuditLogWriter":
+    def from_config(cls, config: Any) -> AuditLogWriter:
         """Build from a :class:`~caretaker.config.MaintainerConfig`.
 
-        ``config.audit_log.enabled`` **and** ``config.postgres.enabled`` must
-        both be true for Postgres persistence to be active.
+        ``config.audit_log.enabled`` **and** ``config.mongo.enabled`` must
+        both be true for MongoDB persistence to be active.
         """
         from caretaker.config import MaintainerConfig
 
         if not isinstance(config, MaintainerConfig):
             return cls(enabled=False)
 
-        pg_enabled = getattr(config, "postgres", None) is not None and config.postgres.enabled
+        mongo_enabled = getattr(config, "mongo", None) is not None and config.mongo.enabled
         audit_enabled = (
             getattr(config, "audit_log", None) is not None and config.audit_log.enabled
         )
-        enabled = pg_enabled and audit_enabled
+        enabled = mongo_enabled and audit_enabled
 
-        db_url_env = config.postgres.database_url_env if pg_enabled else "DATABASE_URL"
-        return cls(enabled=enabled, database_url_env=db_url_env)
+        mongodb_url_env = config.mongo.mongodb_url_env if mongo_enabled else "MONGODB_URL"
+        database_name = config.mongo.database_name if mongo_enabled else "caretaker"
+        audit_collection = config.mongo.audit_collection if mongo_enabled else "audit_log"
+        return cls(
+            enabled=enabled,
+            mongodb_url_env=mongodb_url_env,
+            database_name=database_name,
+            collection_name=audit_collection,
+        )
 
 
 def _now_ms() -> int:

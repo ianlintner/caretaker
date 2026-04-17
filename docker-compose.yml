@@ -1,31 +1,29 @@
-# Local development environment: Postgres + Redis
+# Local development environment: MongoDB + Redis
 #
 # Usage:
 #   docker compose up -d
 #
 # Set these environment variables in your shell or .env file to use them:
-#   DATABASE_URL=postgresql://caretaker:caretaker@localhost:5432/caretaker
+#   MONGODB_URL=mongodb://localhost:27017/caretaker
 #   REDIS_URL=redis://localhost:6379
 #
 # For SaaS equivalents (free tiers) see docs/azure-backend-adoption-roadmap.md:
-#   - Postgres: Neon (https://neon.tech)
-#   - Redis:    Upstash (https://upstash.com)
+#   - MongoDB: Azure Cosmos DB for MongoDB (https://azure.microsoft.com/free)
+#              MongoDB Atlas M0 (https://www.mongodb.com/atlas)
+#   - Redis:   Upstash (https://upstash.com) or Redis Cloud free tier
 #
-# Both accept the same connection URL format — no code changes needed.
+# All accept standard connection URL formats — no code changes needed when
+# switching between local Docker and SaaS.
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: caretaker
-      POSTGRES_USER: caretaker
-      POSTGRES_PASSWORD: caretaker
+  mongodb:
+    image: mongo:7
     ports:
-      - "5432:5432"
+      - "27017:27017"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mongo_data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U caretaker -d caretaker"]
+      test: ["CMD", "mongosh", "--eval", "db.runCommand({ ping: 1 })"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -41,4 +39,5 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
+  mongo_data:
+
