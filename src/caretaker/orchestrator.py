@@ -17,7 +17,8 @@ from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.llm.router import LLMRouter
 from caretaker.mcp import MCPClient, TelemetryClient
-from caretaker.state.memory import MemoryStore
+from caretaker.state.audit_log import AuditLogWriter
+from caretaker.state.backends.factory import build_memory_backend
 from caretaker.state.models import (
     IssueTrackingState,
     OrchestratorState,
@@ -80,14 +81,14 @@ class Orchestrator:
         self._llm = LLMRouter(config.llm)
         self._state_tracker = StateTracker(github, owner, repo)
 
-        # Disk-backed memory store (SQLite)
-        self._memory: MemoryStore | None = None
-        if config.memory_store.enabled:
-            self._memory = MemoryStore(
-                db_path=config.memory_store.db_path,
-                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
-            )
-            logger.info("MemoryStore enabled: %s", config.memory_store.db_path)
+        # Memory backend — SQLite (default) or Postgres (Phase 1 SaaS)
+        self._memory = build_memory_backend(config)
+        if self._memory is not None:
+            backend_type = getattr(config.memory_store, "backend", "sqlite")
+            logger.info("MemoryBackend enabled: backend=%s", backend_type)
+
+        # Audit log (writes to Postgres audit_log table + structured log)
+        self._audit_log = AuditLogWriter.from_config(config)
 
         # Optional Telemetry & MCP clients
         self._telemetry: TelemetryClient | None = None
@@ -285,6 +286,31 @@ class Orchestrator:
             logger.warning("Run completed with %d errors", len(summary.errors))
         else:
             logger.info("Run completed successfully")
+
+        # Audit-log the run outcome
+        try:
+            import uuid as _uuid
+
+            await self._audit_log.record(
+                run_id=str(_uuid.uuid4()),
+                agent_id="orchestrator",
+                outcome="error" if has_errors else "success",
+                tool=None,
+                extra={
+                    "mode": mode,
+                    "processed": summary.processed,
+                    "actions": len(summary.actions),
+                    "errors": len(summary.errors),
+                },
+            )
+        except Exception as _audit_err:
+            logger.debug("Failed to write orchestrator audit record: %s", _audit_err)
+
+        # Close audit log connection
+        try:
+            await self._audit_log.close()
+        except Exception:
+            pass
 
         # Write JSON run report if a path was provided
         if report_path:
