@@ -41,3 +41,5 @@ Thumbs.db
 
 # MkDocs build output — deployed via GitHub Actions, not committed to git
 site/
+.gitignore
+.caretaker-memory.db*

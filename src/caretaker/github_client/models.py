@@ -39,8 +39,8 @@ class CheckStatus(StrEnum):
     COMPLETED = "completed"
     # Additional statuses returned by GitHub for checks awaiting a runner or gate
     WAITING = "waiting"
-    REQUESTED = "requested"
     PENDING = "pending"
+    REQUESTED = "requested"
 
 
 class CheckConclusion(StrEnum):
