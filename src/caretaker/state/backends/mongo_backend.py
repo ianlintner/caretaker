@@ -156,8 +156,6 @@ class MongoMemoryBackend:
         value: str,
         ttl_seconds: int | None = None,
     ) -> None:
-        import pymongo
-
         now = datetime.now(UTC)
         expires_at: datetime | None = None
         if ttl_seconds is not None:

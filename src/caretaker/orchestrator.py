@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -307,10 +308,8 @@ class Orchestrator:
             logger.debug("Failed to write orchestrator audit record: %s", _audit_err)
 
         # Close audit log connection
-        try:
+        async with contextlib.suppress(Exception):
             await self._audit_log.close()
-        except Exception:
-            pass
 
         # Write JSON run report if a path was provided
         if report_path:

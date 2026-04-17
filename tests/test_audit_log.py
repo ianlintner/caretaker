@@ -8,7 +8,7 @@ from caretaker.state.audit_log import AuditLogWriter
 
 
 class TestAuditLogWriterDisabled:
-    """When disabled, no Postgres connection is attempted."""
+    """When disabled, no MongoDB connection is attempted."""
 
     @pytest.mark.asyncio
     async def test_record_does_not_raise_when_disabled(self) -> None:
@@ -39,11 +39,11 @@ class TestAuditLogWriterDisabled:
 
 
 class TestAuditLogWriterFromConfig:
-    def test_disabled_when_postgres_not_enabled(self) -> None:
+    def test_disabled_when_mongo_not_enabled(self) -> None:
         from caretaker.config import MaintainerConfig
 
         config = MaintainerConfig()
-        config.postgres.enabled = False
+        config.mongo.enabled = False
         config.audit_log.enabled = True
         writer = AuditLogWriter.from_config(config)
         assert writer._enabled is False
@@ -52,7 +52,7 @@ class TestAuditLogWriterFromConfig:
         from caretaker.config import MaintainerConfig
 
         config = MaintainerConfig()
-        config.postgres.enabled = True
+        config.mongo.enabled = True
         config.audit_log.enabled = False
         writer = AuditLogWriter.from_config(config)
         assert writer._enabled is False
@@ -61,7 +61,7 @@ class TestAuditLogWriterFromConfig:
         from caretaker.config import MaintainerConfig
 
         config = MaintainerConfig()
-        config.postgres.enabled = True
+        config.mongo.enabled = True
         config.audit_log.enabled = True
         writer = AuditLogWriter.from_config(config)
         assert writer._enabled is True
@@ -75,9 +75,9 @@ class TestAuditLogWriterFromConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AuditLogWriter should not crash when DATABASE_URL is absent."""
-        monkeypatch.delenv("DATABASE_URL", raising=False)
-        writer = AuditLogWriter(enabled=True, database_url_env="DATABASE_URL")
-        # _ensure_connection returns None when env var not set
-        conn = await writer._ensure_connection()
+        monkeypatch.delenv("MONGODB_URL", raising=False)
+        writer = AuditLogWriter(enabled=True, mongodb_url_env="MONGODB_URL")
+        # _ensure_collection returns None when env var not set
+        conn = await writer._ensure_collection()
         assert conn is None
         await writer.close()

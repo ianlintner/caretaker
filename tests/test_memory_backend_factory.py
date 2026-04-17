@@ -25,28 +25,28 @@ class TestBuildMemoryBackend:
         backend = build_memory_backend(base_config)
         assert isinstance(backend, SQLiteMemoryBackend)
 
-    def test_falls_back_to_sqlite_when_postgres_not_enabled(
+    def test_falls_back_to_sqlite_when_mongo_not_enabled(
         self, base_config: MaintainerConfig
     ) -> None:
         base_config.memory_store.enabled = True
-        base_config.memory_store.backend = "postgres"  # type: ignore[assignment]
-        base_config.postgres.enabled = False
+        base_config.memory_store.backend = "mongo"  # type: ignore[assignment]
+        base_config.mongo.enabled = False
         base_config.memory_store.db_path = ":memory:"
         backend = build_memory_backend(base_config)
         assert isinstance(backend, SQLiteMemoryBackend)
 
-    def test_returns_postgres_backend_when_configured(
+    def test_returns_mongo_backend_when_configured(
         self, base_config: MaintainerConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+        monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/caretaker")
         base_config.memory_store.enabled = True
-        base_config.memory_store.backend = "postgres"  # type: ignore[assignment]
-        base_config.postgres.enabled = True
+        base_config.memory_store.backend = "mongo"  # type: ignore[assignment]
+        base_config.mongo.enabled = True
 
-        from caretaker.state.backends.postgres_backend import PostgresMemoryBackend
+        from caretaker.state.backends.mongo_backend import MongoMemoryBackend
 
         backend = build_memory_backend(base_config)
-        assert isinstance(backend, PostgresMemoryBackend)
+        assert isinstance(backend, MongoMemoryBackend)
 
     def test_sqlite_backend_is_functional(self, base_config: MaintainerConfig) -> None:
         base_config.memory_store.enabled = True

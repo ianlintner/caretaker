@@ -8,9 +8,10 @@ treat all backends uniformly.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from caretaker.state.memory import MemoryStore
+if TYPE_CHECKING:
+    from caretaker.state.memory import MemoryStore
 
 
 class SQLiteMemoryBackend:
