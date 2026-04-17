@@ -1,0 +1,44 @@
+# Local development environment: Postgres + Redis
+#
+# Usage:
+#   docker compose up -d
+#
+# Set these environment variables in your shell or .env file to use them:
+#   DATABASE_URL=postgresql://caretaker:caretaker@localhost:5432/caretaker
+#   REDIS_URL=redis://localhost:6379
+#
+# For SaaS equivalents (free tiers) see docs/azure-backend-adoption-roadmap.md:
+#   - Postgres: Neon (https://neon.tech)
+#   - Redis:    Upstash (https://upstash.com)
+#
+# Both accept the same connection URL format — no code changes needed.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: caretaker
+      POSTGRES_USER: caretaker
+      POSTGRES_PASSWORD: caretaker
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caretaker -d caretaker"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:

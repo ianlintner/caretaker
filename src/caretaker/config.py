@@ -196,9 +196,9 @@ class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
     enabled: bool = True
-    # Storage backend: "sqlite" (default, zero-dependency) or "postgres" (Phase 1, requires
-    # PostgresConfig.enabled=true and DATABASE_URL env var set).
-    backend: Literal["sqlite", "postgres"] = "sqlite"
+    # Storage backend: "sqlite" (default, zero-dependency) or "mongo" (Phase 1, requires
+    # MongoConfig.enabled=true and MONGODB_URL env var set).
+    backend: Literal["sqlite", "mongo"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
     # Ignored when backend="postgres".
@@ -216,28 +216,34 @@ class AzureConfig(StrictBaseModel):
     use_managed_identity: bool = False
 
 
-class PostgresConfig(StrictBaseModel):
-    """Phase 1 — Postgres durable state backend.
+class MongoConfig(StrictBaseModel):
+    """Phase 1 — MongoDB / Cosmos DB for MongoDB durable state backend.
 
-    Use a free SaaS Postgres (e.g. Neon https://neon.tech, Supabase, etc.).
-    Set the connection URL via the env var named in ``database_url_env``.
+    Use a free SaaS MongoDB:
+    - **Azure Cosmos DB for MongoDB** (https://azure.microsoft.com/free) —
+      always-free tier: 1,000 RU/s + 25 GB; no credit card required.
+    - **MongoDB Atlas** (https://www.mongodb.com/atlas) — M0 free cluster.
+
+    Set the connection URL via the env var named in ``mongodb_url_env``.
 
     Example .caretaker.yml::
 
-        postgres:
+        mongo:
           enabled: true
-          database_url_env: DATABASE_URL   # set in GitHub Actions / .env
+          mongodb_url_env: MONGODB_URL   # set in GitHub Actions / .env
     """
 
     enabled: bool = False
-    # Name of the env var holding a standard libpq-compatible connection URL.
-    # Works with Neon, Supabase, Railway, or any Postgres SaaS.
-    # e.g. postgresql+psycopg://user:pass@host/dbname?sslmode=require
-    database_url_env: str = "DATABASE_URL"
-    # Maximum pool size (connections).  Keep small on free-tier plans.
-    pool_size: int = 5
-    # Seconds before an idle connection is closed.
-    pool_timeout: int = 30
+    # Name of the env var holding a standard MongoDB connection URI.
+    # Works with Cosmos DB for MongoDB, Atlas, or local mongod.
+    # e.g. mongodb+srv://user:pass@cluster.cosmos.azure.com/?tls=true
+    mongodb_url_env: str = "MONGODB_URL"
+    # MongoDB database name.
+    database_name: str = "caretaker"
+    # Collection name for the agent memory store.
+    memory_collection: str = "agent_memory"
+    # Collection name for the audit log.
+    audit_collection: str = "audit_log"
 
 
 class RedisConfig(StrictBaseModel):
@@ -270,9 +276,9 @@ class RedisConfig(StrictBaseModel):
 class AuditLogConfig(StrictBaseModel):
     """Phase 1 — structured audit-log writer.
 
-    Writes one row per agent decision to the ``audit_log`` Postgres table when
-    Postgres is enabled.  When Postgres is disabled, audit entries are emitted
-    as structured log lines only (no data loss, just no queryable table).
+    Writes one document per agent decision to the MongoDB ``audit_log``
+    collection when MongoDB is enabled.  When MongoDB is disabled, audit
+    entries are emitted as structured log lines only.
     """
 
     enabled: bool = True
@@ -348,7 +354,7 @@ class MaintainerConfig(StrictBaseModel):
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)
-    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
+    mongo: MongoConfig = Field(default_factory=MongoConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     audit_log: AuditLogConfig = Field(default_factory=AuditLogConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
