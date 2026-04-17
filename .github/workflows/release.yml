@@ -23,7 +23,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write  # needed to open the version-bump PR
+  pull-requests: write # needed to open the version-bump PR
 
 jobs:
   # ── 1. Determine the target version ────────────────────────────────────────
@@ -155,7 +155,7 @@ jobs:
           else
             git checkout -b "$BRANCH"
             git commit -m "chore: bump version to ${{ env.VERSION }}"
-            git push origin "$BRANCH"
+            git push --force origin "$BRANCH"
             gh pr create \
               --title "chore: bump version to ${{ env.VERSION }}" \
               --body "Automated version bump to ${{ env.VERSION }} triggered by the release workflow." \
@@ -174,11 +174,11 @@ jobs:
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     permissions:
-      id-token: write  # required for trusted OIDC publishing
+      id-token: write # required for trusted OIDC publishing
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}  # build from the release tag
+          ref: ${{ github.ref }} # build from the release tag
 
       - uses: actions/setup-python@v5
         with:
