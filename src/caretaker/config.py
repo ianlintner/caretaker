@@ -196,8 +196,12 @@ class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
     enabled: bool = True
+    # Storage backend: "sqlite" (default, zero-dependency) or "postgres" (Phase 1, requires
+    # PostgresConfig.enabled=true and DATABASE_URL env var set).
+    backend: Literal["sqlite", "postgres"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
+    # Ignored when backend="postgres".
     db_path: str = ".caretaker-memory.db"
     # Write a JSON snapshot of the store to this path after every save so it
     # can be uploaded as a workflow artifact for auditing / rollback.
@@ -210,6 +214,68 @@ class AzureConfig(StrictBaseModel):
     """Configuration for Azure-specific integrations."""
 
     use_managed_identity: bool = False
+
+
+class PostgresConfig(StrictBaseModel):
+    """Phase 1 — Postgres durable state backend.
+
+    Use a free SaaS Postgres (e.g. Neon https://neon.tech, Supabase, etc.).
+    Set the connection URL via the env var named in ``database_url_env``.
+
+    Example .caretaker.yml::
+
+        postgres:
+          enabled: true
+          database_url_env: DATABASE_URL   # set in GitHub Actions / .env
+    """
+
+    enabled: bool = False
+    # Name of the env var holding a standard libpq-compatible connection URL.
+    # Works with Neon, Supabase, Railway, or any Postgres SaaS.
+    # e.g. postgresql+psycopg://user:pass@host/dbname?sslmode=require
+    database_url_env: str = "DATABASE_URL"
+    # Maximum pool size (connections).  Keep small on free-tier plans.
+    pool_size: int = 5
+    # Seconds before an idle connection is closed.
+    pool_timeout: int = 30
+
+
+class RedisConfig(StrictBaseModel):
+    """Phase 1 — Redis cache / dedup backend.
+
+    Use a free SaaS Redis (e.g. Upstash https://upstash.com, Redis Cloud free).
+    Set the connection URL via the env var named in ``redis_url_env``.
+
+    Upstash free tier: 10 K commands/day, 256 MB — plenty for webhook dedup
+    and installation-token caching at hobby / small-team scale.
+
+    Example .caretaker.yml::
+
+        redis:
+          enabled: true
+          redis_url_env: REDIS_URL   # set in GitHub Actions / .env
+    """
+
+    enabled: bool = False
+    # Name of the env var holding a standard Redis URL.
+    # Works with Upstash, Redis Cloud, Railway, or local Redis.
+    # e.g. rediss://default:pass@host:port
+    redis_url_env: str = "REDIS_URL"
+    # TTL (seconds) for webhook delivery-id dedup keys.
+    dedup_ttl_seconds: int = 3600
+    # TTL (seconds) for cached GitHub App installation tokens (< 3600 s expiry).
+    token_cache_ttl_seconds: int = 3000
+
+
+class AuditLogConfig(StrictBaseModel):
+    """Phase 1 — structured audit-log writer.
+
+    Writes one row per agent decision to the ``audit_log`` Postgres table when
+    Postgres is enabled.  When Postgres is disabled, audit entries are emitted
+    as structured log lines only (no data loss, just no queryable table).
+    """
+
+    enabled: bool = True
 
 
 class MCPConfig(StrictBaseModel):
@@ -282,6 +348,9 @@ class MaintainerConfig(StrictBaseModel):
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)
+    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+    audit_log: AuditLogConfig = Field(default_factory=AuditLogConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
