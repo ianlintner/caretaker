@@ -15,9 +15,7 @@ installation token** (server-to-server) or whether it strictly requires a
 **user-to-server token** (i.e., a token issued on behalf of a specific GitHub
 user account that has a Copilot seat).
 
-This is the one remaining question from
-[`docs/github-app-plan.md §4`](./github-app-plan.md#4-copilot-swe-agent-assignment--the-gating-question)
-that cannot be answered from documentation alone.
+This is the one remaining question from the GitHub App plan (§4: Copilot SWE-Agent Assignment — the gating question) that cannot be answered from documentation alone.
 
 ---
 
@@ -34,18 +32,17 @@ SWE-agent assignment endpoint falls into that category in practice.
 
 **Scenarios being tested:**
 
-| Scenario | Token type | Hypothesis |
-|---|---|---|
-| S1 | App installation token (`ghs_…`) | ✅ Works — App identity is sufficient |
-| S2 | User-to-server OAuth token (`ghu_…`) | ✅ Works — Requires user with Copilot seat |
-| S3 | PAT with `copilot` scope | ✅ Works — Current approach (baseline) |
+| Scenario | Token type                           | Hypothesis                                 |
+| -------- | ------------------------------------ | ------------------------------------------ |
+| S1       | App installation token (`ghs_…`)     | ✅ Works — App identity is sufficient      |
+| S2       | User-to-server OAuth token (`ghu_…`) | ✅ Works — Requires user with Copilot seat |
+| S3       | PAT with `copilot` scope             | ✅ Works — Current approach (baseline)     |
 
 ---
 
 ## Prerequisites
 
-1. A registered GitHub App with the permissions listed in
-   [`docs/github-app-plan.md §6`](./github-app-plan.md#6-permission-manifest).
+1. A registered GitHub App with the required permissions (see GitHub App plan §6: Permission manifest).
 2. The App installed on a test repository.
 3. The test repository must be a **private** repo under an organization with
    an active **GitHub Copilot Business** or **Enterprise** license.
@@ -107,12 +104,12 @@ curl -X POST \
 
 **Expected responses:**
 
-| HTTP code | Meaning | Next action |
-|---|---|---|
-| `201 Created` | **S1 confirmed** — installation token works | Mark as resolved; skip S2 |
-| `403 Forbidden` | User identity required | Proceed to Step 3 (S2) |
-| `404 Not Found` | Repo/issue not found, or App lacks `issues:write` | Check permissions |
-| `422 Unprocessable` | Copilot not enabled for the org | Check license |
+| HTTP code           | Meaning                                           | Next action               |
+| ------------------- | ------------------------------------------------- | ------------------------- |
+| `201 Created`       | **S1 confirmed** — installation token works       | Mark as resolved; skip S2 |
+| `403 Forbidden`     | User identity required                            | Proceed to Step 3 (S2)    |
+| `404 Not Found`     | Repo/issue not found, or App lacks `issues:write` | Check permissions         |
+| `422 Unprocessable` | Copilot not enabled for the org                   | Check license             |
 
 ---
 
@@ -146,17 +143,18 @@ Export the resulting `access_token` as `GHU_TOKEN` and re-run Step 2 with it.
 
 ## Step 4 — Record results and update the plan
 
-Update the table in
-[`docs/github-app-plan.md §4`](./github-app-plan.md#4-copilot-swe-agent-assignment--the-gating-question)
+Update the results in the GitHub App plan (§4)
 with the scenario that succeeded.
 
 If **S1 passes**:
+
 - The `GitHubAppCredentialsProvider.copilot_token()` fallback path in
   [`src/caretaker/github_app/provider.py`](../src/caretaker/github_app/provider.py)
   already handles this — no code change required.
 - Close the spike; proceed to Phase 2 agent wiring.
 
 If **only S2 passes**:
+
 - Implement the full OAuth device-flow or web-flow in the
   `GET /oauth/callback` stub in
   [`src/caretaker/mcp_backend/main.py`](../src/caretaker/mcp_backend/main.py).
@@ -177,11 +175,11 @@ If **only S2 passes**:
 
 ## Related files
 
-| File | Role |
-|---|---|
-| `src/caretaker/github_app/jwt_signer.py` | RS256 App JWT for API auth |
-| `src/caretaker/github_app/installation_tokens.py` | Installation token minter |
-| `src/caretaker/github_app/provider.py` | `GitHubAppCredentialsProvider` |
-| `src/caretaker/mcp_backend/main.py` | OAuth callback stub (`GET /oauth/callback`) |
-| `docs/github-app-plan.md` | Full architectural plan |
-| `docs/azure-mcp-architecture-plan.md` | Multi-replica / Redis upgrade path |
+| File                                              | Role                                        |
+| ------------------------------------------------- | ------------------------------------------- |
+| `src/caretaker/github_app/jwt_signer.py`          | RS256 App JWT for API auth                  |
+| `src/caretaker/github_app/installation_tokens.py` | Installation token minter                   |
+| `src/caretaker/github_app/provider.py`            | `GitHubAppCredentialsProvider`              |
+| `src/caretaker/mcp_backend/main.py`               | OAuth callback stub (`GET /oauth/callback`) |
+| `docs/github-app-plan.md`                         | Full architectural plan                     |
+| `docs/azure-mcp-architecture-plan.md`             | Multi-replica / Redis upgrade path          |
