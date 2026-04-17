@@ -45,6 +45,7 @@ All notable changes to this project will be documented in this file.
 - GitHub app (#334)
 - add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
 - [WIP] Update setup instructions for GitHub app and backend (#340)
+- point release manifest URL at ianlintner/caretaker (#341)
 
 ## [2026-W16] - 2026-04-16
 
