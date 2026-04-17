@@ -83,7 +83,18 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
         if cr.status == CheckStatus.COMPLETED
         and cr.conclusion in (CheckConclusion.FAILURE, CheckConclusion.TIMED_OUT)
     ]
-    pending = [cr for cr in relevant if cr.status in (CheckStatus.QUEUED, CheckStatus.IN_PROGRESS)]
+    pending = [
+        cr
+        for cr in relevant
+        if cr.status
+        in (
+            CheckStatus.QUEUED,
+            CheckStatus.IN_PROGRESS,
+            CheckStatus.WAITING,
+            CheckStatus.REQUESTED,
+            CheckStatus.PENDING,
+        )
+    ]
     passed = [
         cr
         for cr in relevant

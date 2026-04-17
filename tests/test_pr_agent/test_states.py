@@ -112,6 +112,46 @@ class TestEvaluateCI:
         assert result.status == CIStatus.PENDING
         assert result.all_completed is False
 
+    def test_waiting_is_pending(self) -> None:
+        """GitHub 'waiting' status (e.g. environment gates) must be treated as pending."""
+        runs = [
+            make_check_run(
+                name="deploy",
+                status=CheckStatus.WAITING,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+        assert len(result.pending_runs) == 1
+
+    def test_requested_is_pending(self) -> None:
+        """GitHub 'requested' status must be treated as pending CI."""
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.REQUESTED,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+
+    def test_pending_status_is_pending(self) -> None:
+        """GitHub 'pending' status must be treated as pending CI."""
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.PENDING,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+
 
 # ── evaluate_reviews ─────────────────────────────────────────────────
 
