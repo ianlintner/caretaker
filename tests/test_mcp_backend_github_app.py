@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from caretaker.mcp_backend.main import _get_dedup, app
+from caretaker.mcp_backend.main import app
 from caretaker.state.dedup import LocalDedup
 
 # ── helpers ---------------------------------------------------------------
