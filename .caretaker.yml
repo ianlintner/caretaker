@@ -3,11 +3,11 @@
 
 memory_store:
   enabled: true
-  backend: mongo           # use Cosmos DB for MongoDB (set via MONGODB_URL secret)
+  backend: mongo # use Cosmos DB for MongoDB (set via MONGODB_URL secret)
 
 mongo:
   enabled: true
-  mongodb_url_env: MONGODB_URL   # GitHub Actions secret → Cosmos DB for MongoDB
+  mongodb_url_env: MONGODB_URL # GitHub Actions secret → Cosmos DB for MongoDB
   database_name: caretaker
   memory_collection: agent_memory
   audit_collection: audit_log
