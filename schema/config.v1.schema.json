@@ -190,7 +190,7 @@
         "endpoint": { "type": ["string", "null"] },
         "auth_mode": {
           "type": "string",
-          "enum": ["none", "managed_identity", "token"]
+          "enum": ["none", "managed_identity", "token", "apim"]
         },
         "timeout_seconds": { "type": "integer", "minimum": 1 },
         "allowed_tools": {
