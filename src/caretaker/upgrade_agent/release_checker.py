@@ -10,7 +10,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 RELEASES_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/releases.json"
-DEFAULT_OWNER = "caretaker"
+DEFAULT_OWNER = "ianlintner"
 DEFAULT_REPO = "caretaker"
 
 
