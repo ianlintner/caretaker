@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.7.1",
+      "min_compatible": "0.7.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.1",
+      "upgrade_notes": "Update to 0.7.1.",
+      "breaking": false
+    },
+    {
       "version": "0.7.0",
       "min_compatible": "0.7.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.0",
