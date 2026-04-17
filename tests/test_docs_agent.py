@@ -13,6 +13,7 @@ from caretaker.docs_agent.agent import (
     _build_changelog_entry,
     _build_copilot_review_comment,
     _clean_title,
+    _prepend_changelog_entry,
 )
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PullRequest, User
@@ -243,4 +244,34 @@ class TestDocsAgentRun:
         assert report.doc_pr_opened == 77
         # The file should still be committed and the PR created
         gh.create_or_update_file.assert_awaited_once()
+        gh.create_pull_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_file_write_when_branch_already_has_content(self) -> None:
+        """If the existing branch already has the changelog entry, the file write is skipped
+        and the agent proceeds directly to PR creation (avoids 409 SHA-mismatch errors)."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        # Compute what new_content will be (same logic as the agent uses internally)
+        changelog_entry = _build_changelog_entry(merged)
+        expected_new_content = _prepend_changelog_entry("", changelog_entry)
+
+        # First _get_file call: main branch (empty content, no sha)
+        # Second _get_file call: branch already has the exact content we'd write
+        get_file_mock = AsyncMock(side_effect=[("", None), (expected_new_content, "branchsha123")])
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+            patch.object(agent, "_get_file", get_file_mock),
+        ):
+            report = await agent.run()
+
+        # No error — content already on branch, write skipped, PR still created
+        assert report.errors == []
+        assert report.doc_pr_opened == 77
+        gh.create_or_update_file.assert_not_awaited()
         gh.create_pull_request.assert_awaited_once()

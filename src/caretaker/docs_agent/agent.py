@@ -118,6 +118,7 @@ class DocsAgent:
         week_str = datetime.now(UTC).strftime("%Y-W%V")
         branch_name = f"docs/changelog-{week_str}"
 
+        skip_file_write = False
         try:
             # Get the SHA of the default branch tip
             base_sha = await self._get_branch_sha(self._default_branch)
@@ -128,9 +129,20 @@ class DocsAgent:
                     raise
                 # Branch already exists from a previous (possibly incomplete) run — reuse it.
                 logger.warning("Docs agent: branch %r already exists — reusing it", branch_name)
-                # Re-read the file SHA from the existing branch to avoid SHA mismatch on update.
+                # Re-read both the content AND SHA from the existing branch so we can
+                # detect whether the desired update was already committed and avoid a
+                # SHA-mismatch 409 on the subsequent file write.
                 try:
-                    _, current_sha = await self._get_file(self._changelog_path, ref=branch_name)
+                    branch_content, current_sha = await self._get_file(
+                        self._changelog_path, ref=branch_name
+                    )
+                    if branch_content == new_content:
+                        logger.info(
+                            "Docs agent: branch %r already has the changelog update — "
+                            "skipping file write",
+                            branch_name,
+                        )
+                        skip_file_write = True
                 except Exception as read_err:
                     logger.warning(
                         "Docs agent: could not read %s from branch %r (using default SHA): %s",
@@ -138,15 +150,16 @@ class DocsAgent:
                         branch_name,
                         read_err,
                     )
-            await self._github.create_or_update_file(
-                owner=self._owner,
-                repo=self._repo,
-                path=self._changelog_path,
-                message=f"docs: update CHANGELOG for {week_str}",
-                content=new_content,
-                branch=branch_name,
-                sha=current_sha,
-            )
+            if not skip_file_write:
+                await self._github.create_or_update_file(
+                    owner=self._owner,
+                    repo=self._repo,
+                    path=self._changelog_path,
+                    message=f"docs: update CHANGELOG for {week_str}",
+                    content=new_content,
+                    branch=branch_name,
+                    sha=current_sha,
+                )
 
             await self._issues.ensure_label(
                 DOCS_LABEL,
