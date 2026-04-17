@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-W16] - 2026-04-16
+
+- Add Charlie agent for janitorial cleanup of caretaker-managed issues and PRs (#237)
+- Follow-up: add CI backlog guard (close_managed_prs_on_backlog) and fix PR agent CI triage (#238)
+- Handle 403 rate-limit errors and guard state load against unhandled crash (#244)
+- Docs build no longer fails on configure-pages API errors (#256)
+- Remove committed site/ build artifacts; add CodeQL exclusion config (#259)
+- Guard FailureType → TaskType conversion against unmapped values (#263)
+- Treat 405/409/422 merge rejections as waiting, not errors (#265)
+- Fix CI failure on main for Analyze (javascript-typescript) (#268)
+- Replace dynamic CodeQL javascript-typescript scan with explicit Python-only workflow (#269)
+- Group related issues/PRs by workflow run_id (#272)
+- Refactor: introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
+- Prevent duplicate @copilot task comments from concurrent workflow runs (#276)
+- Resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
+- Remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
+- Self-heal: avoid env-noise "unknown error" titles by extracting from full job log (#286)
+- Improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
+- Fix caretaker self-heal for unknown failure (#290)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Self-heal: extract actionable unknown-failure messages from Actions logs (#293)
+- Add sync issue builder for client workflow/file reconciliation (#295)
+- Add installation of Claude agent from improvement repo (#297)
+- Address agent/orchestrator missed-goal patterns from workflow analysis (#298)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- Handle 422 "Reference already exists" gracefully in DocsAgent (#304)
+- Handle 422 branch-already-exists gracefully (#306)
+- Fix unknown caretaker failure with exit code 1 (#308)
+- Handle 403 "not permitted to create PRs" as warning, not error (#310)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- Introduce goal-seeking subsystem with models and evaluation logic (#321)
+- Implement simple memory storage for caretaker (#323)
+- Adjust image width in README (#324)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- Update docs and readme to reflect current features (#328)
+- Implement workflow approval for action-required CI runs (#329)
+- Implement ReviewAgent (#330)
+- Add Azure and MCP configuration options (#331)
+
 ## [0.1.0] - Current
 
 ### Core Agents
