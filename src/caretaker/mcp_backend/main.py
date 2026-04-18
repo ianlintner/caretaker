@@ -33,7 +33,7 @@ from caretaker.state.token_broker import build_token_broker
 logger = logging.getLogger(__name__)
 
 try:
-    _PKG_VERSION = importlib.metadata.version("caretaker")
+    _PKG_VERSION = importlib.metadata.version("caretaker-github")
 except importlib.metadata.PackageNotFoundError:
     _PKG_VERSION = "0.0.0"
 
