@@ -106,3 +106,13 @@ llm:
     - ci_log_analysis
     - architectural_review
     - issue_decomposition
+
+executor:
+  provider: auto
+  foundry:
+    enabled: true
+    model: azure_ai/gpt-4o
+    allowed_task_types:
+      - LINT_FAILURE
+      - REVIEW_COMMENT
+    route_same_repo_only: true
