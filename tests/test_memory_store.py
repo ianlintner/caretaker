@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from caretaker.state.memory import MemoryStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture
