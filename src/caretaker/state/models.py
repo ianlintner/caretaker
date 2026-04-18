@@ -133,6 +133,23 @@ class RunSummary(BaseModel):
     # Escalation agent metrics
     escalation_items_found: int = 0
     escalation_digest_issue: int | None = None
+    # Principal agent metrics
+    principal_reviews: int = 0
+    principal_prds_created: int = 0
+    principal_refactors_planned: int = 0
+    # Test agent metrics
+    test_prs_analyzed: int = 0
+    test_skeletons_generated: int = 0
+    test_flaky_detected: int = 0
+    # Refactor agent metrics
+    refactor_smells_found: int = 0
+    refactor_prs_created: int = 0
+    # Performance agent metrics
+    perf_prs_analyzed: int = 0
+    perf_regressions_flagged: int = 0
+    # Migration agent metrics
+    migration_deprecations_found: int = 0
+    migration_fixes_applied: int = 0
     # Goal engine metrics
     goal_health: float | None = None
     goal_escalation_count: int = 0

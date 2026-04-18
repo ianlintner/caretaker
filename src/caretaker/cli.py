@@ -52,6 +52,11 @@ class RunMode(StrEnum):
     STALE = "stale"
     ESCALATION = "escalation"
     SELF_HEAL = "self-heal"
+    PRINCIPAL = "principal"
+    TEST = "test"
+    REFACTOR = "refactor"
+    PERF = "perf"
+    MIGRATION = "migration"
     DRY_RUN = "dry-run"
     EVENT = "event"
 

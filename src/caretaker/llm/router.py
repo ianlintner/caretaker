@@ -19,6 +19,16 @@ CLAUDE_FEATURES = {
     "architectural_review",
     "issue_decomposition",
     "upgrade_impact_analysis",
+    "principal_architecture_review",
+    "principal_create_prd",
+    "principal_decompose_refactor",
+    "test_coverage_analysis",
+    "test_skeleton_generation",
+    "refactor_analysis",
+    "refactor_plan",
+    "perf_diff_analysis",
+    "migration_analysis",
+    "migration_plan",
 }
 
 

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Default per-feature model/max-tokens fallback when LLMConfig is not supplied
 # (legacy callers that instantiate ``ClaudeClient()`` directly, e.g. tests).
 _FALLBACK_MODEL = "claude-sonnet-4-5"
+_FALLBACK_REASONING_MODEL = "claude-opus-4-5"
 _LEGACY_FEATURE_DEFAULTS: dict[str, tuple[str, int]] = {
     "ci_log_analysis": (_FALLBACK_MODEL, 2000),
     "analyze_review_comment": (_FALLBACK_MODEL, 1000),
@@ -35,6 +36,16 @@ _LEGACY_FEATURE_DEFAULTS: dict[str, tuple[str, int]] = {
     "generate_recovery_plan": (_FALLBACK_MODEL, 2000),
     "analyze_stuck_pr": (_FALLBACK_MODEL, 800),
     "decompose_issue": (_FALLBACK_MODEL, 3000),
+    "principal_architecture_review": (_FALLBACK_REASONING_MODEL, 4000),
+    "principal_create_prd": (_FALLBACK_REASONING_MODEL, 6000),
+    "principal_decompose_refactor": (_FALLBACK_REASONING_MODEL, 5000),
+    "test_coverage_analysis": (_FALLBACK_REASONING_MODEL, 3000),
+    "test_skeleton_generation": (_FALLBACK_REASONING_MODEL, 4000),
+    "refactor_analysis": (_FALLBACK_REASONING_MODEL, 4000),
+    "refactor_plan": (_FALLBACK_REASONING_MODEL, 3000),
+    "perf_diff_analysis": (_FALLBACK_REASONING_MODEL, 3000),
+    "migration_analysis": (_FALLBACK_REASONING_MODEL, 4000),
+    "migration_plan": (_FALLBACK_REASONING_MODEL, 5000),
 }
 
 
@@ -206,6 +217,203 @@ class ClaudeClient:
             "- Dependencies on other sub-issues"
         )
         return await self._complete("decompose_issue", prompt, 3000)
+
+    # ── Principal agent features ────────────────────────────────────────────
+
+    async def analyze_architecture(self, diff: str, repo_context: str = "") -> str:
+        """Review a PR diff for architectural patterns and consistency."""
+        prompt = (
+            "You are a principal engineer reviewing this PR for architectural quality.\n"
+            "Evaluate:\n"
+            "1. Consistency with existing patterns and conventions\n"
+            "2. Separation of concerns and module boundaries\n"
+            "3. API design quality (naming, signatures, contracts)\n"
+            "4. Error handling and edge cases\n"
+            "5. Potential scalability or maintainability issues\n\n"
+            f"Repository context: {repo_context}\n\n"
+            f"Diff:\n```\n{diff[:12000]}\n```\n\n"
+            "Provide:\n"
+            "VERDICT: APPROVE | REQUEST_CHANGES | COMMENT\n"
+            "SUMMARY: one paragraph architectural assessment\n"
+            "FINDINGS: numbered list of specific findings with severity (critical/major/minor)"
+        )
+        return await self._complete("principal_architecture_review", prompt, 4000)
+
+    async def create_prd(self, issue_body: str, repo_context: str = "") -> str:
+        """Generate a structured PRD from an issue or feature request."""
+        prompt = (
+            "You are a principal engineer creating a Product Requirements Document.\n"
+            "Based on the following issue, produce a structured PRD.\n\n"
+            f"Repository context: {repo_context}\n\n"
+            f"Issue:\n{issue_body}\n\n"
+            "PRD sections:\n"
+            "## Overview\n"
+            "## Goals\n"
+            "## Non-Goals\n"
+            "## Background & Motivation\n"
+            "## Detailed Design\n"
+            "## Milestones (ordered, PR-sized)\n"
+            "## Acceptance Criteria\n"
+            "## Open Questions\n"
+            "## Risks & Mitigations"
+        )
+        return await self._complete("principal_create_prd", prompt, 6000)
+
+    async def decompose_refactor(self, description: str, repo_context: str = "") -> str:
+        """Plan a large refactor into ordered, PR-sized steps."""
+        prompt = (
+            "You are a principal engineer planning a large refactoring effort.\n"
+            "Break this into ordered, independently-reviewable PR-sized steps.\n\n"
+            f"Repository context: {repo_context}\n\n"
+            f"Refactor description:\n{description}\n\n"
+            "For each step provide:\n"
+            "- Step number and title\n"
+            "- Description of changes\n"
+            "- Files affected\n"
+            "- Dependencies on prior steps\n"
+            "- Risk level (low/medium/high)\n"
+            "- Estimated diff size (small/medium/large)\n"
+            "- Rollback strategy"
+        )
+        return await self._complete("principal_decompose_refactor", prompt, 5000)
+
+    # ── Test agent features ─────────────────────────────────────────────────
+
+    async def analyze_test_coverage(self, diff: str, existing_tests: str = "") -> str:
+        """Analyze a PR diff for missing test coverage."""
+        prompt = (
+            "Analyze this PR diff for test coverage gaps.\n"
+            "Identify:\n"
+            "1. New code paths that lack test coverage\n"
+            "2. Edge cases not covered by existing tests\n"
+            "3. Error/exception paths that should be tested\n"
+            "4. Integration points that need testing\n\n"
+            f"Existing test files:\n{existing_tests[:4000]}\n\n"
+            f"PR Diff:\n```\n{diff[:8000]}\n```\n\n"
+            "For each gap provide:\n"
+            "- What to test\n"
+            "- Suggested test name\n"
+            "- Test type (unit/integration/e2e)\n"
+            "- Priority (critical/important/nice-to-have)"
+        )
+        return await self._complete("test_coverage_analysis", prompt, 3000)
+
+    async def generate_test_skeleton(self, code: str, context: str = "") -> str:
+        """Generate test skeleton code for the given source code."""
+        prompt = (
+            "Generate test skeleton code for the following source code.\n"
+            "Include:\n"
+            "1. Test class/function structure with descriptive names\n"
+            "2. Setup/teardown patterns as needed\n"
+            "3. Mock definitions for external dependencies\n"
+            "4. Test cases for happy path and key edge cases\n"
+            "5. Assertions with clear expected values\n\n"
+            f"Context: {context}\n\n"
+            f"Source code:\n```\n{code[:8000]}\n```\n\n"
+            "Output valid, runnable test code using pytest."
+        )
+        return await self._complete("test_skeleton_generation", prompt, 4000)
+
+    # ── Refactor agent features ─────────────────────────────────────────────
+
+    async def analyze_code_smells(self, code: str, context: str = "") -> str:
+        """Analyze code for code smells and refactoring opportunities."""
+        prompt = (
+            "Analyze this code for code smells and refactoring opportunities.\n"
+            "Check for:\n"
+            "1. Dead code (unreachable or unused)\n"
+            "2. Duplication (similar logic repeated)\n"
+            "3. Long functions (>50 lines or too many responsibilities)\n"
+            "4. Complex conditionals (deeply nested or overly broad)\n"
+            "5. Poor naming or unclear abstractions\n"
+            "6. Circular dependencies\n\n"
+            f"Context: {context}\n\n"
+            f"Code:\n```\n{code[:10000]}\n```\n\n"
+            "For each smell provide:\n"
+            "SMELL: <category>\n"
+            "LOCATION: <file:line or function name>\n"
+            "SEVERITY: critical | major | minor\n"
+            "SUGGESTION: specific refactoring approach\n"
+            "CONFIDENCE: 0.0-1.0"
+        )
+        return await self._complete("refactor_analysis", prompt, 4000)
+
+    async def plan_refactor(self, smells: str, context: str = "") -> str:
+        """Create a refactoring plan from identified code smells."""
+        prompt = (
+            "Create a refactoring plan to address these code smells.\n"
+            "Group related smells and order steps for minimal risk.\n\n"
+            f"Context: {context}\n\n"
+            f"Identified smells:\n{smells}\n\n"
+            "For each refactoring step provide:\n"
+            "- Step number and title\n"
+            "- Smells addressed\n"
+            "- Specific changes to make\n"
+            "- Files affected\n"
+            "- Risk level\n"
+            "- Verification approach"
+        )
+        return await self._complete("refactor_plan", prompt, 3000)
+
+    # ── Performance agent features ──────────────────────────────────────────
+
+    async def analyze_perf_diff(self, diff: str, context: str = "") -> str:
+        """Analyze a PR diff for performance anti-patterns."""
+        prompt = (
+            "Analyze this PR diff for performance issues and anti-patterns.\n"
+            "Check for:\n"
+            "1. N+1 query patterns (loops making individual DB/API calls)\n"
+            "2. Unbounded loops or missing pagination\n"
+            "3. Large memory allocations or data structure copies\n"
+            "4. Missing caching for expensive operations\n"
+            "5. Blocking I/O in async contexts\n"
+            "6. Unnecessary serialization/deserialization\n\n"
+            f"Context: {context}\n\n"
+            f"Diff:\n```\n{diff[:10000]}\n```\n\n"
+            "For each issue provide:\n"
+            "PATTERN: <anti-pattern name>\n"
+            "LOCATION: <file:line>\n"
+            "SEVERITY: critical | warning | info\n"
+            "IMPACT: expected performance impact\n"
+            "FIX: specific improvement suggestion"
+        )
+        return await self._complete("perf_diff_analysis", prompt, 3000)
+
+    # ── Migration agent features ────────────────────────────────────────────
+
+    async def analyze_migration(self, code: str, target: str = "") -> str:
+        """Analyze code for deprecated API usage needing migration."""
+        prompt = (
+            "Analyze this code for deprecated or soon-to-be-deprecated API usage.\n\n"
+            f"Migration target: {target}\n\n"
+            f"Code:\n```\n{code[:10000]}\n```\n\n"
+            "For each deprecated usage provide:\n"
+            "DEPRECATED: <old API/pattern>\n"
+            "REPLACEMENT: <new API/pattern>\n"
+            "LOCATION: <file:line>\n"
+            "COMPLEXITY: simple | moderate | complex\n"
+            "AUTO_FIXABLE: yes | no\n"
+            "NOTES: migration considerations"
+        )
+        return await self._complete("migration_analysis", prompt, 4000)
+
+    async def plan_migration(self, deprecations: str, target: str = "") -> str:
+        """Create an ordered migration plan from deprecated API findings."""
+        prompt = (
+            "Create an ordered migration plan for the following deprecated API usages.\n"
+            "Group related changes and order for minimal breakage.\n\n"
+            f"Migration target: {target}\n\n"
+            f"Deprecated usages:\n{deprecations}\n\n"
+            "For each migration step provide:\n"
+            "- Step number and title\n"
+            "- Deprecations addressed\n"
+            "- Specific code changes\n"
+            "- Files affected\n"
+            "- Breaking change risk (yes/no)\n"
+            "- Rollback strategy\n"
+            "- Verification approach"
+        )
+        return await self._complete("migration_plan", prompt, 5000)
 
 
 # ── Logging helpers ──────────────────────────────────────────────────────────
