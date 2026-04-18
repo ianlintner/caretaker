@@ -320,8 +320,8 @@ class PlanMode:
                 instructions="Address the top 3 items by impact. Ensure CI passes on each fix.",
             ),
             RecoveryStep(
-                title="Verify recovery","
-                "
-                instructions=f"Confirm '{goal_id}' score has improved above 0.5 by running caretaker in dry-run mode.",
+                title="Verify recovery",
+                instructions=f"Confirm '{goal_id}' score has improved above 0.5 "
+                "by running caretaker in dry-run mode.",
             ),
         ]
