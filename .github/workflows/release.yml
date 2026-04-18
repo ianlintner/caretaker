@@ -230,7 +230,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload --non-interactive --skip-existing dist/*
+        run: twine upload --non-interactive --skip-existing dist-packages/*
 
       - name: Publish to PyPI (OIDC trusted publishing)
         if: steps.publish-auth.outputs.has_pypi_token != 'true'
