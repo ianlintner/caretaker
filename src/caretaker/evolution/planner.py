@@ -166,6 +166,9 @@ class PlanMode:
 
         if plan.milestone_number:
             state.active_plan_ids[goal_id] = plan.milestone_number
+        # Always record a cooldown stamp, even if milestone creation fell back
+        # to issues-only, so we don't spam retries across runs.
+        state.plan_cooldowns[goal_id] = datetime.now(UTC).isoformat()
 
         # Create one issue per step
         for i, step in enumerate(steps, 1):
