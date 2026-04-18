@@ -66,11 +66,14 @@ def mock_pymongo():
         mock_skills_col if "skill" in name else mock_mutations_col
     )
 
-    with patch.dict(
-        "sys.modules", {"pymongo": MagicMock(MongoClient=MagicMock(return_value=mock_client))}
-    ), patch(
-        "caretaker.evolution.backends.mongo_backend.MongoEvolutionBackend.__init__",
-        autospec=True,
+    with (
+        patch.dict(
+            "sys.modules", {"pymongo": MagicMock(MongoClient=MagicMock(return_value=mock_client))}
+        ),
+        patch(
+            "caretaker.evolution.backends.mongo_backend.MongoEvolutionBackend.__init__",
+            autospec=True,
+        ),
     ):
         yield mock_client, mock_skills_col, mock_mutations_col
 
