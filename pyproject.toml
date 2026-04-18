@@ -71,6 +71,13 @@ backend = [
     "uvicorn>=0.23,<1",
     "pyjwt[crypto]>=2.8,<3",
 ]
+# Multi-provider LLM routing (OpenAI, Vertex, Azure OpenAI, Azure AI Foundry,
+# Bedrock, Ollama, Mistral, Cohere, Groq, etc.) via LiteLLM.  The direct
+# Anthropic SDK remains the default; install this extra and set
+# ``llm.provider: litellm`` in config to enable other backends.
+llm-multi = [
+    "litellm>=1.50,<2",
+]
 
 [project.scripts]
 caretaker = "caretaker.cli:main"

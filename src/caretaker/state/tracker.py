@@ -10,6 +10,7 @@ from caretaker.tools.github import GitHubIssueTools
 from .models import OrchestratorState, RunSummary
 
 if TYPE_CHECKING:
+    from caretaker.evolution.reflection import ReflectionResult
     from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,22 @@ class StateTracker:
 
         body = self._format_summary(summary)
         await self._issues.comment(self._tracking_issue_number, body)
+
+    async def post_reflection(self, result: ReflectionResult) -> None:
+        """Post a reflection analysis comment to the tracking issue."""
+        from caretaker.evolution.reflection import format_reflection_comment
+
+        if self._tracking_issue_number is None:
+            await self._create_tracking_issue()
+        assert self._tracking_issue_number is not None
+
+        body = format_reflection_comment(result)
+        await self._issues.comment(self._tracking_issue_number, body)
+        logger.info(
+            "Reflection posted to tracking issue #%d (triggered_by=%s)",
+            self._tracking_issue_number,
+            result.triggered_by,
+        )
 
     async def _find_tracking_issue(self) -> int | None:
         issues = await self._issues.list(labels=TRACKING_LABEL)

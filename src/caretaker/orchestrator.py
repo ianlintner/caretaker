@@ -13,11 +13,17 @@ from caretaker import __version__
 from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
+from caretaker.evolution.backends.factory import build_evolution_store
+from caretaker.evolution.crystallizer import SkillCrystallizer
+from caretaker.evolution.mutator import StrategyMutator
+from caretaker.evolution.planner import PlanMode
+from caretaker.evolution.reflection import ReflectionEngine
 from caretaker.github_app import AppJWTSigner, GitHubAppCredentialsProvider, InstallationTokenMinter
 from caretaker.github_client.api import GitHubClient
 from caretaker.github_client.credentials import ChainCredentialsProvider, EnvCredentialsProvider
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
+from caretaker.goals.models import GoalStatus
 from caretaker.llm.router import LLMRouter
 from caretaker.mcp import MCPClient, TelemetryClient
 from caretaker.state.audit_log import AuditLogWriter
@@ -31,6 +37,7 @@ from caretaker.state.models import (
 from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
+    from caretaker.evolution.insight_store import InsightStore
     from caretaker.goals.models import GoalEvaluation
     from caretaker.registry import AgentRegistry
 
@@ -167,6 +174,32 @@ class Orchestrator:
         if config.mcp.enabled:
             self._mcp_client = MCPClient(config.mcp)
 
+        # Evolution layer (InsightStore, ReflectionEngine, StrategyMutator, PlanMode)
+        self._insight_store: InsightStore | None = None
+        self._skill_crystallizer: SkillCrystallizer | None = None
+        self._reflection_engine: ReflectionEngine | None = None
+        self._strategy_mutator: StrategyMutator | None = None
+        self._plan_mode: PlanMode | None = None
+        if config.evolution.enabled:
+            store = build_evolution_store(config)
+            assert store is not None, "Evolution store cannot be None when evolution is enabled"
+            self._insight_store = store
+            self._skill_crystallizer = SkillCrystallizer(store)
+            self._reflection_engine = ReflectionEngine()
+            self._strategy_mutator = StrategyMutator(store)
+            if config.evolution.plan_mode_enabled:
+                self._plan_mode = PlanMode(
+                    github=github,
+                    owner=owner,
+                    repo=repo,
+                    claude_client=self._llm.claude,
+                )
+            logger.info("Evolution layer enabled: backend=%s", config.evolution.backend)
+
+        # Apply any pending strategy mutations to runtime config before building agents
+        if self._strategy_mutator is not None:
+            config = self._strategy_mutator.apply_pending(config, OrchestratorState())
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -234,6 +267,14 @@ class Orchestrator:
         try:
             state = await self._state_tracker.load()
 
+            # Pending strategy mutations were applied in __init__ (before agents
+            # were constructed) so AgentContext.config already carries them. We
+            # intentionally do NOT re-apply here: rebuilding the registry mid-run
+            # would invalidate in-flight agent state.
+
+            # Snapshot PR states before agents run (for crystallization comparison)
+            _pre_agent_prs = {n: pr.model_copy() for n, pr in state.tracked_prs.items()}
+
             # Initialize optional remote dependencies
             if self._mcp_client and self._mcp_client.config.enabled:
                 await self._mcp_client.connect()
@@ -293,7 +334,16 @@ class Orchestrator:
             # Cross-agent state reconciliation
             self._reconcile_state(state, summary)
 
+            # ── Skill crystallization (Phase 1) ───────────────
+            if self._skill_crystallizer is not None:
+                recorded = self._skill_crystallizer.crystallize_transitions(
+                    _pre_agent_prs, state.tracked_prs
+                )
+                if recorded:
+                    logger.info("Evolution: crystallized %d skill outcomes", recorded)
+
             # ── Goal post-evaluation ──────────────────────────
+            post_eval = None
             if self._goal_engine:
                 goal_ctx = GoalContext(
                     github=self._github,
@@ -311,6 +361,63 @@ class Orchestrator:
                     post_eval.overall_health,
                     len(post_eval.escalations),
                 )
+
+                # ── Evolution post-eval hooks ─────────────────
+                if post_eval is not None and self._insight_store is not None:
+                    # Plan Mode: activate for CRITICAL goals (Phase 6)
+                    if self._plan_mode is not None:
+                        for goal_id, snap in post_eval.snapshots.items():
+                            if (
+                                snap.status == GoalStatus.CRITICAL
+                                and goal_id not in state.active_plan_ids
+                            ):
+                                goal_obj = self._goal_engine.goals.get(goal_id)
+                                if goal_obj:
+                                    with contextlib.suppress(Exception):
+                                        await self._plan_mode.activate(
+                                            goal=goal_obj,
+                                            evaluation=post_eval,
+                                            state=state,
+                                            insight_store=self._insight_store,
+                                        )
+                        await self._plan_mode.monitor_plans(state, post_eval)
+
+                    # Strategy mutation evaluation (Phase 4)
+                    if self._strategy_mutator is not None:
+                        outcomes = self._strategy_mutator.evaluate_pending(state, post_eval)
+                        for outcome in outcomes:
+                            logger.info(
+                                "Mutation %s: %s.%s %s (Δ=%.3f)",
+                                outcome.outcome,
+                                outcome.agent_name,
+                                outcome.parameter,
+                                outcome.new_value,
+                                outcome.score_delta,
+                            )
+
+                    # Reflection engine (Phase 3)
+                    if (
+                        self._reflection_engine is not None
+                        and self._config.evolution.reflection_enabled
+                        and self._reflection_engine.should_reflect(post_eval, state)
+                    ):
+                        with contextlib.suppress(Exception):
+                            reflection = await self._reflection_engine.reflect(
+                                evaluation=post_eval,
+                                state=state,
+                                run_history=state.run_history[-10:],
+                                insight_store=self._insight_store,
+                                claude_client=self._llm.claude,
+                            )
+                            await self._state_tracker.post_reflection(reflection)
+                            # Propose a mutation from the reflection if mutations enabled
+                            if (
+                                self._strategy_mutator is not None
+                                and self._config.evolution.mutation_enabled
+                            ):
+                                self._strategy_mutator.propose_mutation(
+                                    reflection, state, self._config
+                                )
 
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)
@@ -378,6 +485,9 @@ class Orchestrator:
         with contextlib.suppress(Exception):
             if self._memory is not None:
                 self._memory.close()
+        with contextlib.suppress(Exception):
+            if self._insight_store is not None:
+                self._insight_store.close()
 
         # Write JSON run report if a path was provided
         if report_path:

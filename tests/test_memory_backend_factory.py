@@ -31,7 +31,7 @@ class TestBuildMemoryBackend:
         self, base_config: MaintainerConfig
     ) -> None:
         base_config.memory_store.enabled = True
-        base_config.memory_store.backend = "mongo"  # type: ignore[assignment]
+        base_config.memory_store.backend = "mongo"
         base_config.mongo.enabled = False
         base_config.memory_store.db_path = ":memory:"
         backend = build_memory_backend(base_config)
@@ -42,7 +42,7 @@ class TestBuildMemoryBackend:
     ) -> None:
         monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/caretaker")
         base_config.memory_store.enabled = True
-        base_config.memory_store.backend = "mongo"  # type: ignore[assignment]
+        base_config.memory_store.backend = "mongo"
         base_config.mongo.enabled = True
 
         from caretaker.state.backends.mongo_backend import MongoMemoryBackend

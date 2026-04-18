@@ -68,6 +68,11 @@ class TrackedPR(BaseModel):
     readiness_blockers: list[str] = Field(default_factory=list)
     readiness_summary: str = ""
 
+    # Evolution: within-run stuck detection (Phase 5)
+    fix_cycles: int = 0
+    last_state_change_at: datetime | None = None
+    stuck_reflection_done: bool = False
+
 
 class TrackedIssue(BaseModel):
     number: int
@@ -156,3 +161,7 @@ class OrchestratorState(BaseModel):
     goal_history: dict[str, list[GoalSnapshot]] = Field(default_factory=dict)
     last_run: RunSummary | None = None
     run_history: list[RunSummary] = Field(default_factory=list)
+    # Evolution: active recovery plan milestones per goal (Phase 6)
+    active_plan_ids: dict[str, int] = Field(default_factory=dict)
+    # Evolution: last-activated timestamp per goal (ISO8601) — used to enforce cooldown
+    plan_cooldowns: dict[str, str] = Field(default_factory=dict)

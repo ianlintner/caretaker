@@ -61,7 +61,7 @@ async def test_chain_returns_first_successful_token() -> None:
 
     chain = ChainCredentialsProvider(
         [
-            EmptyProvider(),  # type: ignore[arg-type]
+            EmptyProvider(),
             StaticCredentialsProvider(default_token="fallback"),
         ]
     )
@@ -78,8 +78,8 @@ async def test_chain_falls_through_all_providers() -> None:
 
     chain = ChainCredentialsProvider(
         [
-            EmptyProvider(),  # type: ignore[arg-type]
-            EmptyProvider(),  # type: ignore[arg-type]
+            EmptyProvider(),
+            EmptyProvider(),
         ]
     )
     with pytest.raises(RuntimeError, match="no provider returned"):

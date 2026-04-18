@@ -127,6 +127,28 @@ class EscalationConfig(StrictBaseModel):
     labels: list[str] = Field(default_factory=lambda: ["maintainer:escalated"])
 
 
+DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5"
+
+DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
+    # Short classification/triage tasks — route to the faster/cheaper tier.
+    "ci_log_analysis": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 2000},
+    "analyze_review_comment": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 1000},
+    "analyze_stuck_pr": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
+    # Longer reasoning tasks — keep on the default (Sonnet) tier.
+    "generate_reflection": {"model": DEFAULT_MODEL, "max_tokens": 1500},
+    "generate_recovery_plan": {"model": DEFAULT_MODEL, "max_tokens": 2000},
+    "decompose_issue": {"model": DEFAULT_MODEL, "max_tokens": 3000},
+}
+
+
+class FeatureModelConfig(StrictBaseModel):
+    """Per-feature model override."""
+
+    model: str | None = None
+    max_tokens: int | None = None
+
+
 class LLMConfig(StrictBaseModel):
     claude_enabled: Literal["auto", "true", "false"] = "auto"
     claude_features: list[str] = Field(
@@ -137,6 +159,20 @@ class LLMConfig(StrictBaseModel):
             "upgrade_impact_analysis",
         ]
     )
+    # Provider selection: "anthropic" (default, direct SDK) or "litellm"
+    # (multi-provider: OpenAI, Vertex, Azure OpenAI, Azure AI Foundry,
+    # Bedrock, Ollama, Mistral, Cohere, Groq, etc.)
+    provider: Literal["anthropic", "litellm"] = "anthropic"
+    # Model used when a feature has no explicit override. For litellm this
+    # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-1.5-pro").
+    default_model: str = DEFAULT_MODEL
+    # Per-request timeout in seconds.
+    timeout_seconds: float = 60.0
+    # Per-feature model/max_tokens overrides — deep-merged on top of DEFAULT_FEATURE_MODELS.
+    feature_models: dict[str, FeatureModelConfig] = Field(default_factory=dict)
+    # Fallback model chain — only used when provider="litellm".  Each entry is
+    # a LiteLLM-format model string tried in order if the primary call fails.
+    fallback_models: list[str] = Field(default_factory=list)
 
 
 class OrchestratorConfig(StrictBaseModel):
@@ -225,6 +261,20 @@ class GoalEngineConfig(StrictBaseModel):
     max_history: int = 20
 
 
+class EvolutionConfig(StrictBaseModel):
+    """Configuration for the learn-and-adapt evolution layer."""
+
+    enabled: bool = False
+    # Storage backend: "sqlite" (default, zero-dependency) or "mongo"
+    # (requires mongo.enabled=true and MONGODB_URL env var).
+    backend: Literal["sqlite", "mongo"] = "sqlite"
+    db_path: str = ".caretaker-evolution.db"
+    skill_min_confidence: float = 0.5
+    reflection_enabled: bool = True
+    mutation_enabled: bool = False  # opt-in; requires review of mutation outcomes
+    plan_mode_enabled: bool = False  # opt-in; creates GitHub milestones + issues
+
+
 class ReviewAgentConfig(StrictBaseModel):
     enabled: bool = False
     mode: Literal["scheduled", "targeted"] = "scheduled"
@@ -293,6 +343,9 @@ class MongoConfig(StrictBaseModel):
     memory_collection: str = "agent_memory"
     # Collection name for the audit log.
     audit_collection: str = "audit_log"
+    # Evolution layer collections (used when evolution.backend = "mongo")
+    evolution_skills_collection: str = "evolution_skills"
+    evolution_mutations_collection: str = "evolution_mutations"
 
 
 class RedisConfig(StrictBaseModel):
@@ -402,6 +455,7 @@ class MaintainerConfig(StrictBaseModel):
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)

@@ -399,6 +399,7 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
         copilot_assignment: CopilotAgentAssignment | None = None,
+        milestone: int | None = None,
     ) -> Issue:
         # Copilot assignment requires the dedicated issue-assignees flow with a user token.
         assign_copilot = any(is_copilot_login(assignee) for assignee in (assignees or []))
@@ -409,6 +410,8 @@ class GitHubClient:
             payload["labels"] = labels
         if real_assignees:
             payload["assignees"] = real_assignees
+        if milestone is not None:
+            payload["milestone"] = milestone
         data = await self._post(f"/repos/{owner}/{repo}/issues", json=payload)
         issue = self._parse_issue(data)
 
@@ -476,6 +479,63 @@ class GitHubClient:
             )
 
         return issue
+
+    async def create_milestone(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a repository milestone. Returns the raw milestone JSON."""
+        payload: dict[str, Any] = {"title": title}
+        if description is not None:
+            payload["description"] = description
+        if due_on is not None:
+            payload["due_on"] = due_on
+        data = await self._post(f"/repos/{owner}/{repo}/milestones", json=payload)
+        return data or {}
+
+    async def update_milestone(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        state: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a milestone (e.g. ``state='closed'``)."""
+        payload: dict[str, Any] = {}
+        if state is not None:
+            payload["state"] = state
+        if title is not None:
+            payload["title"] = title
+        if description is not None:
+            payload["description"] = description
+        if not payload:
+            data = await self._get(f"/repos/{owner}/{repo}/milestones/{number}")
+        else:
+            data = await self._patch(f"/repos/{owner}/{repo}/milestones/{number}", json=payload)
+        return data or {}
+
+    async def get_milestone_issues(
+        self,
+        owner: str,
+        repo: str,
+        milestone_number: int,
+        state: str = "all",
+    ) -> list[Issue]:
+        """List issues associated with a milestone."""
+        params: dict[str, Any] = {
+            "milestone": milestone_number,
+            "state": state,
+            "per_page": 100,
+        }
+        data = await self._get(f"/repos/{owner}/{repo}/issues", params=params)
+        return [self._parse_issue(i) for i in (data or []) if "pull_request" not in i]
 
     async def add_issue_comment(
         self,

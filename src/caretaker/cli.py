@@ -5,13 +5,38 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from enum import StrEnum
+from pathlib import Path
 
 import click
 
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
+
+
+def _load_dotenv_if_present() -> None:
+    """Populate ``os.environ`` from a ``.env`` file in the working directory.
+
+    No-op if the file is missing.  Existing shell variables win over .env
+    values so CI/production deployments can always override.
+    """
+    env_path = Path(os.environ.get("CARETAKER_DOTENV", ".env"))
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv_if_present()
 
 
 class RunMode(StrEnum):

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from caretaker.evolution.insight_store import CATEGORY_CI
 from caretaker.llm.copilot import (
     CopilotProtocol,
     CopilotResult,
@@ -15,6 +16,7 @@ from caretaker.llm.copilot import (
 from caretaker.pr_agent.ci_triage import FailureType
 
 if TYPE_CHECKING:
+    from caretaker.evolution.insight_store import InsightStore
     from caretaker.github_client.models import PullRequest
     from caretaker.pr_agent.ci_triage import TriageResult
     from caretaker.pr_agent.review import ReviewAnalysis
@@ -45,9 +47,15 @@ class CopilotInteractionResult:
 class PRCopilotBridge:
     """Bridge between PR Agent decisions and Copilot execution via comments."""
 
-    def __init__(self, protocol: CopilotProtocol, max_retries: int = 2) -> None:
+    def __init__(
+        self,
+        protocol: CopilotProtocol,
+        max_retries: int = 2,
+        insight_store: InsightStore | None = None,
+    ) -> None:
         self._protocol = protocol
         self._max_retries = max_retries
+        self._insight_store = insight_store
 
     async def request_ci_fix(
         self,
@@ -67,6 +75,10 @@ class PRCopilotBridge:
             priority="high",
             context=issue_context,
         )
+
+        if self._insight_store is not None:
+            skills = self._insight_store.get_relevant(CATEGORY_CI, triage.error_summary)
+            task.enrich_with_skills(skills)
 
         comment = await self._protocol.post_task(pr.number, task)
         return CopilotInteractionResult(

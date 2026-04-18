@@ -44,3 +44,8 @@ site/
 .gitignore
 .caretaker-memory.db*
 *.pem
+/*.txt
+/*.json
+src/caretaker/evolution/backends/mongo_backend.py
+*-evolution.db*
+*.log
