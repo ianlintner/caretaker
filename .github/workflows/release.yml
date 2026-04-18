@@ -236,8 +236,6 @@ jobs:
         if: steps.publish-auth.outputs.has_pypi_token != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # If PYPI_API_TOKEN secret is set it will be used for token-based auth;
-          # when the secret is empty the action falls back to OIDC trusted publishing.
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          # This branch is OIDC-only; token-based publishing is handled above.
           packages-dir: dist-packages
           skip-existing: true
