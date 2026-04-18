@@ -54,12 +54,21 @@ class ReviewEvaluation:
 
 
 @dataclass
+class ReadinessEvaluation:
+    score: float
+    blockers: list[str]
+    summary: str
+    conclusion: str  # success, failure, in_progress
+
+
+@dataclass
 class PRStateEvaluation:
     pr: PullRequest
     ci: CIEvaluation
     reviews: ReviewEvaluation
-    recommended_state: PRTrackingState
-    recommended_action: str
+    readiness: ReadinessEvaluation | None = None
+    recommended_state: PRTrackingState = PRTrackingState.DISCOVERED
+    recommended_action: str = "wait"
 
 
 def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None) -> CIEvaluation:
@@ -152,6 +161,81 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
     )
 
 
+def evaluate_readiness(
+    pr: PullRequest,
+    ci: CIEvaluation,
+    review_eval: ReviewEvaluation,
+    current_state: PRTrackingState,
+) -> ReadinessEvaluation:
+    """Evaluate PR readiness score and blockers."""
+    score = 0.0
+    blockers = []
+
+    # 10%: Mergeable, non-draft, no breaking, no hold
+    if (
+        not pr.draft
+        and pr.mergeable
+        and not pr.has_label("maintainer:breaking")
+        and not pr.has_label("caretaker:hold")
+    ):
+        score += 0.10
+    else:
+        if pr.draft:
+            blockers.append("draft_pr")
+        if not pr.mergeable:
+            blockers.append("merge_conflict")
+        if pr.has_label("maintainer:breaking"):
+            blockers.append("breaking_change")
+        if pr.has_label("caretaker:hold"):
+            blockers.append("manual_hold")
+
+    # 20%: Automated feedback addressed
+    if not review_eval.has_automated_comments or current_state == PRTrackingState.FIX_REQUESTED:
+        score += 0.20
+    else:
+        blockers.append("automated_feedback_unaddressed")
+
+    # 30%: Required reviews satisfied
+    if not review_eval.changes_requested and review_eval.approved:
+        score += 0.30
+    else:
+        if review_eval.changes_requested:
+            blockers.append("changes_requested")
+        if not review_eval.approved:
+            blockers.append("required_review_missing")
+
+    # 40%: CI green and no pending checks
+    if ci.status == CIStatus.PASSING and ci.all_completed:
+        score += 0.40
+    else:
+        if ci.status in (CIStatus.FAILING, CIStatus.MIXED):
+            blockers.append("ci_failing")
+        if not ci.all_completed:
+            blockers.append("ci_pending")
+
+    # Determine conclusion
+    if not blockers:
+        conclusion = "success"
+        summary = "PR is ready for merge"
+    elif (
+        "ci_pending" in blockers
+        or "required_review_missing" in blockers
+        and "changes_requested" not in blockers
+    ):
+        conclusion = "in_progress"
+        summary = f"PR pending: {', '.join(blockers)}"
+    else:
+        conclusion = "failure"
+        summary = f"PR blocked: {', '.join(blockers)}"
+
+    return ReadinessEvaluation(
+        score=round(score, 2),
+        blockers=blockers,
+        summary=summary,
+        conclusion=conclusion,
+    )
+
+
 def evaluate_pr(
     pr: PullRequest,
     check_runs: list[CheckRun],
@@ -163,6 +247,7 @@ def evaluate_pr(
     """Full PR evaluation — determines next state and action."""
     ci = evaluate_ci(check_runs, ignore_jobs)
     review_eval = evaluate_reviews(reviews)
+    readiness = evaluate_readiness(pr, ci, review_eval, current_state)
 
     # State transitions
     if pr.merged:
@@ -170,6 +255,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.MERGED,
             recommended_action="none",
         )
@@ -179,6 +265,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.CLOSED,
             recommended_action="none",
         )
@@ -194,6 +281,7 @@ def evaluate_pr(
                 pr=pr,
                 ci=ci,
                 reviews=review_eval,
+                readiness=readiness,
                 recommended_state=PRTrackingState.CI_PENDING,
                 recommended_action="approve_workflows",
             )
@@ -201,6 +289,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.CI_PENDING,
             recommended_action="wait",
         )
@@ -212,6 +301,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.CI_FAILING,
             recommended_action=action,
         )
@@ -227,6 +317,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
             recommended_action=action,
         )
@@ -244,6 +335,7 @@ def evaluate_pr(
                 pr=pr,
                 ci=ci,
                 reviews=review_eval,
+                readiness=readiness,
                 recommended_state=PRTrackingState.REVIEW_CHANGES_REQUESTED,
                 recommended_action="request_review_fix",
             )
@@ -253,6 +345,7 @@ def evaluate_pr(
             pr=pr,
             ci=ci,
             reviews=review_eval,
+            readiness=readiness,
             recommended_state=PRTrackingState.MERGE_READY,
             recommended_action="merge",
         )
@@ -261,6 +354,7 @@ def evaluate_pr(
         pr=pr,
         ci=ci,
         reviews=review_eval,
+        readiness=readiness,
         recommended_state=PRTrackingState.CI_PASSING,
         recommended_action="await_review",
     )

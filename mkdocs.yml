@@ -34,6 +34,7 @@ nav:
   - Agents: agents.md
   - Goals: goals.md
   - Architecture: architecture.md
+  - PR Ownership: pr-ownership.md
   - Development: development.md
   - Release notes: release-notes.md
 

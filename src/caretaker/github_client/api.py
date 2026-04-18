@@ -266,6 +266,118 @@ class GitHubClient:
             return "pending"
         return str(data.get("state", "pending"))
 
+    async def create_check_run(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+        head_sha: str,
+        status: str = "in_progress",
+        conclusion: str | None = None,
+        output_title: str | None = None,
+        output_summary: str | None = None,
+        started_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a check run (status check) on a commit.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            name: Check run name (e.g. 'caretaker/pr-readiness')
+            head_sha: The SHA of the commit to check
+            status: 'queued', 'in_progress', 'completed'
+            conclusion: 'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                       'timed_out', 'action_required', 'neutral', 'stale'
+            output_title: Title for the check output
+            output_summary: Summary text for the check output
+            started_at: ISO 8601 timestamp when the check started
+            completed_at: ISO 8601 timestamp when the check completed
+
+        Returns:
+            The created check run dict from the GitHub API
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": status,
+        }
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if output_title or output_summary:
+            payload["output"] = {
+                "title": output_title or name,
+                "summary": output_summary or "",
+            }
+        if started_at:
+            payload["started_at"] = started_at
+        if completed_at:
+            payload["completed_at"] = completed_at
+
+        data = await self._post(f"/repos/{owner}/{repo}/check-runs", json=payload)
+        return data if data else {}
+
+    async def update_check_run(
+        self,
+        owner: str,
+        repo: str,
+        check_run_id: int,
+        status: str = "completed",
+        conclusion: str | None = None,
+        output_title: str | None = None,
+        output_summary: str | None = None,
+        completed_at: str | None = None,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing check run.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            check_run_id: The ID of the check run to update
+            status: 'queued', 'in_progress', 'completed'
+            conclusion: 'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                       'timed_out', 'action_required', 'neutral', 'stale'
+            output_title: Title for the check output
+            output_summary: Summary text for the check output
+            completed_at: ISO 8601 timestamp when the check completed
+            actions: Optional list of action buttons to add to the check
+
+        Returns:
+            The updated check run dict from the GitHub API
+        """
+        payload: dict[str, Any] = {
+            "status": status,
+        }
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if output_title or output_summary:
+            payload["output"] = {
+                "title": output_title or "",
+                "summary": output_summary or "",
+            }
+        if completed_at:
+            payload["completed_at"] = completed_at
+        if actions:
+            payload["actions"] = actions
+
+        data = await self._patch(
+            f"/repos/{owner}/{repo}/check-runs/{check_run_id}",
+            json=payload,
+        )
+        return data if data else {}
+
+    async def find_check_run(self, owner: str, repo: str, ref: str, name: str) -> CheckRun | None:
+        """Find an existing check run by name on a given ref (branch/SHA).
+
+        Returns the most recent check run with the matching name, or None if not found.
+        """
+        check_runs = await self.get_check_runs(owner, repo, ref)
+        for cr in check_runs:
+            if cr.name == name:
+                return cr
+        return None
+
     # ── Issues ──────────────────────────────────────────────────
 
     async def list_issues(

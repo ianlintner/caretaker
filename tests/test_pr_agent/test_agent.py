@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from caretaker.config import CIConfig, CopilotConfig, PRAgentConfig
+from caretaker.config import (
+    CIConfig,
+    CopilotConfig,
+    OwnershipConfig,
+    PRAgentConfig,
+    ReadinessConfig,
+)
 from caretaker.github_client.models import (
     CheckConclusion,
     Label,
@@ -30,7 +36,20 @@ def make_config(
         close_managed_prs_on_backlog=close_managed_prs_on_backlog,
     )
     config.copilot = CopilotConfig(max_retries=max_retries)
+    config.ownership = OwnershipConfig()
+    config.readiness = ReadinessConfig()
     return config
+
+
+def make_readiness_evaluation() -> ReadinessEvaluation:
+    """Create a default readiness evaluation for tests."""
+    from caretaker.pr_agent.states import ReadinessEvaluation
+    return ReadinessEvaluation(
+        score=0.5,
+        blockers=["ci_failing"],
+        summary="CI failing",
+        conclusion="in_progress",
+    )
 
 
 @pytest.mark.asyncio
@@ -65,6 +84,7 @@ class TestCIFixLifecycle:
             pr=pr,
             ci=ci_eval,
             reviews=MagicMock(changes_requested=False),
+            readiness=make_readiness_evaluation(),
             recommended_state=PRTrackingState.CI_FAILING,
             recommended_action="request_fix",
         )
@@ -163,6 +183,7 @@ class TestCIFixLifecycle:
             pr=pr,
             ci=ci_eval,
             reviews=MagicMock(changes_requested=False),
+            readiness=make_readiness_evaluation(),
             recommended_state=PRTrackingState.CI_FAILING,
             recommended_action="request_fix",
         )
@@ -421,6 +442,7 @@ class TestApproveWorkflows:
             pr=pr,
             ci=ci_eval,
             reviews=AsyncMock(),
+            readiness=make_readiness_evaluation(),
             recommended_state=PRTrackingState.CI_PENDING,
             recommended_action="approve_workflows",
         )
