@@ -118,6 +118,11 @@ class PullRequest(BaseModel):
     head_ref: str = ""
     head_sha: str = ""
     base_ref: str = ""
+    # Full ``owner/repo`` of the PR's head and base. When the PR is from a
+    # fork the two differ; caretaker uses this to guard against writes that
+    # an App installation token cannot perform on the fork.
+    head_repo_full_name: str = ""
+    base_repo_full_name: str = ""
     mergeable: bool | None = None
     merged: bool = False
     draft: bool = False
@@ -126,6 +131,17 @@ class PullRequest(BaseModel):
     updated_at: dt.datetime | None = None
     merged_at: dt.datetime | None = None
     html_url: str = ""
+
+    @property
+    def is_fork(self) -> bool:
+        """Return True when the PR originates from a fork.
+
+        Defaults to False when the repo identity is unknown so the PR-agent
+        path behaves exactly as it did before these fields were added.
+        """
+        if not self.head_repo_full_name or not self.base_repo_full_name:
+            return False
+        return self.head_repo_full_name != self.base_repo_full_name
 
     @property
     def is_copilot_pr(self) -> bool:

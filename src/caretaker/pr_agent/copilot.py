@@ -166,11 +166,21 @@ class PRCopilotBridge:
             )
 
         route = await self._dispatcher.route(pr=pr, copilot_task=copilot_task)
-        comment_id = route.copilot_comment.id if route.copilot_comment else None
-        # If Foundry completed end-to-end it already posted a result-format
-        # comment; surface that comment id for downstream bookkeeping.
-        if comment_id is None and route.foundry_result is not None:
-            comment_id = route.foundry_result.comment_id
+        # The state machine stores this as ``last_task_comment_id`` and later
+        # polls ``find_latest_result(after_comment_id=...)``. That filter
+        # *skips* any comment whose id <= the stored one. So:
+        #   - Copilot path → id of the TASK comment; the upcoming RESULT
+        #     comment will have a later id and be found. ✓
+        #   - Foundry fallback path → same (Copilot task comment was posted).
+        #   - Foundry success path → Foundry already pushed a commit AND
+        #     posted the RESULT comment. Returning its id here would cause
+        #     the next poll to skip it. Leave as None so the poll scans the
+        #     full comment list and finds the Foundry result.
+        comment_id: int | None
+        if route.copilot_comment is not None:
+            comment_id = route.copilot_comment.id
+        else:
+            comment_id = None
 
         return CopilotInteractionResult(
             task_posted=True,

@@ -165,11 +165,12 @@ class FoundryExecutor:
         ``ExecutorResult``; the caller falls back to Copilot on non-COMPLETED.
         """
         # ── Pre-flight ──
-        # Fork check: PullRequest doesn't carry head_repo_full_name, so we
-        # treat identical base_ref/head_ref ownership as a proxy. Callers can
-        # enrich with explicit repo identity before calling us.
-        head_repo = getattr(pr, "head_repo_full_name", f"{self._owner}/{self._repo}")
-        base_repo = getattr(pr, "base_repo_full_name", f"{self._owner}/{self._repo}")
+        # When the PR model carries explicit repo identity (populated by
+        # ``_parse_pr``) use it for the fork check. Fall back to the local
+        # owner/repo when the PR was constructed by tests/fixtures without
+        # the repo fields — that matches non-fork production behavior.
+        head_repo = pr.head_repo_full_name or f"{self._owner}/{self._repo}"
+        base_repo = pr.base_repo_full_name or f"{self._owner}/{self._repo}"
 
         pre = pre_flight(
             task_type=task.task_type.value,

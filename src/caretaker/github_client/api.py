@@ -777,15 +777,21 @@ class GitHubClient:
 
     @staticmethod
     def _parse_pr(data: dict[str, Any]) -> PullRequest:
+        head = data.get("head") or {}
+        base = data.get("base") or {}
+        head_repo = (head.get("repo") or {}).get("full_name", "") or ""
+        base_repo = (base.get("repo") or {}).get("full_name", "") or ""
         return PullRequest(
             number=data["number"],
             title=data["title"],
             body=data.get("body") or "",
             state=data["state"],
             user=User(login=data["user"]["login"], id=data["user"]["id"]),
-            head_ref=data.get("head", {}).get("ref", ""),
-            head_sha=data.get("head", {}).get("sha", ""),
-            base_ref=data.get("base", {}).get("ref", ""),
+            head_ref=head.get("ref", ""),
+            head_sha=head.get("sha", ""),
+            base_ref=base.get("ref", ""),
+            head_repo_full_name=head_repo,
+            base_repo_full_name=base_repo,
             mergeable=data.get("mergeable"),
             merged=data.get("merged", False),
             draft=data.get("draft", False),
