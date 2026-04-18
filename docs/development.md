@@ -48,7 +48,7 @@ mkdocs serve
 | `src/caretaker/`     | source package                   |
 | `tests/`             | unit and integration-style tests |
 | `schema/`            | versioned config schema          |
-| `dist/templates/`    | consumer repo templates          |
+| `setup-templates/`   | consumer repo templates          |
 | `.github/workflows/` | CI and orchestrator automation   |
 | `docs/`              | documentation site content       |
 

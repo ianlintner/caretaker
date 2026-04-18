@@ -11,7 +11,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
-RELEASES_JSON_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/releases.json"
 DEFAULT_OWNER = "ianlintner"
 DEFAULT_REPO = "caretaker"
 
@@ -36,7 +35,6 @@ async def fetch_releases(
 ) -> list[Release]:
     """Fetch releases from the GitHub Releases API.
 
-    Falls back to the legacy ``releases.json`` manifest on failure.
     Draft and pre-release entries are skipped.
     """
     url = GITHUB_RELEASES_API.format(owner=owner, repo=repo)
@@ -49,12 +47,8 @@ async def fetch_releases(
             resp.raise_for_status()
             data: list[dict[str, object]] = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            logger.warning(
-                "Failed to fetch GitHub releases from %s: %s — falling back to releases.json",
-                url,
-                exc,
-            )
-            return await _fetch_releases_json(owner, repo)
+            logger.warning("Failed to fetch GitHub releases from %s: %s", url, exc)
+            return []
 
     releases: list[Release] = []
     for entry in data:
@@ -74,35 +68,6 @@ async def fetch_releases(
                 changelog_url=str(entry.get("html_url", "")),
                 upgrade_notes=body if body else None,
                 breaking=bool(_BREAKING_RE.search(body)),
-            )
-        )
-    return releases
-
-
-async def _fetch_releases_json(
-    owner: str = DEFAULT_OWNER,
-    repo: str = DEFAULT_REPO,
-) -> list[Release]:
-    """Fallback: parse the legacy ``releases.json`` manifest."""
-    url = RELEASES_JSON_URL.format(owner=owner, repo=repo)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("Failed to fetch releases.json from %s: %s", url, exc)
-            return []
-
-    releases: list[Release] = []
-    for entry in data.get("releases", []):
-        releases.append(
-            Release(
-                version=entry["version"],
-                min_compatible=entry.get("min_compatible", entry["version"]),
-                changelog_url=entry.get("changelog_url", ""),
-                upgrade_notes=entry.get("upgrade_notes"),
-                breaking=entry.get("breaking", False),
             )
         )
     return releases

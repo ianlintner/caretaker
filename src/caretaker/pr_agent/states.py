@@ -172,9 +172,10 @@ def evaluate_readiness(
     blockers = []
 
     # 10%: Mergeable, non-draft, no breaking, no hold
+    # pr.mergeable is None when GitHub hasn't computed it yet — treat as non-blocking.
     if (
         not pr.draft
-        and pr.mergeable
+        and pr.mergeable is not False
         and not pr.has_label("maintainer:breaking")
         and not pr.has_label("caretaker:hold")
     ):
@@ -182,7 +183,7 @@ def evaluate_readiness(
     else:
         if pr.draft:
             blockers.append("draft_pr")
-        if not pr.mergeable:
+        if pr.mergeable is False:
             blockers.append("merge_conflict")
         if pr.has_label("maintainer:breaking"):
             blockers.append("breaking_change")
