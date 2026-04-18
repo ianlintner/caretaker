@@ -1,8 +1,12 @@
 """InsightStore — L2/L3 skill memory for caretaker's evolution layer.
 
-Persists verified execution strategies (SOPs) in a dedicated SQLite database.
-Skills are accumulated over time and injected into Copilot task comments to
-improve fix success rates on familiar problem patterns.
+Provides a unified API for skill/mutation storage regardless of the backend
+(SQLite by default, MongoDB when ``evolution.backend = "mongo"``).
+
+When constructed directly via ``InsightStore(db_path="...")`` it uses its
+own SQLite connection — identical to the previous behavior.  When constructed
+via the factory (``build_evolution_store(config)``), a ``MongoEvolutionBackend``
+may be used instead, with InsightStore acting as a thin facade.
 """
 
 from __future__ import annotations
@@ -13,8 +17,18 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from caretaker.evolution.backends.base import EvolutionBackend
 
 logger = logging.getLogger(__name__)
+
+CATEGORY_CI = "ci"
+CATEGORY_ISSUE = "issue"
+CATEGORY_BUILD = "build"
+CATEGORY_SECURITY = "security"
+ALL_CATEGORIES = {CATEGORY_CI, CATEGORY_ISSUE, CATEGORY_BUILD, CATEGORY_SECURITY}
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS skills (
@@ -46,12 +60,6 @@ CREATE TABLE IF NOT EXISTS mutations (
 );
 CREATE INDEX IF NOT EXISTS idx_mutations_outcome ON mutations(outcome);
 """
-
-CATEGORY_CI = "ci"
-CATEGORY_ISSUE = "issue"
-CATEGORY_BUILD = "build"
-CATEGORY_SECURITY = "security"
-ALL_CATEGORIES = {CATEGORY_CI, CATEGORY_ISSUE, CATEGORY_BUILD, CATEGORY_SECURITY}
 
 
 @dataclass
@@ -123,18 +131,9 @@ def _row_to_skill(row: tuple) -> Skill:
 
 def _row_to_mutation(row: tuple) -> Mutation:
     (
-        mid,
-        agent_name,
-        parameter,
-        old_value,
-        new_value,
-        goal_id,
-        goal_score_before,
-        goal_score_after,
-        runs_evaluated,
-        started_at,
-        ended_at,
-        outcome,
+        mid, agent_name, parameter, old_value, new_value, goal_id,
+        goal_score_before, goal_score_after, runs_evaluated,
+        started_at, ended_at, outcome,
     ) = row
     return Mutation(
         id=mid,
@@ -152,34 +151,16 @@ def _row_to_mutation(row: tuple) -> Mutation:
     )
 
 
-class InsightStore:
-    """SQLite-backed skill memory store for the evolution layer.
+class _SQLiteEvolutionBackend:
+    """Self-contained SQLite backend — used when InsightStore manages its own DB."""
 
-    Separate from MemoryStore so it can be independently reset or inspected.
-    Each skill maps a problem signature to the SOP that resolved it, along with
-    success/failure counts to derive a confidence score.
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
 
-    Args:
-        db_path: Path to the SQLite file.  Pass ``":memory:"`` for tests.
-    """
+    # ── Skill operations ──────────────────────────────────────────────────
 
-    def __init__(self, db_path: str = ":memory:") -> None:
-        self._db_path = db_path
-        if db_path != ":memory:":
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript(_DDL)
-        self._conn.commit()
-        logger.debug("InsightStore opened: %s", db_path)
-
-    # ── Skill API ─────────────────────────────────────────────────────────
-
-    def record_success(self, category: str, signature: str, sop: str) -> None:
-        """Upsert a skill and increment its success counter."""
+    def upsert_skill_success(self, skill_id: str, category: str, signature: str, sop: str) -> None:
         now = datetime.now(UTC).isoformat()
-        sid = _skill_id(category, signature)
         self._conn.execute(
             """
             INSERT INTO skills (id, category, signature, sop_text, success_count, fail_count,
@@ -190,15 +171,12 @@ class InsightStore:
                 success_count = success_count + 1,
                 last_used_at  = excluded.last_used_at
             """,
-            (sid, category, signature, sop, now, now),
+            (skill_id, category, signature, sop, now, now),
         )
         self._conn.commit()
-        logger.debug("InsightStore: recorded success for '%s/%s'", category, signature)
 
-    def record_failure(self, category: str, signature: str) -> None:
-        """Increment the failure counter, creating a skill row if none exists."""
+    def upsert_skill_failure(self, skill_id: str, category: str, signature: str) -> None:
         now = datetime.now(UTC).isoformat()
-        sid = _skill_id(category, signature)
         self._conn.execute(
             """
             INSERT INTO skills (id, category, signature, sop_text, success_count, fail_count,
@@ -208,71 +186,36 @@ class InsightStore:
                 fail_count   = fail_count + 1,
                 last_used_at = excluded.last_used_at
             """,
-            (sid, category, signature, now, now),
+            (skill_id, category, signature, now, now),
         )
         self._conn.commit()
-        logger.debug("InsightStore: recorded failure for '%s/%s'", category, signature)
 
-    def get_relevant(
-        self,
-        category: str,
-        signature: str,
-        min_confidence: float = 0.5,
-    ) -> list[Skill]:
-        """Return skills for this category with confidence >= min_confidence.
-
-        Ordered by confidence desc, then success_count desc.  Returns an empty
-        list when the skill library has no relevant entries or confidence is below
-        the threshold (avoids injecting low-quality hints).
-        """
+    def query_skills(self, category: str, min_attempts: int = 3, limit: int = 10) -> list[Skill]:
         rows = self._conn.execute(
             """
             SELECT id, category, signature, sop_text, success_count, fail_count,
                    last_used_at, created_at
             FROM skills
             WHERE category = ?
-              AND (success_count + fail_count) >= 3
-            ORDER BY
-                CAST(success_count AS REAL) / (success_count + fail_count) DESC,
-                success_count DESC
-            LIMIT 10
-            """,
-            (category,),
-        ).fetchall()
-
-        skills = [_row_to_skill(r) for r in rows]
-        return [s for s in skills if s.confidence >= min_confidence]
-
-    def get_by_signature(self, category: str, signature: str) -> Skill | None:
-        """Return the skill for an exact signature, or None."""
-        sid = _skill_id(category, signature)
-        row = self._conn.execute(
-            "SELECT id, category, signature, sop_text, success_count, fail_count, "
-            "last_used_at, created_at FROM skills WHERE id = ?",
-            (sid,),
-        ).fetchone()
-        return _row_to_skill(row) if row else None
-
-    def top_skills(self, category: str, limit: int = 5) -> list[Skill]:
-        """Return the top *limit* skills by confidence for a category."""
-        rows = self._conn.execute(
-            """
-            SELECT id, category, signature, sop_text, success_count, fail_count,
-                   last_used_at, created_at
-            FROM skills
-            WHERE category = ?
-              AND (success_count + fail_count) >= 3
+              AND (success_count + fail_count) >= ?
             ORDER BY
                 CAST(success_count AS REAL) / (success_count + fail_count) DESC,
                 success_count DESC
             LIMIT ?
             """,
-            (category, limit),
+            (category, min_attempts, limit),
         ).fetchall()
         return [_row_to_skill(r) for r in rows]
 
+    def get_skill(self, skill_id: str) -> Skill | None:
+        row = self._conn.execute(
+            "SELECT id, category, signature, sop_text, success_count, fail_count, "
+            "last_used_at, created_at FROM skills WHERE id = ?",
+            (skill_id,),
+        ).fetchone()
+        return _row_to_skill(row) if row else None
+
     def all_skills(self, category: str | None = None) -> list[Skill]:
-        """Return all skills, optionally filtered by category."""
         if category:
             rows = self._conn.execute(
                 "SELECT id, category, signature, sop_text, success_count, fail_count, "
@@ -287,25 +230,17 @@ class InsightStore:
             ).fetchall()
         return [_row_to_skill(r) for r in rows]
 
-    def prune_low_confidence(self, min_attempts: int = 5) -> int:
-        """Delete skills with >= min_attempts but zero successes (confidence=0).
-
-        Returns count of deleted rows.
-        """
+    def delete_skills(self, skill_ids: list[str]) -> int:
+        if not skill_ids:
+            return 0
+        placeholders = ",".join("?" * len(skill_ids))
         cursor = self._conn.execute(
-            "DELETE FROM skills WHERE (success_count + fail_count) >= ? AND success_count = 0",
-            (min_attempts,),
+            f"DELETE FROM skills WHERE id IN ({placeholders})", skill_ids
         )
         self._conn.commit()
-        removed = cursor.rowcount
-        if removed:
-            logger.info("InsightStore: pruned %d zero-confidence skills", removed)
-        return removed
-
-    # ── Mutation API ──────────────────────────────────────────────────────
+        return cursor.rowcount
 
     def upsert_mutation(self, mutation: Mutation) -> None:
-        """Insert or replace a mutation record."""
         self._conn.execute(
             """
             INSERT INTO mutations (id, agent_name, parameter, old_value, new_value, goal_id,
@@ -318,14 +253,9 @@ class InsightStore:
                 outcome          = excluded.outcome
             """,
             (
-                mutation.id,
-                mutation.agent_name,
-                mutation.parameter,
-                mutation.old_value,
-                mutation.new_value,
-                mutation.goal_id,
-                mutation.goal_score_before,
-                mutation.goal_score_after,
+                mutation.id, mutation.agent_name, mutation.parameter,
+                mutation.old_value, mutation.new_value, mutation.goal_id,
+                mutation.goal_score_before, mutation.goal_score_after,
                 mutation.runs_evaluated,
                 mutation.started_at.isoformat(),
                 mutation.ended_at.isoformat() if mutation.ended_at else None,
@@ -335,7 +265,6 @@ class InsightStore:
         self._conn.commit()
 
     def active_mutations(self) -> list[Mutation]:
-        """Return all pending (not yet evaluated) mutations."""
         rows = self._conn.execute(
             "SELECT id, agent_name, parameter, old_value, new_value, goal_id, "
             "goal_score_before, goal_score_after, runs_evaluated, started_at, ended_at, outcome "
@@ -344,7 +273,6 @@ class InsightStore:
         return [_row_to_mutation(r) for r in rows]
 
     def mutation_history(self, limit: int = 50) -> list[Mutation]:
-        """Return recent mutations ordered by start time desc."""
         rows = self._conn.execute(
             "SELECT id, agent_name, parameter, old_value, new_value, goal_id, "
             "goal_score_before, goal_score_after, runs_evaluated, started_at, ended_at, outcome "
@@ -353,11 +281,106 @@ class InsightStore:
         ).fetchall()
         return [_row_to_mutation(r) for r in rows]
 
+    def close(self) -> None:
+        pass  # Connection lifetime managed by InsightStore
+
+
+class InsightStore:
+    """Unified skill/mutation store for the evolution layer.
+
+    Defaults to self-managed SQLite.  Can also wrap a ``MongoEvolutionBackend``
+    when constructed via the factory and ``evolution.backend = "mongo"``.
+
+    Args:
+        db_path: SQLite file path (ignored when *backend* is provided).
+        backend: Optional pre-built backend.  When provided, *db_path* is
+                 unused and no SQLite connection is opened.
+    """
+
+    def __init__(
+        self,
+        db_path: str = ":memory:",
+        backend: EvolutionBackend | None = None,
+    ) -> None:
+        self._db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+
+        if backend is not None:
+            self._backend: Any = backend
+        else:
+            if db_path != ":memory:":
+                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.executescript(_DDL)
+            self._conn.commit()
+            self._backend = _SQLiteEvolutionBackend(self._conn)
+            logger.debug("InsightStore opened (SQLite): %s", db_path)
+
+    # ── Skill API ─────────────────────────────────────────────────────────
+
+    def record_success(self, category: str, signature: str, sop: str) -> None:
+        """Upsert a skill and increment its success counter."""
+        self._backend.upsert_skill_success(_skill_id(category, signature), category, signature, sop)
+        logger.debug("InsightStore: recorded success for '%s/%s'", category, signature)
+
+    def record_failure(self, category: str, signature: str) -> None:
+        """Upsert a skill and increment its failure counter."""
+        self._backend.upsert_skill_failure(_skill_id(category, signature), category, signature)
+        logger.debug("InsightStore: recorded failure for '%s/%s'", category, signature)
+
+    def get_relevant(
+        self,
+        category: str,
+        signature: str,
+        min_confidence: float = 0.5,
+    ) -> list[Skill]:
+        """Return skills for this category with confidence >= min_confidence."""
+        skills = self._backend.query_skills(category, min_attempts=3, limit=10)
+        return [s for s in skills if s.confidence >= min_confidence]
+
+    def get_by_signature(self, category: str, signature: str) -> Skill | None:
+        """Return the skill for an exact signature, or None."""
+        return self._backend.get_skill(_skill_id(category, signature))
+
+    def top_skills(self, category: str, limit: int = 5) -> list[Skill]:
+        """Return top *limit* skills by confidence for a category."""
+        return self._backend.query_skills(category, min_attempts=3, limit=limit)
+
+    def all_skills(self, category: str | None = None) -> list[Skill]:
+        """Return all skills, optionally filtered by category."""
+        return self._backend.all_skills(category)
+
+    def prune_low_confidence(self, min_attempts: int = 5) -> int:
+        """Delete skills with >= min_attempts but zero successes."""
+        all_s = self._backend.all_skills()
+        ids = [s.id for s in all_s if s.total_attempts >= min_attempts and s.success_count == 0]
+        if not ids:
+            return 0
+        removed = self._backend.delete_skills(ids)
+        if removed:
+            logger.info("InsightStore: pruned %d zero-confidence skills", removed)
+        return removed
+
+    # ── Mutation API ──────────────────────────────────────────────────────
+
+    def upsert_mutation(self, mutation: Mutation) -> None:
+        self._backend.upsert_mutation(mutation)
+
+    def active_mutations(self) -> list[Mutation]:
+        return self._backend.active_mutations()
+
+    def mutation_history(self, limit: int = 50) -> list[Mutation]:
+        return self._backend.mutation_history(limit)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        self._conn.close()
-        logger.debug("InsightStore closed: %s", self._db_path)
+        self._backend.close()
+        if self._conn is not None:
+            self._conn.close()
+            logger.debug("InsightStore closed (SQLite): %s", self._db_path)
 
     def __enter__(self) -> InsightStore:
         return self

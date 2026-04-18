@@ -229,6 +229,9 @@ class EvolutionConfig(StrictBaseModel):
     """Configuration for the learn-and-adapt evolution layer."""
 
     enabled: bool = False
+    # Storage backend: "sqlite" (default, zero-dependency) or "mongo"
+    # (requires mongo.enabled=true and MONGODB_URL env var).
+    backend: Literal["sqlite", "mongo"] = "sqlite"
     db_path: str = ".caretaker-evolution.db"
     skill_min_confidence: float = 0.5
     reflection_enabled: bool = True
@@ -304,6 +307,9 @@ class MongoConfig(StrictBaseModel):
     memory_collection: str = "agent_memory"
     # Collection name for the audit log.
     audit_collection: str = "audit_log"
+    # Evolution layer collections (used when evolution.backend = "mongo")
+    evolution_skills_collection: str = "evolution_skills"
+    evolution_mutations_collection: str = "evolution_mutations"
 
 
 class RedisConfig(StrictBaseModel):

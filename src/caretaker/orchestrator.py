@@ -13,6 +13,7 @@ from caretaker import __version__
 from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
+from caretaker.evolution.backends.factory import build_evolution_store
 from caretaker.evolution.crystallizer import SkillCrystallizer
 from caretaker.evolution.insight_store import InsightStore
 from caretaker.evolution.mutator import StrategyMutator
@@ -180,7 +181,7 @@ class Orchestrator:
         self._strategy_mutator: StrategyMutator | None = None
         self._plan_mode: PlanMode | None = None
         if config.evolution.enabled:
-            self._insight_store = InsightStore(db_path=config.evolution.db_path)
+            self._insight_store = build_evolution_store(config)
             self._skill_crystallizer = SkillCrystallizer(self._insight_store)
             self._reflection_engine = ReflectionEngine()
             self._strategy_mutator = StrategyMutator(self._insight_store)
@@ -191,7 +192,9 @@ class Orchestrator:
                     repo=repo,
                     claude_client=self._llm.claude,
                 )
-            logger.info("Evolution layer enabled: db=%s", config.evolution.db_path)
+            logger.info(
+                "Evolution layer enabled: backend=%s", config.evolution.backend
+            )
 
         # Apply any pending strategy mutations to runtime config before building agents
         if self._strategy_mutator is not None:
