@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 from caretaker.goals.models import GoalSnapshot  # noqa: TC001 (Pydantic needs runtime access)
 
 
+class OwnershipState(StrEnum):
+    UNOWNED = "unowned"
+    OWNED = "owned"
+    RELEASED = "released"
+    ESCALATED = "escalated"
+
+
 class PRTrackingState(StrEnum):
     DISCOVERED = "discovered"
     CI_PENDING = "ci_pending"
@@ -49,6 +56,17 @@ class TrackedPR(BaseModel):
     last_checked: datetime | None = None
     escalated: bool = False
     notes: str = ""
+
+    # Ownership fields
+    ownership_state: OwnershipState = OwnershipState.UNOWNED
+    owned_by: str = "caretaker"
+    ownership_acquired_at: datetime | None = None
+    ownership_released_at: datetime | None = None
+
+    # Readiness fields
+    readiness_score: float = 0.0
+    readiness_blockers: list[str] = Field(default_factory=list)
+    readiness_summary: str = ""
 
 
 class TrackedIssue(BaseModel):
@@ -117,6 +135,11 @@ class RunSummary(BaseModel):
     reviews_completed: int = 0
     review_artifacts_written: int = 0
     review_average_score: float = 0.0
+    # Ownership & readiness metrics (Phase 1)
+    owned_prs: int = 0
+    readiness_pass_rate: float = 0.0
+    avg_readiness_score: float = 0.0
+    authority_merges: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
