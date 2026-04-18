@@ -1,0 +1,75 @@
+name: Release — Publish
+
+# Triggered automatically when release-prepare.yml pushes a vX.Y.Z tag.
+# This workflow runs from the tag ref, so its own code is frozen at tag
+# creation time — no race condition from later workflow edits.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write  # required for OIDC trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assert pyproject.toml version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          TOML_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          if [ "$TOML_VERSION" != "$VERSION" ]; then
+            echo "::error::pyproject.toml version ($TOML_VERSION) does not match tag ($VERSION). Aborting."
+            exit 1
+          fi
+          echo "Version check passed: $VERSION"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Resolve publish auth mode
+        id: publish-auth
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_API_TOKEN" ]; then
+            echo "has_pypi_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_pypi_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install twine
+        if: steps.publish-auth.outputs.has_pypi_token == 'true'
+        run: pip install --upgrade 'twine==6.2.0'
+
+      - name: Publish to PyPI (API token)
+        if: steps.publish-auth.outputs.has_pypi_token == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --non-interactive --skip-existing dist/*
+
+      - name: Publish to PyPI (OIDC trusted publishing)
+        if: steps.publish-auth.outputs.has_pypi_token != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

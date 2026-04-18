@@ -85,23 +85,23 @@ _REPO_BASE = "https://raw.githubusercontent.com/ianlintner/caretaker"
 SYNC_FILES: list[tuple[str, str]] = [
     (
         ".github/workflows/maintainer.yml",
-        "dist/templates/workflows/maintainer.yml",
+        "setup-templates/templates/workflows/maintainer.yml",
     ),
     (
         ".github/agents/maintainer-pr.md",
-        "dist/templates/agents/maintainer-pr.md",
+        "setup-templates/templates/agents/maintainer-pr.md",
     ),
     (
         ".github/agents/maintainer-issue.md",
-        "dist/templates/agents/maintainer-issue.md",
+        "setup-templates/templates/agents/maintainer-issue.md",
     ),
     (
         ".github/agents/maintainer-upgrade.md",
-        "dist/templates/agents/maintainer-upgrade.md",
+        "setup-templates/templates/agents/maintainer-upgrade.md",
     ),
     (
         ".github/maintainer/config.yml",
-        "dist/templates/config-default.yml",
+        "setup-templates/templates/config-default.yml",
     ),
 ]
 
@@ -156,7 +156,7 @@ def build_sync_issue_body(version: str) -> str:
             "If `.github/copilot-instructions.md` does not already contain a "
             "`## Caretaker` section, append the standard block from the "
             "[setup guide]"
-            f"({_REPO_BASE}/{tag_ref}/dist/SETUP_AGENT.md).",
+            f"({_REPO_BASE}/{tag_ref}/setup-templates/SETUP_AGENT.md).",
             "",
             "**Steps:**",
             "1. Fetch each template from the URLs above and overwrite the local copy",

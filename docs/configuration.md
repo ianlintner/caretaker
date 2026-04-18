@@ -6,7 +6,7 @@ Caretaker configuration is defined by the `MaintainerConfig` model in [`src/care
 
 - config file: `.github/maintainer/config.yml`
 - JSON schema: [`schema/config.v1.schema.json`](https://github.com/ianlintner/caretaker/blob/main/schema/config.v1.schema.json)
-- default template: [`dist/templates/config-default.yml`](https://github.com/ianlintner/caretaker/blob/main/dist/templates/config-default.yml)
+- default template: [`setup-templates/templates/config-default.yml`](https://github.com/ianlintner/caretaker/blob/main/setup-templates/templates/config-default.yml)
 
 ## Validation
 
