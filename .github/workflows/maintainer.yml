@@ -237,6 +237,8 @@ jobs:
           # caretaker falls through to Copilot when the vars are absent.
           AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
           AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
           CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
           CARETAKER_LOG_FILE: caretaker-run.log
           CARETAKER_REPORT_FILE: caretaker-report.json
@@ -301,6 +303,8 @@ jobs:
           # caretaker falls through to Copilot when the vars are absent.
           AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
           AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
           # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
           CARETAKER_LOG_FILE: caretaker-self-heal.log
