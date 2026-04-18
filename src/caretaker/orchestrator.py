@@ -182,6 +182,7 @@ class Orchestrator:
         self._plan_mode: PlanMode | None = None
         if config.evolution.enabled:
             store = build_evolution_store(config)
+            assert store is not None, "Evolution store cannot be None when evolution is enabled"
             self._insight_store = store
             self._skill_crystallizer = SkillCrystallizer(store)
             self._reflection_engine = ReflectionEngine()
