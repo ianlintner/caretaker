@@ -151,8 +151,8 @@ class TestContextManager:
 
 
 class TestFilePersistence:
-    def test_data_survives_reopen(self, tmp_path: pytest.TempPathFactory) -> None:
-        db = str(tmp_path / "test.db")  # type: ignore[arg-type]
+    def test_data_survives_reopen(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "test.db")
         s1 = MemoryStore(db_path=db)
         s1.set("ag", "key", "persistent")
         s1.close()
