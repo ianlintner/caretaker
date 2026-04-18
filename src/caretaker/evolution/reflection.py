@@ -170,9 +170,9 @@ class ReflectionEngine:
         insight_store: InsightStore,
         triggered: list[str],
     ) -> str:
-        lines = ["
-            "
-            "You are analyzing why an autonomous repository maintenance system is failing to improve.",
+        lines = [
+            "You are analyzing why an autonomous repository maintenance system "
+            "is failing to improve.",
             "",
             "## Current Goal States",
         ]
@@ -243,8 +243,7 @@ def format_reflection_comment(result: ReflectionResult) -> str:
         f"{REFLECTION_COMMENT_MARKER}",
         f"## Caretaker Reflection — {result.reflected_at.strftime('%Y-%m-%d %H:%M UTC')}",
         "",
-        f"**Triggered by:** {trigger_msg
-        f"**Triggered by:** {', '.join(result.triggered_by) if result.triggered_by else 'overall health decline'}",
+        f"**Triggered by:** {trigger_msg}",
         "",
         result.analysis,
     ]
