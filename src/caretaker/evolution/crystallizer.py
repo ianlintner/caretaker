@@ -76,17 +76,16 @@ class SkillCrystallizer:
         Returns the count of skills recorded.
         """
         recorded = 0
-        _terminal = {PRTrackingState.MERGED, PRTrackingState.ESCALATED, PRTrackingState.CLOSED}
+        # Only MERGED / ESCALATED carry signal. CLOSED is often a human "abandon"
+        # or the CI-backlog guard — neither tells us whether a fix worked.
+        _terminal = {PRTrackingState.MERGED, PRTrackingState.ESCALATED}
 
         for pr_number, current in current_prs.items():
             if current.state not in _terminal:
                 continue
 
             previous = previous_prs.get(pr_number)
-            if previous is None:
-                previous_state = None
-            else:
-                previous_state = previous.state
+            previous_state = previous.state if previous is not None else None
 
             # Only crystallize on genuine transitions to terminal states
             if previous_state == current.state:
@@ -108,7 +107,7 @@ class SkillCrystallizer:
                     signature,
                 )
                 recorded += 1
-            elif current.state == PRTrackingState.ESCALATED:
+            else:  # ESCALATED
                 self._store.record_failure(category, signature)
                 logger.debug(
                     "Crystallized failure: PR #%d → category=%s sig='%.40s'",

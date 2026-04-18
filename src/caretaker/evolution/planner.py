@@ -201,24 +201,68 @@ class PlanMode:
         state: OrchestratorState,
         evaluation: GoalEvaluation,
     ) -> list[PlanStatus]:
-        """Check active plans; auto-close if goal has recovered."""
+        """Check active plans; close milestone when goal recovers or all steps done.
+
+        Two completion conditions:
+        - Goal score has recovered to >= 0.95 (goal no longer CRITICAL)
+        - All milestone issues are in the ``closed`` state
+        """
         statuses: list[PlanStatus] = []
         goals_to_remove: list[str] = []
 
         for goal_id, milestone_number in list(state.active_plan_ids.items()):
             snapshot = evaluation.snapshots.get(goal_id)
-            if snapshot and snapshot.score >= 0.95:
-                # Goal recovered without plan completing — close the milestone
-                logger.info("PlanMode: goal '%s' recovered, closing milestone %d", goal_id, milestone_number)
+
+            open_issues = 0
+            closed_issues = 0
+            try:
+                issues = await self._github.get_milestone_issues(
+                    self._owner, self._repo, milestone_number, state="all"
+                )
+                for issue in issues:
+                    if getattr(issue, "state", "").lower() == "closed":
+                        closed_issues += 1
+                    else:
+                        open_issues += 1
+            except Exception as exc:
+                logger.debug(
+                    "PlanMode: could not list milestone #%d issues: %s",
+                    milestone_number,
+                    exc,
+                )
+
+            recovered = snapshot is not None and snapshot.score >= 0.95
+            all_steps_done = open_issues == 0 and closed_issues > 0
+            is_complete = recovered or all_steps_done
+
+            if is_complete:
+                reason = "recovered" if recovered else "all steps closed"
+                try:
+                    await self._github.update_milestone(
+                        self._owner, self._repo, milestone_number, state="closed"
+                    )
+                    logger.info(
+                        "PlanMode: goal '%s' %s — milestone #%d closed",
+                        goal_id,
+                        reason,
+                        milestone_number,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "PlanMode: failed to close milestone #%d (%s): %s",
+                        milestone_number,
+                        reason,
+                        exc,
+                    )
                 goals_to_remove.append(goal_id)
-                continue
+
             statuses.append(
                 PlanStatus(
                     goal_id=goal_id,
                     milestone_number=milestone_number,
-                    open_issues=0,
-                    closed_issues=0,
-                    is_complete=False,
+                    open_issues=open_issues,
+                    closed_issues=closed_issues,
+                    is_complete=is_complete,
                 )
             )
 
@@ -228,17 +272,22 @@ class PlanMode:
         return statuses
 
     def _is_on_cooldown(self, goal_id: str, state: OrchestratorState) -> bool:
-        """Check if this goal had a plan activated within PLAN_COOLDOWN_DAYS."""
-        cutoff = datetime.now(UTC) - timedelta(days=PLAN_COOLDOWN_DAYS)
-        for run in reversed(state.run_history):
-            run_at = run.run_at
-            if run_at.tzinfo is None:
-                run_at = run_at.replace(tzinfo=UTC)
-            if run_at < cutoff:
-                break
-            # Check if notes in any recent run mention this goal's plan
-            # (Simple heuristic: we don't have per-run plan tracking in RunSummary yet)
-        return False  # Conservative: allow plans unless we have explicit cooldown tracking
+        """Return True when this goal had a plan activated within PLAN_COOLDOWN_DAYS.
+
+        Cooldown is tracked via ``OrchestratorState.plan_cooldowns`` (goal_id →
+        ISO8601 of last activation). Missing or malformed entries mean "not on
+        cooldown" so the system fails open.
+        """
+        stamp = state.plan_cooldowns.get(goal_id)
+        if not stamp:
+            return False
+        try:
+            last = datetime.fromisoformat(stamp)
+        except ValueError:
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - last) < timedelta(days=PLAN_COOLDOWN_DAYS)
 
     def _build_context(self, goal_id: str, snapshot: object, state: OrchestratorState) -> str:
         lines = [f"Goal '{goal_id}' has been CRITICAL for recent runs."]
