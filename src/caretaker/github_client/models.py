@@ -116,6 +116,7 @@ class PullRequest(BaseModel):
     state: PRState
     user: User
     head_ref: str = ""
+    head_sha: str = ""
     base_ref: str = ""
     mergeable: bool | None = None
     merged: bool = False

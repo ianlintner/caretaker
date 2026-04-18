@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.github_client.api import GitHubAPIError
@@ -14,12 +14,20 @@ from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
 from caretaker.pr_agent.merge import evaluate_merge
+from caretaker.pr_agent.ownership import (
+    build_readiness_comment,
+    claim_ownership,
+    get_readiness_check_summary,
+    get_readiness_check_title,
+    release_ownership,
+    should_release_ownership,
+)
 from caretaker.pr_agent.review import analyze_reviews
 from caretaker.pr_agent.states import (
     PRStateEvaluation,
     evaluate_pr,
 )
-from caretaker.state.models import PRTrackingState, TrackedPR
+from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
 from caretaker.tools.debug_dump import render_debug_dump
 
 if TYPE_CHECKING:
@@ -216,6 +224,10 @@ class PRAgent:
                 pass  # closed/merged, nothing to do
             case _:
                 report.waiting.append(pr.number)
+
+        # Handle ownership lifecycle: claim, release, readiness check publishing
+        # This runs after the main action to ensure we have the latest evaluation
+        tracking = await self._handle_ownership(pr, tracking, evaluation, report)
 
         return tracking
 
@@ -582,3 +594,200 @@ class PRAgent:
         body += render_debug_dump(payload, title="Escalation debug dump")
         await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
         logger.info("PR #%d escalated: %s", pr.number, reason)
+
+    async def _publish_readiness_check(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        evaluation: PRStateEvaluation,
+    ) -> None:
+        """Publish the caretaker/pr-readiness check run on the PR's head SHA.
+
+        This publishes a non-required check (Phase 1) that shows PR readiness status.
+        The check is updated on every evaluation to keep the status current.
+        """
+        if not self._config.readiness.enabled:
+            return
+
+        # Guard against optional readiness field
+        if evaluation.readiness is None:
+            return
+
+        check_name = self._config.readiness.check_name
+        head_sha = pr.head_sha
+        if not head_sha:
+            logger.warning(
+                "PR #%d: missing head SHA, skipping %s check publication",
+                pr.number,
+                check_name,
+            )
+            return
+
+        # Update readiness tracking from evaluation
+        tracking.readiness_score = evaluation.readiness.score
+        tracking.readiness_blockers = evaluation.readiness.blockers
+        tracking.readiness_summary = evaluation.readiness.summary
+
+        # Find existing check run
+        existing_check = await self._github.find_check_run(
+            self._owner, self._repo, head_sha, check_name
+        )
+
+        # Determine conclusion based on readiness
+        conclusion = evaluation.readiness.conclusion
+        check_status = "completed"
+        check_conclusion = None
+        if conclusion == "success":
+            check_conclusion = "success"
+        elif conclusion == "failure":
+            check_conclusion = "failure"
+        else:  # in_progress
+            check_status = "in_progress"
+
+        check_title = get_readiness_check_title(tracking)
+        check_summary = get_readiness_check_summary(tracking)
+
+        try:
+            if existing_check:
+                # Update existing check run
+                await self._github.update_check_run(
+                    self._owner,
+                    self._repo,
+                    existing_check.id,
+                    status=check_status,
+                    conclusion=check_conclusion,
+                    output_title=check_title,
+                    output_summary=check_summary,
+                    completed_at=(
+                        datetime.now(UTC).isoformat() if check_status == "completed" else None
+                    ),
+                )
+                logger.debug(
+                    "PR #%d: Updated %s check (id=%d, conclusion=%s)",
+                    pr.number,
+                    check_name,
+                    existing_check.id,
+                    check_conclusion,
+                )
+            else:
+                # Create new check run
+                result = await self._github.create_check_run(
+                    self._owner,
+                    self._repo,
+                    check_name,
+                    head_sha,
+                    status=check_status,
+                    conclusion=check_conclusion,
+                    output_title=check_title,
+                    output_summary=check_summary,
+                    started_at=datetime.now(UTC).isoformat(),
+                    completed_at=(
+                        datetime.now(UTC).isoformat() if check_status == "completed" else None
+                    ),
+                )
+                logger.debug(
+                    "PR #%d: Created %s check (id=%s)",
+                    pr.number,
+                    check_name,
+                    result.get("id"),
+                )
+        except GitHubAPIError as e:
+            logger.warning(
+                "PR #%d: Failed to publish readiness check: %s",
+                pr.number,
+                e,
+            )
+
+    async def _handle_ownership(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        evaluation: PRStateEvaluation,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Handle PR ownership — claim, release, and update readiness.
+
+        This method:
+        1. Updates readiness tracking from the evaluation
+        2. Attempts to claim ownership if eligible
+        3. Releases ownership if the PR is merged/closed/escalated
+        4. Publishes the readiness check
+        5. Posts update comments on meaningful changes
+        """
+        previous_score = tracking.readiness_score
+        previous_blockers = list(tracking.readiness_blockers)
+
+        # Guard against optional readiness field
+        if evaluation.readiness is None:
+            return tracking
+
+        # Update readiness tracking
+        tracking.readiness_score = evaluation.readiness.score
+        tracking.readiness_blockers = evaluation.readiness.blockers
+        tracking.readiness_summary = evaluation.readiness.summary
+
+        # Handle ownership state transitions
+        if should_release_ownership(pr, tracking, "merged"):
+            await release_ownership(
+                self._github,
+                self._owner,
+                self._repo,
+                pr,
+                tracking,
+                self._config.ownership,
+                reason="PR merged",
+            )
+        elif should_release_ownership(pr, tracking, "closed"):
+            await release_ownership(
+                self._github,
+                self._owner,
+                self._repo,
+                pr,
+                tracking,
+                self._config.ownership,
+                reason="PR closed",
+            )
+        elif should_release_ownership(pr, tracking, "escalated"):
+            await release_ownership(
+                self._github,
+                self._owner,
+                self._repo,
+                pr,
+                tracking,
+                self._config.ownership,
+                reason="PR escalated",
+            )
+        elif tracking.ownership_state == OwnershipState.UNOWNED:
+            # Try to claim ownership
+            await claim_ownership(
+                self._github,
+                self._owner,
+                self._repo,
+                pr,
+                tracking,
+                self._config.ownership,
+            )
+
+        # Publish readiness check
+        await self._publish_readiness_check(pr, tracking, evaluation)
+
+        # Post update comment on meaningful changes (only for owned PRs)
+        if tracking.ownership_state == OwnershipState.OWNED:
+            update_comment = build_readiness_comment(
+                tracking,
+                previous_score,
+                previous_blockers,
+            )
+            if update_comment:
+                try:
+                    await self._github.add_issue_comment(
+                        self._owner, self._repo, pr.number, update_comment
+                    )
+                except GitHubAPIError as e:
+                    logger.warning(
+                        "PR #%d: Failed to post readiness update comment: %s",
+                        pr.number,
+                        e,
+                    )
+
+        return tracking

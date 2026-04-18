@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
@@ -15,6 +16,52 @@ SUPPORTED_CONFIG_VERSIONS = {"v1"}
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class OwnershipAutoClaimConfig(StrictBaseModel):
+    """Configuration for which PR types Caretaker auto-claims ownership of."""
+
+    copilot_prs: bool = True
+    dependabot_prs: bool = True
+    human_prs: bool = False
+
+
+class OwnershipConfig(StrictBaseModel):
+    """Configuration for PR ownership management."""
+
+    enabled: bool = True
+    auto_claim: OwnershipAutoClaimConfig = Field(default_factory=OwnershipAutoClaimConfig)
+    label: str = "caretaker:owned"
+    hold_label: str = "caretaker:hold"
+
+
+class ReadinessConfig(StrictBaseModel):
+    """Configuration for PR readiness evaluation."""
+
+    enabled: bool = True
+    check_name: str = "caretaker/pr-readiness"
+    required_reviews: int = 1
+    require_all_checks_passed: bool = True
+    require_review_resolution: bool = True
+
+
+class MergeAuthorityMode(StrEnum):
+    """Merge authority modes for owned PRs.
+
+    - advisory: Only publish readiness check, no merge authority
+    - gate_only: Gate merge via required check, don't merge directly
+    - gate_and_merge: Gate via required check AND merge directly when ready
+    """
+
+    ADVISORY = "advisory"
+    GATE_ONLY = "gate_only"
+    GATE_AND_MERGE = "gate_and_merge"
+
+
+class MergeAuthorityConfig(StrictBaseModel):
+    """Configuration for Caretaker merge authority."""
+
+    mode: MergeAuthorityMode = MergeAuthorityMode.ADVISORY
 
 
 class AutoMergeConfig(StrictBaseModel):
@@ -48,6 +95,8 @@ class PRAgentConfig(StrictBaseModel):
     copilot: CopilotConfig = Field(default_factory=CopilotConfig)
     ci: CIConfig = Field(default_factory=CIConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
+    readiness: ReadinessConfig = Field(default_factory=ReadinessConfig)
 
 
 class IssueAgentLabels(StrictBaseModel):
