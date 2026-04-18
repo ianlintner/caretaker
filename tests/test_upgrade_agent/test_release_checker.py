@@ -8,9 +8,7 @@ import respx
 
 from caretaker.upgrade_agent.release_checker import (
     GITHUB_RELEASES_API,
-    RELEASES_JSON_URL,
     Release,
-    _fetch_releases_json,
     fetch_releases,
     needs_upgrade,
 )
@@ -84,18 +82,6 @@ _GH_RELEASES_RESPONSE = [
     },
 ]
 
-_RELEASES_JSON_PAYLOAD = {
-    "releases": [
-        {
-            "version": "1.3.0",
-            "min_compatible": "1.0.0",
-            "changelog_url": "https://example.com/v1.3.0",
-            "upgrade_notes": "Update pins.",
-            "breaking": False,
-        }
-    ]
-}
-
 
 @pytest.mark.asyncio
 class TestFetchReleases:
@@ -128,24 +114,9 @@ class TestFetchReleases:
         assert r.breaking is True
 
     @respx.mock
-    async def test_falls_back_to_releases_json_on_api_error(self) -> None:
-        gh_url = GITHUB_RELEASES_API.format(owner="ianlintner", repo="caretaker")
-        json_url = RELEASES_JSON_URL.format(owner="ianlintner", repo="caretaker")
-        respx.get(gh_url).mock(return_value=httpx.Response(500))
-        respx.get(json_url).mock(return_value=httpx.Response(200, json=_RELEASES_JSON_PAYLOAD))
-
-        releases = await fetch_releases()
-
-        assert len(releases) == 1
-        assert releases[0].version == "1.3.0"
-        assert releases[0].upgrade_notes == "Update pins."
-
-    @respx.mock
-    async def test_returns_empty_list_when_both_sources_fail(self) -> None:
-        gh_url = GITHUB_RELEASES_API.format(owner="ianlintner", repo="caretaker")
-        json_url = RELEASES_JSON_URL.format(owner="ianlintner", repo="caretaker")
-        respx.get(gh_url).mock(return_value=httpx.Response(500))
-        respx.get(json_url).mock(return_value=httpx.Response(404))
+    async def test_returns_empty_list_on_api_error(self) -> None:
+        url = GITHUB_RELEASES_API.format(owner="ianlintner", repo="caretaker")
+        respx.get(url).mock(return_value=httpx.Response(500))
 
         releases = await fetch_releases()
 
@@ -170,31 +141,5 @@ class TestFetchReleases:
         )
 
         releases = await fetch_releases()
-
-        assert releases == []
-
-
-@pytest.mark.asyncio
-class TestFetchReleasesJson:
-    @respx.mock
-    async def test_parses_legacy_manifest(self) -> None:
-        url = RELEASES_JSON_URL.format(owner="ianlintner", repo="caretaker")
-        respx.get(url).mock(return_value=httpx.Response(200, json=_RELEASES_JSON_PAYLOAD))
-
-        releases = await _fetch_releases_json()
-
-        assert len(releases) == 1
-        r = releases[0]
-        assert r.version == "1.3.0"
-        assert r.min_compatible == "1.0.0"
-        assert r.upgrade_notes == "Update pins."
-        assert r.breaking is False
-
-    @respx.mock
-    async def test_returns_empty_on_http_error(self) -> None:
-        url = RELEASES_JSON_URL.format(owner="ianlintner", repo="caretaker")
-        respx.get(url).mock(return_value=httpx.Response(503))
-
-        releases = await _fetch_releases_json()
 
         assert releases == []
