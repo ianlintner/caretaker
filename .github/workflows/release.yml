@@ -175,6 +175,7 @@ jobs:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     permissions:
       id-token: write # required for trusted OIDC publishing
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -207,7 +208,30 @@ jobs:
       - name: Build package
         run: python -m build
 
-      - name: Publish to PyPI
+      - name: Resolve publish auth mode
+        id: publish-auth
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_API_TOKEN" ]; then
+            echo "has_pypi_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_pypi_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install twine (token publish path)
+        if: steps.publish-auth.outputs.has_pypi_token == 'true'
+        run: pip install twine
+
+      - name: Publish to PyPI (API token, non-Docker)
+        if: steps.publish-auth.outputs.has_pypi_token == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --skip-existing dist/*
+
+      - name: Publish to PyPI (OIDC trusted publishing)
+        if: steps.publish-auth.outputs.has_pypi_token != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # If PYPI_API_TOKEN secret is set it will be used for token-based auth;
