@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "caretaker"
+name = "caretaker-github"
 version = "0.8.0"
 description = "Autonomous GitHub repository maintenance powered by Copilot"
 readme = "README.md"

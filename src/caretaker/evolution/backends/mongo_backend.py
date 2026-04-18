@@ -2,7 +2,7 @@
 
 Enabled when ``mongo.enabled = true`` and ``evolution.backend = "mongo"``
 in ``.caretaker.yml``.  Requires the ``motor`` package (installed via the
-``backend`` extra: ``pip install caretaker[backend]``).
+``backend`` extra: ``pip install caretaker-github[backend]``).
 
 Uses two collections:
 - ``evolution_skills``   — one document per problem signature
@@ -122,7 +122,7 @@ class MongoEvolutionBackend:
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
                 "pymongo is required for the MongoDB evolution backend. "
-                "Install it with: pip install caretaker[backend]"
+                "Install it with: pip install caretaker-github[backend]"
             ) from exc
 
         self._client: pymongo.MongoClient[Any] = _pymongo.MongoClient(mongodb_url)

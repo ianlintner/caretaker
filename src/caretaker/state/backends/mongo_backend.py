@@ -2,7 +2,7 @@
 
 Enabled when ``memory_store.backend = "mongo"`` in ``.caretaker.yml``.
 Requires the ``motor`` package (which pulls in ``pymongo``), installed via the
-``backend`` extra: ``pip install caretaker[backend]``.
+``backend`` extra: ``pip install caretaker-github[backend]``.
 
 Connection URL is read from the env var named in
 ``mongo.mongodb_url_env`` (default: ``MONGODB_URL``). This works with:
@@ -62,7 +62,7 @@ class MongoMemoryBackend:
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
                 "pymongo is required for the MongoDB memory backend. "
-                "Install it with: pip install caretaker[backend]"
+                "Install it with: pip install caretaker-github[backend]"
             ) from exc
 
         self._max_entries = max_entries_per_namespace
