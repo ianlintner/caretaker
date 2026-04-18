@@ -44,3 +44,5 @@ site/
 .gitignore
 .caretaker-memory.db*
 *.pem
+/*.txt
+/*.json
