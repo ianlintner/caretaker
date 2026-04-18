@@ -237,6 +237,7 @@ class LiteLLMProvider:
                 "ANTHROPIC_API_KEY",
                 "OPENAI_API_KEY",
                 "AZURE_API_KEY",
+                "AZURE_AI_API_KEY",
                 "VERTEX_PROJECT",
                 "GOOGLE_APPLICATION_CREDENTIALS",
                 "AWS_ACCESS_KEY_ID",
