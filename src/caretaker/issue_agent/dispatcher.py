@@ -9,6 +9,7 @@ from caretaker.issue_agent.classifier import IssueClassification
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
 
@@ -43,13 +44,32 @@ def build_assignment_body(issue: Issue, classification: IssueClassification) -> 
 
 
 class IssueDispatcher:
-    """Creates structured issue assignments for Copilot."""
+    """Creates structured issue assignments for Copilot.
 
-    def __init__(self, github: GitHubClient, owner: str, repo: str) -> None:
+    Accepts an optional :class:`ExecutorDispatcher` for symmetry with the
+    other bridges.  MVP: the dispatcher is stored but not yet consumed — small
+    feature / simple-bug routing through Foundry is Phase 2 since it requires
+    design decomposition the tool-loop doesn't yet do.
+    """
+
+    def __init__(
+        self,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+        dispatcher: ExecutorDispatcher | None = None,
+    ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._issues = GitHubIssueTools(github, owner, repo)
+        # TODO(foundry-phase-2): route FEATURE_SMALL / BUG_SIMPLE tasks
+        # through this dispatcher once we have an issue-to-PR decomposer.
+        self._dispatcher = dispatcher
+
+    @property
+    def dispatcher(self) -> ExecutorDispatcher | None:
+        return self._dispatcher
 
     async def dispatch(
         self,

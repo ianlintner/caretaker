@@ -65,7 +65,6 @@ class TestComment:
 
 class TestIssue:
     def test_is_maintainer_issue_by_title(self) -> None:
-
         issue = Issue(
             number=1,
             title="[Maintainer] Fix lint errors",

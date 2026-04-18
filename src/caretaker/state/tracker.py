@@ -158,7 +158,6 @@ class StateTracker:
 
     @staticmethod
     def _format_summary(summary: RunSummary) -> str:
-
         lines = [
             f"## Maintainer Run — {summary.run_at.strftime('%B %d, %Y')}",
             "",

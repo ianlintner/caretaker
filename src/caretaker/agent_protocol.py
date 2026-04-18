@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from caretaker.config import MaintainerConfig
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.llm.router import LLMRouter
     from caretaker.state.backends.base import MemoryBackend
@@ -31,6 +32,10 @@ class AgentContext:
     memory: MemoryStore | MemoryBackend | None = None
     mcp_client: Any | None = None
     telemetry: Any | None = None
+    # Optional Foundry-backed executor dispatcher. When set, bridges such as
+    # PRCopilotBridge may route coding tasks through it instead of posting to
+    # Copilot. Left as ``None`` for zero behavior change.
+    executor_dispatcher: ExecutorDispatcher | None = None
 
 
 @dataclass

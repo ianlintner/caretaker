@@ -48,6 +48,7 @@ class PRAgentAdapter(BaseAgent):
             repo=self._ctx.repo,
             config=self._ctx.config.pr_agent,
             llm_router=self._ctx.llm_router,
+            dispatcher=self._ctx.executor_dispatcher,
         )
         head_branch: str | None = None
         pr_number: int | None = None
@@ -99,6 +100,7 @@ class IssueAgentAdapter(BaseAgent):
             repo=self._ctx.repo,
             config=self._ctx.config.issue_agent,
             llm_router=self._ctx.llm_router,
+            dispatcher=self._ctx.executor_dispatcher,
         )
         report, tracked_issues = await agent.run(state.tracked_issues)
         state.tracked_issues = tracked_issues
@@ -143,6 +145,7 @@ class UpgradeAgentAdapter(BaseAgent):
             repo=self._ctx.repo,
             config=self._ctx.config.upgrade_agent,
             current_version=__version__,
+            dispatcher=self._ctx.executor_dispatcher,
         )
         report = await agent.run()
         return AgentResult(

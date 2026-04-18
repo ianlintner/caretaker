@@ -232,6 +232,11 @@ jobs:
           # that must not be authored as github-actions[bot].
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Azure AI Foundry — enables the in-process coding executor as an
+          # alternative to posting @copilot comments. Safe to leave unset;
+          # caretaker falls through to Copilot when the vars are absent.
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
           CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
           CARETAKER_LOG_FILE: caretaker-run.log
           CARETAKER_REPORT_FILE: caretaker-report.json
@@ -291,6 +296,11 @@ jobs:
           # Fine-grained PAT for a real write-capable user or machine user.
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Azure AI Foundry — enables the in-process coding executor as an
+          # alternative to posting @copilot comments. Safe to leave unset;
+          # caretaker falls through to Copilot when the vars are absent.
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
           # Pass info about the failed run so the agent can fetch its logs
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
           CARETAKER_LOG_FILE: caretaker-self-heal.log

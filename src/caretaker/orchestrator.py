@@ -18,12 +18,16 @@ from caretaker.evolution.crystallizer import SkillCrystallizer
 from caretaker.evolution.mutator import StrategyMutator
 from caretaker.evolution.planner import PlanMode
 from caretaker.evolution.reflection import ReflectionEngine
+from caretaker.foundry.dispatcher import ExecutorDispatcher
+from caretaker.foundry.executor import FoundryExecutor
 from caretaker.github_app import AppJWTSigner, GitHubAppCredentialsProvider, InstallationTokenMinter
 from caretaker.github_client.api import GitHubClient
 from caretaker.github_client.credentials import ChainCredentialsProvider, EnvCredentialsProvider
 from caretaker.goals.definitions import build_goals
 from caretaker.goals.engine import GoalContext, GoalEngine
 from caretaker.goals.models import GoalStatus
+from caretaker.llm.copilot import CopilotProtocol
+from caretaker.llm.provider import LiteLLMProvider
 from caretaker.llm.router import LLMRouter
 from caretaker.mcp import MCPClient, TelemetryClient
 from caretaker.state.audit_log import AuditLogWriter
@@ -200,6 +204,14 @@ class Orchestrator:
         if self._strategy_mutator is not None:
             config = self._strategy_mutator.apply_pending(config, OrchestratorState())
 
+        # ── Executor dispatcher (Copilot / Foundry routing) ────────────
+        self._executor_dispatcher: ExecutorDispatcher | None = None
+        try:
+            self._executor_dispatcher = self._build_executor_dispatcher(config, github, owner, repo)
+        except Exception as exc:  # never block agent boot on Foundry config issues
+            logger.warning("Failed to build ExecutorDispatcher; falling back to Copilot: %s", exc)
+            self._executor_dispatcher = None
+
         ctx = AgentContext(
             github=github,
             owner=owner,
@@ -210,6 +222,7 @@ class Orchestrator:
             memory=self._memory,
             mcp_client=self._mcp_client,
             telemetry=self._telemetry,
+            executor_dispatcher=self._executor_dispatcher,
         )
         self._registry: AgentRegistry = build_registry(ctx)
 
@@ -220,6 +233,65 @@ class Orchestrator:
             issues = self._goal_engine.validate(self._registry)
             for issue in issues:
                 logger.warning(issue)
+
+    def _build_executor_dispatcher(
+        self,
+        config: MaintainerConfig,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+    ) -> ExecutorDispatcher | None:
+        """Build the Foundry executor + dispatcher, or return None when disabled.
+
+        The dispatcher is *always* returned when any non-default executor
+        config is present so the Copilot fallback path stays active.  When
+        the config is the factory default (provider=copilot) we return None,
+        which preserves the byte-identical legacy code path for agents.
+        """
+        executor_cfg = config.executor
+        # Zero-config: exit preserves the legacy path (no dispatcher).
+        if executor_cfg.provider == "copilot" and not executor_cfg.foundry.enabled:
+            return None
+
+        copilot_protocol = CopilotProtocol(github, owner, repo)
+
+        foundry_executor: FoundryExecutor | None = None
+        if executor_cfg.foundry.enabled:
+            provider = LiteLLMProvider(
+                fallback_models=list(executor_cfg.foundry.fallback_models),
+                timeout=executor_cfg.foundry.request_timeout_seconds,
+            )
+            if not provider.available:
+                logger.warning(
+                    "executor.foundry.enabled=True but LiteLLM provider is unavailable "
+                    "(missing credentials or package). Routing stays on Copilot."
+                )
+            else:
+                # Foundry's ``git push`` needs a write-capable token. Route
+                # through GitHubClient so the App-installation token path (or
+                # the env ``GITHUB_TOKEN`` fallback) is always respected.
+                async def _push_token() -> str:
+                    return await github.get_default_token()
+
+                foundry_executor = FoundryExecutor(
+                    provider=provider,
+                    github=github,
+                    owner=owner,
+                    repo=repo,
+                    config=executor_cfg.foundry,
+                    token_supplier=_push_token,
+                )
+                logger.info(
+                    "FoundryExecutor ready: model=%s allowed_task_types=%s",
+                    executor_cfg.foundry.model,
+                    executor_cfg.foundry.allowed_task_types,
+                )
+
+        return ExecutorDispatcher(
+            config=executor_cfg,
+            foundry_executor=foundry_executor,
+            copilot_protocol=copilot_protocol,
+        )
 
     @classmethod
     def from_config_path(cls, path: str) -> Orchestrator:

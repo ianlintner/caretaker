@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.upgrade_agent.release_checker import Release
 
@@ -177,13 +178,33 @@ def build_sync_issue_body(version: str) -> str:
 
 
 class UpgradePlanner:
-    """Creates upgrade issues for pending releases."""
+    """Creates upgrade issues for pending releases.
 
-    def __init__(self, github: GitHubClient, owner: str, repo: str) -> None:
+    When a Foundry :class:`ExecutorDispatcher` is provided, the planner
+    *records* the dispatcher but does not change its issue-creation flow in
+    MVP — the dispatcher is used by the caretaker orchestrator's higher-level
+    upgrade-PR path.  Keeping the field lets that integration land without
+    a signature change.
+    """
+
+    def __init__(
+        self,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+        dispatcher: ExecutorDispatcher | None = None,
+    ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._issues = GitHubIssueTools(github, owner, repo)
+        # TODO(foundry-phase-2): route non-breaking upgrade tasks through
+        # this dispatcher instead of creating @copilot-assigned issues.
+        self._dispatcher = dispatcher
+
+    @property
+    def dispatcher(self) -> ExecutorDispatcher | None:
+        return self._dispatcher
 
     async def create_upgrade_issue(
         self,

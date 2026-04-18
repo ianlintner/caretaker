@@ -16,6 +16,7 @@ from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
     from caretaker.config import IssueAgentConfig
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
     from caretaker.llm.router import LLMRouter
@@ -42,6 +43,7 @@ class IssueAgent:
         repo: str,
         config: IssueAgentConfig,
         llm_router: LLMRouter | None = None,
+        dispatcher: ExecutorDispatcher | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -50,7 +52,7 @@ class IssueAgent:
         self._llm = llm_router
         self._issues = GitHubIssueTools(github, owner, repo)
         self._pull_requests = GitHubPullRequestTools(github, owner, repo)
-        self._dispatcher = IssueDispatcher(github, owner, repo)
+        self._dispatcher = IssueDispatcher(github, owner, repo, dispatcher=dispatcher)
 
     async def run(
         self, tracked_issues: dict[int, TrackedIssue]
