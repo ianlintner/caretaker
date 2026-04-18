@@ -267,12 +267,19 @@ class Orchestrator:
                     "(missing credentials or package). Routing stays on Copilot."
                 )
             else:
+                # Foundry's ``git push`` needs a write-capable token. Route
+                # through GitHubClient so the App-installation token path (or
+                # the env ``GITHUB_TOKEN`` fallback) is always respected.
+                async def _push_token() -> str:
+                    return await github.get_default_token()
+
                 foundry_executor = FoundryExecutor(
                     provider=provider,
                     github=github,
                     owner=owner,
                     repo=repo,
                     config=executor_cfg.foundry,
+                    token_supplier=_push_token,
                 )
                 logger.info(
                     "FoundryExecutor ready: model=%s allowed_task_types=%s",

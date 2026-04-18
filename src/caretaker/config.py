@@ -466,8 +466,12 @@ class FoundryExecutorConfig(StrictBaseModel):
     )
     max_files_touched: int = 10
     max_diff_lines: int = 400
+    # MVP task types that are actually dispatched to Foundry today. ``UPGRADE``
+    # is intentionally omitted until ``UpgradePlanner`` routes via the
+    # dispatcher; users who wire an upstream-Copilot upgrade path to Foundry
+    # can opt in by overriding this list in their config.
     allowed_task_types: list[str] = Field(
-        default_factory=lambda: ["LINT_FAILURE", "REVIEW_COMMENT", "UPGRADE"]
+        default_factory=lambda: ["LINT_FAILURE", "REVIEW_COMMENT"]
     )
     route_same_repo_only: bool = True
     request_timeout_seconds: float = 120.0
