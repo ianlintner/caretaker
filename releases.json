@@ -1,0 +1,53 @@
+{
+  "releases": [
+    {
+      "version": "0.7.2",
+      "min_compatible": "0.7.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.2",
+      "upgrade_notes": "Update to 0.7.2.",
+      "breaking": false
+    },
+    {
+      "version": "0.7.1",
+      "min_compatible": "0.7.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.1",
+      "upgrade_notes": "Update to 0.7.1.",
+      "breaking": false
+    },
+    {
+      "version": "0.7.0",
+      "min_compatible": "0.7.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.0",
+      "upgrade_notes": "Update to 0.7.0.",
+      "breaking": false
+    },
+    {
+      "version": "0.6.5",
+      "min_compatible": "0.6.5",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.6.5",
+      "upgrade_notes": "Update to 0.6.5.",
+      "breaking": false
+    },
+    {
+      "version": "0.6.4",
+      "min_compatible": "0.6.4",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.6.4",
+      "upgrade_notes": "Update to 0.6.4.",
+      "breaking": false
+    },
+    {
+      "version": "0.5.2",
+      "min_compatible": "0.5.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/blob/main/CHANGELOG.md",
+      "upgrade_notes": "Update .version to 0.5.2 and refresh workflow and agent templates.",
+      "breaking": false
+    },
+    {
+      "version": "0.5.0",
+      "min_compatible": "0.5.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/blob/main/CHANGELOG.md",
+      "upgrade_notes": "Update .version to 0.5.0 and refresh workflow and agent templates.",
+      "breaking": false
+    }
+  ]
+}

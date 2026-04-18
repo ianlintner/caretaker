@@ -42,6 +42,7 @@ site/
 *.pem
 /*.txt
 /*.json
+!releases.json
 src/caretaker/evolution/backends/mongo_backend.py
 *-evolution.db*
 *.log
