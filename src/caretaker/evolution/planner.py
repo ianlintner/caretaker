@@ -31,6 +31,18 @@ PLAN_COOLDOWN_DAYS = 7
 MAX_PLAN_STEPS = 8
 PLAN_LABEL = "caretaker:recovery"
 
+# Map goal_id → InsightStore category (goal_ids don't share a prefix convention
+# with skill categories so we need an explicit mapping).
+_GOAL_TO_CATEGORY: dict[str, str] = {
+    "ci_health": "ci",
+    "pr_lifecycle": "ci",          # PR stalls are usually CI-driven
+    "issue_triage": "issue",
+    "security_posture": "security",
+    "upgrade_currency": "build",   # dependency upgrades are build-side concerns
+    "self_health": "ci",           # caretaker's own CI health
+    "documentation": "issue",
+}
+
 
 @dataclass
 class RecoveryStep:
@@ -112,7 +124,8 @@ class PlanMode:
 
         # Build context for Claude
         failing_context = self._build_context(goal_id, snapshot, state)
-        top_skills = insight_store.top_skills(goal_id.split("_")[0], limit=3)
+        category = _GOAL_TO_CATEGORY.get(goal_id, "ci")
+        top_skills = insight_store.top_skills(category, limit=3)
         known_skills_text = "\n".join(f"- {s.sop_text}" for s in top_skills)
 
         plan_text = ""

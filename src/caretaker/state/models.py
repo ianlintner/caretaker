@@ -163,3 +163,5 @@ class OrchestratorState(BaseModel):
     run_history: list[RunSummary] = Field(default_factory=list)
     # Evolution: active recovery plan milestones per goal (Phase 6)
     active_plan_ids: dict[str, int] = Field(default_factory=dict)
+    # Evolution: last-activated timestamp per goal (ISO8601) — used to enforce cooldown
+    plan_cooldowns: dict[str, str] = Field(default_factory=dict)
