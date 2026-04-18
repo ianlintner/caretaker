@@ -21,6 +21,7 @@ from caretaker.github_client.models import (
     ReviewState,
     User,
 )
+from caretaker.pr_agent.states import ReadinessEvaluation
 from caretaker.state.models import PRTrackingState, TrackedPR
 from tests.conftest import make_check_run, make_pr, make_review
 
@@ -43,7 +44,6 @@ def make_config(
 
 def make_readiness_evaluation() -> ReadinessEvaluation:
     """Create a default readiness evaluation for tests."""
-    from caretaker.pr_agent.states import ReadinessEvaluation
     return ReadinessEvaluation(
         score=0.5,
         blockers=["ci_failing"],
