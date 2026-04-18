@@ -224,9 +224,7 @@ def build_ownership_claim_comment(pr: PullRequest, tracking: TrackedPR) -> str:
     """Build the comment body for ownership claim."""
     blockers = set(tracking.readiness_blockers)
     mergeability_points = (
-        0
-        if {"draft_pr", "merge_conflict", "breaking_change", "manual_hold"} & blockers
-        else 10
+        0 if {"draft_pr", "merge_conflict", "breaking_change", "manual_hold"} & blockers else 10
     )
     automated_points = 0 if "automated_feedback_unaddressed" in blockers else 20
     review_points = 0 if {"required_review_missing", "changes_requested"} & blockers else 30

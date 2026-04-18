@@ -217,9 +217,8 @@ def evaluate_readiness(
     if not blockers:
         conclusion = "success"
         summary = "PR is ready for merge"
-    elif (
-        "ci_pending" in blockers
-        or ("required_review_missing" in blockers and "changes_requested" not in blockers)
+    elif "ci_pending" in blockers or (
+        "required_review_missing" in blockers and "changes_requested" not in blockers
     ):
         conclusion = "in_progress"
         summary = f"PR pending: {', '.join(blockers)}"
