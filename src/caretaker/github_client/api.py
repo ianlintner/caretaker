@@ -76,6 +76,15 @@ class GitHubClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def get_default_token(self, *, installation_id: int | None = None) -> str:
+        """Return the write-capable installation/env token used for API calls.
+
+        Exposed for callers that must hand the token to subprocesses (e.g. the
+        Foundry executor's ``git push`` path) without reaching into
+        ``self._creds`` directly.
+        """
+        return await self._creds.default_token(installation_id=installation_id)
+
     async def __aenter__(self) -> GitHubClient:
         return self
 
