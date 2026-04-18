@@ -339,7 +339,7 @@ class LiteLLMProvider:
         # are Pydantic-ish; fall back to a manual dict build.
         raw_message: dict[str, Any]
         try:
-            raw_message = message.model_dump()  # type: ignore[attr-defined]
+            raw_message = message.model_dump()
         except AttributeError:
             raw_message = {
                 "role": getattr(message, "role", "assistant"),

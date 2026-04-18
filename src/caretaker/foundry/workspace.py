@@ -14,6 +14,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003 — used at runtime in Workspace ctor
+from types import TracebackType
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,12 @@ class Workspace:
         logger.info("Foundry workspace opened at %s (base_sha=%s)", target, self._head_sha)
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if self._path is None:
             return
         try:
