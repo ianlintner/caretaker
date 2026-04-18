@@ -8,10 +8,6 @@ __pycache__/
 dist/
 build/
 .eggs/
-# But track the setup templates and agent distribution files
-!dist/SETUP_AGENT.md
-!dist/templates/
-!dist/templates/**
 
 # Virtual environments
 .venv/
