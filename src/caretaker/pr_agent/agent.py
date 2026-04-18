@@ -614,9 +614,14 @@ class PRAgent:
             return
 
         check_name = self._config.readiness.check_name
-        head_sha = pr.head_ref  # This is the branch/ref, not the commit SHA
-        # For PRs, we need to get the actual commit SHA
-        # The head_ref from PR is the branch name; we use it directly for check runs
+        head_sha = pr.head_sha
+        if not head_sha:
+            logger.warning(
+                "PR #%d: missing head SHA, skipping %s check publication",
+                pr.number,
+                check_name,
+            )
+            return
 
         # Update readiness tracking from evaluation
         tracking.readiness_score = evaluation.readiness.score
@@ -630,13 +635,14 @@ class PRAgent:
 
         # Determine conclusion based on readiness
         conclusion = evaluation.readiness.conclusion
+        check_status = "completed"
         check_conclusion = None
         if conclusion == "success":
             check_conclusion = "success"
         elif conclusion == "failure":
             check_conclusion = "failure"
         else:  # in_progress
-            check_conclusion = None  # Will be updated with in_progress status
+            check_status = "in_progress"
 
         check_title = get_readiness_check_title(tracking)
         check_summary = get_readiness_check_summary(tracking)
@@ -648,11 +654,13 @@ class PRAgent:
                     self._owner,
                     self._repo,
                     existing_check.id,
-                    status="completed",
+                    status=check_status,
                     conclusion=check_conclusion,
                     output_title=check_title,
                     output_summary=check_summary,
-                    completed_at=datetime.now(UTC).isoformat(),
+                    completed_at=(
+                        datetime.now(UTC).isoformat() if check_status == "completed" else None
+                    ),
                 )
                 logger.debug(
                     "PR #%d: Updated %s check (id=%d, conclusion=%s)",
@@ -668,12 +676,14 @@ class PRAgent:
                     self._repo,
                     check_name,
                     head_sha,
-                    status="completed",
+                    status=check_status,
                     conclusion=check_conclusion,
                     output_title=check_title,
                     output_summary=check_summary,
                     started_at=datetime.now(UTC).isoformat(),
-                    completed_at=datetime.now(UTC).isoformat(),
+                    completed_at=(
+                        datetime.now(UTC).isoformat() if check_status == "completed" else None
+                    ),
                 )
                 logger.debug(
                     "PR #%d: Created %s check (id=%s)",
@@ -705,7 +715,7 @@ class PRAgent:
         5. Posts update comments on meaningful changes
         """
         previous_score = tracking.readiness_score
-        list(tracking.readiness_blockers)
+        previous_blockers = list(tracking.readiness_blockers)
 
         # Guard against optional readiness field
         if evaluation.readiness is None:
@@ -756,7 +766,6 @@ class PRAgent:
                 pr,
                 tracking,
                 self._config.ownership,
-                self._config.ownership,  # readiness uses same config for label
             )
 
         # Publish readiness check
@@ -764,7 +773,11 @@ class PRAgent:
 
         # Post update comment on meaningful changes (only for owned PRs)
         if tracking.ownership_state == OwnershipState.OWNED:
-            update_comment = build_readiness_comment(tracking, previous_score)
+            update_comment = build_readiness_comment(
+                tracking,
+                previous_score,
+                previous_blockers,
+            )
             if update_comment:
                 try:
                     await self._github.add_issue_comment(

@@ -31,7 +31,7 @@ The `caretaker:hold` label prevents Caretaker from merging a PR even if it meets
 
 - Maintained by humans who want to control merge timing
 - Does not affect ownership claim
-- Does not affect readiness evaluation
+- Affects readiness evaluation by adding `manual_hold` blocker and withholding the 10% mergeability component
 
 ## Readiness Scoring
 
@@ -214,6 +214,5 @@ To migrate from the current `auto_merge` behavior to Caretaker merge authority:
 
 ## Known Limitations
 
-- The `head_ref` from GitHub PR API is a branch name, not a commit SHA
-- Check runs require a commit SHA; ensure the PR head branch has been pushed
+- Check runs require a PR head commit SHA; if GitHub omits `head.sha`, readiness check publication is skipped for that cycle
 - Assignee APIs are user-oriented; Caretaker uses labels/checks/comments for identity

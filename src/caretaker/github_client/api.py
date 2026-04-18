@@ -724,6 +724,7 @@ class GitHubClient:
             state=data["state"],
             user=User(login=data["user"]["login"], id=data["user"]["id"]),
             head_ref=data.get("head", {}).get("ref", ""),
+            head_sha=data.get("head", {}).get("sha", ""),
             base_ref=data.get("base", {}).get("ref", ""),
             mergeable=data.get("mergeable"),
             merged=data.get("merged", False),

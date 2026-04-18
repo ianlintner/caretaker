@@ -77,16 +77,15 @@ def should_release_ownership(
     if tracking.ownership_state != OwnershipState.OWNED:
         return False
 
-    # Release on merge
-    if pr.merged:
+    if reason == "escalated":
         return True
+    if reason == "merged":
+        return bool(pr.merged)
+    if reason == "closed":
+        state_value = getattr(pr.state, "value", pr.state)
+        return state_value == "closed"
 
-    # Release on close
-    if pr.state.value == "closed":
-        return True
-
-    # Release on escalation
-    return reason == "escalated"
+    return bool(pr.merged)
 
 
 async def claim_ownership(
@@ -96,7 +95,6 @@ async def claim_ownership(
     pr: PullRequest,
     tracking: TrackedPR,
     ownership_config: OwnershipConfig,
-    readiness_config: OwnershipConfig,
 ) -> OwnershipClaim:
     """Attempt to acquire ownership of a PR.
 
@@ -107,7 +105,6 @@ async def claim_ownership(
         pr: The pull request
         tracking: Current tracking state
         ownership_config: Ownership configuration
-        readiness_config: Readiness configuration (uses same label field)
 
     Returns:
         OwnershipClaim with the result of the claim attempt
@@ -225,6 +222,16 @@ async def release_ownership(
 
 def build_ownership_claim_comment(pr: PullRequest, tracking: TrackedPR) -> str:
     """Build the comment body for ownership claim."""
+    blockers = set(tracking.readiness_blockers)
+    mergeability_points = (
+        0
+        if {"draft_pr", "merge_conflict", "breaking_change", "manual_hold"} & blockers
+        else 10
+    )
+    automated_points = 0 if "automated_feedback_unaddressed" in blockers else 20
+    review_points = 0 if {"required_review_missing", "changes_requested"} & blockers else 30
+    ci_points = 0 if {"ci_pending", "ci_failing"} & blockers else 40
+
     return f"""<!-- caretaker:ownership:claim -->
 
 ## 🏠 Caretaker Ownership
@@ -235,10 +242,10 @@ Caretaker has claimed ownership of this PR.
 
 | Component | Score |
 |-----------|-------|
-| Mergeable & non-draft | {int(tracking.readiness_score * 10)}% |
-| Automated feedback | {int(tracking.readiness_score * 20)}% |
-| Reviews approved | {int(tracking.readiness_score * 30)}% |
-| CI passing | {int(tracking.readiness_score * 40)}% |
+| Mergeable & non-draft | {mergeability_points}% |
+| Automated feedback | {automated_points}% |
+| Reviews approved | {review_points}% |
+| CI passing | {ci_points}% |
 | **Total** | **{int(tracking.readiness_score * 100)}%** |
 
 ### Blockers
@@ -285,7 +292,11 @@ Caretaker has released ownership of this PR.
 """
 
 
-def build_readiness_comment(tracking: TrackedPR, previous_score: float | None = None) -> str:
+def build_readiness_comment(
+    tracking: TrackedPR,
+    previous_score: float | None = None,
+    previous_blockers: list[str] | None = None,
+) -> str:
     """Build a comment updating readiness status.
 
     Only call this on meaningful changes to avoid comment noise.
@@ -300,9 +311,11 @@ def build_readiness_comment(tracking: TrackedPR, previous_score: float | None = 
     score_changed = (
         previous_score is not None and abs(tracking.readiness_score - previous_score) >= 0.1
     )
-    blockers_changed = previous_score is None or score_changed
+    blockers_changed = previous_blockers is not None and set(previous_blockers) != set(
+        tracking.readiness_blockers
+    )
 
-    if not blockers_changed and not score_changed:
+    if previous_score is not None and not blockers_changed and not score_changed:
         return ""
 
     return f"""<!-- caretaker:readiness:update -->
