@@ -312,14 +312,16 @@ class PlanMode:
         return [
             RecoveryStep(
                 title="Audit current state",
-                instructions=f"Review the current state of '{goal_id}' — identify all open issues and PRs contributing to the failure.",
+                instructions=f"Review the current state of '{goal_id}' — "
+                "identify all open issues and PRs contributing to the failure.",
             ),
             RecoveryStep(
                 title="Fix highest-impact items",
                 instructions="Address the top 3 items by impact. Ensure CI passes on each fix.",
             ),
             RecoveryStep(
-                title="Verify recovery",
+                title="Verify recovery","
+                "
                 instructions=f"Confirm '{goal_id}' score has improved above 0.5 by running caretaker in dry-run mode.",
             ),
         ]

@@ -98,13 +98,14 @@ class ReflectionEngine:
             for r in state.run_history[-self.HEALTH_DECLINE_RUNS :]
             if r.goal_health is not None
         ]
-        if len(health_scores) >= self.HEALTH_DECLINE_RUNS:
-            if all(health_scores[i] > health_scores[i + 1] for i in range(len(health_scores) - 1)):
-                logger.debug(
-                    "Reflection triggered: overall health declining for %d runs",
-                    self.HEALTH_DECLINE_RUNS,
-                )
-                return True
+        if len(health_scores) >= self.HEALTH_DECLINE_RUNS and all(
+            health_scores[i] > health_scores[i + 1] for i in range(len(health_scores) - 1)
+        ):
+            logger.debug(
+                "Reflection triggered: overall health declining for %d runs",
+                self.HEALTH_DECLINE_RUNS,
+            )
+            return True
 
         return False
 
@@ -169,7 +170,8 @@ class ReflectionEngine:
         insight_store: InsightStore,
         triggered: list[str],
     ) -> str:
-        lines = [
+        lines = ["
+            "
             "You are analyzing why an autonomous repository maintenance system is failing to improve.",
             "",
             "## Current Goal States",
@@ -234,11 +236,14 @@ class ReflectionEngine:
 
 
 def format_reflection_comment(result: ReflectionResult) -> str:
-    """Format a ReflectionResult as a GitHub comment body."""
+    trigger_msg = (
+        ", ".join(result.triggered_by) if result.triggered_by else "overall health decline"
+    )
     lines = [
         f"{REFLECTION_COMMENT_MARKER}",
         f"## Caretaker Reflection — {result.reflected_at.strftime('%Y-%m-%d %H:%M UTC')}",
         "",
+        f"**Triggered by:** {trigger_msg
         f"**Triggered by:** {', '.join(result.triggered_by) if result.triggered_by else 'overall health decline'}",
         "",
         result.analysis,

@@ -33,7 +33,7 @@ class EvolutionBackend(Protocol):
         min_attempts: int = 3,
         limit: int = 10,
     ) -> list[Skill]:
-        """Return skills for *category* with at least *min_attempts* total, sorted by confidence desc."""
+        """Return skills for *category* with >= *min_attempts* total, sorted by confidence."""
         ...
 
     def get_skill(self, skill_id: str) -> Skill | None:
