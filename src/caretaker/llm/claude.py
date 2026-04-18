@@ -87,6 +87,87 @@ class ClaudeClient:
         self._log_response("analyze_review_comment", result)
         return result
 
+    async def generate_reflection(self, prompt: str) -> str:
+        """Generate a reflection analysis for stuck/diverging goals."""
+        if not self.available:
+            return ""
+        self._ensure_client()
+        assert self._client is not None
+
+        self._log_request("generate_reflection", prompt)
+        response = self._client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = cast("str", response.content[0].text)
+        self._log_response("generate_reflection", result)
+        return result
+
+    async def generate_recovery_plan(
+        self,
+        goal_id: str,
+        goal_score: float,
+        failing_context: str,
+        known_skills: str = "",
+    ) -> str:
+        """Generate a step-by-step recovery plan for a CRITICAL goal."""
+        if not self.available:
+            return ""
+        self._ensure_client()
+        assert self._client is not None
+
+        prompt = (
+            f"Generate a recovery plan for a CRITICAL goal: '{goal_id}' (score={goal_score:.2f}).\n\n"
+            f"Current situation:\n{failing_context}\n\n"
+            + (f"Known effective skills:\n{known_skills}\n\n" if known_skills else "")
+            + "Provide a numbered list of 3-8 specific, actionable steps to recover this goal.\n"
+            "Each step should be executable by a GitHub Copilot agent.\n"
+            "Format: STEP N: <title> — <detailed instructions>"
+        )
+        self._log_request("generate_recovery_plan", prompt)
+        response = self._client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = cast("str", response.content[0].text)
+        self._log_response("generate_recovery_plan", result)
+        return result
+
+    async def analyze_stuck_pr(
+        self,
+        pr_number: int,
+        previous_attempts: int,
+        ci_log: str,
+        known_skills: str = "",
+    ) -> str:
+        """Analyze a PR that has been stuck in CI_FAILING for multiple cycles."""
+        if not self.available:
+            return ""
+        self._ensure_client()
+        assert self._client is not None
+
+        prompt = (
+            f"PR #{pr_number} has failed CI {previous_attempts} time(s).\n\n"
+            f"Latest CI log:\n```\n{ci_log[:6000]}\n```\n\n"
+            + (f"Previously successful strategies for similar failures:\n{known_skills}\n\n" if known_skills else "")
+            + "Provide a focused analysis:\n"
+            "1. Why previous fix attempts likely failed\n"
+            "2. The most likely root cause given the current log\n"
+            "3. A specific, different approach to try next\n"
+            "Keep response under 300 words."
+        )
+        self._log_request("analyze_stuck_pr", prompt)
+        response = self._client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = cast("str", response.content[0].text)
+        self._log_response("analyze_stuck_pr", result)
+        return result
+
     async def decompose_issue(self, issue_body: str, repo_context: str = "") -> str:
         """Break a large issue into smaller implementable tasks."""
         if not self.available:

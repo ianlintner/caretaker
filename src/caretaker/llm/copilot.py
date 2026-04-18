@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from caretaker.evolution.insight_store import Skill
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Comment
 
@@ -47,6 +48,19 @@ class CopilotTask:
     max_attempts: int
     priority: str = "medium"
     context: str = ""
+    _skill_hints: str = field(default="", init=False, repr=False)
+
+    def enrich_with_skills(self, skills: list[Skill]) -> None:
+        """Append skill hints from the InsightStore into this task's comment body."""
+        if not skills:
+            return
+        lines = []
+        for s in skills[:3]:
+            pct = f"{s.confidence:.0%}"
+            lines.append(
+                f"> {s.sop_text} (confidence: {pct}, {s.success_count}/{s.total_attempts} attempts)"
+            )
+        self._skill_hints = "\n".join(lines)
 
     def to_comment(self) -> str:
         lines = [
@@ -70,6 +84,14 @@ class CopilotTask:
         ]
         if self.context:
             lines.extend(["**Context:**", self.context, ""])
+        if self._skill_hints:
+            lines.extend(
+                [
+                    "**SKILL HINTS** (learned from prior fixes in this repo):",
+                    self._skill_hints,
+                    "",
+                ]
+            )
         lines.append(TASK_CLOSE)
         return "\n".join(lines)
 

@@ -225,6 +225,17 @@ class GoalEngineConfig(StrictBaseModel):
     max_history: int = 20
 
 
+class EvolutionConfig(StrictBaseModel):
+    """Configuration for the learn-and-adapt evolution layer."""
+
+    enabled: bool = False
+    db_path: str = ".caretaker-evolution.db"
+    skill_min_confidence: float = 0.5
+    reflection_enabled: bool = True
+    mutation_enabled: bool = False  # opt-in; requires review of mutation outcomes
+    plan_mode_enabled: bool = False  # opt-in; creates GitHub milestones + issues
+
+
 class ReviewAgentConfig(StrictBaseModel):
     enabled: bool = False
     mode: Literal["scheduled", "targeted"] = "scheduled"
@@ -402,6 +413,7 @@ class MaintainerConfig(StrictBaseModel):
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)

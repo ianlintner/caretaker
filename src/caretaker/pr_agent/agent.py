@@ -32,6 +32,7 @@ from caretaker.tools.debug_dump import render_debug_dump
 
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
+    from caretaker.evolution.insight_store import InsightStore
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
     from caretaker.llm.router import LLMRouter
@@ -59,16 +60,19 @@ class PRAgent:
         repo: str,
         config: PRAgentConfig,
         llm_router: LLMRouter | None = None,
+        insight_store: InsightStore | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._config = config
         self._llm = llm_router
+        self._insight_store = insight_store
         self._copilot_protocol = CopilotProtocol(github, owner, repo)
         self._copilot_bridge = PRCopilotBridge(
             self._copilot_protocol,
             max_retries=config.copilot.max_retries,
+            insight_store=insight_store,
         )
 
     async def run(
@@ -201,6 +205,15 @@ class PRAgent:
             evaluation.recommended_state.value,
             evaluation.recommended_action,
         )
+
+        # Track fix cycles: each FIX_REQUESTED → CI_FAILING transition is one cycle
+        if (
+            tracking.state == PRTrackingState.FIX_REQUESTED
+            and evaluation.recommended_state == PRTrackingState.CI_FAILING
+        ):
+            tracking.fix_cycles += 1
+            tracking.stuck_reflection_done = False  # allow re-analysis next cycle
+            logger.debug("PR #%d: fix_cycles incremented to %d", pr.number, tracking.fix_cycles)
 
         # Set state to the recommendation first; action handlers may override
         # (e.g. FIX_REQUESTED after posting a @copilot comment).
@@ -415,15 +428,21 @@ class PRAgent:
 
             attempt = tracking.copilot_attempts + 1
 
+            stuck_analysis = await self._maybe_analyze_stuck_pr(pr, tracking, triage.error_summary)
+            if stuck_analysis:
+                tracking.stuck_reflection_done = True
+
             result = await self._copilot_bridge.request_ci_fix(
                 pr=pr,
                 triage=triage,
                 attempt=attempt,
+                issue_context=stuck_analysis if stuck_analysis else "",
             )
 
             tracking.copilot_attempts = attempt
             tracking.last_task_comment_id = result.comment_id
             tracking.state = PRTrackingState.FIX_REQUESTED
+            tracking.last_state_change_at = datetime.utcnow()
             report.fix_requested.append(pr.number)
             logger.info(
                 "PR #%d: CI fix requested (attempt %d/%d)",
@@ -433,6 +452,33 @@ class PRAgent:
             )
 
         return tracking
+
+    async def _maybe_analyze_stuck_pr(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        error_summary: str,
+    ) -> str:
+        """Return a stuck-PR analysis string when the fix_cycles threshold is met."""
+        if tracking.fix_cycles < 2 or tracking.stuck_reflection_done or not self._llm:
+            return ""
+        if not self._llm.feature_enabled("ci_log_analysis"):
+            return ""
+        skill_hints = ""
+        if self._insight_store is not None:
+            skills = self._insight_store.get_relevant("ci", error_summary)
+            if skills:
+                skill_hints = "\n".join(
+                    f"- {s.sop_text} (confidence {s.confidence:.0%})" for s in skills[:3]
+                )
+        analysis = await self._llm.claude.analyze_stuck_pr(
+            pr_number=pr.number,
+            previous_attempts=tracking.copilot_attempts,
+            ci_log=error_summary,
+            known_skills=skill_hints,
+        )
+        logger.info("PR #%d: stuck analysis generated (fix_cycles=%d)", pr.number, tracking.fix_cycles)
+        return analysis
 
     async def _handle_ci_backlog(
         self,
