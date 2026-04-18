@@ -603,22 +603,22 @@ class TestMutationFullLifecycle:
     def test_full_cycle_rejects_on_no_improvement(
         self, store: InsightStore
     ) -> None:
+        state = OrchestratorState()
+        state.goal_history["ci_health"] = [
+            GoalSnapshot(
+                goal_id="ci_health", score=0.4, status=GoalStatus.PROGRESSING
+            )
+        ]
+
         mutator = StrategyMutator(store)
         proposed = mutator.propose_mutation(
             self._reflection_for("copilot_max_retries", "4"),
-            OrchestratorState(),
+            state,
             MaintainerConfig(),
         )
         assert proposed is not None
 
-        state = OrchestratorState()
-        state.goal_history["ci_health"] = [
-            GoalSnapshot(
-                goal_id="ci_health",
-                score=proposed.goal_score_before,  # no change
-                status=GoalStatus.PROGRESSING,
-            )
-        ]
+        # Score stays flat — no acceptance delta
         eval_stub = GoalEvaluation(
             snapshots={
                 "ci_health": GoalSnapshot(
