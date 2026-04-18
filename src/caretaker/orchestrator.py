@@ -267,9 +267,10 @@ class Orchestrator:
         try:
             state = await self._state_tracker.load()
 
-            # Apply pending strategy mutations using loaded state (real goal history)
-            if self._strategy_mutator is not None:
-                self._config = self._strategy_mutator.apply_pending(self._config, state)
+            # Pending strategy mutations were applied in __init__ (before agents
+            # were constructed) so AgentContext.config already carries them. We
+            # intentionally do NOT re-apply here: rebuilding the registry mid-run
+            # would invalidate in-flight agent state.
 
             # Snapshot PR states before agents run (for crystallization comparison)
             _pre_agent_prs = {n: pr.model_copy() for n, pr in state.tracked_prs.items()}
