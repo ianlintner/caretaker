@@ -61,9 +61,7 @@ def _make_same_repo_pr(head_sha: str = "deadbeef") -> PullRequest:
 
 class TestForkCheck:
     @pytest.mark.asyncio
-    async def test_fork_pr_escalates_when_route_same_repo_only(
-        self, temp_git_repo: Path
-    ) -> None:
+    async def test_fork_pr_escalates_when_route_same_repo_only(self, temp_git_repo: Path) -> None:
         """With route_same_repo_only=True, a fork PR must escalate."""
         executor = FoundryExecutor(
             provider=FakeToolProvider([]),
@@ -119,9 +117,7 @@ class TestForkCheck:
         assert "fork" not in result.reason.lower()
 
     @pytest.mark.asyncio
-    async def test_route_same_repo_only_false_allows_fork(
-        self, temp_git_repo: Path
-    ) -> None:
+    async def test_route_same_repo_only_false_allows_fork(self, temp_git_repo: Path) -> None:
         """With the guard disabled, the pre-flight no longer escalates for
         forks — behavior reverts to eligibility-by-task-type only.
         """

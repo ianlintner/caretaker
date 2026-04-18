@@ -176,11 +176,9 @@ class PRCopilotBridge:
         #     posted the RESULT comment. Returning its id here would cause
         #     the next poll to skip it. Leave as None so the poll scans the
         #     full comment list and finds the Foundry result.
-        comment_id: int | None
-        if route.copilot_comment is not None:
-            comment_id = route.copilot_comment.id
-        else:
-            comment_id = None
+        comment_id: int | None = (
+            route.copilot_comment.id if route.copilot_comment is not None else None
+        )
 
         return CopilotInteractionResult(
             task_posted=True,

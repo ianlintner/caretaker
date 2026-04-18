@@ -343,3 +343,59 @@ async def test_approve_workflow_run_error_raises_githubapieerror() -> None:
         await gh.approve_workflow_run("o", "r", 55)
 
     assert exc_info.value.status_code == 422
+
+
+def test_parse_pr_populates_head_and_base_repo_full_name() -> None:
+    """_parse_pr reads repo.full_name so the fork check can work."""
+    data = {
+        "number": 7,
+        "title": "fork pr",
+        "body": "",
+        "state": "open",
+        "user": {"login": "contributor", "id": 1},
+        "head": {
+            "ref": "feat",
+            "sha": "abc",
+            "repo": {"full_name": "contributor/caretaker"},
+        },
+        "base": {
+            "ref": "main",
+            "sha": "def",
+            "repo": {"full_name": "ianlintner/caretaker"},
+        },
+    }
+    pr = GitHubClient._parse_pr(data)
+    assert pr.head_repo_full_name == "contributor/caretaker"
+    assert pr.base_repo_full_name == "ianlintner/caretaker"
+    assert pr.is_fork is True
+
+
+def test_parse_pr_is_fork_false_for_same_repo() -> None:
+    data = {
+        "number": 8,
+        "title": "internal",
+        "body": "",
+        "state": "open",
+        "user": {"login": "bot", "id": 2},
+        "head": {"ref": "b", "sha": "a", "repo": {"full_name": "ianlintner/caretaker"}},
+        "base": {"ref": "main", "sha": "d", "repo": {"full_name": "ianlintner/caretaker"}},
+    }
+    pr = GitHubClient._parse_pr(data)
+    assert pr.is_fork is False
+
+
+def test_parse_pr_handles_missing_repo_block() -> None:
+    """A PR without repo metadata must not crash; is_fork stays False."""
+    data = {
+        "number": 9,
+        "title": "minimal",
+        "body": "",
+        "state": "open",
+        "user": {"login": "bot", "id": 2},
+        "head": {"ref": "b", "sha": "a"},
+        "base": {"ref": "main", "sha": "d"},
+    }
+    pr = GitHubClient._parse_pr(data)
+    assert pr.head_repo_full_name == ""
+    assert pr.base_repo_full_name == ""
+    assert pr.is_fork is False

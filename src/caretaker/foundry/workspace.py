@@ -14,7 +14,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003 — used at runtime in Workspace ctor
-from types import TracebackType
+from types import TracebackType  # noqa: TC003 — used at runtime in __aexit__ annotation
 
 logger = logging.getLogger(__name__)
 
