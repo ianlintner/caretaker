@@ -609,6 +609,10 @@ class PRAgent:
         if not self._config.readiness.enabled:
             return
 
+        # Guard against optional readiness field
+        if evaluation.readiness is None:
+            return
+
         check_name = self._config.readiness.check_name
         head_sha = pr.head_ref  # This is the branch/ref, not the commit SHA
         # For PRs, we need to get the actual commit SHA
@@ -702,6 +706,10 @@ class PRAgent:
         """
         previous_score = tracking.readiness_score
         list(tracking.readiness_blockers)
+
+        # Guard against optional readiness field
+        if evaluation.readiness is None:
+            return tracking
 
         # Update readiness tracking
         tracking.readiness_score = evaluation.readiness.score
