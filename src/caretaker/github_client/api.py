@@ -399,6 +399,7 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
         copilot_assignment: CopilotAgentAssignment | None = None,
+        milestone: int | None = None,
     ) -> Issue:
         # Copilot assignment requires the dedicated issue-assignees flow with a user token.
         assign_copilot = any(is_copilot_login(assignee) for assignee in (assignees or []))
@@ -409,6 +410,8 @@ class GitHubClient:
             payload["labels"] = labels
         if real_assignees:
             payload["assignees"] = real_assignees
+        if milestone is not None:
+            payload["milestone"] = milestone
         data = await self._post(f"/repos/{owner}/{repo}/issues", json=payload)
         issue = self._parse_issue(data)
 
