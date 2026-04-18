@@ -205,7 +205,9 @@ jobs:
         run: pip install build
 
       - name: Build package
-        run: python -m build
+        # Use a dedicated output directory to avoid mixing build artifacts with
+        # the repo's dist/ directory (which contains caretaker setup templates).
+        run: python -m build --outdir dist-packages
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -213,4 +215,5 @@ jobs:
           # If PYPI_API_TOKEN secret is set it will be used for token-based auth;
           # when the secret is empty the action falls back to OIDC trusted publishing.
           password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist-packages
           skip-existing: true
