@@ -140,6 +140,8 @@ llm:
 #       - "setup.py"
 #     max_files_touched: 10
 #     max_diff_lines: 400
-#     allowed_task_types: [LINT_FAILURE, REVIEW_COMMENT, UPGRADE]
+#     # MVP scope: UPGRADE emission via dispatcher is Phase 2 — opt in by
+#     # adding it to this list once UpgradePlanner routes through Foundry.
+#     allowed_task_types: [LINT_FAILURE, REVIEW_COMMENT]
 #     route_same_repo_only: true
 #     request_timeout_seconds: 120.0

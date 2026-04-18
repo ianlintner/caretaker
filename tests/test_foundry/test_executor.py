@@ -111,16 +111,13 @@ class TestExecutorEndToEnd:
                 route_same_repo_only=False,
             ),
             source_repo_path=temp_git_repo,
-            token_supplier=lambda: _static_token("dummy"),
         )
 
         # Override the remote URL to point at the bare origin.
-        original_resolve = executor._resolve_remote_url
-
         async def _fake_url() -> str:
             return str(bare_origin)
 
-        executor._resolve_remote_url = _fake_url  # type: ignore[assignment]
+        executor._resolve_remote_url = _fake_url  # type: ignore[method-assign]
 
         task = CodingTask(
             task_type=TaskType.LINT_FAILURE,
@@ -142,9 +139,6 @@ class TestExecutorEndToEnd:
             text=True,
         )
         assert "caretaker-foundry" in log.stdout
-
-        # Silence unused warning from unused var.
-        _ = original_resolve
 
     @pytest.mark.asyncio
     async def test_escalates_when_no_changes_produced(
@@ -210,7 +204,3 @@ class TestExecutorEndToEnd:
         result = await executor.run(task, _make_pr("deadbeef"))
         assert result.outcome == ExecutorOutcome.ESCALATED
         assert "allowlist" in result.reason
-
-
-async def _static_token(value: str) -> str:
-    return value

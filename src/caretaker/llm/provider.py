@@ -37,14 +37,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMRequest:
+    """A single completion request.
+
+    ``messages`` is **only consumed by** :meth:`LLMProvider.complete_with_tools`
+    — the non-tool-use :meth:`complete` path ignores it and always sends a
+    single-user-turn message built from :attr:`prompt`. Callers that need
+    multi-turn history must route through ``complete_with_tools``.
+    """
+
     feature: str
     prompt: str
     model: str
     max_tokens: int
     temperature: float = 0.0
-    # Optional pre-built chat history used by the tool-use loop.  When set it
-    # supersedes ``prompt``; ``complete`` callers continue to pass ``prompt``
-    # only.
+    # Optional pre-built chat history. When set, :meth:`complete_with_tools`
+    # uses it verbatim instead of constructing a message from ``prompt``.
+    # Ignored by :meth:`complete`.
     messages: list[dict[str, Any]] | None = None
 
 
