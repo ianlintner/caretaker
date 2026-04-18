@@ -9,7 +9,7 @@ There are two common ways to use Caretaker:
 
 The fastest path is the setup guide shipped with this repository:
 
-- [`dist/SETUP_AGENT.md`](https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md)
+- [`setup-templates/SETUP_AGENT.md`](https://github.com/ianlintner/caretaker/blob/main/setup-templates/SETUP_AGENT.md)
 
 The guide is designed to be used from a GitHub issue assigned to `@copilot`.
 
@@ -23,7 +23,7 @@ Use the template below — click the **copy** button on the right to copy it, th
 ### Instructions
 
 1. Read the setup guide at:
-   https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md
+   https://github.com/ianlintner/caretaker/blob/main/setup-templates/SETUP_AGENT.md
 2. Follow the instructions exactly.
 3. Open a single PR with the generated files.
 ```

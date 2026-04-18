@@ -156,7 +156,7 @@ def build_sync_issue_body(version: str) -> str:
             "If `.github/copilot-instructions.md` does not already contain a "
             "`## Caretaker` section, append the standard block from the "
             "[setup guide]"
-            f"({_REPO_BASE}/{tag_ref}/dist/SETUP_AGENT.md).",
+            f"({_REPO_BASE}/{tag_ref}/setup-templates/SETUP_AGENT.md).",
             "",
             "**Steps:**",
             "1. Fetch each template from the URLs above and overwrite the local copy",

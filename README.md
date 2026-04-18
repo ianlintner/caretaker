@@ -13,7 +13,7 @@ Documentation: https://ianlintner.github.io/caretaker/
 ## How It Works
 
 1. **You** paste a setup issue into your repo and assign it to `@copilot`
-2. **Copilot** reads our [SETUP_AGENT.md](dist/SETUP_AGENT.md), analyzes your repo, and opens a PR with everything configured
+2. **Copilot** reads our [SETUP_AGENT.md](setup-templates/SETUP_AGENT.md), analyzes your repo, and opens a PR with everything configured
 3. **You** merge the PR
 4. **The orchestrator** runs daily via GitHub Actions, managing PRs, issues, and upgrades
 
@@ -35,7 +35,7 @@ The orchestrator uses Copilot as its execution engine — it observes your repo 
 ### Instructions
 
 1. Read the setup guide at:
-   https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md
+   https://github.com/ianlintner/caretaker/blob/main/setup-templates/SETUP_AGENT.md
 
 2. Follow the instructions in that guide exactly.
 
@@ -195,7 +195,7 @@ Add `ANTHROPIC_API_KEY` to unlock enhanced AI features:
 
 ## Configuration
 
-See [dist/templates/config-default.yml](dist/templates/config-default.yml) for the full config schema.
+See [setup-templates/templates/config-default.yml](setup-templates/templates/config-default.yml) for the full config schema.
 
 Key settings:
 

@@ -22,8 +22,8 @@ It watches pull requests, issues, CI failures, upgrades, stale work, and securit
 
 ## Repository pointers
 
-- setup guide: [`dist/SETUP_AGENT.md`](https://github.com/ianlintner/caretaker/blob/main/dist/SETUP_AGENT.md)
-- default config template: [`dist/templates/config-default.yml`](https://github.com/ianlintner/caretaker/blob/main/dist/templates/config-default.yml)
+- setup guide: [`setup-templates/SETUP_AGENT.md`](https://github.com/ianlintner/caretaker/blob/main/setup-templates/SETUP_AGENT.md)
+- default config template: [`setup-templates/templates/config-default.yml`](https://github.com/ianlintner/caretaker/blob/main/setup-templates/templates/config-default.yml)
 - schema: [`schema/config.v1.schema.json`](https://github.com/ianlintner/caretaker/blob/main/schema/config.v1.schema.json)
 - source package: [`src/caretaker`](https://github.com/ianlintner/caretaker/tree/main/src/caretaker)
 
