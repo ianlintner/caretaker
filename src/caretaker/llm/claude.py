@@ -157,7 +157,8 @@ class ClaudeClient:
     ) -> str:
         """Generate a step-by-step recovery plan for a CRITICAL goal."""
         prompt = (
-            f"Generate a recovery plan for a CRITICAL goal: '{goal_id}' (score={goal_score:.2f}).\n\n"
+            f"Generate a recovery plan for a CRITICAL goal: '{goal_id}' "
+            f"(score={goal_score:.2f}).\n\n"
             f"Current situation:\n{failing_context}\n\n"
             + (f"Known effective skills:\n{known_skills}\n\n" if known_skills else "")
             + "Provide a numbered list of 3-8 specific, actionable steps to recover this goal.\n"

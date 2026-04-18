@@ -1,4 +1,6 @@
-"""Tests for the evolution layer — InsightStore, skill injection, reflection, mutator, stuck detection."""
+"""Tests for the evolution layer — InsightStore, skill injection, reflection,
+mutator, stuck detection.
+"""
 
 from __future__ import annotations
 
