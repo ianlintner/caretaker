@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 # (legacy callers that instantiate ``ClaudeClient()`` directly, e.g. tests).
 _FALLBACK_MODEL = "claude-sonnet-4-5"
 _LEGACY_FEATURE_DEFAULTS: dict[str, tuple[str, int]] = {
-    "ci_log_analysis":        (_FALLBACK_MODEL, 2000),
+    "ci_log_analysis": (_FALLBACK_MODEL, 2000),
     "analyze_review_comment": (_FALLBACK_MODEL, 1000),
-    "generate_reflection":    (_FALLBACK_MODEL, 1500),
+    "generate_reflection": (_FALLBACK_MODEL, 1500),
     "generate_recovery_plan": (_FALLBACK_MODEL, 2000),
-    "analyze_stuck_pr":       (_FALLBACK_MODEL, 800),
-    "decompose_issue":        (_FALLBACK_MODEL, 3000),
+    "analyze_stuck_pr": (_FALLBACK_MODEL, 800),
+    "decompose_issue": (_FALLBACK_MODEL, 3000),
 }
 
 
@@ -177,7 +177,11 @@ class ClaudeClient:
         prompt = (
             f"PR #{pr_number} has failed CI {previous_attempts} time(s).\n\n"
             f"Latest CI log:\n```\n{ci_log[:6000]}\n```\n\n"
-            + (f"Previously successful strategies for similar failures:\n{known_skills}\n\n" if known_skills else "")
+            + (
+                f"Previously successful strategies for similar failures:\n{known_skills}\n\n"
+                if known_skills
+                else ""
+            )
             + "Provide a focused analysis:\n"
             "1. Why previous fix attempts likely failed\n"
             "2. The most likely root cause given the current log\n"

@@ -35,11 +35,11 @@ PLAN_LABEL = "caretaker:recovery"
 # with skill categories so we need an explicit mapping).
 _GOAL_TO_CATEGORY: dict[str, str] = {
     "ci_health": "ci",
-    "pr_lifecycle": "ci",          # PR stalls are usually CI-driven
+    "pr_lifecycle": "ci",  # PR stalls are usually CI-driven
     "issue_triage": "issue",
     "security_posture": "security",
-    "upgrade_currency": "build",   # dependency upgrades are build-side concerns
-    "self_health": "ci",           # caretaker's own CI health
+    "upgrade_currency": "build",  # dependency upgrades are build-side concerns
+    "self_health": "ci",  # caretaker's own CI health
     "documentation": "issue",
 }
 
@@ -70,7 +70,9 @@ class PlanStatus:
 
 def _parse_steps(plan_text: str) -> list[RecoveryStep]:
     """Parse STEP N: <title> — <instructions> lines from Claude output."""
-    pattern = re.compile(r"STEP\s+\d+:\s*(.+?)\s*[—\-]{1,3}\s*(.+?)(?=STEP\s+\d+:|$)", re.DOTALL | re.IGNORECASE)
+    pattern = re.compile(
+        r"STEP\s+\d+:\s*(.+?)\s*[—\-]{1,3}\s*(.+?)(?=STEP\s+\d+:|$)", re.DOTALL | re.IGNORECASE
+    )
     steps: list[RecoveryStep] = []
     for match in pattern.finditer(plan_text):
         title = match.group(1).strip()
@@ -129,7 +131,9 @@ class PlanMode:
         known_skills_text = "\n".join(f"- {s.sop_text}" for s in top_skills)
 
         plan_text = ""
-        if hasattr(self._claude, "generate_recovery_plan") and getattr(self._claude, "available", False):
+        if hasattr(self._claude, "generate_recovery_plan") and getattr(
+            self._claude, "available", False
+        ):
             try:
                 plan_text = await self._claude.generate_recovery_plan(  # type: ignore[union-attr]
                     goal_id=goal_id,
@@ -159,7 +163,11 @@ class PlanMode:
                 title=f"[caretaker] {goal_id} recovery — {datetime.now(UTC).strftime('%Y-%m-%d')}",
                 description=plan.summary,
             )
-            plan.milestone_number = milestone.get("number") if isinstance(milestone, dict) else getattr(milestone, "number", None)
+            plan.milestone_number = (
+                milestone.get("number")
+                if isinstance(milestone, dict)
+                else getattr(milestone, "number", None)
+            )
         except Exception as exc:
             logger.warning("PlanMode: failed to create milestone: %s", exc)
             return plan  # Return plan without milestone — still useful for logging

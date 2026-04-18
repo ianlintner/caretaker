@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from caretaker.evolution.insight_store import Mutation, Skill, _skill_id
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -67,8 +66,13 @@ def mock_pymongo():
         mock_skills_col if "skill" in name else mock_mutations_col
     )
 
-    with patch.dict("sys.modules", {"pymongo": MagicMock(MongoClient=MagicMock(return_value=mock_client))}):
-        with patch("caretaker.evolution.backends.mongo_backend.MongoEvolutionBackend.__init__", autospec=True) as mock_init:
+    with patch.dict(
+        "sys.modules", {"pymongo": MagicMock(MongoClient=MagicMock(return_value=mock_client))}
+    ):
+        with patch(
+            "caretaker.evolution.backends.mongo_backend.MongoEvolutionBackend.__init__",
+            autospec=True,
+        ):
             yield mock_client, mock_skills_col, mock_mutations_col
 
 
@@ -151,7 +155,7 @@ class TestMongoEvolutionBackendSkills:
 
     def test_query_skills_python_confidence_sort(self, backend):
         b, skills_col, _ = backend
-        low_doc = _make_skill_doc(success_count=3, fail_count=7)   # 0.3 confidence
+        low_doc = _make_skill_doc(success_count=3, fail_count=7)  # 0.3 confidence
         high_doc = _make_skill_doc(success_count=8, fail_count=2, signature="webpack_oom")  # 0.8
         skills_col.find.return_value = [low_doc, high_doc]
 
@@ -290,7 +294,7 @@ class TestInsightStoreWithMongoBackend:
     def test_get_relevant_filters_by_confidence(self):
         mock_backend = MagicMock()
         now = datetime.now(UTC)
-        low = Skill("ci:aaa", "ci", "sig1", "sop1", 1, 9, now, now)   # 0.1 confidence
+        low = Skill("ci:aaa", "ci", "sig1", "sop1", 1, 9, now, now)  # 0.1 confidence
         high = Skill("ci:bbb", "ci", "sig2", "sop2", 8, 2, now, now)  # 0.8 confidence
         mock_backend.query_skills.return_value = [high, low]
 

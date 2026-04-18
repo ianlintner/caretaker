@@ -477,7 +477,9 @@ class PRAgent:
             ci_log=error_summary,
             known_skills=skill_hints,
         )
-        logger.info("PR #%d: stuck analysis generated (fix_cycles=%d)", pr.number, tracking.fix_cycles)
+        logger.info(
+            "PR #%d: stuck analysis generated (fix_cycles=%d)", pr.number, tracking.fix_cycles
+        )
         return analysis
 
     async def _handle_ci_backlog(

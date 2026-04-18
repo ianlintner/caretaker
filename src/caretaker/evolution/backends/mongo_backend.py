@@ -29,13 +29,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SKILL_FIELDS = {"_id", "category", "signature", "sop_text", "success_count", "fail_count", "last_used_at", "created_at"}
-_MUTATION_FIELDS = {"_id", "agent_name", "parameter", "old_value", "new_value", "goal_id",
-                    "goal_score_before", "goal_score_after", "runs_evaluated", "started_at", "ended_at", "outcome"}
+_SKILL_FIELDS = {
+    "_id",
+    "category",
+    "signature",
+    "sop_text",
+    "success_count",
+    "fail_count",
+    "last_used_at",
+    "created_at",
+}
+_MUTATION_FIELDS = {
+    "_id",
+    "agent_name",
+    "parameter",
+    "old_value",
+    "new_value",
+    "goal_id",
+    "goal_score_before",
+    "goal_score_after",
+    "runs_evaluated",
+    "started_at",
+    "ended_at",
+    "outcome",
+}
 
 
 def _to_skill(doc: dict[str, Any]) -> Any:
     from caretaker.evolution.insight_store import Skill, _parse_dt
+
     return Skill(
         id=str(doc["_id"]),
         category=doc["category"],
@@ -43,8 +65,11 @@ def _to_skill(doc: dict[str, Any]) -> Any:
         sop_text=doc.get("sop_text", ""),
         success_count=doc.get("success_count", 0),
         fail_count=doc.get("fail_count", 0),
-        last_used_at=_parse_dt(doc["last_used_at"].isoformat() if doc.get("last_used_at") else None),
-        created_at=_parse_dt(doc["created_at"].isoformat() if doc.get("created_at") else None) or datetime.now(UTC),
+        last_used_at=_parse_dt(
+            doc["last_used_at"].isoformat() if doc.get("last_used_at") else None
+        ),
+        created_at=_parse_dt(doc["created_at"].isoformat() if doc.get("created_at") else None)
+        or datetime.now(UTC),
     )
 
 
@@ -249,9 +274,7 @@ class MongoEvolutionBackend:
         self._mutations.replace_one({"_id": mutation.id}, doc, upsert=True)
 
     def active_mutations(self) -> list[Any]:
-        cursor = self._mutations.find(
-            {"$or": [{"outcome": None}, {"outcome": "pending"}]}
-        )
+        cursor = self._mutations.find({"$or": [{"outcome": None}, {"outcome": "pending"}]})
         return [_to_mutation(doc) for doc in cursor]
 
     def mutation_history(self, limit: int = 50) -> list[Any]:

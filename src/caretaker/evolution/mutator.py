@@ -123,7 +123,11 @@ class StrategyMutator:
 
         active = self._store.active_mutations()
         if len(active) >= MAX_CONCURRENT:
-            logger.info("Mutation proposal skipped: %d active mutations (max %d)", len(active), MAX_CONCURRENT)
+            logger.info(
+                "Mutation proposal skipped: %d active mutations (max %d)",
+                len(active),
+                MAX_CONCURRENT,
+            )
             return None
 
         active_keys = {(m.agent_name, m.parameter) for m in active}
@@ -167,9 +171,7 @@ class StrategyMutator:
 
         return None
 
-    def apply_pending(
-        self, config: MaintainerConfig, state: OrchestratorState
-    ) -> MaintainerConfig:
+    def apply_pending(self, config: MaintainerConfig, state: OrchestratorState) -> MaintainerConfig:
         """Return a patched MaintainerConfig with all active mutations applied.
 
         Does NOT write config.yaml — mutations are in-memory for this run only

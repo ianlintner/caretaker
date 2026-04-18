@@ -34,9 +34,9 @@ from caretaker.evolution.mutator import (
     StrategyMutator,
 )
 from caretaker.evolution.planner import (
+    _GOAL_TO_CATEGORY,
     PLAN_COOLDOWN_DAYS,
     PLAN_LABEL,
-    _GOAL_TO_CATEGORY,
     PlanMode,
     RecoveryPlan,
 )
@@ -56,7 +56,6 @@ from caretaker.state.models import (
     PRTrackingState,
     TrackedPR,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -195,9 +194,7 @@ class TestPlanModeActivation:
         state.active_plan_ids[goal_id] = 99  # already active
 
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)
-        plan = await plan_mode.activate(
-            _goal(goal_id), _critical_evaluation(goal_id), state, store
-        )
+        plan = await plan_mode.activate(_goal(goal_id), _critical_evaluation(goal_id), state, store)
 
         assert plan is None
         github_mock.create_milestone.assert_not_awaited()
@@ -211,9 +208,7 @@ class TestPlanModeActivation:
     ) -> None:
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)
         empty_eval = GoalEvaluation(snapshots={}, overall_health=0.0)
-        plan = await plan_mode.activate(
-            _goal("ci_health"), empty_eval, OrchestratorState(), store
-        )
+        plan = await plan_mode.activate(_goal("ci_health"), empty_eval, OrchestratorState(), store)
         assert plan is None
 
     @pytest.mark.asyncio
@@ -262,9 +257,7 @@ class TestPlanModeCooldown:
         state.plan_cooldowns[goal_id] = stamp.isoformat()
 
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)
-        plan = await plan_mode.activate(
-            _goal(goal_id), _critical_evaluation(goal_id), state, store
-        )
+        plan = await plan_mode.activate(_goal(goal_id), _critical_evaluation(goal_id), state, store)
 
         assert plan is None
         github_mock.create_milestone.assert_not_awaited()
@@ -283,9 +276,7 @@ class TestPlanModeCooldown:
         state.plan_cooldowns[goal_id] = stamp.isoformat()
 
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)
-        plan = await plan_mode.activate(
-            _goal(goal_id), _critical_evaluation(goal_id), state, store
-        )
+        plan = await plan_mode.activate(_goal(goal_id), _critical_evaluation(goal_id), state, store)
 
         assert plan is not None
         github_mock.create_milestone.assert_awaited_once()
@@ -304,9 +295,7 @@ class TestPlanModeCooldown:
         state.plan_cooldowns[goal_id] = naive_recent.isoformat()
 
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)
-        plan = await plan_mode.activate(
-            _goal(goal_id), _critical_evaluation(goal_id), state, store
-        )
+        plan = await plan_mode.activate(_goal(goal_id), _critical_evaluation(goal_id), state, store)
         assert plan is None  # blocked — naive stamp correctly parsed
 
     @pytest.mark.asyncio
@@ -480,9 +469,7 @@ class TestMutationFullLifecycle:
             triggered_by=["ci_health"],
         )
 
-    def test_propose_is_skipped_at_max_concurrent(
-        self, store: InsightStore
-    ) -> None:
+    def test_propose_is_skipped_at_max_concurrent(self, store: InsightStore) -> None:
         for i in range(MAX_CONCURRENT):
             store.upsert_mutation(
                 Mutation(
@@ -519,9 +506,7 @@ class TestMutationFullLifecycle:
         )
         assert result is None
 
-    def test_apply_pending_patches_pr_agent_copilot(
-        self, store: InsightStore
-    ) -> None:
+    def test_apply_pending_patches_pr_agent_copilot(self, store: InsightStore) -> None:
         """apply_pending must reach into nested pr_agent.copilot.max_retries."""
         config = MaintainerConfig()
         original = config.pr_agent.copilot.max_retries
@@ -550,15 +535,11 @@ class TestMutationFullLifecycle:
         # Original config must not be mutated
         assert config.pr_agent.copilot.max_retries == original
 
-    def test_full_cycle_accepts_on_improvement(
-        self, store: InsightStore
-    ) -> None:
+    def test_full_cycle_accepts_on_improvement(self, store: InsightStore) -> None:
         # Seed score history BEFORE propose so goal_score_before is captured
         state = OrchestratorState()
         state.goal_history["ci_health"] = [
-            GoalSnapshot(
-                goal_id="ci_health", score=0.4, status=GoalStatus.PROGRESSING
-            )
+            GoalSnapshot(goal_id="ci_health", score=0.4, status=GoalStatus.PROGRESSING)
         ]
 
         mutator = StrategyMutator(store)
@@ -600,14 +581,10 @@ class TestMutationFullLifecycle:
         # Accepted mutation no longer active
         assert store.active_mutations() == []
 
-    def test_full_cycle_rejects_on_no_improvement(
-        self, store: InsightStore
-    ) -> None:
+    def test_full_cycle_rejects_on_no_improvement(self, store: InsightStore) -> None:
         state = OrchestratorState()
         state.goal_history["ci_health"] = [
-            GoalSnapshot(
-                goal_id="ci_health", score=0.4, status=GoalStatus.PROGRESSING
-            )
+            GoalSnapshot(goal_id="ci_health", score=0.4, status=GoalStatus.PROGRESSING)
         ]
 
         mutator = StrategyMutator(store)
@@ -655,7 +632,9 @@ class TestCrystallizerTransitionFilters:
 
     def test_ci_backlog_notes_are_skipped(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
-        previous = {1: TrackedPR(number=1, state=PRTrackingState.CI_FAILING, notes="ci_backlog_guard")}
+        previous = {
+            1: TrackedPR(number=1, state=PRTrackingState.CI_FAILING, notes="ci_backlog_guard")
+        }
         current = {1: TrackedPR(number=1, state=PRTrackingState.MERGED, notes="ci_backlog_guard")}
         assert crystallizer.crystallize_transitions(previous, current) == 0
 

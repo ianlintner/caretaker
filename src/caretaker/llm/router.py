@@ -39,8 +39,7 @@ class LLMRouter:
             self._active = self._claude.available
             if not self._active:
                 logger.warning(
-                    "LLM enabled in config but no provider credentials detected "
-                    "(provider=%s)",
+                    "LLM enabled in config but no provider credentials detected (provider=%s)",
                     config.provider,
                 )
         else:

@@ -132,13 +132,13 @@ DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5"
 
 DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     # Short classification/triage tasks — route to the faster/cheaper tier.
-    "ci_log_analysis":        {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 2000},
+    "ci_log_analysis": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 2000},
     "analyze_review_comment": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 1000},
-    "analyze_stuck_pr":       {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
+    "analyze_stuck_pr": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
     # Longer reasoning tasks — keep on the default (Sonnet) tier.
-    "generate_reflection":    {"model": DEFAULT_MODEL, "max_tokens": 1500},
+    "generate_reflection": {"model": DEFAULT_MODEL, "max_tokens": 1500},
     "generate_recovery_plan": {"model": DEFAULT_MODEL, "max_tokens": 2000},
-    "decompose_issue":        {"model": DEFAULT_MODEL, "max_tokens": 3000},
+    "decompose_issue": {"model": DEFAULT_MODEL, "max_tokens": 3000},
 }
 
 

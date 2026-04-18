@@ -131,9 +131,18 @@ def _row_to_skill(row: tuple) -> Skill:
 
 def _row_to_mutation(row: tuple) -> Mutation:
     (
-        mid, agent_name, parameter, old_value, new_value, goal_id,
-        goal_score_before, goal_score_after, runs_evaluated,
-        started_at, ended_at, outcome,
+        mid,
+        agent_name,
+        parameter,
+        old_value,
+        new_value,
+        goal_id,
+        goal_score_before,
+        goal_score_after,
+        runs_evaluated,
+        started_at,
+        ended_at,
+        outcome,
     ) = row
     return Mutation(
         id=mid,
@@ -234,9 +243,7 @@ class _SQLiteEvolutionBackend:
         if not skill_ids:
             return 0
         placeholders = ",".join("?" * len(skill_ids))
-        cursor = self._conn.execute(
-            f"DELETE FROM skills WHERE id IN ({placeholders})", skill_ids
-        )
+        cursor = self._conn.execute(f"DELETE FROM skills WHERE id IN ({placeholders})", skill_ids)
         self._conn.commit()
         return cursor.rowcount
 
@@ -253,9 +260,14 @@ class _SQLiteEvolutionBackend:
                 outcome          = excluded.outcome
             """,
             (
-                mutation.id, mutation.agent_name, mutation.parameter,
-                mutation.old_value, mutation.new_value, mutation.goal_id,
-                mutation.goal_score_before, mutation.goal_score_after,
+                mutation.id,
+                mutation.agent_name,
+                mutation.parameter,
+                mutation.old_value,
+                mutation.new_value,
+                mutation.goal_id,
+                mutation.goal_score_before,
+                mutation.goal_score_after,
                 mutation.runs_evaluated,
                 mutation.started_at.isoformat(),
                 mutation.ended_at.isoformat() if mutation.ended_at else None,

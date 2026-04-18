@@ -58,10 +58,10 @@ def _count_consecutive_bad(goal_id: str, state: OrchestratorState) -> int:
 class ReflectionEngine:
     """Determines when to reflect and orchestrates the Claude analysis call."""
 
-    DIVERGING_THRESHOLD = 3   # consecutive DIVERGING runs before reflection
-    STALE_THRESHOLD = 5       # consecutive STALE runs before reflection
-    HEALTH_THRESHOLD = 0.6    # self_health below this for 2+ runs triggers reflection
-    HEALTH_DECLINE_RUNS = 5   # consecutive overall health declines
+    DIVERGING_THRESHOLD = 3  # consecutive DIVERGING runs before reflection
+    STALE_THRESHOLD = 5  # consecutive STALE runs before reflection
+    HEALTH_THRESHOLD = 0.6  # self_health below this for 2+ runs triggers reflection
+    HEALTH_DECLINE_RUNS = 5  # consecutive overall health declines
 
     def __init__(self) -> None:
         pass
@@ -87,14 +87,23 @@ class ReflectionEngine:
                     if s.score < self.HEALTH_THRESHOLD
                 )
                 if recent_low >= 2:
-                    logger.debug("Reflection triggered: self_health below %.1f", self.HEALTH_THRESHOLD)
+                    logger.debug(
+                        "Reflection triggered: self_health below %.1f", self.HEALTH_THRESHOLD
+                    )
                     return True
 
         # Overall health declining across last N runs
-        health_scores = [r.goal_health for r in state.run_history[-self.HEALTH_DECLINE_RUNS:] if r.goal_health is not None]
+        health_scores = [
+            r.goal_health
+            for r in state.run_history[-self.HEALTH_DECLINE_RUNS :]
+            if r.goal_health is not None
+        ]
         if len(health_scores) >= self.HEALTH_DECLINE_RUNS:
             if all(health_scores[i] > health_scores[i + 1] for i in range(len(health_scores) - 1)):
-                logger.debug("Reflection triggered: overall health declining for %d runs", self.HEALTH_DECLINE_RUNS)
+                logger.debug(
+                    "Reflection triggered: overall health declining for %d runs",
+                    self.HEALTH_DECLINE_RUNS,
+                )
                 return True
 
         return False
@@ -108,9 +117,12 @@ class ReflectionEngine:
         triggered: list[str] = []
         for goal_id, snapshot in evaluation.snapshots.items():
             consecutive = _count_consecutive_bad(goal_id, state)
-            if snapshot.status == GoalStatus.DIVERGING and consecutive >= self.DIVERGING_THRESHOLD:
-                triggered.append(goal_id)
-            elif snapshot.status == GoalStatus.STALE and consecutive >= self.STALE_THRESHOLD:
+            if (
+                snapshot.status == GoalStatus.DIVERGING
+                and consecutive >= self.DIVERGING_THRESHOLD
+                or snapshot.status == GoalStatus.STALE
+                and consecutive >= self.STALE_THRESHOLD
+            ):
                 triggered.append(goal_id)
         return triggered
 
@@ -189,15 +201,17 @@ class ReflectionEngine:
                 for s in top:
                     lines.append(f"  - [{s.confidence:.0%}] {s.sop_text[:80]}")
 
-        lines.extend([
-            "",
-            "## Analysis Request",
-            "Analyze the following and respond in under 400 words:",
-            "1. Root cause of each stuck/diverging goal",
-            "2. Strategy changes most likely to improve each",
-            "3. Config parameters that should change (with specific values)",
-            "   Format any config recommendation as: RECOMMEND: <agent>.<param> = <value>",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Analysis Request",
+                "Analyze the following and respond in under 400 words:",
+                "1. Root cause of each stuck/diverging goal",
+                "2. Strategy changes most likely to improve each",
+                "3. Config parameters that should change (with specific values)",
+                "   Format any config recommendation as: RECOMMEND: <agent>.<param> = <value>",
+            ]
+        )
         return "\n".join(lines)
 
     def _parse_recommendations(self, analysis: str) -> list[StrategyRecommendation]:
@@ -205,9 +219,7 @@ class ReflectionEngine:
         import re
 
         recommendations: list[StrategyRecommendation] = []
-        pattern = re.compile(
-            r"RECOMMEND:\s*(\w+)\.(\w+)\s*=\s*(.+?)(?:\n|$)", re.IGNORECASE
-        )
+        pattern = re.compile(r"RECOMMEND:\s*(\w+)\.(\w+)\s*=\s*(.+?)(?:\n|$)", re.IGNORECASE)
         for match in pattern.finditer(analysis):
             agent_name, parameter, value = match.group(1), match.group(2), match.group(3).strip()
             recommendations.append(
@@ -234,6 +246,8 @@ def format_reflection_comment(result: ReflectionResult) -> str:
     if result.recommendations:
         lines.extend(["", "**Proposed strategy changes:**"])
         for rec in result.recommendations:
-            lines.append(f"- `{rec.agent_name}.{rec.parameter}` → `{rec.suggested_value}`: {rec.rationale}")
+            lines.append(
+                f"- `{rec.agent_name}.{rec.parameter}` → `{rec.suggested_value}`: {rec.rationale}"
+            )
     lines.append(REFLECTION_COMMENT_CLOSE)
     return "\n".join(lines)

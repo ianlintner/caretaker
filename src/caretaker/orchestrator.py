@@ -15,7 +15,6 @@ from caretaker.agents import EVENT_AGENT_MAP, build_registry
 from caretaker.config import MaintainerConfig
 from caretaker.evolution.backends.factory import build_evolution_store
 from caretaker.evolution.crystallizer import SkillCrystallizer
-from caretaker.evolution.insight_store import InsightStore
 from caretaker.evolution.mutator import StrategyMutator
 from caretaker.evolution.planner import PlanMode
 from caretaker.evolution.reflection import ReflectionEngine
@@ -38,6 +37,7 @@ from caretaker.state.models import (
 from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
+    from caretaker.evolution.insight_store import InsightStore
     from caretaker.goals.models import GoalEvaluation
     from caretaker.registry import AgentRegistry
 
@@ -192,9 +192,7 @@ class Orchestrator:
                     repo=repo,
                     claude_client=self._llm.claude,
                 )
-            logger.info(
-                "Evolution layer enabled: backend=%s", config.evolution.backend
-            )
+            logger.info("Evolution layer enabled: backend=%s", config.evolution.backend)
 
         # Apply any pending strategy mutations to runtime config before building agents
         if self._strategy_mutator is not None:
@@ -367,7 +365,10 @@ class Orchestrator:
                     # Plan Mode: activate for CRITICAL goals (Phase 6)
                     if self._plan_mode is not None:
                         for goal_id, snap in post_eval.snapshots.items():
-                            if snap.status == GoalStatus.CRITICAL and goal_id not in state.active_plan_ids:
+                            if (
+                                snap.status == GoalStatus.CRITICAL
+                                and goal_id not in state.active_plan_ids
+                            ):
                                 goal_obj = self._goal_engine.goals.get(goal_id)
                                 if goal_obj:
                                     with contextlib.suppress(Exception):
@@ -412,7 +413,9 @@ class Orchestrator:
                                 self._strategy_mutator is not None
                                 and self._config.evolution.mutation_enabled
                             ):
-                                self._strategy_mutator.propose_mutation(reflection, state, self._config)
+                                self._strategy_mutator.propose_mutation(
+                                    reflection, state, self._config
+                                )
 
         except Exception as e:
             logger.error("Orchestrator error: %s", e, exc_info=True)

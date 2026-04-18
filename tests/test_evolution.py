@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from caretaker.evolution.crystallizer import SkillCrystallizer, _infer_category, _extract_signature
+from caretaker.evolution.crystallizer import SkillCrystallizer, _infer_category
 from caretaker.evolution.insight_store import (
     CATEGORY_BUILD,
     CATEGORY_CI,
@@ -19,8 +18,7 @@ from caretaker.evolution.mutator import StrategyMutator
 from caretaker.evolution.reflection import ReflectionEngine
 from caretaker.goals.models import GoalSnapshot, GoalStatus
 from caretaker.llm.copilot import CopilotTask, TaskType
-from caretaker.state.models import OrchestratorState, PRTrackingState, RunSummary, TrackedPR
-
+from caretaker.state.models import OrchestratorState, PRTrackingState, TrackedPR
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -213,8 +211,14 @@ class TestSkillInjection:
 class TestSkillCrystallizer:
     def test_crystallize_merged_pr(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
-        previous = {1: TrackedPR(number=1, state=PRTrackingState.FIX_REQUESTED, notes="jest timeout failure")}
-        current = {1: TrackedPR(number=1, state=PRTrackingState.MERGED, notes="jest timeout failure")}
+        previous = {
+            1: TrackedPR(
+                number=1, state=PRTrackingState.FIX_REQUESTED, notes="jest timeout failure"
+            )
+        }
+        current = {
+            1: TrackedPR(number=1, state=PRTrackingState.MERGED, notes="jest timeout failure")
+        }
 
         recorded = crystallizer.crystallize_transitions(previous, current)
         assert recorded == 1
@@ -224,7 +228,9 @@ class TestSkillCrystallizer:
 
     def test_crystallize_escalated_pr(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
-        previous = {2: TrackedPR(number=2, state=PRTrackingState.FIX_REQUESTED, notes="build failure")}
+        previous = {
+            2: TrackedPR(number=2, state=PRTrackingState.FIX_REQUESTED, notes="build failure")
+        }
         current = {2: TrackedPR(number=2, state=PRTrackingState.ESCALATED, notes="build failure")}
 
         recorded = crystallizer.crystallize_transitions(previous, current)
@@ -264,13 +270,13 @@ class TestReflectionEngine:
     def _make_state_with_stale_goal(self, goal_id: str, n: int) -> OrchestratorState:
         state = OrchestratorState()
         state.goal_history[goal_id] = [
-            GoalSnapshot(goal_id=goal_id, score=0.5, status=GoalStatus.STALE)
-            for _ in range(n)
+            GoalSnapshot(goal_id=goal_id, score=0.5, status=GoalStatus.STALE) for _ in range(n)
         ]
         return state
 
     def _make_evaluation_with_stale(self, goal_id: str) -> object:
         from caretaker.goals.models import GoalEvaluation
+
         return GoalEvaluation(
             snapshots={goal_id: GoalSnapshot(goal_id=goal_id, score=0.5, status=GoalStatus.STALE)},
             overall_health=0.5,
@@ -292,6 +298,7 @@ class TestReflectionEngine:
 
     def test_should_reflect_diverging_3_runs(self) -> None:
         from caretaker.goals.models import GoalEvaluation
+
         engine = ReflectionEngine()
         goal_id = "pr_throughput"
         state = OrchestratorState()
@@ -301,13 +308,16 @@ class TestReflectionEngine:
             GoalSnapshot(goal_id=goal_id, score=0.5, status=GoalStatus.DIVERGING),
         ]
         evaluation = GoalEvaluation(
-            snapshots={goal_id: GoalSnapshot(goal_id=goal_id, score=0.4, status=GoalStatus.DIVERGING)},
+            snapshots={
+                goal_id: GoalSnapshot(goal_id=goal_id, score=0.4, status=GoalStatus.DIVERGING)
+            },
             overall_health=0.4,
         )
         assert engine.should_reflect(evaluation, state) is True
 
     def test_triggered_goals_returns_correct_ids(self) -> None:
         from caretaker.goals.models import GoalEvaluation
+
         engine = ReflectionEngine()
         goal_id = "ci_health"
         state = self._make_state_with_stale_goal(goal_id, 6)
@@ -346,6 +356,7 @@ class TestStrategyMutator:
             store.upsert_mutation(m)
 
         from caretaker.evolution.reflection import ReflectionResult, StrategyRecommendation
+
         reflection = ReflectionResult(
             analysis="test",
             recommendations=[
@@ -353,6 +364,7 @@ class TestStrategyMutator:
             ],
         )
         from caretaker.config import MaintainerConfig
+
         result = mutator.propose_mutation(reflection, OrchestratorState(), MaintainerConfig())
         assert result is None  # blocked by MAX_CONCURRENT
 
@@ -379,10 +391,18 @@ class TestStrategyMutator:
 
         state = OrchestratorState()
         state.goal_history["ci_health"] = [
-            GoalSnapshot(goal_id="ci_health", score=0.4 + ACCEPTANCE_DELTA + 0.01, status=GoalStatus.PROGRESSING)
+            GoalSnapshot(
+                goal_id="ci_health",
+                score=0.4 + ACCEPTANCE_DELTA + 0.01,
+                status=GoalStatus.PROGRESSING,
+            )
         ]
         evaluation = GoalEvaluation(
-            snapshots={"ci_health": GoalSnapshot(goal_id="ci_health", score=0.5, status=GoalStatus.PROGRESSING)},
+            snapshots={
+                "ci_health": GoalSnapshot(
+                    goal_id="ci_health", score=0.5, status=GoalStatus.PROGRESSING
+                )
+            },
             overall_health=0.5,
         )
 

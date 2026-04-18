@@ -90,9 +90,7 @@ class AnthropicProvider:
         if self._client is None and self._api_key:
             import anthropic
 
-            self._client = anthropic.AsyncAnthropic(
-                api_key=self._api_key, timeout=self._timeout
-            )
+            self._client = anthropic.AsyncAnthropic(api_key=self._api_key, timeout=self._timeout)
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         if not self.available:

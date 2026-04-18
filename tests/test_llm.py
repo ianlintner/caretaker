@@ -156,9 +156,7 @@ class TestFeatureModelResolution:
         provider = FakeProvider()
         config = LLMConfig(
             feature_models={
-                "ci_log_analysis": FeatureModelConfig(
-                    model="openai/gpt-4o-mini", max_tokens=500
-                ),
+                "ci_log_analysis": FeatureModelConfig(model="openai/gpt-4o-mini", max_tokens=500),
             }
         )
         client = ClaudeClient(config=config, provider=provider)
@@ -238,9 +236,7 @@ class TestLiteLLMProvider:
 
     def test_available_with_foundry_key(self) -> None:
         """Microsoft Foundry credentials should flip available=True."""
-        with patch.dict(
-            os.environ, {"AZURE_AI_API_KEY": "foundry-key"}, clear=True
-        ):
+        with patch.dict(os.environ, {"AZURE_AI_API_KEY": "foundry-key"}, clear=True):
             p = LiteLLMProvider()
             # available also needs the litellm package to be importable
             if p.package_installed:
