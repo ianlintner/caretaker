@@ -129,6 +129,7 @@ class EscalationConfig(StrictBaseModel):
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5"
+DEFAULT_REASONING_MODEL = "claude-opus-4-5"
 
 DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     # Short classification/triage tasks — route to the faster/cheaper tier.
@@ -139,6 +140,17 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     "generate_reflection": {"model": DEFAULT_MODEL, "max_tokens": 1500},
     "generate_recovery_plan": {"model": DEFAULT_MODEL, "max_tokens": 2000},
     "decompose_issue": {"model": DEFAULT_MODEL, "max_tokens": 3000},
+    # Deep reasoning tasks — route to Opus for complex analysis.
+    "principal_architecture_review": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 4000},
+    "principal_create_prd": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 6000},
+    "principal_decompose_refactor": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 5000},
+    "test_coverage_analysis": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 3000},
+    "test_skeleton_generation": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 4000},
+    "refactor_analysis": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 4000},
+    "refactor_plan": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 3000},
+    "perf_diff_analysis": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 3000},
+    "migration_analysis": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 4000},
+    "migration_plan": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 5000},
 }
 
 
@@ -273,6 +285,62 @@ class EvolutionConfig(StrictBaseModel):
     reflection_enabled: bool = True
     mutation_enabled: bool = False  # opt-in; requires review of mutation outcomes
     plan_mode_enabled: bool = False  # opt-in; creates GitHub milestones + issues
+
+
+class PrincipalAgentConfig(StrictBaseModel):
+    """Configuration for the principal/lead engineer agent.
+
+    Performs architecture reviews, PRD generation, and refactor decomposition
+    using Opus-class models for deep reasoning.
+    """
+
+    enabled: bool = False
+    auto_review_large_prs: bool = True
+    large_pr_threshold: int = 300
+    prd_labels: list[str] = Field(default_factory=lambda: ["needs-prd", "architecture"])
+    model_override: str | None = None
+
+
+class TestAgentConfig(StrictBaseModel):
+    """Configuration for the test coverage and quality agent."""
+
+    enabled: bool = False
+    coverage_threshold: float = 0.8
+    detect_flaky: bool = True
+    generate_skeletons: bool = True
+    max_skeletons_per_run: int = 3
+
+
+class RefactorAgentConfig(StrictBaseModel):
+    """Configuration for the code smell detection and refactoring agent."""
+
+    enabled: bool = False
+    auto_create_prs: bool = False
+    max_prs_per_run: int = 1
+    min_confidence: float = 0.8
+    target_patterns: list[str] = Field(
+        default_factory=lambda: ["dead_code", "duplication", "long_function"]
+    )
+
+
+class PerformanceAgentConfig(StrictBaseModel):
+    """Configuration for the performance anti-pattern detection agent."""
+
+    enabled: bool = False
+    benchmark_job_name: str | None = None
+    regression_threshold_pct: float = 10.0
+    anti_patterns: list[str] = Field(
+        default_factory=lambda: ["n_plus_one", "unbounded_loop", "missing_pagination"]
+    )
+
+
+class MigrationAgentConfig(StrictBaseModel):
+    """Configuration for the framework/language migration agent."""
+
+    enabled: bool = False
+    target_migrations: list[dict[str, str]] = Field(default_factory=list)
+    auto_fix_simple: bool = False
+    max_fixes_per_run: int = 5
 
 
 class ReviewAgentConfig(StrictBaseModel):
@@ -505,6 +573,11 @@ class MaintainerConfig(StrictBaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
+    principal_agent: PrincipalAgentConfig = Field(default_factory=PrincipalAgentConfig)
+    test_agent: TestAgentConfig = Field(default_factory=TestAgentConfig)
+    refactor_agent: RefactorAgentConfig = Field(default_factory=RefactorAgentConfig)
+    perf_agent: PerformanceAgentConfig = Field(default_factory=PerformanceAgentConfig)
+    migration_agent: MigrationAgentConfig = Field(default_factory=MigrationAgentConfig)
     memory_store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     azure: AzureConfig = Field(default_factory=AzureConfig)

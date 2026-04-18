@@ -35,7 +35,7 @@ async def test_self_heal_adapter_persists_actioned_sigs_in_stable_order() -> Non
         updated_cooldowns={},
     )
 
-    with patch("caretaker.agents.SelfHealAgent") as mock_agent_cls:
+    with patch("caretaker.self_heal_agent.adapter.SelfHealAgent") as mock_agent_cls:
         mock_agent_cls.return_value.run = AsyncMock(return_value=mock_report)
         await adapter.execute(state)
 
@@ -65,7 +65,7 @@ async def test_self_heal_adapter_caps_to_latest_500_while_preserving_order() -> 
         updated_cooldowns={},
     )
 
-    with patch("caretaker.agents.SelfHealAgent") as mock_agent_cls:
+    with patch("caretaker.self_heal_agent.adapter.SelfHealAgent") as mock_agent_cls:
         mock_agent_cls.return_value.run = AsyncMock(return_value=mock_report)
         await adapter.execute(state)
 
