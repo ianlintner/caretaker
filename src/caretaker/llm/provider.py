@@ -196,7 +196,7 @@ class LiteLLMProvider:
         actual_model = getattr(response, "model", request.model)
         cost = None
         try:
-            from litellm import completion_cost  # type: ignore[import-not-found]
+            from litellm import completion_cost
 
             cost = completion_cost(completion_response=response)
         except Exception:

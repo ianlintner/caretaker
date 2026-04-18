@@ -135,7 +135,7 @@ class PlanMode:
             self._claude, "available", False
         ):
             try:
-                plan_text = await self._claude.generate_recovery_plan(  # type: ignore[union-attr]
+                plan_text = await self._claude.generate_recovery_plan(
                     goal_id=goal_id,
                     goal_score=snapshot.score,
                     failing_context=failing_context,

@@ -142,7 +142,7 @@ class ReflectionEngine:
         try:
             # ClaudeClient.generate_reflection is injected at call time
             if hasattr(claude_client, "generate_reflection"):
-                analysis_text = await claude_client.generate_reflection(prompt)  # type: ignore[union-attr]
+                analysis_text = await claude_client.generate_reflection(prompt)
         except Exception as exc:
             logger.warning("Reflection Claude call failed: %s", exc)
             analysis_text = f"[Reflection unavailable: {exc}]"

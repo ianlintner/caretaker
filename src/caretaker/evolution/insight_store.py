@@ -115,7 +115,7 @@ def _parse_dt(value: str | None) -> datetime | None:
     return dt
 
 
-def _row_to_skill(row: tuple) -> Skill:
+def _row_to_skill(row: tuple[Any, ...]) -> Skill:
     sid, category, signature, sop_text, success_count, fail_count, last_used_at, created_at = row
     return Skill(
         id=sid,
@@ -129,7 +129,7 @@ def _row_to_skill(row: tuple) -> Skill:
     )
 
 
-def _row_to_mutation(row: tuple) -> Mutation:
+def _row_to_mutation(row: tuple[Any, ...]) -> Mutation:
     (
         mid,
         agent_name,
@@ -318,7 +318,7 @@ class InsightStore:
         self._conn: sqlite3.Connection | None = None
 
         if backend is not None:
-            self._backend: Any = backend
+            self._backend: EvolutionBackend = backend
         else:
             if db_path != ":memory:":
                 Path(db_path).parent.mkdir(parents=True, exist_ok=True)

@@ -181,10 +181,11 @@ class Orchestrator:
         self._strategy_mutator: StrategyMutator | None = None
         self._plan_mode: PlanMode | None = None
         if config.evolution.enabled:
-            self._insight_store = build_evolution_store(config)
-            self._skill_crystallizer = SkillCrystallizer(self._insight_store)
+            store = build_evolution_store(config)
+            self._insight_store = store
+            self._skill_crystallizer = SkillCrystallizer(store)
             self._reflection_engine = ReflectionEngine()
-            self._strategy_mutator = StrategyMutator(self._insight_store)
+            self._strategy_mutator = StrategyMutator(store)
             if config.evolution.plan_mode_enabled:
                 self._plan_mode = PlanMode(
                     github=github,
