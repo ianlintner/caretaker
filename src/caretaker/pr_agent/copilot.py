@@ -17,6 +17,7 @@ from caretaker.pr_agent.ci_triage import FailureType
 
 if TYPE_CHECKING:
     from caretaker.evolution.insight_store import InsightStore
+    from caretaker.foundry.dispatcher import ExecutorDispatcher, RouteResult
     from caretaker.github_client.models import PullRequest
     from caretaker.pr_agent.ci_triage import TriageResult
     from caretaker.pr_agent.review import ReviewAnalysis
@@ -42,20 +43,33 @@ class CopilotInteractionResult:
     attempt: int
     max_attempts: int
     comment_id: int | None = None
+    # Populated when the ExecutorDispatcher routed to Foundry (fully or as a
+    # pre-Copilot attempt). Left None when the bridge fell through the legacy
+    # path with no dispatcher configured.
+    route: RouteResult | None = None
 
 
 class PRCopilotBridge:
-    """Bridge between PR Agent decisions and Copilot execution via comments."""
+    """Bridge between PR Agent decisions and Copilot / Foundry execution.
+
+    Historically this only posted ``@copilot`` comments.  It now also accepts
+    an optional :class:`caretaker.foundry.dispatcher.ExecutorDispatcher`: when
+    present, tasks are routed through the dispatcher (which may run them via
+    the Foundry in-process executor, or fall back to Copilot).  When
+    ``dispatcher`` is ``None`` the behavior is byte-identical to before.
+    """
 
     def __init__(
         self,
         protocol: CopilotProtocol,
         max_retries: int = 2,
         insight_store: InsightStore | None = None,
+        dispatcher: ExecutorDispatcher | None = None,
     ) -> None:
         self._protocol = protocol
         self._max_retries = max_retries
         self._insight_store = insight_store
+        self._dispatcher = dispatcher
 
     async def request_ci_fix(
         self,
@@ -64,7 +78,7 @@ class PRCopilotBridge:
         attempt: int = 1,
         issue_context: str = "",
     ) -> CopilotInteractionResult:
-        """Post a CI fix request to Copilot via PR comment."""
+        """Post a CI fix request via Copilot or the Foundry dispatcher."""
         task = CopilotTask(
             task_type=_FAILURE_TYPE_TO_TASK_TYPE.get(triage.failure_type, TaskType.CI_FAILURE),
             job_name=triage.job_name,
@@ -80,13 +94,11 @@ class PRCopilotBridge:
             skills = self._insight_store.get_relevant(CATEGORY_CI, triage.error_summary)
             task.enrich_with_skills(skills)
 
-        comment = await self._protocol.post_task(pr.number, task)
-        return CopilotInteractionResult(
-            task_posted=True,
-            task_type=triage.failure_type.value,
+        return await self._dispatch(
+            pr=pr,
+            copilot_task=task,
             attempt=attempt,
-            max_attempts=self._max_retries,
-            comment_id=comment.id,
+            task_type_label=triage.failure_type.value,
         )
 
     async def request_review_fix(
@@ -95,7 +107,7 @@ class PRCopilotBridge:
         analyses: list[ReviewAnalysis],
         attempt: int = 1,
     ) -> CopilotInteractionResult:
-        """Post review fix instructions to Copilot."""
+        """Post review fix instructions via Copilot or the Foundry dispatcher."""
         # Build combined instructions from all blocking reviews
         review_items = []
         for i, analysis in enumerate(analyses, 1):
@@ -122,19 +134,57 @@ class PRCopilotBridge:
             priority="medium",
         )
 
-        comment = await self._protocol.post_task(pr.number, task)
+        return await self._dispatch(
+            pr=pr,
+            copilot_task=task,
+            attempt=attempt,
+            task_type_label="REVIEW_COMMENT",
+        )
+
+    async def _dispatch(
+        self,
+        *,
+        pr: PullRequest,
+        copilot_task: CopilotTask,
+        attempt: int,
+        task_type_label: str,
+    ) -> CopilotInteractionResult:
+        """Shared routing logic for CI and review fix requests.
+
+        When no dispatcher is configured the call path is byte-identical to
+        the legacy ``self._protocol.post_task(...)`` dispatch, so existing
+        integrations and tests are unaffected.
+        """
+        if self._dispatcher is None:
+            comment = await self._protocol.post_task(pr.number, copilot_task)
+            return CopilotInteractionResult(
+                task_posted=True,
+                task_type=task_type_label,
+                attempt=attempt,
+                max_attempts=self._max_retries,
+                comment_id=comment.id,
+            )
+
+        route = await self._dispatcher.route(pr=pr, copilot_task=copilot_task)
+        comment_id = route.copilot_comment.id if route.copilot_comment else None
+        # If Foundry completed end-to-end it already posted a result-format
+        # comment; surface that comment id for downstream bookkeeping.
+        if comment_id is None and route.foundry_result is not None:
+            comment_id = route.foundry_result.comment_id
+
         return CopilotInteractionResult(
             task_posted=True,
-            task_type="REVIEW_COMMENT",
+            task_type=task_type_label,
             attempt=attempt,
             max_attempts=self._max_retries,
-            comment_id=comment.id,
+            comment_id=comment_id,
+            route=route,
         )
 
     async def check_copilot_response(
         self, pr_number: int, after_comment_id: int | None = None
     ) -> CopilotResult | None:
-        """Check if Copilot has responded to our task."""
+        """Check if Copilot (or Foundry) has responded to our task."""
         return await self._protocol.find_latest_result(pr_number, after_comment_id)
 
     async def get_attempt_count(self, pr_number: int) -> int:

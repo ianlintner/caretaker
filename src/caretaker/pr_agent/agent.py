@@ -33,6 +33,7 @@ from caretaker.tools.debug_dump import render_debug_dump
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
     from caretaker.evolution.insight_store import InsightStore
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
     from caretaker.llm.router import LLMRouter
@@ -61,6 +62,7 @@ class PRAgent:
         config: PRAgentConfig,
         llm_router: LLMRouter | None = None,
         insight_store: InsightStore | None = None,
+        dispatcher: ExecutorDispatcher | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -73,6 +75,7 @@ class PRAgent:
             self._copilot_protocol,
             max_retries=config.copilot.max_retries,
             insight_store=insight_store,
+            dispatcher=dispatcher,
         )
 
     async def run(

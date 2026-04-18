@@ -436,9 +436,56 @@ class GitHubAppConfig(StrictBaseModel):
     installation_token_refresh_skew_seconds: int = 300
 
 
+class FoundryExecutorConfig(StrictBaseModel):
+    """Settings for the Foundry (Azure AI Foundry / LiteLLM) coding executor.
+
+    Disabled by default.  When enabled, the ``ExecutorDispatcher`` routes
+    eligible tasks through the in-process executor instead of dispatching to
+    Copilot via comment markers.
+    """
+
+    enabled: bool = False
+    # LiteLLM-format model string (e.g. "azure_ai/gpt-4o", "openai/gpt-4o").
+    model: str = "azure_ai/gpt-4o"
+    fallback_models: list[str] = Field(default_factory=list)
+    max_iterations: int = 20
+    max_tokens_per_task: int = 200_000
+    workspace_timeout_seconds: int = 600
+    allowed_commands: list[str] = Field(
+        default_factory=lambda: ["ruff", "black", "isort", "prettier", "eslint"]
+    )
+    write_denylist: list[str] = Field(
+        default_factory=lambda: [
+            ".github/workflows/**",
+            ".github/agents/**",
+            ".caretaker.yml",
+            ".github/maintainer/**",
+            "scripts/release*",
+            "setup.py",
+        ]
+    )
+    max_files_touched: int = 10
+    max_diff_lines: int = 400
+    allowed_task_types: list[str] = Field(
+        default_factory=lambda: ["LINT_FAILURE", "REVIEW_COMMENT", "UPGRADE"]
+    )
+    route_same_repo_only: bool = True
+    request_timeout_seconds: float = 120.0
+
+
+class ExecutorConfig(StrictBaseModel):
+    """Top-level switch deciding how coding tasks are executed."""
+
+    provider: Literal["copilot", "foundry", "auto"] = "copilot"
+    foundry: FoundryExecutorConfig = Field(default_factory=FoundryExecutorConfig)
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
+    # Optional foundry/copilot executor routing. Omit (or leave at default
+    # provider=copilot) to preserve legacy behavior byte-identically.
+    executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     pr_agent: PRAgentConfig = Field(default_factory=PRAgentConfig)
     issue_agent: IssueAgentConfig = Field(default_factory=IssueAgentConfig)
     upgrade_agent: UpgradeAgentConfig = Field(default_factory=UpgradeAgentConfig)

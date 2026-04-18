@@ -26,6 +26,7 @@ False and ``complete()`` returns an empty response — callers already handle th
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -41,6 +42,10 @@ class LLMRequest:
     model: str
     max_tokens: int
     temperature: float = 0.0
+    # Optional pre-built chat history used by the tool-use loop.  When set it
+    # supersedes ``prompt``; ``complete`` callers continue to pass ``prompt``
+    # only.
+    messages: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -53,6 +58,40 @@ class LLMResponse:
     cost_usd: float | None = None
 
 
+@dataclass
+class LLMToolCall:
+    """A tool-call emitted by the model.
+
+    ``id`` is the provider-assigned identifier that must be echoed back on the
+    corresponding ``tool`` result message in the next request.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class LLMToolResponse:
+    """Response from a tool-use completion.
+
+    Exactly one of ``text`` or ``tool_calls`` is expected to carry content:
+    models either emit a final textual reply *or* ask for tool calls.
+    """
+
+    text: str
+    tool_calls: list[LLMToolCall]
+    model: str
+    provider: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = None
+    stop_reason: str | None = None
+    # Raw assistant message as returned by the provider, suitable for
+    # appending to the next request's ``messages`` list verbatim.
+    raw_message: dict[str, Any] | None = None
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Minimal surface every backend must implement."""
@@ -63,6 +102,22 @@ class LLMProvider(Protocol):
     def available(self) -> bool: ...
 
     async def complete(self, request: LLMRequest) -> LLMResponse: ...
+
+    async def complete_with_tools(
+        self,
+        request: LLMRequest,
+        tools: list[dict[str, Any]],
+    ) -> LLMToolResponse:
+        """Tool-use completion.
+
+        ``tools`` uses the OpenAI function-calling JSON schema shape
+        (``{"type": "function", "function": {"name", "description", "parameters"}}``).
+        LiteLLM normalises this across providers.
+
+        Providers that do not support tool-use should raise
+        :class:`NotImplementedError`.
+        """
+        ...
 
 
 # ── AnthropicProvider ─────────────────────────────────────────────────────────
@@ -112,6 +167,16 @@ class AnthropicProvider:
             provider=self.name,
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
             output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        )
+
+    async def complete_with_tools(
+        self,
+        request: LLMRequest,
+        tools: list[dict[str, Any]],
+    ) -> LLMToolResponse:
+        raise NotImplementedError(
+            "AnthropicProvider does not implement tool-use; use provider='litellm' "
+            "with an Anthropic or Azure model for tool-calling."
         )
 
 
@@ -211,6 +276,110 @@ class LiteLLMProvider:
             cost_usd=cost,
         )
 
+    async def complete_with_tools(
+        self,
+        request: LLMRequest,
+        tools: list[dict[str, Any]],
+    ) -> LLMToolResponse:
+        """Tool-use completion via LiteLLM.
+
+        Accepts an optional pre-built ``request.messages`` list; when absent
+        it falls back to a single-user-turn message built from ``request.prompt``.
+        """
+        if not self.available or self._acompletion is None:
+            raise RuntimeError("LiteLLM provider unavailable (package missing or no credentials)")
+
+        messages: list[dict[str, Any]] = (
+            list(request.messages)
+            if request.messages is not None
+            else [{"role": "user", "content": request.prompt}]
+        )
+
+        kwargs: dict[str, Any] = {
+            "model": request.model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "timeout": self._timeout,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        if self._fallback_models:
+            kwargs["fallbacks"] = self._fallback_models
+
+        response = await self._acompletion(**kwargs)
+        choice = response.choices[0]
+        message = choice.message
+        text = getattr(message, "content", None) or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        tool_calls: list[LLMToolCall] = []
+        for tc in raw_tool_calls:
+            name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
+            raw_args = (
+                getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
+            )
+            try:
+                parsed_args = json.loads(raw_args) if raw_args else {}
+                if not isinstance(parsed_args, dict):
+                    parsed_args = {"_raw": parsed_args}
+            except (TypeError, ValueError):
+                parsed_args = {"_raw": raw_args}
+            tool_calls.append(
+                LLMToolCall(
+                    id=getattr(tc, "id", "") or "",
+                    name=name,
+                    arguments=parsed_args,
+                )
+            )
+
+        # Build a round-trip-safe raw_message so the caller can append it to
+        # the next request's messages array verbatim. LiteLLM message objects
+        # are Pydantic-ish; fall back to a manual dict build.
+        raw_message: dict[str, Any]
+        try:
+            raw_message = message.model_dump()  # type: ignore[attr-defined]
+        except AttributeError:
+            raw_message = {
+                "role": getattr(message, "role", "assistant"),
+                "content": text,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+                or None,
+            }
+
+        usage = getattr(response, "usage", None)
+        actual_model = getattr(response, "model", request.model)
+        cost = None
+        try:
+            from litellm import completion_cost
+
+            cost = completion_cost(completion_response=response)
+        except Exception:
+            cost = None
+
+        return LLMToolResponse(
+            text=text,
+            tool_calls=tool_calls,
+            model=actual_model,
+            provider=self.name,
+            input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            cost_usd=cost,
+            stop_reason=finish_reason,
+            raw_message=raw_message,
+        )
+
 
 # ── NullProvider ──────────────────────────────────────────────────────────────
 
@@ -223,6 +392,13 @@ class NullProvider:
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         return LLMResponse(text="", model=request.model, provider=self.name)
+
+    async def complete_with_tools(
+        self,
+        request: LLMRequest,
+        tools: list[dict[str, Any]],
+    ) -> LLMToolResponse:
+        raise NotImplementedError("NullProvider does not support tool-use")
 
 
 def build_provider(

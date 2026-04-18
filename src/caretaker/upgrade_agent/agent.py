@@ -11,6 +11,7 @@ from caretaker.upgrade_agent.release_checker import fetch_releases, needs_upgrad
 
 if TYPE_CHECKING:
     from caretaker.config import UpgradeAgentConfig
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
@@ -35,13 +36,14 @@ class UpgradeAgent:
         repo: str,
         config: UpgradeAgentConfig,
         current_version: str,
+        dispatcher: ExecutorDispatcher | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._config = config
         self._current_version = current_version
-        self._planner = UpgradePlanner(github, owner, repo)
+        self._planner = UpgradePlanner(github, owner, repo, dispatcher=dispatcher)
 
     async def run(self) -> UpgradeAgentReport:
         """Check for upgrades and create issues if needed."""
