@@ -102,7 +102,7 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
                 except Exception:
                     logger.warning("Failed to initialise graph API", exc_info=True)
 
-            # Serve SPA static files (must be last — catchall)
+            # Serve SPA static files
             if _ADMIN_STATIC_DIR.is_dir():
                 application.mount(
                     "/assets",
@@ -115,6 +115,18 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
 
         except Exception:
             logger.warning("Failed to initialise admin dashboard", exc_info=True)
+
+    # Register the SPA catch-all AFTER all API routes so it never shadows them.
+    # Starlette matches routes in registration order; a /{full_path:path} wildcard
+    # added at module level would intercept every /api/* request before the admin
+    # router (added above) gets a chance to handle it.
+    @application.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catchall(full_path: str) -> Response:
+        """Serve the admin SPA index.html for any unmatched route."""
+        index = _ADMIN_STATIC_DIR / "index.html"
+        if index.is_file():
+            return FileResponse(str(index), media_type="text/html")
+        return Response(content="Admin dashboard not built", status_code=404)
 
     yield
 
@@ -480,13 +492,6 @@ if _cors_origins:
 # ── SPA catchall (must be last) ──────────────────────────────────────
 
 
-@app.get("/{full_path:path}", include_in_schema=False)
-async def spa_catchall(full_path: str) -> Response:
-    """Serve the admin SPA index.html for any unmatched route."""
-    index = _ADMIN_STATIC_DIR / "index.html"
-    if index.is_file():
-        return FileResponse(str(index), media_type="text/html")
-    return Response(content="Admin dashboard not built", status_code=404)
 
 
 # Entrypoint for local testing:
