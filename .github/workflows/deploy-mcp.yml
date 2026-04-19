@@ -84,14 +84,15 @@ jobs:
 
       - name: Apply manifests
         run: |
-          # Server-side apply with force-conflicts so this workflow owns the
-          # deployment spec (reconciles stale client-side managedFields from
-          # prior manual `kubectl apply` runs).
-          kubectl apply \
-            --server-side=true --force-conflicts \
-            --field-manager=caretaker-deploy-workflow \
+          # `replace --force` deletes and recreates the Deployment to reconcile
+          # stale unmanaged fields from a prior manual `kubectl apply` — a
+          # regular apply/server-side-apply cannot remove an unmanaged `value`
+          # on an env entry that we now declare via `valueFrom`.
+          kubectl replace --force \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
-            -f infra/k8s/caretaker-mcp-deployment.yaml \
+            -f infra/k8s/caretaker-mcp-deployment.yaml
+          kubectl apply \
+            -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
             -f infra/k8s/caretaker-mcp-service.yaml
 
       - name: Update deployment image
