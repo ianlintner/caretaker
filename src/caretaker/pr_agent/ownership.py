@@ -1,4 +1,16 @@
-"""PR ownership management — claim, release, and state transitions."""
+"""PR ownership management — claim, release, and state transitions.
+
+This module posts **one caretaker comment per PR** (the "status comment"),
+identified by :data:`STATUS_COMMENT_MARKER`, and edits it in place as the PR
+progresses through its lifecycle (claim → readiness updates → merge-ready →
+released). Callers should use :func:`upsert_status_comment`; direct calls to
+``add_issue_comment`` are reserved for other non-status comments.
+
+Legacy markers from previous versions (``caretaker:ownership:claim``,
+``caretaker:readiness:update``, ``caretaker:ownership:release``) are still
+matched when searching for an existing comment, so PRs opened before this
+change get their older comment edited instead of a second comment appended.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +24,67 @@ from caretaker.state.models import OwnershipState, TrackedPR
 if TYPE_CHECKING:
     from caretaker.config import OwnershipConfig
     from caretaker.github_client.api import GitHubClient
-    from caretaker.github_client.models import PullRequest
+    from caretaker.github_client.models import Comment, PullRequest
 
 logger = logging.getLogger(__name__)
+
+# Canonical marker for the single caretaker status comment per PR.
+STATUS_COMMENT_MARKER = "<!-- caretaker:status -->"
+
+# Legacy markers still recognized so PRs created before the unified status
+# comment migrate cleanly: if we find an old claim/readiness/release comment,
+# we edit it with the new body (which carries STATUS_COMMENT_MARKER).
+_LEGACY_STATUS_MARKERS: tuple[str, ...] = (
+    "<!-- caretaker:ownership:claim -->",
+    "<!-- caretaker:readiness:update -->",
+    "<!-- caretaker:ownership:release -->",
+)
+
+
+async def find_status_comment(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> Comment | None:
+    """Return the caretaker status comment on a PR, if any.
+
+    Prefers the new :data:`STATUS_COMMENT_MARKER`; falls back to any legacy
+    marker so that pre-migration PRs can be updated in place instead of
+    accumulating a second comment.
+
+    When multiple matching comments exist (leftover from the pre-idempotency
+    bug), the one with the highest id (most recent) is returned.
+    """
+    comments = await github.get_pr_comments(owner, repo, pr_number)
+    match: Comment | None = None
+    for c in comments:
+        body = c.body or ""
+        is_status = STATUS_COMMENT_MARKER in body or any(m in body for m in _LEGACY_STATUS_MARKERS)
+        if is_status and (match is None or c.id > match.id):
+            match = c
+    return match
+
+
+async def upsert_status_comment(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    body: str,
+) -> None:
+    """Post or edit the single caretaker status comment for a PR.
+
+    If no status comment exists, a new one is posted. Otherwise the existing
+    comment is edited in place (or left untouched if the body is identical).
+    """
+    existing = await find_status_comment(github, owner, repo, pr_number)
+    if existing is None:
+        await github.add_issue_comment(owner, repo, pr_number, body)
+        return
+    if (existing.body or "").strip() == body.strip():
+        return
+    await github.edit_issue_comment(owner, repo, existing.id, body)
 
 
 @dataclass
@@ -31,31 +101,19 @@ def should_auto_claim(
     pr: PullRequest,
     config: OwnershipConfig,
 ) -> bool:
-    """Determine if Caretaker should automatically claim ownership of a PR.
-
-    Args:
-        pr: The pull request to evaluate
-        config: Ownership configuration
-
-    Returns:
-        True if Caretaker should auto-claim this PR
-    """
+    """Determine if Caretaker should automatically claim ownership of a PR."""
     if not config.enabled:
         return False
 
-    # Auto-claim Copilot PRs if configured
     if pr.is_copilot_pr:
         return config.auto_claim.copilot_prs
 
-    # Auto-claim Dependabot PRs if configured
     if pr.is_dependabot_pr:
         return config.auto_claim.dependabot_prs
 
-    # Human PRs require manual `caretaker:owned` label unless auto-claim is enabled
     if config.auto_claim.human_prs:
         return True
 
-    # Check for explicit ownership label
     return bool(pr.has_label(config.label))
 
 
@@ -64,16 +122,7 @@ def should_release_ownership(
     tracking: TrackedPR,
     reason: str,
 ) -> bool:
-    """Determine if Caretaker should release ownership of a PR.
-
-    Args:
-        pr: The pull request
-        tracking: Current tracking state
-        reason: The reason for checking release (e.g., 'merged', 'closed', 'escalated')
-
-    Returns:
-        True if ownership should be released
-    """
+    """Determine if Caretaker should release ownership of a PR."""
     if tracking.ownership_state != OwnershipState.OWNED:
         return False
 
@@ -96,22 +145,9 @@ async def claim_ownership(
     tracking: TrackedPR,
     ownership_config: OwnershipConfig,
 ) -> OwnershipClaim:
-    """Attempt to acquire ownership of a PR.
-
-    Args:
-        github: GitHub client
-        owner: Repository owner
-        repo: Repository name
-        pr: The pull request
-        tracking: Current tracking state
-        ownership_config: Ownership configuration
-
-    Returns:
-        OwnershipClaim with the result of the claim attempt
-    """
+    """Attempt to acquire ownership of a PR and post the initial status comment."""
     previous_state = tracking.ownership_state
 
-    # Already owned by us
     if tracking.ownership_state == OwnershipState.OWNED:
         return OwnershipClaim(
             claimed=False,
@@ -120,7 +156,6 @@ async def claim_ownership(
             previous_state=previous_state,
         )
 
-    # Check if we should auto-claim
     if not should_auto_claim(pr, ownership_config):
         return OwnershipClaim(
             claimed=False,
@@ -129,23 +164,21 @@ async def claim_ownership(
             previous_state=previous_state,
         )
 
-    # Claim the PR
     tracking.ownership_state = OwnershipState.OWNED
     tracking.ownership_acquired_at = datetime.now(UTC)
     tracking.owned_by = "caretaker"
 
-    # Add ownership label
     try:
         await github.add_labels(owner, repo, pr.number, [ownership_config.label])
     except Exception as e:
         logger.warning("Failed to add ownership label: %s", e)
 
-    # Post ownership claim comment
-    comment_body = build_ownership_claim_comment(pr, tracking)
     try:
-        await github.add_issue_comment(owner, repo, pr.number, comment_body)
+        await upsert_status_comment(
+            github, owner, repo, pr.number, build_status_comment(pr, tracking)
+        )
     except Exception as e:
-        logger.warning("Failed to post ownership claim comment: %s", e)
+        logger.warning("Failed to post caretaker status comment: %s", e)
 
     logger.info(
         "PR #%d: Caretaker claimed ownership (was: %s)",
@@ -170,20 +203,7 @@ async def release_ownership(
     ownership_config: OwnershipConfig,
     reason: str = "release",
 ) -> OwnershipClaim:
-    """Release ownership of a PR.
-
-    Args:
-        github: GitHub client
-        owner: Repository owner
-        repo: Repository name
-        pr: The pull request
-        tracking: Current tracking state
-        ownership_config: Ownership configuration
-        reason: Reason for release
-
-    Returns:
-        OwnershipClaim with the result
-    """
+    """Release ownership of a PR and flip the status comment to its terminal body."""
     previous_state = tracking.ownership_state
 
     if tracking.ownership_state not in (OwnershipState.OWNED, OwnershipState.ESCALATED):
@@ -194,16 +214,14 @@ async def release_ownership(
             previous_state=previous_state,
         )
 
-    # Release ownership
     tracking.ownership_state = OwnershipState.RELEASED
     tracking.ownership_released_at = datetime.now(UTC)
 
-    # Post release comment
-    comment_body = build_ownership_release_comment(pr, tracking, reason)
     try:
-        await github.add_issue_comment(owner, repo, pr.number, comment_body)
+        body = build_status_comment(pr, tracking, release_reason=reason)
+        await upsert_status_comment(github, owner, repo, pr.number, body)
     except Exception as e:
-        logger.warning("Failed to post ownership release comment: %s", e)
+        logger.warning("Failed to update caretaker status comment on release: %s", e)
 
     logger.info(
         "PR #%d: Caretaker released ownership (was: %s, reason: %s)",
@@ -220,8 +238,34 @@ async def release_ownership(
     )
 
 
-def build_ownership_claim_comment(pr: PullRequest, tracking: TrackedPR) -> str:
-    """Build the comment body for ownership claim."""
+def _status_line(pr: PullRequest, tracking: TrackedPR, release_reason: str | None) -> str:
+    """Render the one-line status heading for the status comment."""
+    if release_reason:
+        if bool(getattr(pr, "merged", False)):
+            return "**Status:** 🎉 Merged — caretaker has released ownership"
+        pr_state = getattr(pr.state, "value", pr.state)
+        if pr_state == "closed":
+            return "**Status:** 🚫 Closed without merge — caretaker has released ownership"
+        if release_reason == "PR escalated" or tracking.escalated:
+            return "**Status:** ⚠️ Escalated to maintainers — caretaker has released ownership"
+        return f"**Status:** 🔓 Released — {release_reason}"
+
+    if tracking.readiness_score >= 1.0:
+        return "**Status:** ✅ Ready for merge — all requirements satisfied"
+    return "**Status:** ⏳ Monitoring — awaiting requirements"
+
+
+def build_status_comment(
+    pr: PullRequest,
+    tracking: TrackedPR,
+    release_reason: str | None = None,
+) -> str:
+    """Render the unified caretaker status comment body.
+
+    This single body is edited in place as the PR progresses — there is no
+    separate claim / readiness / release comment. The header and status line
+    reflect the current phase (monitoring / ready for merge / released).
+    """
     blockers = set(tracking.readiness_blockers)
     mergeability_points = (
         0 if {"draft_pr", "merge_conflict", "breaking_change", "manual_hold"} & blockers else 10
@@ -229,14 +273,37 @@ def build_ownership_claim_comment(pr: PullRequest, tracking: TrackedPR) -> str:
     automated_points = 0 if "automated_feedback_unaddressed" in blockers else 20
     review_points = 0 if {"required_review_missing", "changes_requested"} & blockers else 30
     ci_points = 0 if {"ci_pending", "ci_failing"} & blockers else 40
+    total_pct = int(tracking.readiness_score * 100)
 
-    return f"""<!-- caretaker:ownership:claim -->
+    blockers_section = (
+        "None — PR is ready!"
+        if not tracking.readiness_blockers
+        else "\n".join(f"- `{b}`" for b in tracking.readiness_blockers)
+    )
 
-## 🏠 Caretaker Ownership
+    ownership_lines = [f"- **Owner:** {tracking.owned_by}"]
+    if tracking.ownership_acquired_at:
+        ownership_lines.append(
+            f"- **Claimed:** {tracking.ownership_acquired_at.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+    if tracking.ownership_released_at:
+        ownership_lines.append(
+            f"- **Released:** {tracking.ownership_released_at.strftime('%Y-%m-%d %H:%M UTC')} "
+            f"({release_reason or 'released'})"
+        )
+        ownership_lines.append(f"- **Duration:** {format_duration(tracking)}")
 
-Caretaker has claimed ownership of this PR.
+    ownership_block = "\n".join(ownership_lines)
 
-### Readiness Score
+    return f"""{STATUS_COMMENT_MARKER}
+
+## 🏠 Caretaker Status
+
+{_status_line(pr, tracking, release_reason)}
+
+**Readiness Score:** {total_pct}%
+
+### Readiness Breakdown
 
 | Component | Score |
 |-----------|-------|
@@ -244,104 +311,18 @@ Caretaker has claimed ownership of this PR.
 | Automated feedback | {automated_points}% |
 | Reviews approved | {review_points}% |
 | CI passing | {ci_points}% |
-| **Total** | **{int(tracking.readiness_score * 100)}%** |
+| **Total** | **{total_pct}%** |
 
 ### Blockers
 
-{
-        (
-            "None — PR is ready!"
-            if not tracking.readiness_blockers
-            else chr(10).join(f"- `{b}`" for b in tracking.readiness_blockers)
-        )
-    }
+{blockers_section}
 
-### What This Means
+### Ownership
 
-Caretaker will monitor this PR and:
-- Post updates when readiness status changes
-- Request fixes for CI failures or review comments
-- Attempt to merge when fully ready (if auto-merge is enabled)
-- Escalate to maintainers if unable to proceed
+{ownership_block}
 
 ---
-*This is an automated comment from [Caretaker](https://github.com/ianlintner/caretaker).*
-"""
-
-
-def build_ownership_release_comment(pr: PullRequest, tracking: TrackedPR, reason: str) -> str:
-    """Build the comment body for ownership release."""
-    blockers = ", ".join(tracking.readiness_blockers) if tracking.readiness_blockers else "none"
-    return f"""<!-- caretaker:ownership:release -->
-
-## 🏠 Caretaker Ownership Released
-
-Caretaker has released ownership of this PR.
-
-**Reason:** {reason}
-
-**Final State:**
-- Ownership duration: {format_duration(tracking)}
-- Final readiness score: {int(tracking.readiness_score * 100)}%
-- Final blockers: {blockers}
-
----
-*This is an automated comment from [Caretaker](https://github.com/ianlintner/caretaker).*
-"""
-
-
-def build_readiness_comment(
-    tracking: TrackedPR,
-    previous_score: float | None = None,
-    previous_blockers: list[str] | None = None,
-) -> str:
-    """Build a comment updating readiness status.
-
-    Only call this on meaningful changes to avoid comment noise.
-
-    Args:
-        tracking: The tracked PR with current readiness state
-        previous_score: The previous readiness score to compare against
-
-    Returns:
-        The comment body, or empty string if no meaningful change
-    """
-    score_changed = (
-        previous_score is not None and abs(tracking.readiness_score - previous_score) >= 0.1
-    )
-    blockers_changed = previous_blockers is not None and set(previous_blockers) != set(
-        tracking.readiness_blockers
-    )
-
-    if previous_score is not None and not blockers_changed and not score_changed:
-        return ""
-
-    return f"""<!-- caretaker:readiness:update -->
-
-## 📊 PR Readiness Update
-
-**Readiness Score:** {int(tracking.readiness_score * 100)}%
-
-{
-        (
-            "**Status:** ✅ Ready for merge"
-            if tracking.readiness_score >= 1.0
-            else "**Status:** ⏳ Awaiting requirements"
-        )
-    }
-
-### Blockers
-
-{
-        (
-            "None"
-            if not tracking.readiness_blockers
-            else chr(10).join(f"- `{b}`" for b in tracking.readiness_blockers)
-        )
-    }
-
----
-*This is an automated comment from [Caretaker](https://github.com/ianlintner/caretaker).*
+*This comment is edited in place as the PR progresses. Automated by [Caretaker](https://github.com/ianlintner/caretaker).*
 """
 
 

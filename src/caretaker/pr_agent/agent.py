@@ -15,12 +15,13 @@ from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
 from caretaker.pr_agent.merge import evaluate_merge
 from caretaker.pr_agent.ownership import (
-    build_readiness_comment,
+    build_status_comment,
     claim_ownership,
     get_readiness_check_summary,
     get_readiness_check_title,
     release_ownership,
     should_release_ownership,
+    upsert_status_comment,
 )
 from caretaker.pr_agent.review import analyze_reviews
 from caretaker.pr_agent.states import (
@@ -199,6 +200,7 @@ class PRAgent:
             current_state=tracking.state,
             ignore_jobs=self._config.ci.ignore_jobs,
             auto_approve_workflows=self._config.ci.auto_approve_workflows,
+            required_reviews=self._config.readiness.required_reviews,
         )
 
         logger.info(
@@ -763,11 +765,8 @@ class PRAgent:
         2. Attempts to claim ownership if eligible
         3. Releases ownership if the PR is merged/closed/escalated
         4. Publishes the readiness check
-        5. Posts update comments on meaningful changes
+        5. Edits the single caretaker status comment in place
         """
-        previous_score = tracking.readiness_score
-        previous_blockers = list(tracking.readiness_blockers)
-
         # Guard against optional readiness field
         if evaluation.readiness is None:
             return tracking
@@ -822,23 +821,26 @@ class PRAgent:
         # Publish readiness check
         await self._publish_readiness_check(pr, tracking, evaluation)
 
-        # Post update comment on meaningful changes (only for owned PRs)
-        if tracking.ownership_state == OwnershipState.OWNED:
-            update_comment = build_readiness_comment(
-                tracking,
-                previous_score,
-                previous_blockers,
-            )
-            if update_comment:
-                try:
-                    await self._github.add_issue_comment(
-                        self._owner, self._repo, pr.number, update_comment
-                    )
-                except GitHubAPIError as e:
-                    logger.warning(
-                        "PR #%d: Failed to post readiness update comment: %s",
-                        pr.number,
-                        e,
-                    )
+        # Edit the single caretaker status comment in place for owned, still-open
+        # PRs. This keeps one living comment that transitions through
+        # ⏳ monitoring → ✅ ready for merge, rather than appending a new comment
+        # on every evaluation. release_ownership handles the terminal body
+        # (merged / closed / escalated) when the PR reaches a final state.
+        is_terminal = bool(pr.merged) or getattr(pr.state, "value", pr.state) == "closed"
+        if tracking.ownership_state == OwnershipState.OWNED and not is_terminal:
+            try:
+                await upsert_status_comment(
+                    self._github,
+                    self._owner,
+                    self._repo,
+                    pr.number,
+                    build_status_comment(pr, tracking),
+                )
+            except GitHubAPIError as e:
+                logger.warning(
+                    "PR #%d: Failed to upsert caretaker status comment: %s",
+                    pr.number,
+                    e,
+                )
 
         return tracking
