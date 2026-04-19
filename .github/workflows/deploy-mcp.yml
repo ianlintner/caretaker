@@ -103,7 +103,8 @@ jobs:
             -f infra/k8s/caretaker-mcp-deployment.yaml
           kubectl apply \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
-            -f infra/k8s/caretaker-mcp-service.yaml
+            -f infra/k8s/caretaker-mcp-service.yaml \
+            -f infra/k8s/redis-statefulset.yaml
 
       - name: Update deployment image
         run: |
