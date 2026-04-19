@@ -163,10 +163,18 @@ async def login(request: Request) -> RedirectResponse:
     if not client_id:
         raise HTTPException(status_code=503, detail="OIDC client ID not configured")
 
+    import base64
+    import hashlib
+
     state = secrets.token_urlsafe(32)
-    # Store state for CSRF validation
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+
     if _redis:
         await _redis.set(f"{_SESSION_PREFIX}state:{state}", "1", ex=300)
+        await _redis.set(f"{_SESSION_PREFIX}pkce:{state}", code_verifier, ex=300)
 
     base_url = (
         _config.public_base_url.rstrip("/")
@@ -182,6 +190,8 @@ async def login(request: Request) -> RedirectResponse:
         f"&redirect_uri={redirect_uri}"
         f"&scope=openid+email+profile"
         f"&state={state}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
     )
 
     return RedirectResponse(url=f"{auth_endpoint}{params}")
@@ -204,12 +214,15 @@ async def callback(
     if not _config or not _oidc_metadata or not _signer or not _redis:
         raise HTTPException(status_code=503, detail="Auth not configured")
 
-    # Validate CSRF state
+    # Validate CSRF state and retrieve PKCE verifier
     state_key = f"{_SESSION_PREFIX}state:{state}"
+    pkce_key = f"{_SESSION_PREFIX}pkce:{state}"
     stored = await _redis.get(state_key)
     if not stored:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
+    code_verifier = await _redis.get(pkce_key)
     await _redis.delete(state_key)
+    await _redis.delete(pkce_key)
 
     # Exchange code for tokens
     import httpx
@@ -225,16 +238,20 @@ async def callback(
 
     token_endpoint = _oidc_metadata["token_endpoint"]
 
+    token_payload: dict[str, str] = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    if code_verifier:
+        token_payload["code_verifier"] = code_verifier
+
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
             token_endpoint,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
+            data=token_payload,
             headers={"Accept": "application/json"},
         )
 
