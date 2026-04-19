@@ -427,3 +427,54 @@ class TestEvaluatePRReviewGuards:
         # Should fall through to merge — bot comments already addressed
         assert result.recommended_action in ("merge", "await_review")
         assert result.recommended_action != "request_review_fix"
+
+
+class TestReadinessRequiredReviews:
+    """Readiness scoring respects the required_reviews config knob.
+
+    Regression for rust-oauth2-server PR #172 where the score stayed stuck at
+    20% on a solo-dev repo because `required_review_missing` was unconditionally
+    added whenever no reviewer had approved.
+    """
+
+    def test_required_reviews_zero_grants_review_points_without_approval(self) -> None:
+        """When required_reviews=0, a PR with no reviews still scores the 30% review component."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]  # passing
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no reviews at all
+            PRTrackingState.CI_PASSING,
+            required_reviews=0,
+        )
+        assert result.readiness is not None
+        assert "required_review_missing" not in result.readiness.blockers
+        # 10 (mergeable) + 20 (no automated feedback) + 30 (reviews waived) + 40 (CI) = 100
+        assert result.readiness.score == 1.0
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+    def test_required_reviews_zero_still_blocks_on_changes_requested(self) -> None:
+        """Even with required_reviews=0, an explicit changes-requested review blocks."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        reviews = [make_review(state=ReviewState.CHANGES_REQUESTED, body="nope")]
+        result = evaluate_pr(
+            pr,
+            checks,
+            reviews,
+            PRTrackingState.CI_PASSING,
+            required_reviews=0,
+        )
+        assert result.readiness is not None
+        assert "changes_requested" in result.readiness.blockers
+        assert "required_review_missing" not in result.readiness.blockers
+
+    def test_required_reviews_default_one_still_adds_blocker(self) -> None:
+        """Default behavior (required_reviews=1) is unchanged — missing review blocks."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)  # default=1
+        assert result.readiness is not None
+        assert "required_review_missing" in result.readiness.blockers
+        assert result.readiness.score < 1.0

@@ -166,8 +166,16 @@ def evaluate_readiness(
     ci: CIEvaluation,
     review_eval: ReviewEvaluation,
     current_state: PRTrackingState,
+    required_reviews: int = 1,
 ) -> ReadinessEvaluation:
-    """Evaluate PR readiness score and blockers."""
+    """Evaluate PR readiness score and blockers.
+
+    Args:
+        required_reviews: Minimum approving reviews required for the review-points
+            component. When ``0`` (repo doesn't require reviews), the review
+            component passes automatically and ``required_review_missing`` is not
+            added as a blocker. An explicit ``changes_requested`` review still blocks.
+    """
     score = 0.0
     blockers = []
 
@@ -196,14 +204,16 @@ def evaluate_readiness(
     else:
         blockers.append("automated_feedback_unaddressed")
 
-    # 30%: Required reviews satisfied
-    if not review_eval.changes_requested and review_eval.approved:
-        score += 0.30
+    # 30%: Required reviews satisfied. When required_reviews is 0, the repo
+    # does not require approving reviews, so this component passes unless a
+    # reviewer has explicitly requested changes.
+    reviews_required = required_reviews > 0
+    if review_eval.changes_requested:
+        blockers.append("changes_requested")
+    elif reviews_required and not review_eval.approved:
+        blockers.append("required_review_missing")
     else:
-        if review_eval.changes_requested:
-            blockers.append("changes_requested")
-        if not review_eval.approved:
-            blockers.append("required_review_missing")
+        score += 0.30
 
     # 40%: CI green and no pending checks
     if ci.status == CIStatus.PASSING and ci.all_completed:
@@ -242,11 +252,12 @@ def evaluate_pr(
     current_state: PRTrackingState,
     ignore_jobs: list[str] | None = None,
     auto_approve_workflows: bool = False,
+    required_reviews: int = 1,
 ) -> PRStateEvaluation:
     """Full PR evaluation — determines next state and action."""
     ci = evaluate_ci(check_runs, ignore_jobs)
     review_eval = evaluate_reviews(reviews)
-    readiness = evaluate_readiness(pr, ci, review_eval, current_state)
+    readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews)
 
     # State transitions
     if pr.merged:
