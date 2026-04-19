@@ -492,7 +492,5 @@ if _cors_origins:
 # ── SPA catchall (must be last) ──────────────────────────────────────
 
 
-
-
 # Entrypoint for local testing:
 # uvicorn src.caretaker.mcp_backend.main:app --reload
