@@ -71,6 +71,16 @@ backend = [
     "uvicorn>=0.23,<1",
     "pyjwt[crypto]>=2.8,<3",
 ]
+# Admin dashboard with OIDC auth and Neo4j graph store.
+admin = [
+    "fastapi>=0.100,<1",
+    "uvicorn>=0.23,<1",
+    "authlib>=1.3,<2",           # OIDC/OAuth2 client
+    "itsdangerous>=2.1,<3",      # session cookie signing
+    "neo4j>=5.0,<6",             # Neo4j async driver
+    "redis[asyncio]>=5,<6",      # session storage
+    "httpx>=0.27,<1",            # OIDC discovery fetching
+]
 # Multi-provider LLM routing (OpenAI, Vertex, Azure OpenAI, Azure AI Foundry,
 # Bedrock, Ollama, Mistral, Cohere, Groq, etc.) via LiteLLM.  The direct
 # Anthropic SDK remains the default; install this extra and set
@@ -112,8 +122,16 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency-injection idiom requires these callables in defaults.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path", "fastapi.Body", "fastapi.Cookie"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["neo4j", "neo4j.*", "itsdangerous", "itsdangerous.*"]
+ignore_missing_imports = true

@@ -454,6 +454,39 @@ class AuditLogConfig(StrictBaseModel):
     enabled: bool = True
 
 
+class AdminDashboardConfig(StrictBaseModel):
+    """Configuration for the admin dashboard.
+
+    Uses OIDC (OpenID Connect) for authentication via an external provider
+    (e.g. rust-oauth2-server).  Sessions are stored in Redis.
+    """
+
+    enabled: bool = False
+    # OIDC discovery URL — e.g. https://auth.example.com/.well-known/openid-configuration
+    oidc_issuer_url: str = ""
+    oidc_client_id_env: str = "CARETAKER_ADMIN_OIDC_CLIENT_ID"
+    oidc_client_secret_env: str = "CARETAKER_ADMIN_OIDC_CLIENT_SECRET"
+    # Session lifetime in seconds.
+    session_ttl_seconds: int = 3600
+    # Optional email allowlist.  When non-empty, only these emails may log in.
+    allowed_emails: list[str] = Field(default_factory=list)
+    # CORS origins allowed for the admin API (dev convenience).
+    cors_origins: list[str] = Field(default_factory=list)
+    # Secret key for signing session cookies.  Read from this env var.
+    session_secret_env: str = "CARETAKER_ADMIN_SESSION_SECRET"
+    # Public base URL for OAuth redirect callbacks.
+    public_base_url: str = ""
+
+
+class GraphStoreConfig(StrictBaseModel):
+    """Configuration for the Neo4j graph store."""
+
+    enabled: bool = False
+    neo4j_url_env: str = "NEO4J_URL"
+    neo4j_auth_env: str = "NEO4J_AUTH"
+    database: str = "caretaker"
+
+
 class MCPConfig(StrictBaseModel):
     """Configuration for remote MCP servers."""
 
@@ -587,6 +620,8 @@ class MaintainerConfig(StrictBaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
+    admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
+    graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:
