@@ -86,9 +86,9 @@ async def configure(config: AdminDashboardConfig) -> None:
     session_secret = os.environ.get(config.session_secret_env, "")
     if not session_secret:
         logger.warning(
-            "No session secret configured (%s) — generating ephemeral secret. "
-            "Sessions will not survive restarts.",
-            config.session_secret_env,
+            "No session secret configured — generating ephemeral secret. "
+            "Sessions will not survive restarts. Set the env var named by "
+            "config.admin_dashboard.session_secret_env to fix."
         )
         session_secret = secrets.token_hex(32)
 
