@@ -64,11 +64,21 @@ jobs:
       - name: Login to ACR
         run: az acr login --name "${{ vars.CARETAKER_ACR_NAME }}"
 
-      - name: Build and push image
+      - name: Set up QEMU (for arm64 emulation on amd64 runners)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image (multi-arch amd64 + arm64)
         run: |
           IMAGE="${{ vars.CARETAKER_ACR_NAME }}.azurecr.io/${{ vars.CARETAKER_MCP_IMAGE_REPOSITORY }}:${{ steps.tag.outputs.tag }}"
-          docker build -f Dockerfile.mcp -t "$IMAGE" .
-          docker push "$IMAGE"
+          docker buildx build \
+            -f Dockerfile.mcp \
+            --platform linux/amd64,linux/arm64 \
+            --tag "$IMAGE" \
+            --push \
+            .
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Get AKS credentials
