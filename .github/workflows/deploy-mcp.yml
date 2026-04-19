@@ -84,7 +84,12 @@ jobs:
 
       - name: Apply manifests
         run: |
+          # Server-side apply with force-conflicts so this workflow owns the
+          # deployment spec (reconciles stale client-side managedFields from
+          # prior manual `kubectl apply` runs).
           kubectl apply \
+            --server-side=true --force-conflicts \
+            --field-manager=caretaker-deploy-workflow \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
             -f infra/k8s/caretaker-mcp-deployment.yaml \
             -f infra/k8s/caretaker-mcp-service.yaml
