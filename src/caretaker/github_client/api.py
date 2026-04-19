@@ -574,6 +574,20 @@ class GitHubClient:
         )
         return self._parse_comment(data)
 
+    async def edit_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        body: str,
+    ) -> Comment:
+        """Edit an existing issue/PR comment by id via PATCH."""
+        data = await self._patch(
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            json={"body": body},
+        )
+        return self._parse_comment(data)
+
     async def add_labels(
         self, owner: str, repo: str, number: int, labels: list[str]
     ) -> list[Label]:

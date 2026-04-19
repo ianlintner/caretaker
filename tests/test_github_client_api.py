@@ -163,6 +163,28 @@ async def test_add_issue_comment_uses_default_client_for_regular_comments() -> N
     assert comment.user.login == "github-actions[bot]"
 
 
+@pytest.mark.asyncio
+async def test_edit_issue_comment_sends_patch() -> None:
+    """edit_issue_comment issues PATCH to /issues/comments/:id and returns the Comment."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    payload = _comment_payload("github-actions[bot]")
+    payload["body"] = "new body"
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=_make_response(200, payload))
+    gh._client = mock_client
+
+    comment = await gh.edit_issue_comment("o", "r", 123, "new body")
+
+    assert comment.id == 123
+    assert comment.body == "new body"
+    call = mock_client.request.await_args
+    assert call.args[0] == "PATCH"
+    assert call.args[1].endswith("/repos/o/r/issues/comments/123")
+    assert call.kwargs["json"] == {"body": "new body"}
+
+
 # ── In-process read cache ─────────────────────────────────────────────────────
 
 
