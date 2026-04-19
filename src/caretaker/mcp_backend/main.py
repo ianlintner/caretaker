@@ -1,6 +1,6 @@
 """Minimal backend service scaffolding for Caretaker MCP endpoints.
 
-This FastAPI app hosts two logical surfaces:
+This FastAPI app hosts three logical surfaces:
 
 1. The MCP tool interface (``/health``, ``/mcp/tools``, ``/mcp/tools/call``)
    described in ``docs/azure-mcp-architecture-plan.md``.
@@ -9,6 +9,9 @@ This FastAPI app hosts two logical surfaces:
    routes are always registered but return ``503 Service Unavailable``
    when the corresponding environment variables are not configured,
    preserving backward compatibility for existing deployments.
+3. The admin dashboard (``/api/auth/*``, ``/api/admin/*``, ``/api/graph/*``)
+   with OIDC authentication, read-only data access, and a React SPA
+   served as static files at the root.
 """
 
 from __future__ import annotations
@@ -16,9 +19,13 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import os
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from caretaker.github_app import (
@@ -37,13 +44,90 @@ try:
 except importlib.metadata.PackageNotFoundError:
     _PKG_VERSION = "0.0.0"
 
+
+# ---------------------------------------------------------------------------
+# Admin dashboard bootstrap (OIDC + data access + graph API)
+# ---------------------------------------------------------------------------
+
+_ADMIN_STATIC_DIR = Path(__file__).resolve().parent.parent / "admin" / "static"
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
+    """App lifespan: initialise admin dashboard if configured."""
+    admin_enabled = os.environ.get("CARETAKER_ADMIN_ENABLED", "").lower() in ("1", "true", "yes")
+
+    if admin_enabled:
+        try:
+            from caretaker.admin import api as admin_api
+            from caretaker.admin import auth as admin_auth
+            from caretaker.admin.data import AdminDataAccess
+            from caretaker.config import AdminDashboardConfig
+
+            # Build config from env vars
+            config = AdminDashboardConfig(
+                enabled=True,
+                oidc_issuer_url=os.environ.get("CARETAKER_ADMIN_OIDC_ISSUER_URL", ""),
+                public_base_url=os.environ.get("CARETAKER_ADMIN_PUBLIC_BASE_URL", ""),
+                allowed_emails=[
+                    e.strip()
+                    for e in os.environ.get("CARETAKER_ADMIN_ALLOWED_EMAILS", "").split(",")
+                    if e.strip()
+                ],
+            )
+
+            if config.oidc_issuer_url:
+                await admin_auth.configure(config)
+                logger.info("Admin OIDC auth configured (issuer=%s)", config.oidc_issuer_url)
+            else:
+                logger.warning("CARETAKER_ADMIN_OIDC_ISSUER_URL not set — admin auth disabled")
+
+            # Initialise data access (stores will be injected later or left as None)
+            data = AdminDataAccess()
+            admin_api.configure(data)
+
+            application.include_router(admin_auth.router)
+            application.include_router(admin_api.router)
+
+            # Mount graph API if Neo4j is configured
+            neo4j_url = os.environ.get("NEO4J_URL", "")
+            if neo4j_url:
+                try:
+                    from caretaker.admin.graph_api import configure as configure_graph
+                    from caretaker.admin.graph_api import router as graph_router
+
+                    await configure_graph()
+                    application.include_router(graph_router)
+                    logger.info("Graph API enabled (Neo4j at %s)", neo4j_url)
+                except Exception:
+                    logger.warning("Failed to initialise graph API", exc_info=True)
+
+            # Serve SPA static files (must be last — catchall)
+            if _ADMIN_STATIC_DIR.is_dir():
+                application.mount(
+                    "/assets",
+                    StaticFiles(directory=str(_ADMIN_STATIC_DIR / "assets")),
+                    name="admin-assets",
+                )
+                logger.info("Admin SPA static files served from %s", _ADMIN_STATIC_DIR)
+
+            logger.info("Admin dashboard enabled")
+
+        except Exception:
+            logger.warning("Failed to initialise admin dashboard", exc_info=True)
+
+    yield
+
+
 app = FastAPI(
     title="Caretaker MCP Backend",
     description=(
         "Backend service for remote Caretaker capabilities.  Hosts the MCP "
-        "tool interface and (optionally) the GitHub App webhook receiver."
+        "tool interface, (optionally) the GitHub App webhook receiver, and "
+        "the admin dashboard."
     ),
     version=_PKG_VERSION,
+    lifespan=_lifespan,
 )
 
 
@@ -374,6 +458,35 @@ async def get_installation_token(
         token=token.token,
         expires_at=token.expires_at,
     )
+
+
+# ── CORS middleware (admin dashboard dev) ─────────────────────────────
+
+_cors_origins = [
+    o.strip() for o in os.environ.get("CARETAKER_ADMIN_CORS_ORIGINS", "").split(",") if o.strip()
+]
+if _cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+
+# ── SPA catchall (must be last) ──────────────────────────────────────
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_catchall(full_path: str) -> Response:
+    """Serve the admin SPA index.html for any unmatched route."""
+    index = _ADMIN_STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(str(index), media_type="text/html")
+    return Response(content="Admin dashboard not built", status_code=404)
 
 
 # Entrypoint for local testing:

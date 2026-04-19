@@ -59,6 +59,64 @@ spec:
                   name: caretaker-secrets
                   key: github-app-private-key
                   optional: true
+            # Admin dashboard — disabled by default.  Flip to "true" once
+            # Redis + Neo4j + OIDC are provisioned (see Phase F).
+            - name: CARETAKER_ADMIN_ENABLED
+              value: "false"
+            - name: CARETAKER_ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-issuer-url
+                  optional: true
+            - name: CARETAKER_ADMIN_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-client-id
+                  optional: true
+            - name: CARETAKER_ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-client-secret
+                  optional: true
+            - name: CARETAKER_ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: session-secret
+                  optional: true
+            - name: CARETAKER_ADMIN_PUBLIC_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: public-base-url
+                  optional: true
+            - name: CARETAKER_ADMIN_ALLOWED_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: allowed-emails
+                  optional: true
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: redis-url
+                  optional: true
+            - name: NEO4J_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: neo4j-url
+                  optional: true
+            - name: NEO4J_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: neo4j-auth
+                  optional: true
           resources:
             requests:
               cpu: "10m"

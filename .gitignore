@@ -46,3 +46,6 @@ site/
 src/caretaker/evolution/backends/mongo_backend.py
 *-evolution.db*
 *.log
+
+# Claude Code local state
+.claude/
