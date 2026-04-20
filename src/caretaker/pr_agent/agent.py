@@ -733,7 +733,9 @@ class PRAgent:
         if debug_data:
             payload["debug"] = debug_data
 
+        marker = "<!-- caretaker:escalation -->"
         body = (
+            f"{marker}\n\n"
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
             f"**Reason:** {reason}\n\n"
@@ -741,7 +743,20 @@ class PRAgent:
             f"Please review and take appropriate action."
         )
         body += render_debug_dump(payload, title="Escalation debug dump")
-        await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
+        # Upsert: one escalation comment per PR, edited in place if the reason
+        # changes. Without this, repeated escalation evaluations would spam
+        # the PR with identical comments (portfolio #148 saw 14 dupes).
+        # Cooldown: don't re-edit the comment more than once per hour even
+        # if the body content shifts slightly — a fresh ping every cycle is
+        # not what a human reviewer wants.
+        await self._github.upsert_issue_comment(
+            self._owner,
+            self._repo,
+            pr.number,
+            marker,
+            body,
+            min_seconds_between_updates=3600,
+        )
         logger.info("PR #%d escalated: %s", pr.number, reason)
 
     async def _publish_readiness_check(
