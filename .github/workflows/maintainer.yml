@@ -97,10 +97,26 @@ jobs:
             // Issue comments need extra filtering to avoid chatter storms and self loops.
             if (eventName === "issue_comment") {
               const actor = payload.comment?.user?.login || context.actor || "unknown";
-              const body = (payload.comment?.body || "").toLowerCase();
+              const rawBody = payload.comment?.body || "";
+              const body = rawBody.toLowerCase();
+
+              // Skip any caretaker-marker comment regardless of who authored it.
+              // PAT-routed caretaker comments come from a write-capable user
+              // identity, not a bot, so an actor-only filter misses them.
+              if (/<!--\s*caretaker:[a-z0-9:_-]+/i.test(rawBody)) {
+                skip("issue_comment carries caretaker marker (self-trigger loop guard)");
+                return;
+              }
 
               // Ignore bot-authored comments to avoid self-trigger loops.
-              if (actor === "the-care-taker[bot]" || actor === "github-actions[bot]") {
+              const botActors = new Set([
+                "the-care-taker[bot]",
+                "github-actions[bot]",
+                "copilot-swe-agent[bot]",
+                "anthropic-code-agent[bot]",
+                "copilot-pull-request-reviewer[bot]",
+              ]);
+              if (botActors.has(actor)) {
                 skip(`bot-authored issue_comment from ${actor}`);
                 return;
               }
@@ -113,6 +129,16 @@ jobs:
 
               if (!hasExplicitCommand) {
                 skip("issue_comment missing explicit maintainer command/mention");
+                return;
+              }
+            }
+
+            // Reviews submitted by the Copilot reviewer bot are not human signals
+            // and should not trigger a caretaker run on their own.
+            if (eventName === "pull_request_review") {
+              const reviewer = payload.review?.user?.login || "";
+              if (reviewer === "copilot-pull-request-reviewer[bot]") {
+                skip(`pull_request_review by ${reviewer} (bot reviewer; not a human signal)`);
                 return;
               }
             }
