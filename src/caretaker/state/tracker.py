@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.github_client.api import CommentingDisabledError
 from caretaker.tools.github import GitHubIssueTools
 
 from .models import OrchestratorState, RunSummary
@@ -80,6 +81,10 @@ class StateTracker:
         versions appended a new comment per run, which produced unbounded
         comment growth on the tracking issue (portfolio#121 reached 110 bot
         comments).
+
+        If the tracking issue has reached GitHub's 2500-comment limit and
+        commenting is disabled, a fresh tracking issue is created automatically
+        so that state persistence does not crash the entire run.
         """
         if summary:
             self._state.last_run = summary
@@ -95,13 +100,33 @@ class StateTracker:
 
         state_json = self._state.model_dump_json(indent=2)
         body = self._build_state_comment(state_json, summary)
-        await self._github.upsert_issue_comment(
-            self._owner,
-            self._repo,
-            self._tracking_issue_number,
-            STATE_COMMENT_MARKER,
-            body,
-        )
+        try:
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                STATE_COMMENT_MARKER,
+                body,
+            )
+        except CommentingDisabledError:
+            logger.warning(
+                "Tracking issue #%d has exceeded GitHub's comment limit — "
+                "creating a fresh tracking issue for state persistence.",
+                self._tracking_issue_number,
+            )
+            self._tracking_issue_number = None
+            await self._create_tracking_issue()
+            if self._tracking_issue_number is None:
+                raise RuntimeError(
+                    "Failed to create a fresh tracking issue after commenting was disabled"
+                ) from None
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                STATE_COMMENT_MARKER,
+                body,
+            )
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
 
     async def post_run_summary(self, summary: RunSummary) -> None:
@@ -111,6 +136,9 @@ class StateTracker:
         last :data:`_RUN_HISTORY_KEEP` runs rendered, edited in place. This
         replaces the previous append-per-run pattern that drove unbounded
         comment growth.
+
+        If the tracking issue has exceeded GitHub's comment limit, the upsert
+        is skipped with a warning rather than crashing the run.
         """
         if self._tracking_issue_number is None:
             await self._create_tracking_issue()
@@ -124,13 +152,20 @@ class StateTracker:
             recent = recent[-_RUN_HISTORY_KEEP:]
 
         body = self._build_history_comment(recent)
-        await self._github.upsert_issue_comment(
-            self._owner,
-            self._repo,
-            self._tracking_issue_number,
-            RUN_HISTORY_COMMENT_MARKER,
-            body,
-        )
+        try:
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                RUN_HISTORY_COMMENT_MARKER,
+                body,
+            )
+        except CommentingDisabledError:
+            logger.warning(
+                "Tracking issue #%d has exceeded GitHub's comment limit — "
+                "skipping run history comment.",
+                self._tracking_issue_number,
+            )
 
     async def post_reflection(self, result: ReflectionResult) -> None:
         """Post a reflection analysis comment to the tracking issue."""

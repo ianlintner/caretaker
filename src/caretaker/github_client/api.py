@@ -43,6 +43,11 @@ class GitHubAPIError(Exception):
         super().__init__(f"GitHub API error {status_code}: {message}")
 
 
+class CommentingDisabledError(GitHubAPIError):
+    """Raised when GitHub refuses a new comment because the issue is locked
+    due to exceeding 2500 comments."""
+
+
 class GitHubClient:
     """Async GitHub REST API client."""
 
@@ -121,6 +126,8 @@ class GitHubClient:
             if "rate limit" in message.lower():
                 detail = f"Retry after {retry_after}s" if retry_after else "No retry time specified"
                 raise GitHubAPIError(403, f"Rate limited. {detail}")
+            if "commenting is disabled on issues with more than" in message.lower():
+                raise CommentingDisabledError(403, message)
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code >= 400:
             raise GitHubAPIError(resp.status_code, resp.text)

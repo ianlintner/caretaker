@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from caretaker.github_client.api import CommentingDisabledError
 from caretaker.state.models import RunSummary
 from caretaker.state.tracker import (
     RUN_HISTORY_COMMENT_MARKER,
@@ -113,3 +114,65 @@ class TestPostRunSummaryUsesUpsert:
         assert idx_latest != -1
         assert idx_one != -1
         assert idx_latest < idx_one
+
+
+@pytest.mark.asyncio
+class TestCommentingDisabledHandling:
+    """Tests that verify graceful handling of GitHub's 2500-comment limit."""
+
+    async def test_save_creates_fresh_issue_when_commenting_disabled(self) -> None:
+        """save() must rotate to a new tracking issue when commenting is disabled."""
+        github = AsyncMock()
+        # First upsert call raises; second (on the new issue) succeeds.
+        github.upsert_issue_comment = AsyncMock(
+            side_effect=[
+                CommentingDisabledError(
+                    403,
+                    "Commenting is disabled on issues with more than 2500 comments",
+                ),
+                AsyncMock(),
+            ]
+        )
+        new_issue = AsyncMock()
+        new_issue.number = 200
+        github.create_issue = AsyncMock(return_value=new_issue)
+
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+
+        # Patch _create_tracking_issue to simulate creating issue #200
+        async def _fake_create() -> None:
+            tracker._tracking_issue_number = 200
+
+        tracker._create_tracking_issue = _fake_create  # type: ignore[method-assign]
+
+        await tracker.save(summary=_summary())
+
+        # State was ultimately saved on the fresh issue
+        assert tracker._tracking_issue_number == 200
+        assert github.upsert_issue_comment.await_count == 2
+        second_call = github.upsert_issue_comment.await_args_list[1]
+        assert second_call.args[2] == 200
+
+    async def test_post_run_summary_skips_when_commenting_disabled(self) -> None:
+        """post_run_summary() must log a warning and not raise when commenting is disabled."""
+        github = AsyncMock()
+        github.upsert_issue_comment = AsyncMock(
+            side_effect=CommentingDisabledError(
+                403, "Commenting is disabled on issues with more than 2500 comments"
+            )
+        )
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+
+        # Should not raise
+        await tracker.post_run_summary(_summary())
+
+        github.upsert_issue_comment.assert_awaited_once()
+
+    async def test_commenting_disabled_error_is_subclass_of_github_api_error(self) -> None:
+        from caretaker.github_client.api import GitHubAPIError
+
+        err = CommentingDisabledError(403, "msg")
+        assert isinstance(err, GitHubAPIError)
+        assert err.status_code == 403
