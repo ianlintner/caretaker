@@ -300,6 +300,59 @@ class UpgradePlanner:
         logger.info("Created upgrade issue #%d for v%s", issue.number, target.version)
         return issue.number
 
+    async def close_superseded_upgrade_prs(self, version: str) -> list[int]:
+        """Close older open upgrade PRs for the same target version.
+
+        When two workflow runs open upgrade PRs in parallel (racing on the
+        same upgrade issue), the older one is superseded. Keeps the
+        highest-numbered open PR whose title references ``Upgrade to
+        v{version}``; closes the rest with a ``Superseded by #N`` comment.
+
+        Returns the list of PR numbers closed.
+        """
+        title_substring = f"Upgrade to v{version}"
+        try:
+            prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
+        except Exception as e:
+            logger.warning("Failed to list open PRs for upgrade dedupe: %s", e)
+            return []
+
+        matches = [p for p in prs if title_substring in (p.title or "")]
+        if len(matches) <= 1:
+            return []
+
+        matches.sort(key=lambda p: p.number)
+        *to_close, keeper = matches
+        closed: list[int] = []
+        for pr in to_close:
+            try:
+                await self._github.add_issue_comment(
+                    self._owner,
+                    self._repo,
+                    pr.number,
+                    f"Superseded by #{keeper.number} (both target v{version}).",
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to add superseded comment on PR #%d: %s", pr.number, e
+                )
+            try:
+                await self._github.update_issue(
+                    self._owner, self._repo, pr.number, state="closed"
+                )
+                closed.append(pr.number)
+                logger.info(
+                    "Closed superseded upgrade PR #%d (kept #%d) for v%s",
+                    pr.number,
+                    keeper.number,
+                    version,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to close superseded upgrade PR #%d: %s", pr.number, e
+                )
+        return closed
+
     async def create_sync_issue(self, version: str) -> int:
         """Create a sync issue for the given version and return its number.
 

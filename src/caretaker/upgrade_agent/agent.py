@@ -23,6 +23,7 @@ class UpgradeAgentReport:
     latest_version: str | None = None
     upgrade_needed: bool = False
     upgrade_issue: int | None = None
+    superseded_prs: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -75,6 +76,9 @@ class UpgradeAgent:
                     self._current_version,
                     latest.version,
                     issue_number,
+                )
+                report.superseded_prs = await self._planner.close_superseded_upgrade_prs(
+                    latest.version
                 )
             else:
                 logger.info("Already on latest version %s", self._current_version)
