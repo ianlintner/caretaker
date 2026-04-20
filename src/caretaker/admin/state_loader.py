@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from caretaker.github_app import (
     AppJWTSigner,
@@ -25,7 +26,8 @@ from caretaker.github_app import (
 from caretaker.github_client.api import GitHubClient
 from caretaker.state.tracker import StateTracker
 
-from .data import AdminDataAccess
+if TYPE_CHECKING:
+    from .data import AdminDataAccess
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +75,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
 
     signer = AppJWTSigner(app_id=app_id, private_key_pem=private_key)
     minter = InstallationTokenMinter(signer=signer)
-    provider = GitHubAppCredentialsProvider(
-        minter=minter, default_installation_id=installation_id
-    )
+    provider = GitHubAppCredentialsProvider(minter=minter, default_installation_id=installation_id)
 
     async def _loop() -> None:
         logger.info("Admin state refresh started (repo=%s, interval=%ds)", repo, interval)
