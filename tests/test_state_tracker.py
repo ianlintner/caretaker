@@ -133,7 +133,6 @@ class TestSaveRotatesOnCommentingDisabled:
         )
         new_issue = AsyncMock()
         new_issue.number = 42
-        github.create_issue = AsyncMock(return_value=new_issue)
 
         tracker = StateTracker(github=github, owner="o", repo="r")
         tracker._tracking_issue_number = 1  # old issue with too many comments

@@ -116,7 +116,7 @@ class StateTracker:
                 body,
             )
         except GitHubAPIError as e:
-            if "Commenting is disabled" in str(e):
+            if e.status_code == 403 and "Commenting is disabled" in e.message:
                 logger.warning(
                     "Tracking issue #%d has hit the GitHub 2500-comment limit — "
                     "rotating to a new tracking issue",
