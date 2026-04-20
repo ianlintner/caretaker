@@ -252,9 +252,7 @@ class GitHubClient:
             for f in data
         ]
 
-    async def get_closing_issue_numbers(
-        self, owner: str, repo: str, number: int
-    ) -> list[int]:
+    async def get_closing_issue_numbers(self, owner: str, repo: str, number: int) -> list[int]:
         """Return issue numbers this PR will close when merged.
 
         Uses the GraphQL ``closingIssuesReferences`` connection which reflects
@@ -280,17 +278,12 @@ class GitHubClient:
                 },
             )
         except Exception as e:
-            logger.warning(
-                "GraphQL closingIssuesReferences for PR #%d failed: %s", number, e
-            )
+            logger.warning("GraphQL closingIssuesReferences for PR #%d failed: %s", number, e)
             return []
         if not result:
             return []
         try:
-            nodes = (
-                result["data"]["repository"]["pullRequest"]
-                ["closingIssuesReferences"]["nodes"]
-            )
+            nodes = result["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
         except (KeyError, TypeError):
             return []
         return [int(n["number"]) for n in nodes if n and "number" in n]

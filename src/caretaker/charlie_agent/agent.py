@@ -390,8 +390,7 @@ class CharlieAgent:
                 )
                 continue
             closes_self_heal = any(
-                "caretaker:self-heal" in issue_label_map.get(n, frozenset())
-                for n in closing
+                "caretaker:self-heal" in issue_label_map.get(n, frozenset()) for n in closing
             )
             if not closes_self_heal:
                 continue

@@ -75,9 +75,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
 
     signer = AppJWTSigner(app_id=app_id, private_key_pem=private_key)
     minter = InstallationTokenMinter(signer=signer)
-    provider = GitHubAppCredentialsProvider(
-        minter=minter, default_installation_id=installation_id
-    )
+    provider = GitHubAppCredentialsProvider(minter=minter, default_installation_id=installation_id)
 
     neo4j_url = os.environ.get("NEO4J_URL", "").strip()
 

@@ -175,9 +175,7 @@ class AdminDataAccess:
                 "run_window_end": None,
             }
         self_heal_per_run = [
-            r.self_heal_local_issues
-            + r.self_heal_upstream_bugs
-            + r.self_heal_upstream_features
+            r.self_heal_local_issues + r.self_heal_upstream_bugs + r.self_heal_upstream_features
             for r in runs
         ]
         escalations_total = sum(

@@ -318,9 +318,7 @@ class TestCloseSupersededUpgradePRs:
 
         assert closed == [10, 20]
         assert github.update_issue.await_count == 2
-        closed_numbers = [
-            call.args[2] for call in github.update_issue.await_args_list
-        ]
+        closed_numbers = [call.args[2] for call in github.update_issue.await_args_list]
         assert set(closed_numbers) == {10, 20}
         for call in github.update_issue.await_args_list:
             assert call.kwargs == {"state": "closed"}

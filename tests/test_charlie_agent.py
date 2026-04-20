@@ -361,12 +361,8 @@ class TestSelfHealPrimaryFileDedupe:
                 {"path": "src/caretaker/github_client/api.py", "additions": 7, "deletions": 0},
             ],
         }
-        gh.get_closing_issue_numbers.side_effect = (
-            lambda owner, repo, n: closing_by_pr.get(n, [])
-        )
-        gh.list_pull_request_files.side_effect = (
-            lambda owner, repo, n: files_by_pr.get(n, [])
-        )
+        gh.get_closing_issue_numbers.side_effect = lambda owner, repo, n: closing_by_pr.get(n, [])
+        gh.list_pull_request_files.side_effect = lambda owner, repo, n: files_by_pr.get(n, [])
 
         report = await CharlieAgent(github=gh, owner="o", repo="r").run()
 

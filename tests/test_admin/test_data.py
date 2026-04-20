@@ -118,9 +118,7 @@ class TestFanoutMetrics:
 
     def test_hot_prs_capped_at_twenty(self) -> None:
         state = OrchestratorState(
-            tracked_prs={
-                i: TrackedPR(number=i, fix_cycles=5) for i in range(1, 30)
-            },
+            tracked_prs={i: TrackedPR(number=i, fix_cycles=5) for i in range(1, 30)},
         )
         data = AdminDataAccess(state=state)
 
