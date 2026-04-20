@@ -93,6 +93,26 @@ _PATTERNS: list[tuple[FailureType, list[str]]] = [
 ]
 
 
+# Conclusions that should NOT trigger a Copilot fix request. These come from
+# CI runs that were never given a chance to fail meaningfully — workflow
+# cancellation cascade, intentional skip, neutral exit. Treating them as
+# failures is the upstream cause of the "[WIP] Fix CI failure (unknown)"
+# self-heal PRs that get auto-closed.
+NON_ACTIONABLE_CONCLUSIONS = frozenset({"cancelled", "skipped", "neutral"})
+
+
+def is_actionable_conclusion(conclusion: object) -> bool:
+    """Return True if a check_run conclusion warrants triage / fix-request.
+
+    Accepts either a CheckConclusion enum, the raw string value, or None
+    (in-progress / unreported) to keep call sites simple.
+    """
+    if conclusion is None:
+        return False
+    value = getattr(conclusion, "value", conclusion)
+    return value not in NON_ACTIONABLE_CONCLUSIONS
+
+
 def classify_failure(check_run: CheckRun) -> FailureType:
     """Classify a CI failure by job name and output."""
     text = f"{check_run.name} {check_run.output_title or ''} {check_run.output_summary or ''}"
