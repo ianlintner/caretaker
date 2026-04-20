@@ -121,6 +121,19 @@ async def latest_run(
     return result
 
 
+@router.get("/metrics/storm")
+async def storm_metrics(
+    window: int = Query(default=20, ge=1, le=200),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Rolling self-heal + escalation counts across the most recent runs.
+
+    Surfaces the F2 storm-detection metric: would have flagged the
+    2026-04-14 108-PR-in-90-min incident near run #5.
+    """
+    return _get_data().get_storm_metrics(window_runs=window)
+
+
 # ── Goals ─────────────────────────────────────────────────────────────────
 
 

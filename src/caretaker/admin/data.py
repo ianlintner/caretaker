@@ -151,6 +151,49 @@ class AdminDataAccess:
             result[goal_id] = [json.loads(s.model_dump_json()) for s in snapshots]
         return result
 
+    # ── Metrics ───────────────────────────────────────────────────────────
+
+    def get_storm_metrics(self, window_runs: int = 20) -> dict[str, Any]:
+        """Aggregate self-heal + escalation activity across the most recent runs.
+
+        Used by the admin dashboard to surface storm-class regressions early —
+        the 2026-04-14 incident opened 108 self-heal PRs in 90 minutes; a
+        rolling rate across the last N runs would have flagged it near run #5.
+
+        Counts come from ``RunSummary`` fields already persisted per run, so
+        no new instrumentation is needed.
+        """
+        runs = self._state.run_history[-window_runs:] if self._state.run_history else []
+        if not runs:
+            return {
+                "window_runs": 0,
+                "self_heal_total": 0,
+                "self_heal_max_single_run": 0,
+                "escalations_total": 0,
+                "avg_escalation_rate": 0.0,
+                "run_window_start": None,
+                "run_window_end": None,
+            }
+        self_heal_per_run = [
+            r.self_heal_local_issues
+            + r.self_heal_upstream_bugs
+            + r.self_heal_upstream_features
+            for r in runs
+        ]
+        escalations_total = sum(
+            r.prs_escalated + r.issues_escalated + r.stale_assignments_escalated for r in runs
+        )
+        avg_esc = sum(r.escalation_rate for r in runs) / len(runs) if runs else 0.0
+        return {
+            "window_runs": len(runs),
+            "self_heal_total": sum(self_heal_per_run),
+            "self_heal_max_single_run": max(self_heal_per_run) if self_heal_per_run else 0,
+            "escalations_total": escalations_total,
+            "avg_escalation_rate": round(avg_esc, 4),
+            "run_window_start": runs[0].run_at.isoformat() if runs[0].run_at else None,
+            "run_window_end": runs[-1].run_at.isoformat() if runs[-1].run_at else None,
+        }
+
     # ── Memory Store ──────────────────────────────────────────────────────
 
     def get_memory_namespaces(self) -> list[NamespaceSummary]:
