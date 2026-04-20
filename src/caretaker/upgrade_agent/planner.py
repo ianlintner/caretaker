@@ -269,8 +269,7 @@ class UpgradePlanner:
             if existing_marker_match and existing_marker_match.group(1) != target.version:
                 continue  # belongs to a different upgrade target
             logger.info(
-                "Upgrade issue for v%s already exists (legacy title): #%d — "
-                "backfilling marker",
+                "Upgrade issue for v%s already exists (legacy title): #%d — backfilling marker",
                 target.version,
                 issue.number,
             )
@@ -326,8 +325,7 @@ class UpgradePlanner:
         for issue in issues:
             if legacy_title_substring in issue.title and issue.is_maintainer_issue:
                 logger.info(
-                    "Sync issue for v%s already exists (legacy title): #%d — "
-                    "backfilling marker",
+                    "Sync issue for v%s already exists (legacy title): #%d — backfilling marker",
                     version,
                     issue.number,
                 )

@@ -113,10 +113,7 @@ async def compact_legacy_comments(
         c
         for c in comments
         if (c.body or "")
-        and (
-            STATUS_COMMENT_MARKER in c.body
-            or any(m in c.body for m in _LEGACY_STATUS_MARKERS)
-        )
+        and (STATUS_COMMENT_MARKER in c.body or any(m in c.body for m in _LEGACY_STATUS_MARKERS))
     ]
     if len(matches) <= 1:
         return 0
