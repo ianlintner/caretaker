@@ -270,3 +270,137 @@ class TestSelfHealCooldown:
         assert report.local_issues_created == [42]
         assert len(report.actioned_sigs) == 1
         assert "self-heal:maintain:config_error" in report.updated_cooldowns
+
+
+@pytest.mark.asyncio
+class TestSelfHealStormCap:
+    """Sprint 2 C4: refuse to open new self-heal issues during a storm.
+
+    Catches the F1 retry-storm pattern (caretaker-self 2026-04-14: 108 PRs in
+    90 minutes). Counts existing open self-heal issues by createdAt timestamp
+    so the cap survives across workflow runs.
+    """
+
+    @staticmethod
+    def _stub_issue(number: int, created_at):
+        from caretaker.github_client.models import Issue, User
+
+        return Issue(
+            number=number,
+            title="🩺 Caretaker self-heal: x",
+            body="<!-- caretaker:self-heal --> sig:abc123def456 -->",
+            state="open",
+            user=User(login="bot", id=0, type="Bot"),
+            created_at=created_at,
+        )
+
+    async def test_blocks_when_hourly_cap_hit(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            max_open_per_hour=3,
+            max_open_per_day=20,
+        )
+        recent_open = [
+            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10))
+            for i in range(3)  # exactly the hourly cap
+        ]
+
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(
+                agent._issues, "list", AsyncMock(return_value=recent_open)
+            ),
+            patch.object(agent, "_create_local_fix_issue", AsyncMock()) as create_mock,
+        ):
+            report = await agent.run()
+
+        create_mock.assert_not_awaited()
+        assert any("storm-cap" in e and "hourly cap hit" in e for e in report.errors)
+
+    async def test_allows_when_below_caps(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            max_open_per_hour=5,
+            max_open_per_day=20,
+        )
+        # 2 in last hour (under cap of 5)
+        recent = [
+            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10)) for i in range(2)
+        ]
+
+        mock_issue = AsyncMock()
+        mock_issue.number = 99
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(agent._issues, "list", AsyncMock(return_value=recent)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
+            patch.object(agent, "_create_local_fix_issue", AsyncMock(return_value=mock_issue)),
+        ):
+            report = await agent.run()
+
+        assert report.local_issues_created == [99]
+
+    async def test_caps_disabled_when_zero(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            max_open_per_hour=0,  # disabled
+            max_open_per_day=0,   # disabled
+        )
+        # 100 issues opened in the last hour — cap disabled, should still allow
+        recent = [
+            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=1)) for i in range(100)
+        ]
+
+        mock_issue = AsyncMock()
+        mock_issue.number = 1
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(agent._issues, "list", AsyncMock(return_value=recent)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
+            patch.object(agent, "_create_local_fix_issue", AsyncMock(return_value=mock_issue)),
+        ):
+            report = await agent.run()
+
+        assert report.local_issues_created == [1]

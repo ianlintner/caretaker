@@ -77,6 +77,8 @@ class SelfHealAgent:
         known_sigs: set[str] | None = None,
         cooldown_hours: int = 6,
         issue_cooldowns: dict[str, str] | None = None,
+        max_open_per_hour: int = 5,
+        max_open_per_day: int = 20,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -88,6 +90,12 @@ class SelfHealAgent:
         self._cooldown_hours = cooldown_hours
         # Mutable copy — callers read back updated_cooldowns after run()
         self._issue_cooldowns: dict[str, str] = dict(issue_cooldowns or {})
+        # Storm caps — refuse to open more than N self-heal issues in any
+        # rolling hour / day window. Counts existing self-heal-labeled issues
+        # by their createdAt so the cap survives across workflow runs without
+        # extra state plumbing. 0 disables the respective check.
+        self._max_open_per_hour = max(0, max_open_per_hour)
+        self._max_open_per_day = max(0, max_open_per_day)
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
@@ -114,6 +122,15 @@ class SelfHealAgent:
         # this workflow run, skip creating self-heal issues entirely.
         if run_id and await self._run_id_already_tracked(run_id):
             logger.info("Self-heal: run_id %d already tracked by another agent, skipping", run_id)
+            return report
+
+        # Storm cap — refuse to open any new self-heal issues if too many
+        # have been opened recently. Catches the F1 retry-storm pattern that
+        # produced 108 PRs in 90 minutes on caretaker-self on 2026-04-14.
+        blocked, reason = await self._storm_cap_blocked()
+        if blocked:
+            logger.warning("Self-heal: %s", reason)
+            report.errors.append(f"storm-cap: {reason}")
             return report
 
         for job_name, log_text in failure_logs:
@@ -307,6 +324,48 @@ class SelfHealAgent:
         except Exception as e:
             logger.debug("Self-heal: could not fetch job log %s: %s", job_id, e)
         return ""
+
+    async def _storm_cap_blocked(self) -> tuple[bool, str]:
+        """Return (blocked, reason). True when opening one more self-heal
+        issue would exceed the per-hour or per-day cap.
+
+        Counts existing open self-heal-labeled issues by ``created_at`` so
+        the cap survives across workflow runs without persistence plumbing.
+        """
+        if self._max_open_per_hour <= 0 and self._max_open_per_day <= 0:
+            return False, ""
+        try:
+            issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
+        except Exception as e:
+            logger.warning("Storm cap: failed to list self-heal issues (%s) — allowing", e)
+            return False, ""
+        from datetime import UTC, datetime as _dt, timedelta
+        now = _dt.now(UTC)
+        hour_ago = now - timedelta(hours=1)
+        day_ago = now - timedelta(days=1)
+        hour_count = 0
+        day_count = 0
+        for i in issues:
+            created = getattr(i, "created_at", None)
+            if created is None:
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created >= day_ago:
+                day_count += 1
+                if created >= hour_ago:
+                    hour_count += 1
+        if self._max_open_per_hour > 0 and hour_count >= self._max_open_per_hour:
+            return True, (
+                f"hourly cap hit ({hour_count}/{self._max_open_per_hour} self-heal "
+                "issues opened in the last hour) — pausing self-heal"
+            )
+        if self._max_open_per_day > 0 and day_count >= self._max_open_per_day:
+            return True, (
+                f"daily cap hit ({day_count}/{self._max_open_per_day} self-heal "
+                "issues opened in the last 24h) — pausing self-heal"
+            )
+        return False, ""
 
     async def _get_existing_self_heal_sigs(self) -> set[str]:
         issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
