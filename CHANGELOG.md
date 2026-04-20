@@ -12,7 +12,8 @@ PR-workflow noise reduction sweep. Three-sprint plan addressing the 60-day audit
 - Dispatch-guard tightening: skip caretaker-marker comments regardless of authoring identity; expand bot-actor allowlist; skip Copilot reviewer reviews; downstream template gets a minimal version (B1)
 - `is_actionable_conclusion()` helper + `NON_ACTIONABLE_CONCLUSIONS` set — refuse to triage cancelled/skipped/neutral check runs (C1+C2)
 - `_handle_ci_fix` skips `@copilot` task posting when failure is UNKNOWN with empty error logs (C3)
-- Upgrade-issue marker dedupe: `<!-- caretaker:upgrade target=X.Y.Z -->` body marker with title-substring fallback + backfill, fixes the rust-oauth2-server #118/#121/#126/#129/#153 v0.5.0 dupe pattern (D1+D2)
+- Upgrade-issue marker dedupe: `<!-- caretaker:upgrade target=X.Y.Z -->` body marker with title-substring fallback + backfill, fixes the rust-oauth2-server #118/#121/#126/#129/#153 v0.5.0 dupe pattern (D1)
+- Upgrade-PR dedupe: when multiple open PRs race the same upgrade target, keep the newest and close the rest with a `Superseded by #N` comment. Addresses portfolio #144/#146 racing pattern (D2)
 
 ### Sprint 2 — comment idempotency, cooldowns, storm cap (#406)
 
