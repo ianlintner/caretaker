@@ -20,6 +20,16 @@ TRACKING_LABEL = "maintainer:internal"
 STATE_MARKER_OPEN = "<!-- maintainer-state:"
 STATE_MARKER_CLOSE = ":maintainer-state -->"
 
+# Per-comment marker used by upsert_issue_comment so that the orchestrator
+# state and the rolling run-history comments are edited in place instead of
+# accumulating one new comment per run. portfolio#121 reached 110 bot
+# comments before this was added.
+STATE_COMMENT_MARKER = "<!-- caretaker:orchestrator-state -->"
+RUN_HISTORY_COMMENT_MARKER = "<!-- caretaker:run-history -->"
+
+# How many recent runs to keep visible in the rolling history comment.
+_RUN_HISTORY_KEEP = 10
+
 
 class StateTracker:
     """Persists orchestrator state as a hidden JSON block in a tracking issue."""
@@ -63,7 +73,14 @@ class StateTracker:
         return self._state
 
     async def save(self, summary: RunSummary | None = None) -> None:
-        """Save current state to the tracking issue."""
+        """Save current state to the tracking issue.
+
+        State is persisted as a single comment carrying ``STATE_COMMENT_MARKER``
+        — the comment is edited in place on every save, not appended. Earlier
+        versions appended a new comment per run, which produced unbounded
+        comment growth on the tracking issue (portfolio#121 reached 110 bot
+        comments).
+        """
         if summary:
             self._state.last_run = summary
             self._state.run_history.append(summary)
@@ -78,17 +95,42 @@ class StateTracker:
 
         state_json = self._state.model_dump_json(indent=2)
         body = self._build_state_comment(state_json, summary)
-        await self._issues.comment(self._tracking_issue_number, body)
+        await self._github.upsert_issue_comment(
+            self._owner,
+            self._repo,
+            self._tracking_issue_number,
+            STATE_COMMENT_MARKER,
+            body,
+        )
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
 
     async def post_run_summary(self, summary: RunSummary) -> None:
-        """Post a human-readable run summary to the tracking issue."""
+        """Post a human-readable run summary to the tracking issue.
+
+        Maintains a single rolling "Maintainer Run History" comment with the
+        last :data:`_RUN_HISTORY_KEEP` runs rendered, edited in place. This
+        replaces the previous append-per-run pattern that drove unbounded
+        comment growth.
+        """
         if self._tracking_issue_number is None:
             await self._create_tracking_issue()
         assert self._tracking_issue_number is not None
 
-        body = self._format_summary(summary)
-        await self._issues.comment(self._tracking_issue_number, body)
+        recent = list(self._state.run_history[-_RUN_HISTORY_KEEP:])
+        # Make sure the latest run is represented even if save() didn't run
+        # for some reason (defensive — save() should always be called first).
+        if not recent or recent[-1] is not summary:
+            recent.append(summary)
+            recent = recent[-_RUN_HISTORY_KEEP:]
+
+        body = self._build_history_comment(recent)
+        await self._github.upsert_issue_comment(
+            self._owner,
+            self._repo,
+            self._tracking_issue_number,
+            RUN_HISTORY_COMMENT_MARKER,
+            body,
+        )
 
     async def post_reflection(self, result: ReflectionResult) -> None:
         """Post a reflection analysis comment to the tracking issue."""
@@ -140,7 +182,7 @@ class StateTracker:
 
     @staticmethod
     def _build_state_comment(state_json: str, summary: RunSummary | None = None) -> str:
-        lines = ["## Orchestrator State Update\n"]
+        lines = [STATE_COMMENT_MARKER, "", "## Orchestrator State Update\n"]
         if summary:
             lines.append(f"Run completed at {summary.run_at.isoformat()} (mode: {summary.mode})")
             lines.append(f"- PRs monitored: {summary.prs_monitored}")
@@ -155,6 +197,23 @@ class StateTracker:
             lines.append("")
         lines.append(f"{STATE_MARKER_OPEN}\n{state_json}\n{STATE_MARKER_CLOSE}")
         return "\n".join(lines)
+
+    @classmethod
+    def _build_history_comment(cls, runs: list[RunSummary]) -> str:
+        """Render a rolling history of recent runs as one upsertable body."""
+        lines = [
+            RUN_HISTORY_COMMENT_MARKER,
+            "",
+            f"## Maintainer Run History (last {len(runs)} runs)",
+            "",
+            "_This comment is edited in place on every run — it does not grow._",
+            "",
+        ]
+        for run in reversed(runs):  # newest first
+            lines.append(cls._format_summary(run))
+            lines.append("---")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
     @staticmethod
     def _format_summary(summary: RunSummary) -> str:
