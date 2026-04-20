@@ -266,11 +266,12 @@ async def callback(
     # Diagnostic: log the keys returned (NOT the values, to avoid token leak).
     # Helps catch OIDC providers that omit access_token or use non-standard
     # field names in the token response.
-    logger.info(
-        "Token exchange returned keys=%s (access_token_len=%d, id_token_len=%d)",
+    logger.warning(
+        "Token exchange returned keys=%s (access_token_len=%d, id_token_len=%d) raw_prefix=%r",
         sorted(token_data.keys()) if isinstance(token_data, dict) else "non-dict",
         len(token_data.get("access_token", "") or ""),
         len(token_data.get("id_token", "") or ""),
+        token_resp.text[:200],
     )
 
     # Decode ID token (basic validation — production should verify signature)
