@@ -41,6 +41,8 @@ class TestBuildUpgradeIssueBody:
         assert "Upgrade to v1.5.0" in body
         assert "BREAKING: False" in body
         assert "@copilot" in body
+        assert "caretaker:causal" in body
+        assert "source=upgrade" in body
 
     def test_breaking_body_marks_warning(self) -> None:
         release = Release(

@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
 from caretaker.tools.github import GitHubIssueTools
 
 _UPGRADE_MARKER_RE = re.compile(r"<!--\s*caretaker:upgrade target=([^\s>]+)\s*-->")
@@ -40,6 +41,7 @@ def build_upgrade_issue_body(
     """Build the body for an upgrade issue."""
     lines = [
         _upgrade_target_marker(target.version),
+        make_causal_marker("upgrade"),
         "",
         f"## [Maintainer] Upgrade to v{target.version}",
         "",
