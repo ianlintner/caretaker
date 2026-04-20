@@ -297,45 +297,64 @@ async def callback(
 
 
 async def _extract_user_info(id_token: str, token_data: dict[str, Any]) -> UserInfo:
-    """Extract user info from the ID token or userinfo endpoint."""
-    # Try decoding JWT payload without signature verification (signature
-    # was already verified by the OIDC provider during token exchange).
+    """Extract user info from the ID token, with userinfo endpoint as fallback.
+
+    Some OIDC providers (e.g. roauth2) put the ``sub`` claim in the ID token
+    but only return ``email`` / ``name`` / ``picture`` from the userinfo
+    endpoint. Merge both: ID-token claims first, then fill any missing
+    profile fields from userinfo.
+    """
+    sub = ""
+    email: str | None = None
+    name: str | None = None
+    picture: str | None = None
+
+    # Step 1: decode ID-token JWT payload (signature was verified during exchange).
     if id_token:
         import base64
 
         parts = id_token.split(".")
         if len(parts) >= 2:
-            # Pad base64
             payload = parts[1]
             payload += "=" * (4 - len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            return UserInfo(
-                sub=claims.get("sub", ""),
-                email=claims.get("email"),
-                name=claims.get("name"),
-                picture=claims.get("picture"),
-            )
+            try:
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                sub = claims.get("sub", "")
+                email = claims.get("email")
+                name = claims.get("name")
+                picture = claims.get("picture")
+            except Exception as e:
+                logger.warning("Failed to decode ID token payload: %s", e)
 
-    # Fallback: call userinfo endpoint
-    if _oidc_metadata and "userinfo_endpoint" in _oidc_metadata:
+    # Step 2: if ID token didn't carry the profile fields we need, try userinfo.
+    if not email and _oidc_metadata and "userinfo_endpoint" in _oidc_metadata:
         import httpx
 
         access_token = token_data.get("access_token", "")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                _oidc_metadata["userinfo_endpoint"],
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    _oidc_metadata["userinfo_endpoint"],
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
             if resp.status_code == 200:
                 data = resp.json()
-                return UserInfo(
-                    sub=data.get("sub", ""),
-                    email=data.get("email"),
-                    name=data.get("name"),
-                    picture=data.get("picture"),
+                # Userinfo claims fill any gap from the ID token.
+                sub = sub or data.get("sub", "")
+                email = email or data.get("email")
+                name = name or data.get("name")
+                picture = picture or data.get("picture")
+            else:
+                logger.warning(
+                    "userinfo endpoint returned %s: %s", resp.status_code, resp.text[:200]
                 )
+        except Exception as e:
+            logger.warning("Failed to call userinfo endpoint: %s", e)
 
-    raise HTTPException(status_code=502, detail="Could not extract user info")
+    if not sub:
+        raise HTTPException(status_code=502, detail="Could not extract user info (no sub)")
+
+    return UserInfo(sub=sub, email=email, name=name, picture=picture)
 
 
 @router.post("/logout")
