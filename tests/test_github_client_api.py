@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime as _dt
+from datetime import UTC
+from datetime import datetime as _dt
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from caretaker.github_client.api import GitHubAPIError, GitHubClient
 from caretaker.github_client.credentials import StaticCredentialsProvider
-
 
 _TS = _dt(2026, 4, 19, tzinfo=UTC)
 
@@ -514,8 +514,9 @@ async def test_upsert_issue_comment_picks_newest_match() -> None:
     marker = "<!-- caretaker:test-marker -->"
     new_body = f"{marker}\nnew"
 
-    older = Comment(id=10, body=f"{marker}\nA", user=User(login="bot", id=0, type="Bot"), created_at=_TS)
-    newer = Comment(id=20, body=f"{marker}\nB", user=User(login="bot", id=0, type="Bot"), created_at=_TS)
+    user = User(login="bot", id=0, type="Bot")
+    older = Comment(id=10, body=f"{marker}\nA", user=user, created_at=_TS)
+    newer = Comment(id=20, body=f"{marker}\nB", user=user, created_at=_TS)
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[older, newer])),
         patch.object(client, "add_issue_comment", AsyncMock()),
@@ -568,7 +569,9 @@ async def test_upsert_issue_comment_rejects_body_without_marker() -> None:
 @pytest.mark.asyncio
 async def test_upsert_cooldown_skips_recent_update() -> None:
     """An existing comment updated within the cooldown window is NOT re-edited."""
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     from caretaker.github_client.models import Comment, User
 
     client = _client_with_token()
@@ -596,7 +599,9 @@ async def test_upsert_cooldown_skips_recent_update() -> None:
 @pytest.mark.asyncio
 async def test_upsert_cooldown_allows_update_past_window() -> None:
     """Beyond the cooldown window, the update proceeds normally."""
-    from datetime import UTC, datetime as _dt, timedelta
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
     from caretaker.github_client.models import Comment, User
 
     client = _client_with_token()
@@ -625,7 +630,9 @@ async def test_upsert_cooldown_allows_update_past_window() -> None:
 @pytest.mark.asyncio
 async def test_upsert_cooldown_zero_means_always_update() -> None:
     """Default cooldown of 0 must not block any update."""
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     from caretaker.github_client.models import Comment, User
 
     client = _client_with_token()
@@ -673,21 +680,24 @@ async def test_upsert_cooldown_does_not_block_initial_post() -> None:
 # ── add_issue_comment caretaker-marker cap ───────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_add_issue_comment_below_cap_posts_normally() -> None:
+def _ck(i: int, body: str = "<!-- caretaker:status -->\n"):
+    """Helper for short caretaker-marker comment fixtures used in cap tests."""
     from caretaker.github_client.models import Comment, User
 
+    return Comment(
+        id=i, body=body, user=User(login="b", id=0, type="Bot"), created_at=_TS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_issue_comment_below_cap_posts_normally() -> None:
     client = GitHubClient(
         credentials_provider=StaticCredentialsProvider(default_token="x"),
         comment_cap_per_issue=5,
     )
     body = "<!-- caretaker:test -->\nbody"
-    existing = [
-        Comment(id=i, body=f"<!-- caretaker:status -->\n", user=User(login="b", id=0, type="Bot"), created_at=_TS)
-        for i in range(3)  # 3 < 5 cap
-    ]
+    existing = [_ck(i) for i in range(3)]  # 3 < 5 cap
 
-    posted = Comment(id=99, body=body, user=User(login="b", id=0, type="Bot"), created_at=_TS)
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=existing)),
         patch.object(client, "_post", AsyncMock(return_value={
@@ -702,17 +712,12 @@ async def test_add_issue_comment_below_cap_posts_normally() -> None:
 
 @pytest.mark.asyncio
 async def test_add_issue_comment_at_cap_refuses_with_marker_body() -> None:
-    from caretaker.github_client.models import Comment, User
-
     client = GitHubClient(
         credentials_provider=StaticCredentialsProvider(default_token="x"),
         comment_cap_per_issue=3,
     )
     body = "<!-- caretaker:test -->\nbody"
-    existing = [
-        Comment(id=i, body="<!-- caretaker:status -->\n", user=User(login="b", id=0, type="Bot"), created_at=_TS)
-        for i in range(3)  # exactly cap
-    ]
+    existing = [_ck(i) for i in range(3)]  # exactly cap
 
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=existing)),
@@ -726,17 +731,12 @@ async def test_add_issue_comment_at_cap_refuses_with_marker_body() -> None:
 @pytest.mark.asyncio
 async def test_add_issue_comment_cap_does_not_apply_to_non_caretaker_body() -> None:
     """Human comments and non-caretaker bot comments are never blocked."""
-    from caretaker.github_client.models import Comment, User
-
     client = GitHubClient(
         credentials_provider=StaticCredentialsProvider(default_token="x"),
         comment_cap_per_issue=3,
     )
     body = "Just a normal comment"  # no caretaker marker
-    existing = [
-        Comment(id=i, body="<!-- caretaker:status -->\n", user=User(login="b", id=0, type="Bot"), created_at=_TS)
-        for i in range(10)  # way over cap, but body has no marker
-    ]
+    existing = [_ck(i) for i in range(10)]  # way over cap, body has no marker
     posted_payload = {
         "id": 100, "body": body,
         "user": {"login": "b", "id": 0, "type": "Bot"},
@@ -752,7 +752,6 @@ async def test_add_issue_comment_cap_does_not_apply_to_non_caretaker_body() -> N
 
 @pytest.mark.asyncio
 async def test_add_issue_comment_cap_zero_disables_check() -> None:
-    from caretaker.github_client.models import Comment, User
 
     client = GitHubClient(
         credentials_provider=StaticCredentialsProvider(default_token="x"),

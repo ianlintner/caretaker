@@ -659,9 +659,10 @@ class GitHubClient:
         for c in comments:
             if not (c.body or ""):
                 continue
-            if any(m in c.body for m in all_markers):
-                if existing is None or c.id > existing.id:
-                    existing = c
+            if any(m in c.body for m in all_markers) and (
+                existing is None or c.id > existing.id
+            ):
+                existing = c
 
         if existing is None:
             return await self.add_issue_comment(owner, repo, issue_number, body)
@@ -670,7 +671,8 @@ class GitHubClient:
             return existing
 
         if min_seconds_between_updates > 0:
-            from datetime import UTC, datetime as _dt
+            from datetime import UTC
+            from datetime import datetime as _dt
             ref = existing.updated_at or existing.created_at
             if ref is not None:
                 if ref.tzinfo is None:
