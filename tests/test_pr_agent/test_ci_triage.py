@@ -155,4 +155,4 @@ class TestIsActionableConclusion:
     def test_constant_set_complete(self) -> None:
         # Sentinel: if someone adds a new conclusion value, force them to
         # decide whether it's actionable.
-        assert NON_ACTIONABLE_CONCLUSIONS == {"cancelled", "skipped", "neutral"}
+        assert set(NON_ACTIONABLE_CONCLUSIONS) == {"cancelled", "skipped", "neutral"}
