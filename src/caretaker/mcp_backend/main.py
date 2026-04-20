@@ -16,6 +16,7 @@ This FastAPI app hosts three logical surfaces:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import logging
 import os
@@ -82,9 +83,19 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             else:
                 logger.warning("CARETAKER_ADMIN_OIDC_ISSUER_URL not set — admin auth disabled")
 
-            # Initialise data access (stores will be injected later or left as None)
+            # Initialise data access. The state store is hydrated by a
+            # background task (see admin.state_loader) that polls the
+            # orchestrator's per-repo tracking issue.
             data = AdminDataAccess()
             admin_api.configure(data)
+
+            try:
+                from caretaker.admin.state_loader import build_refresh_task
+
+                application.state.admin_refresh_task = build_refresh_task(data)
+            except Exception:
+                logger.warning("Failed to start admin state refresh task", exc_info=True)
+                application.state.admin_refresh_task = None
 
             application.include_router(admin_auth.router)
             application.include_router(admin_api.router)
@@ -129,6 +140,14 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         return Response(content="Admin dashboard not built", status_code=404)
 
     yield
+
+    task = getattr(application.state, "admin_refresh_task", None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 app = FastAPI(
