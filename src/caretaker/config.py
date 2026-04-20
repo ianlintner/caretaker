@@ -85,6 +85,11 @@ class CIConfig(StrictBaseModel):
 
 
 class ReviewConfig(StrictBaseModel):
+    # NOTE: auto_approve_copilot is currently a no-op — accepted for backward
+    # compatibility with existing configs but not yet wired into the review
+    # flow. Tracked as a follow-up to Sprint 2 E2 (auto-merge after Copilot
+    # post-approval push), where the same review-state semantics need to be
+    # decided. Setting this to true today has no effect.
     auto_approve_copilot: bool = False
     nitpick_threshold: Literal["low", "high"] = "low"
 
@@ -97,6 +102,12 @@ class PRAgentConfig(StrictBaseModel):
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
     readiness: ReadinessConfig = Field(default_factory=ReadinessConfig)
+    # When a PR has been open this long without progressing to merge-ready and
+    # without a human review approval, escalate it to a human. Catches the
+    # long-tail abandonment cases (portfolio #4 was open 10 days; #28 was
+    # open 7 days) that the within-cycle stuck-detection doesn't see.
+    # 0 disables the gate.
+    stuck_age_hours: int = 24
 
 
 class IssueAgentLabels(StrictBaseModel):

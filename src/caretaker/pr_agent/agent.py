@@ -182,6 +182,38 @@ class PRAgent:
 
         return report, tracked_prs
 
+    @staticmethod
+    def _pr_age_hours(pr: PullRequest) -> float:
+        """Return the PR's open age in hours, or 0.0 if created_at is missing."""
+        if pr.created_at is None:
+            return 0.0
+        created = pr.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - created).total_seconds() / 3600.0
+
+    def _is_pr_stuck_by_age(self, pr: PullRequest, reviews: list[Any]) -> bool:
+        """Return True when the PR meets the stuck-by-age criteria.
+
+        Stuck means: open longer than ``stuck_age_hours`` AND no human
+        approval review on file. CI state is intentionally NOT considered —
+        a PR that's been failing for 24h with no human attention is exactly
+        what this gate catches.
+        """
+        from caretaker.github_client.models import ReviewState
+
+        age = self._pr_age_hours(pr)
+        if age < self._config.stuck_age_hours:
+            return False
+        for review in reviews or []:
+            if getattr(review, "state", None) == ReviewState.APPROVED:
+                user = getattr(review, "user", None)
+                login = getattr(user, "login", "") if user else ""
+                # Only human approvals count — bot reviewers don't count
+                if login and not ("[bot]" in login or login.startswith("copilot")):
+                    return False
+        return True
+
     async def _process_pr(
         self, pr: PullRequest, tracking: TrackedPR, report: PRAgentReport
     ) -> TrackedPR:
@@ -192,6 +224,45 @@ class PRAgent:
         # Fetch CI status and reviews
         check_runs = await self._github.get_check_runs(self._owner, self._repo, pr.head_ref)
         reviews = await self._github.get_pr_reviews(self._owner, self._repo, pr.number)
+
+        # Stuck-PR age gate (E1): if the PR has been open for longer than
+        # ``stuck_age_hours`` AND no human approval AND no recent merge
+        # transition, escalate to a human. Catches long-tail abandonment
+        # (portfolio #4 was open 10 days; #28 was open 7 days). Skipped if
+        # already escalated (terminal) or PR is closed/merged.
+        if (
+            self._config.stuck_age_hours > 0
+            and not tracking.escalated
+            and tracking.state
+            not in (PRTrackingState.ESCALATED, PRTrackingState.MERGED, PRTrackingState.CLOSED)
+            and self._is_pr_stuck_by_age(pr, reviews)
+        ):
+            await self._escalate(
+                pr,
+                f"Open >{self._config.stuck_age_hours}h with no human approval — needs review",
+                debug_data={
+                    "pr_age_hours": self._pr_age_hours(pr),
+                    "stuck_age_hours": self._config.stuck_age_hours,
+                    "fix_cycles": tracking.fix_cycles,
+                    "copilot_attempts": tracking.copilot_attempts,
+                },
+            )
+            tracking.state = PRTrackingState.ESCALATED
+            tracking.escalated = True
+            report.escalated.append(pr.number)
+            # Still flow through ownership handling so the status comment
+            # transitions to "released — escalated" cleanly.
+            evaluation = evaluate_pr(
+                pr=pr,
+                check_runs=check_runs,
+                reviews=reviews,
+                current_state=tracking.state,
+                ignore_jobs=self._config.ci.ignore_jobs,
+                auto_approve_workflows=self._config.ci.auto_approve_workflows,
+                required_reviews=self._config.readiness.required_reviews,
+            )
+            tracking = await self._handle_ownership(pr, tracking, evaluation, report)
+            return tracking
 
         # Evaluate PR state
         evaluation = evaluate_pr(
@@ -393,6 +464,29 @@ class PRAgent:
             report.waiting.append(pr.number)
             return tracking
 
+        # E3: when the prior attempt is older than retry_window_hours, reset
+        # the attempt counter — old failures shouldn't compound to escalation
+        # on long-lived PRs that genuinely needed time.
+        window_h = self._config.copilot.retry_window_hours
+        if (
+            window_h > 0
+            and tracking.copilot_attempts > 0
+            and tracking.last_copilot_attempt_at is not None
+        ):
+            last = tracking.last_copilot_attempt_at
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+            age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
+            if age_h >= window_h:
+                logger.info(
+                    "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
+                    "outside %dh retry window)",
+                    pr.number,
+                    age_h,
+                    window_h,
+                )
+                tracking.copilot_attempts = 0
+
         # Check if we've exceeded Copilot retry limit
         if tracking.copilot_attempts >= self._config.copilot.max_retries:
             logger.warning(
@@ -468,6 +562,7 @@ class PRAgent:
             tracking.last_task_comment_id = result.comment_id
             tracking.state = PRTrackingState.FIX_REQUESTED
             tracking.last_state_change_at = datetime.utcnow()
+            tracking.last_copilot_attempt_at = datetime.now(UTC)
             report.fix_requested.append(pr.number)
             logger.info(
                 "PR #%d: CI fix requested (attempt %d/%d)",
@@ -621,6 +716,7 @@ class PRAgent:
         )
         tracking.copilot_attempts = attempt
         tracking.last_task_comment_id = result.comment_id
+        tracking.last_copilot_attempt_at = datetime.now(UTC)
         tracking.state = PRTrackingState.FIX_REQUESTED
         report.fix_requested.append(pr.number)
 
