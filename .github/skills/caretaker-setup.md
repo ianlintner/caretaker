@@ -162,7 +162,7 @@ jobs:
       - name: Install caretaker
         run: |
           VERSION=$(cat .github/maintainer/.version)
-          pip install "caretaker==${VERSION}"
+          pip install "caretaker-github @ git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
 
       - name: Run caretaker
         env:
@@ -465,9 +465,10 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Invalid version in `.github/maintainer/.version`
 
 **Solution**:
-1. Check latest version: https://pypi.org/project/caretaker/
-2. Update `.version` file with valid version
+1. Check latest release: https://github.com/ianlintner/caretaker/releases
+2. Update `.version` file with valid version (tag name without the `v` prefix)
 3. Use format: `X.Y.Z` (e.g., `0.5.2`)
+4. Ensure the install line uses the real distribution name: `pip install "caretaker-github @ git+https://github.com/ianlintner/caretaker.git@v${VERSION}"` (the git repository is `caretaker` but the Python distribution name is `caretaker-github`)
 
 ### Issue: "Config validation failed"
 

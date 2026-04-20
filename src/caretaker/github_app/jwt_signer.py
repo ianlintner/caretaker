@@ -73,7 +73,7 @@ class AppJWTSigner:
             raise RuntimeError(
                 "PyJWT with the 'crypto' extra is required for GitHub App "
                 "support.  Install caretaker with the 'github-app' extra, "
-                "e.g. `pip install 'caretaker[github-app]'`."
+                "e.g. `pip install 'caretaker-github[github-app]'`."
             ) from exc
 
         payload = {
