@@ -319,9 +319,7 @@ class TestSelfHealStormCap:
             ),
             patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
             patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
-            patch.object(
-                agent._issues, "list", AsyncMock(return_value=recent_open)
-            ),
+            patch.object(agent._issues, "list", AsyncMock(return_value=recent_open)),
             patch.object(agent, "_create_local_fix_issue", AsyncMock()) as create_mock,
         ):
             report = await agent.run()
@@ -342,9 +340,7 @@ class TestSelfHealStormCap:
             max_open_per_day=20,
         )
         # 2 in last hour (under cap of 5)
-        recent = [
-            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10)) for i in range(2)
-        ]
+        recent = [self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10)) for i in range(2)]
 
         mock_issue = AsyncMock()
         mock_issue.number = 99
@@ -377,12 +373,10 @@ class TestSelfHealStormCap:
             repo="r",
             report_upstream=False,
             max_open_per_hour=0,  # disabled
-            max_open_per_day=0,   # disabled
+            max_open_per_day=0,  # disabled
         )
         # 100 issues opened in the last hour — cap disabled, should still allow
-        recent = [
-            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=1)) for i in range(100)
-        ]
+        recent = [self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=1)) for i in range(100)]
 
         mock_issue = AsyncMock()
         mock_issue.number = 1

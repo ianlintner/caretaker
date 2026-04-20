@@ -443,7 +443,10 @@ async def test_upsert_issue_comment_posts_when_no_existing() -> None:
     body = f"{marker}\nhello"
 
     posted = Comment(
-        id=1, body=body, user=User(login="bot", id=0, type="Bot"), created_at=_TS,
+        id=1,
+        body=body,
+        user=User(login="bot", id=0, type="Bot"),
+        created_at=_TS,
     )
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[])),
@@ -474,9 +477,7 @@ async def test_upsert_issue_comment_edits_when_body_differs() -> None:
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[existing])),
         patch.object(client, "add_issue_comment", AsyncMock()) as add_mock,
-        patch.object(
-            client, "edit_issue_comment", AsyncMock(return_value=existing)
-        ) as edit_mock,
+        patch.object(client, "edit_issue_comment", AsyncMock(return_value=existing)) as edit_mock,
     ):
         await client.upsert_issue_comment("o", "r", 1, marker, new_body)
 
@@ -547,9 +548,7 @@ async def test_upsert_issue_comment_falls_back_to_legacy_marker() -> None:
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[legacy])),
         patch.object(client, "add_issue_comment", AsyncMock()) as add_mock,
-        patch.object(
-            client, "edit_issue_comment", AsyncMock(return_value=legacy)
-        ) as edit_mock,
+        patch.object(client, "edit_issue_comment", AsyncMock(return_value=legacy)) as edit_mock,
     ):
         await client.upsert_issue_comment(
             "o", "r", 1, new_marker, new_body, legacy_markers=(legacy_marker,)
@@ -589,7 +588,12 @@ async def test_upsert_cooldown_skips_recent_update() -> None:
         patch.object(client, "edit_issue_comment", AsyncMock()) as edit_mock,
     ):
         result = await client.upsert_issue_comment(
-            "o", "r", 1, marker, new_body, min_seconds_between_updates=3600,
+            "o",
+            "r",
+            1,
+            marker,
+            new_body,
+            min_seconds_between_updates=3600,
         )
 
     edit_mock.assert_not_awaited()
@@ -616,12 +620,15 @@ async def test_upsert_cooldown_allows_update_past_window() -> None:
     )
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[old])),
-        patch.object(
-            client, "edit_issue_comment", AsyncMock(return_value=old)
-        ) as edit_mock,
+        patch.object(client, "edit_issue_comment", AsyncMock(return_value=old)) as edit_mock,
     ):
         await client.upsert_issue_comment(
-            "o", "r", 1, marker, new_body, min_seconds_between_updates=3600,
+            "o",
+            "r",
+            1,
+            marker,
+            new_body,
+            min_seconds_between_updates=3600,
         )
 
     edit_mock.assert_awaited_once_with("o", "r", 42, new_body)
@@ -647,9 +654,7 @@ async def test_upsert_cooldown_zero_means_always_update() -> None:
     )
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[fresh])),
-        patch.object(
-            client, "edit_issue_comment", AsyncMock(return_value=fresh)
-        ) as edit_mock,
+        patch.object(client, "edit_issue_comment", AsyncMock(return_value=fresh)) as edit_mock,
     ):
         await client.upsert_issue_comment("o", "r", 1, marker, new_body)
     edit_mock.assert_awaited_once()
@@ -666,12 +671,15 @@ async def test_upsert_cooldown_does_not_block_initial_post() -> None:
     posted = Comment(id=1, body=body, user=User(login="b", id=0, type="Bot"), created_at=_TS)
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=[])),
-        patch.object(
-            client, "add_issue_comment", AsyncMock(return_value=posted)
-        ) as add_mock,
+        patch.object(client, "add_issue_comment", AsyncMock(return_value=posted)) as add_mock,
     ):
         result = await client.upsert_issue_comment(
-            "o", "r", 1, marker, body, min_seconds_between_updates=3600,
+            "o",
+            "r",
+            1,
+            marker,
+            body,
+            min_seconds_between_updates=3600,
         )
     add_mock.assert_awaited_once()
     assert result.id == 1
@@ -685,7 +693,10 @@ def _ck(i: int, body: str = "<!-- caretaker:status -->\n"):
     from caretaker.github_client.models import Comment, User
 
     return Comment(
-        id=i, body=body, user=User(login="b", id=0, type="Bot"), created_at=_TS,
+        id=i,
+        body=body,
+        user=User(login="b", id=0, type="Bot"),
+        created_at=_TS,
     )
 
 
@@ -700,11 +711,18 @@ async def test_add_issue_comment_below_cap_posts_normally() -> None:
 
     with (
         patch.object(client, "get_pr_comments", AsyncMock(return_value=existing)),
-        patch.object(client, "_post", AsyncMock(return_value={
-            "id": 99, "body": body,
-            "user": {"login": "b", "id": 0, "type": "Bot"},
-            "created_at": _TS.isoformat(),
-        })),
+        patch.object(
+            client,
+            "_post",
+            AsyncMock(
+                return_value={
+                    "id": 99,
+                    "body": body,
+                    "user": {"login": "b", "id": 0, "type": "Bot"},
+                    "created_at": _TS.isoformat(),
+                }
+            ),
+        ),
     ):
         result = await client.add_issue_comment("o", "r", 1, body)
     assert result.id == 99
@@ -738,7 +756,8 @@ async def test_add_issue_comment_cap_does_not_apply_to_non_caretaker_body() -> N
     body = "Just a normal comment"  # no caretaker marker
     existing = [_ck(i) for i in range(10)]  # way over cap, body has no marker
     posted_payload = {
-        "id": 100, "body": body,
+        "id": 100,
+        "body": body,
         "user": {"login": "b", "id": 0, "type": "Bot"},
         "created_at": _TS.isoformat(),
     }
@@ -759,7 +778,8 @@ async def test_add_issue_comment_cap_zero_disables_check() -> None:
     )
     body = "<!-- caretaker:test -->\nbody"
     posted_payload = {
-        "id": 5, "body": body,
+        "id": 5,
+        "body": body,
         "user": {"login": "b", "id": 0, "type": "Bot"},
         "created_at": _TS.isoformat(),
     }

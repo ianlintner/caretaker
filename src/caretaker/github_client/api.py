@@ -580,9 +580,7 @@ class GitHubClient:
                 existing = await self.get_pr_comments(owner, repo, number)
             except Exception:
                 existing = []  # if we can't read, don't block writes
-            caretaker_count = sum(
-                1 for c in existing if c.body and "caretaker:" in c.body
-            )
+            caretaker_count = sum(1 for c in existing if c.body and "caretaker:" in c.body)
             if caretaker_count >= self._comment_cap_per_issue:
                 msg = (
                     f"Refusing to add caretaker comment to {owner}/{repo}#{number}: "
@@ -659,9 +657,7 @@ class GitHubClient:
         for c in comments:
             if not (c.body or ""):
                 continue
-            if any(m in c.body for m in all_markers) and (
-                existing is None or c.id > existing.id
-            ):
+            if any(m in c.body for m in all_markers) and (existing is None or c.id > existing.id):
                 existing = c
 
         if existing is None:
@@ -673,6 +669,7 @@ class GitHubClient:
         if min_seconds_between_updates > 0:
             from datetime import UTC
             from datetime import datetime as _dt
+
             ref = existing.updated_at or existing.created_at
             if ref is not None:
                 if ref.tzinfo is None:
@@ -682,8 +679,12 @@ class GitHubClient:
                     logger.info(
                         "upsert cooldown active on %s/%s#%d marker=%s "
                         "(age=%.0fs < cooldown=%ds) — skipping update",
-                        owner, repo, issue_number, marker,
-                        age, min_seconds_between_updates,
+                        owner,
+                        repo,
+                        issue_number,
+                        marker,
+                        age,
+                        min_seconds_between_updates,
                     )
                     return existing
 

@@ -654,7 +654,11 @@ class PRAgent:
         # if the body content shifts slightly — a fresh ping every cycle is
         # not what a human reviewer wants.
         await self._github.upsert_issue_comment(
-            self._owner, self._repo, pr.number, marker, body,
+            self._owner,
+            self._repo,
+            pr.number,
+            marker,
+            body,
             min_seconds_between_updates=3600,
         )
         logger.info("PR #%d escalated: %s", pr.number, reason)

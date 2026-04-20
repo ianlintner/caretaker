@@ -341,6 +341,7 @@ class SelfHealAgent:
             return False, ""
         from datetime import UTC, timedelta
         from datetime import datetime as _dt
+
         now = _dt.now(UTC)
         hour_ago = now - timedelta(hours=1)
         day_ago = now - timedelta(days=1)

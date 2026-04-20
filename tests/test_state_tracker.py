@@ -55,9 +55,7 @@ class TestSaveUsesUpsert:
         assert STATE_COMMENT_MARKER in body
         assert "Orchestrator State Update" in body
 
-    async def test_repeated_saves_only_call_upsert(
-        self, tracker_with_issue: StateTracker
-    ) -> None:
+    async def test_repeated_saves_only_call_upsert(self, tracker_with_issue: StateTracker) -> None:
         """Five back-to-back saves must produce five upsert calls (not five posts)."""
         tracker = tracker_with_issue
         for _ in range(5):
@@ -86,9 +84,7 @@ class TestPostRunSummaryUsesUpsert:
         assert "Maintainer Run History" in body
         assert "PRs monitored" in body
 
-    async def test_history_keeps_at_most_10_runs(
-        self, tracker_with_issue: StateTracker
-    ) -> None:
+    async def test_history_keeps_at_most_10_runs(self, tracker_with_issue: StateTracker) -> None:
         tracker = tracker_with_issue
         for i in range(15):
             tracker._state.run_history.append(_summary(prs=i))

@@ -295,6 +295,10 @@ class IssueAgent:
         # Cooldown: 1h between updates so human reviewers aren't re-pinged
         # every cycle on issues that are already escalated.
         await self._github.upsert_issue_comment(
-            self._owner, self._repo, issue.number, marker, body,
+            self._owner,
+            self._repo,
+            issue.number,
+            marker,
+            body,
             min_seconds_between_updates=3600,
         )
