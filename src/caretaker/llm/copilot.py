@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
+
 if TYPE_CHECKING:
     from caretaker.evolution.insight_store import Skill
     from caretaker.github_client.api import GitHubClient
@@ -72,6 +74,7 @@ class CopilotTask:
         lines = [
             "@copilot",
             "",
+            make_causal_marker("pr-agent-task"),
             TASK_OPEN,
             f"TASK: Fix {self.task_type.value.replace('_', ' ').lower()}",
             f"TYPE: {self.task_type.value}",

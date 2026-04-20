@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.causal import make_causal_marker
 from caretaker.devops_agent.log_analyzer import FailureSummary, analyze_job_log
 from caretaker.tools.github import GitHubIssueTools
 
@@ -288,7 +289,9 @@ def _build_issue_body(
     summary: FailureSummary, sig: str, branch: str, *, run_id: int | None = None
 ) -> str:
     run_id_fragment = f" run_id:{run_id}" if run_id else ""
+    causal = make_causal_marker("devops", run_id=run_id)
     return f"""{DEVOPS_AGENT_MARKER} sig:{sig}{run_id_fragment} -->
+{causal}
 
 ## CI Build Failure — `{branch}` branch
 
