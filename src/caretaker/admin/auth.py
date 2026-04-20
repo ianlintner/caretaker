@@ -296,10 +296,21 @@ async def callback(
         except Exception:
             pass
 
-    # Enforce email allowlist
-    if _config.allowed_emails and user_info.email not in _config.allowed_emails:
-        logger.warning("Login denied for email=%s (not in allowlist)", user_info.email)
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Enforce allowlist. Primary key is email, but some OIDC providers (e.g.
+    # roauth2) never populate the email claim in the ID token and require a
+    # bearer-authenticated userinfo call we can't always complete. Accept a
+    # ``sub`` match as a fallback so operators can pin access by stable subject
+    # identifier when email extraction is unreliable.
+    if _config.allowed_emails:
+        email_match = bool(user_info.email) and user_info.email in _config.allowed_emails
+        sub_match = bool(user_info.sub) and user_info.sub in _config.allowed_emails
+        if not email_match and not sub_match:
+            logger.warning(
+                "Login denied: email=%s sub=%s not in allowlist (add either to allowed-emails)",
+                user_info.email,
+                user_info.sub,
+            )
+            raise HTTPException(status_code=403, detail="Access denied")
 
     # Create session
     sid = str(uuid.uuid4())
