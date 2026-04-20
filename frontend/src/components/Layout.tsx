@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   GitPullRequest,
@@ -10,10 +10,13 @@ import {
   Network,
   Settings,
   LogOut,
+  ChevronRight,
+  Activity,
 } from 'lucide-react'
 import { useUser } from '@/hooks/useUser'
 import { post } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import ThemeToggle from '@/components/ThemeToggle'
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -27,9 +30,19 @@ const NAV = [
   { to: '/config', label: 'Config', icon: Settings },
 ]
 
+function crumbFor(pathname: string): string {
+  if (pathname === '/') return 'Overview'
+  const segment = pathname.split('/').filter(Boolean)[0] ?? ''
+  const match = NAV.find((n) => n.to.replace('/', '') === segment)
+  if (match) return match.label
+  return segment.charAt(0).toUpperCase() + segment.slice(1)
+}
+
 export default function Layout() {
   const { user, refresh } = useUser()
   const navigate = useNavigate()
+  const location = useLocation()
+  const crumb = crumbFor(location.pathname)
 
   async function handleLogout() {
     try {
@@ -43,12 +56,36 @@ export default function Layout() {
 
   return (
     <div className="flex min-h-screen">
-      <aside className="w-60 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-card)] flex flex-col">
+      <aside
+        className={cn(
+          'w-60 shrink-0 flex flex-col sticky top-0 h-screen z-20',
+          'glass border-r border-[var(--color-border)]',
+        )}
+      >
         <div className="px-5 py-4 border-b border-[var(--color-border)]">
-          <h1 className="text-lg font-semibold tracking-tight">Caretaker</h1>
-          <p className="text-xs text-[var(--color-muted-foreground)]">Admin Dashboard</p>
+          <div className="flex items-center gap-2">
+            <div
+              aria-hidden
+              className="h-7 w-7 rounded-md grid place-items-center text-[var(--color-primary-foreground)]"
+              style={{
+                background:
+                  'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+                boxShadow: 'var(--shadow-glow)',
+              }}
+            >
+              <Activity className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-sm font-semibold tracking-tight leading-tight">
+                Caretaker
+              </h1>
+              <p className="text-[10px] uppercase tracking-[0.14em] text-[var(--color-muted-foreground)]">
+                Orchestrator
+              </p>
+            </div>
+          </div>
         </div>
-        <nav className="flex-1 overflow-y-auto p-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto p-3 space-y-0.5">
           {NAV.map((item) => {
             const Icon = item.icon
             return (
@@ -58,15 +95,33 @@ export default function Layout() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors',
+                    'group relative flex items-center gap-2.5 px-3 py-2 rounded-[var(--radius-sm)] text-sm',
+                    'transition-colors duration-[var(--motion-fast)]',
                     isActive
-                      ? 'bg-[var(--color-primary)] text-[var(--color-primary-foreground)]'
-                      : 'text-[var(--color-foreground)] hover:bg-[var(--color-muted)]',
+                      ? 'text-[var(--color-foreground)] bg-[var(--color-primary-soft)]'
+                      : 'text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] hover:bg-[var(--color-muted)]',
                   )
                 }
               >
-                <Icon className="h-4 w-4" />
-                {item.label}
+                {({ isActive }) => (
+                  <>
+                    <span
+                      aria-hidden
+                      className={cn(
+                        'absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[2px] rounded-r-full transition-opacity',
+                        isActive ? 'opacity-100' : 'opacity-0',
+                      )}
+                      style={{ background: 'var(--color-primary)' }}
+                    />
+                    <Icon
+                      className={cn(
+                        'h-4 w-4 shrink-0',
+                        isActive && 'text-[var(--color-primary)]',
+                      )}
+                    />
+                    <span>{item.label}</span>
+                  </>
+                )}
               </NavLink>
             )
           })}
@@ -78,7 +133,7 @@ export default function Layout() {
                 <img
                   src={user.picture}
                   alt=""
-                  className="h-7 w-7 rounded-full"
+                  className="h-7 w-7 rounded-full ring-1 ring-[var(--color-border)]"
                 />
               ) : (
                 <div className="h-7 w-7 rounded-full bg-[var(--color-muted)] grid place-items-center text-xs">
@@ -86,7 +141,9 @@ export default function Layout() {
                 </div>
               )}
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium truncate">{user.name || user.email}</p>
+                <p className="text-xs font-medium truncate">
+                  {user.name || user.email}
+                </p>
                 {user.email && (
                   <p className="text-[10px] text-[var(--color-muted-foreground)] truncate">
                     {user.email}
@@ -96,7 +153,11 @@ export default function Layout() {
             </div>
             <button
               onClick={handleLogout}
-              className="mt-1 w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+              className={cn(
+                'mt-1 w-full flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-sm)] text-xs',
+                'text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]',
+                'transition-colors',
+              )}
             >
               <LogOut className="h-3.5 w-3.5" />
               Sign out
@@ -104,8 +165,30 @@ export default function Layout() {
           </div>
         )}
       </aside>
-      <main className="flex-1 min-w-0">
-        <Outlet />
+      <main className="flex-1 min-w-0 flex flex-col">
+        <header
+          className={cn(
+            'sticky top-0 z-10 glass border-b border-[var(--color-border)]',
+            'flex items-center justify-between px-6 h-14',
+          )}
+        >
+          <nav
+            aria-label="Breadcrumb"
+            className="flex items-center gap-1.5 text-xs text-[var(--color-muted-foreground)]"
+          >
+            <span>Caretaker</span>
+            <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+            <span className="text-[var(--color-foreground)] font-medium">
+              {crumb}
+            </span>
+          </nav>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+          </div>
+        </header>
+        <div className="flex-1 min-w-0">
+          <Outlet />
+        </div>
       </main>
     </div>
   )
