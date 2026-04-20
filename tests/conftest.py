@@ -55,9 +55,15 @@ def make_pr(
     merged: bool = False,
     mergeable: bool | None = True,
     head_ref: str = "feature",
+    created_at: datetime | None = None,
 ) -> PullRequest:
     if user is None:
         user = User(login="dev-user", id=3, type="User")
+    # Default to "just now" so the stuck-PR age gate doesn't fire on tests
+    # that don't care about age. Pass an explicit ancient datetime to test
+    # age-related behavior.
+    if created_at is None:
+        created_at = datetime.now(UTC)
     return PullRequest(
         number=number,
         title=f"PR #{number}",
@@ -70,8 +76,8 @@ def make_pr(
         merged=merged,
         draft=draft,
         labels=labels or [],
-        created_at=datetime(2024, 1, 1, tzinfo=UTC),
-        updated_at=datetime(2024, 1, 1, tzinfo=UTC),
+        created_at=created_at,
+        updated_at=created_at,
         html_url=f"https://github.com/test/repo/pull/{number}",
     )
 
