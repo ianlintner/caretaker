@@ -17,6 +17,7 @@ from caretaker.pr_agent.merge import evaluate_merge
 from caretaker.pr_agent.ownership import (
     build_status_comment,
     claim_ownership,
+    compact_legacy_comments,
     get_readiness_check_summary,
     get_readiness_check_title,
     release_ownership,
@@ -525,6 +526,25 @@ class PRAgent:
             if triage.failure_type == FailureType.BACKLOG:
                 return await self._handle_ci_backlog(pr, tracking, report)
 
+            # Refuse to ask Copilot to fix nothing. When the upstream check_run
+            # produced no usable error output, posting a TASK comment with an
+            # empty error block has historically led to Copilot opening
+            # "[WIP] Fix CI failure (unknown)" PRs that get auto-closed.
+            # Wait for the next cycle when logs may have been captured.
+            if (
+                triage.failure_type == FailureType.UNKNOWN
+                and not (triage.error_summary or "").strip()
+                and not (triage.raw_output or "").strip()
+            ):
+                logger.info(
+                    "PR #%d: skipping @copilot task — unknown failure with empty logs (job=%s)",
+                    pr.number,
+                    triage.job_name,
+                )
+                tracking.notes = "skipped_empty_unknown_failure"
+                report.waiting.append(pr.number)
+                return tracking
+
             attempt = tracking.copilot_attempts + 1
 
             stuck_analysis = await self._maybe_analyze_stuck_pr(pr, tracking, triage.error_summary)
@@ -953,5 +973,28 @@ class PRAgent:
                     pr.number,
                     e,
                 )
+
+            # One-shot cleanup of pre-#403 legacy duplicate comments. Idempotent
+            # via the tracking flag so we never loop on the same PR.
+            if not tracking.legacy_comments_compacted:
+                try:
+                    removed = await compact_legacy_comments(
+                        self._github, self._owner, self._repo, pr.number
+                    )
+                    if removed:
+                        logger.info(
+                            "PR #%d: compacted %d legacy caretaker comment(s)",
+                            pr.number,
+                            removed,
+                        )
+                except GitHubAPIError as e:
+                    logger.warning(
+                        "PR #%d: legacy comment compaction failed: %s",
+                        pr.number,
+                        e,
+                    )
+                # Mark compacted regardless of removal count: 0 means nothing
+                # to compact (good); errors are logged but shouldn't loop.
+                tracking.legacy_comments_compacted = True
 
         return tracking

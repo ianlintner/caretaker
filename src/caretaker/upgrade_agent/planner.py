@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from caretaker.tools.github import GitHubIssueTools
+
+_UPGRADE_MARKER_RE = re.compile(r"<!--\s*caretaker:upgrade target=([^\s>]+)\s*-->")
 
 if TYPE_CHECKING:
     from caretaker.foundry.dispatcher import ExecutorDispatcher
@@ -15,12 +18,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _upgrade_target_marker(version: str) -> str:
+    """HTML-comment marker that uniquely identifies an upgrade issue by version.
+
+    Used for robust dedupe instead of title-substring matching, which
+    historically allowed multiple issues for the same target version
+    (rust-oauth2-server #118/#121/#126/#129/#153 all targeted v0.5.0).
+    """
+    return f"<!-- caretaker:upgrade target={version} -->"
+
+
+def _sync_target_marker(version: str) -> str:
+    return f"<!-- caretaker:sync target={version} -->"
+
+
 def build_upgrade_issue_body(
     current_version: str,
     target: Release,
 ) -> str:
     """Build the body for an upgrade issue."""
     lines = [
+        _upgrade_target_marker(target.version),
+        "",
         f"## [Maintainer] Upgrade to v{target.version}",
         "",
         f"Current version: `{current_version}`",
@@ -211,20 +230,61 @@ class UpgradePlanner:
         current_version: str,
         target: Release,
     ) -> int:
-        """Create an upgrade issue and return its number."""
-        # Check if an upgrade issue already exists for this version (open or closed).
-        # Using state="all" prevents re-creating the issue when a previous attempt was
-        # closed without completing the upgrade, which would spawn duplicate Copilot PRs.
+        """Create an upgrade issue and return its number.
+
+        Dedupe is body-marker first, title-substring second:
+
+        1. Look for ``<!-- caretaker:upgrade target=X.Y.Z -->`` in any issue
+           body (open or closed) — this is the precise key.
+        2. Fall back to the legacy title-substring check for issues created
+           before the marker was added; backfill the marker so the next
+           lookup is exact.
+        3. Otherwise create a new issue with the marker baked in.
+
+        The two-step lookup closes the rust-oauth2-server #118/#121/#126/
+        #129/#153 pattern where five issues all targeted v0.5.0.
+        """
+        target_marker = _upgrade_target_marker(target.version)
+        legacy_title_substring = f"Upgrade to v{target.version}"
+
         issues = await self._issues.list(state="all")
+
+        # Step 1: precise marker-based dedupe
         for issue in issues:
-            if f"Upgrade to v{target.version}" in issue.title and issue.is_maintainer_issue:
+            if target_marker in (issue.body or ""):
                 logger.info(
-                    "Upgrade issue for v%s already exists: #%d",
+                    "Upgrade issue for v%s already exists (marker): #%d",
                     target.version,
                     issue.number,
                 )
                 return issue.number
 
+        # Step 2: legacy title-substring fallback + backfill marker.
+        # Skip issues that already carry a marker for a *different* target,
+        # since the marker is authoritative even if the title is misleading.
+        for issue in issues:
+            if legacy_title_substring not in issue.title or not issue.is_maintainer_issue:
+                continue
+            existing_marker_match = _UPGRADE_MARKER_RE.search(issue.body or "")
+            if existing_marker_match and existing_marker_match.group(1) != target.version:
+                continue  # belongs to a different upgrade target
+            logger.info(
+                "Upgrade issue for v%s already exists (legacy title): #%d — backfilling marker",
+                target.version,
+                issue.number,
+            )
+            try:
+                new_body = (issue.body or "").rstrip() + f"\n\n{target_marker}\n"
+                await self._issues.update(issue.number, body=new_body)
+            except Exception as e:  # backfill is best-effort
+                logger.warning(
+                    "Failed to backfill upgrade marker on issue #%d: %s",
+                    issue.number,
+                    e,
+                )
+            return issue.number
+
+        # Step 3: no existing issue — create one with marker in body
         body = build_upgrade_issue_body(current_version, target)
         labels = ["maintainer:internal", "upgrade"]
         if target.breaking:
@@ -245,22 +305,42 @@ class UpgradePlanner:
 
         A sync issue tells the client agent to reconcile all workflow files,
         agent templates, and config against the canonical templates for
-        *version*.  If a matching open sync issue already exists it is reused.
+        *version*.  Dedupe uses the same marker-first / title-second pattern
+        as :meth:`create_upgrade_issue`.
         """
+        target_marker = _sync_target_marker(version)
+        legacy_title_substring = f"Sync installation files to v{version}"
+
         issues = await self._issues.list()
+
         for issue in issues:
-            if (
-                f"Sync installation files to v{version}" in issue.title
-                and issue.is_maintainer_issue
-            ):
+            if target_marker in (issue.body or ""):
                 logger.info(
-                    "Sync issue for v%s already exists: #%d",
+                    "Sync issue for v%s already exists (marker): #%d",
                     version,
                     issue.number,
                 )
                 return issue.number
 
-        body = build_sync_issue_body(version)
+        for issue in issues:
+            if legacy_title_substring in issue.title and issue.is_maintainer_issue:
+                logger.info(
+                    "Sync issue for v%s already exists (legacy title): #%d — backfilling marker",
+                    version,
+                    issue.number,
+                )
+                try:
+                    new_body = (issue.body or "").rstrip() + f"\n\n{target_marker}\n"
+                    await self._issues.update(issue.number, body=new_body)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to backfill sync marker on issue #%d: %s",
+                        issue.number,
+                        e,
+                    )
+                return issue.number
+
+        body = build_sync_issue_body(version) + f"\n\n{target_marker}\n"
         issue = await self._issues.create(
             title=f"[Maintainer] Sync installation files to v{version}",
             body=body,

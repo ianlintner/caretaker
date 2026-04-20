@@ -79,6 +79,12 @@ class TrackedPR(BaseModel):
     last_state_change_at: datetime | None = None
     stuck_reflection_done: bool = False
 
+    # One-shot legacy comment compaction. Pre-#403 PRs accumulated separate
+    # ownership-claim / readiness-update comments per cycle; this flag tracks
+    # whether the cleanup pass has already collapsed them into the single
+    # caretaker:status comment.
+    legacy_comments_compacted: bool = False
+
 
 class TrackedIssue(BaseModel):
     number: int
