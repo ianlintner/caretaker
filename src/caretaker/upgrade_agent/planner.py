@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
 from caretaker.tools.github import GitHubIssueTools
 
 _UPGRADE_MARKER_RE = re.compile(r"<!--\s*caretaker:upgrade target=([^\s>]+)\s*-->")
@@ -13,6 +14,7 @@ _UPGRADE_MARKER_RE = re.compile(r"<!--\s*caretaker:upgrade target=([^\s>]+)\s*--
 if TYPE_CHECKING:
     from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
     from caretaker.upgrade_agent.release_checker import Release
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ def build_upgrade_issue_body(
     """Build the body for an upgrade issue."""
     lines = [
         _upgrade_target_marker(target.version),
+        make_causal_marker("upgrade"),
         "",
         f"## [Maintainer] Upgrade to v{target.version}",
         "",
@@ -299,6 +302,40 @@ class UpgradePlanner:
         )
         logger.info("Created upgrade issue #%d for v%s", issue.number, target.version)
         return issue.number
+
+    async def close_superseded_upgrade_prs(self, version: str) -> list[int]:
+        """Close older open upgrade PRs for the same target version.
+
+        When two workflow runs open upgrade PRs in parallel (racing on the
+        same upgrade issue), the older one is superseded. Keeps the
+        highest-numbered open PR whose title references ``Upgrade to
+        v{version}``; closes the rest with a ``Superseded by #N`` comment.
+
+        Returns the list of PR numbers closed.
+        """
+        from caretaker.dedupe import close_superseded_prs
+
+        title_substring = f"Upgrade to v{version}"
+        try:
+            prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
+        except Exception as e:
+            logger.warning("Failed to list open PRs for upgrade dedupe: %s", e)
+            return []
+
+        def _key(pr: PullRequest) -> str | None:
+            return f"upgrade:{version}" if title_substring in (pr.title or "") else None
+
+        def _comment(closed: PullRequest, keeper: PullRequest) -> str:
+            return f"Superseded by #{keeper.number} (both target v{version})."
+
+        return await close_superseded_prs(
+            self._github,
+            self._owner,
+            self._repo,
+            prs,
+            bucket_key=_key,
+            comment=_comment,
+        )
 
     async def create_sync_issue(self, version: str) -> int:
         """Create a sync issue for the given version and return its number.

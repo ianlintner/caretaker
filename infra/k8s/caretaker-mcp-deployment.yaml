@@ -59,6 +59,10 @@ spec:
                   name: caretaker-secrets
                   key: github-app-private-key
                   optional: true
+            - name: CARETAKER_GITHUB_APP_INSTALLATION_ID
+              value: "124850811"
+            - name: CARETAKER_ADMIN_WATCHED_REPO
+              value: "ianlintner/caretaker"
             - name: CARETAKER_ADMIN_ENABLED
               value: "true"
             - name: CARETAKER_ADMIN_OIDC_ISSUER_URL

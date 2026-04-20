@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from caretaker.github_client.models import Issue, User
+from caretaker.github_client.models import Issue, PRState, PullRequest, User
 from caretaker.upgrade_agent.planner import (
     SYNC_FILES,
     UpgradePlanner,
@@ -41,6 +41,8 @@ class TestBuildUpgradeIssueBody:
         assert "Upgrade to v1.5.0" in body
         assert "BREAKING: False" in body
         assert "@copilot" in body
+        assert "caretaker:causal" in body
+        assert "source=upgrade" in body
 
     def test_breaking_body_marks_warning(self) -> None:
         release = Release(
@@ -268,6 +270,77 @@ class TestUpgradeIssueMarkerDedupe:
         # despite the misleading title.
         assert number == 50
         github.create_issue.assert_awaited_once()
+
+
+def make_pr(number: int, title: str) -> PullRequest:
+    return PullRequest(
+        number=number,
+        title=title,
+        state=PRState.OPEN,
+        user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"),
+    )
+
+
+@pytest.mark.asyncio
+class TestCloseSupersededUpgradePRs:
+    """Portfolio #144/#146 and rust-oauth2-server pattern: two Copilot PRs
+    targeting the same upgrade version racing each other. Keep newest, close older.
+    """
+
+    async def test_no_prs_returns_empty(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = []
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
+
+    async def test_single_pr_not_closed(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [make_pr(50, "Upgrade to v0.10.0")]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
+
+    async def test_closes_older_prs_keeps_newest(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [
+            make_pr(10, "Upgrade to v0.10.0"),
+            make_pr(20, "Upgrade to v0.10.0"),
+            make_pr(30, "Upgrade to v0.10.0"),
+        ]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == [10, 20]
+        assert github.update_issue.await_count == 2
+        closed_numbers = [call.args[2] for call in github.update_issue.await_args_list]
+        assert set(closed_numbers) == {10, 20}
+        for call in github.update_issue.await_args_list:
+            assert call.kwargs == {"state": "closed"}
+        # Superseded comment references the keeper.
+        assert github.add_issue_comment.await_count == 2
+        for call in github.add_issue_comment.await_args_list:
+            assert "#30" in call.args[3]
+
+    async def test_ignores_prs_for_different_version(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [
+            make_pr(10, "Upgrade to v0.9.0"),
+            make_pr(20, "Upgrade to v0.10.0"),
+        ]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
 
 
 @pytest.mark.asyncio

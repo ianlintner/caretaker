@@ -39,7 +39,9 @@ permissions:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    # Native arm64 runner: AKS nodes are arm64, so amd64 emulation is unnecessary
+    # and was exceeding the 30min timeout during QEMU-based multi-arch builds.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -64,18 +66,15 @@ jobs:
       - name: Login to ACR
         run: az acr login --name "${{ vars.CARETAKER_ACR_NAME }}"
 
-      - name: Set up QEMU (for arm64 emulation on amd64 runners)
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push image (multi-arch amd64 + arm64)
+      - name: Build and push image (arm64, native)
         run: |
           IMAGE="${{ vars.CARETAKER_ACR_NAME }}.azurecr.io/${{ vars.CARETAKER_MCP_IMAGE_REPOSITORY }}:${{ steps.tag.outputs.tag }}"
           docker buildx build \
             -f Dockerfile.mcp \
-            --platform linux/amd64,linux/arm64 \
+            --platform linux/arm64 \
             --tag "$IMAGE" \
             --push \
             .
@@ -104,7 +103,8 @@ jobs:
           kubectl apply \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
             -f infra/k8s/caretaker-mcp-service.yaml \
-            -f infra/k8s/redis-statefulset.yaml
+            -f infra/k8s/redis-statefulset.yaml \
+            -f infra/k8s/neo4j-statefulset.yaml
 
       - name: Update deployment image
         run: |

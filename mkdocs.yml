@@ -35,6 +35,7 @@ nav:
   - Goals: goals.md
   - Architecture: architecture.md
   - PR Ownership: pr-ownership.md
+  - Causal chains: causal-chains.md
   - Development: development.md
   - Release notes: release-notes.md
 

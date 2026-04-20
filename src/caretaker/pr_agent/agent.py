@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.causal import make_causal_marker
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
@@ -415,6 +416,25 @@ class PRAgent:
                 pr.number,
                 merge_decision.reason,
             )
+            # E2 diagnosis: when a PR is approved but still blocked, emit a
+            # structured snapshot so the next occurrence (portfolio #151-class
+            # — approved + Copilot pushed a new commit post-approval) can be
+            # root-caused from logs rather than manual GitHub archaeology.
+            if evaluation.reviews.approved:
+                logger.info(
+                    "PR #%d merge-block diagnosis: blockers=%s ci_status=%s "
+                    "changes_requested=%s approving_reviewers=%s automated_comments=%d "
+                    "draft=%s mergeable=%s copilot_pr=%s",
+                    pr.number,
+                    merge_decision.blockers,
+                    evaluation.ci.status.value,
+                    evaluation.reviews.changes_requested,
+                    [r.user.login for r in evaluation.reviews.approving_reviews],
+                    len(evaluation.reviews.automated_review_comments),
+                    pr.draft,
+                    pr.mergeable,
+                    pr.is_copilot_pr,
+                )
             report.waiting.append(pr.number)
 
         return tracking
@@ -754,8 +774,10 @@ class PRAgent:
             payload["debug"] = debug_data
 
         marker = "<!-- caretaker:escalation -->"
+        causal = make_causal_marker("pr-agent:escalation")
         body = (
-            f"{marker}\n\n"
+            f"{marker}\n"
+            f"{causal}\n\n"
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
             f"**Reason:** {reason}\n\n"

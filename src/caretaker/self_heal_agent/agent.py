@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from caretaker import __version__
+from caretaker.causal import make_causal_marker
 from caretaker.self_heal_agent.upstream_reporter import (
     report_upstream_bug,
     report_upstream_feature,
@@ -645,8 +646,10 @@ def _build_fix_issue_body(
     }.get(kind, "🩺 Error")
 
     run_id_fragment = f" run_id:{run_id}" if run_id else ""
+    causal = make_causal_marker("self-heal", run_id=run_id)
     return (
-        f"{SELF_HEAL_MARKER} sig:{sig}{run_id_fragment} -->\n\n"
+        f"{SELF_HEAL_MARKER} sig:{sig}{run_id_fragment} -->\n"
+        f"{causal}\n\n"
         f"## {kind_label}\n\n"
         f"{details}\n\n"
         f"**Job:** `{job_name}`\n\n"

@@ -9,8 +9,10 @@ import pytest
 
 from caretaker.charlie_agent.agent import (
     CharlieAgent,
+    _build_issue_label_map,
     _build_issue_run_map,
     _extract_work_key,
+    _primary_source_file,
     _resolve_pr_run_key,
 )
 from caretaker.github_client.models import Issue, Label, PRState, PullRequest, User
@@ -103,6 +105,9 @@ class TestCharlieAgent:
         assert report.duplicate_issues_closed == 1
         assert report.issues_closed == 1
         gh.add_issue_comment.assert_awaited_once()
+        comment_body = gh.add_issue_comment.call_args.args[3]
+        assert "caretaker:causal" in comment_body
+        assert "source=charlie:close-duplicate-issue" in comment_body
         gh.update_issue.assert_awaited_once_with("o", "r", 11, state="closed")
 
     @pytest.mark.asyncio
@@ -280,3 +285,130 @@ class TestResolvePrRunKey:
     def test_returns_none_when_no_fixes_reference(self) -> None:
         issue_run_map = {50: "99001"}
         assert _resolve_pr_run_key("Some PR body without fixes", issue_run_map) is None
+
+
+class TestPrimarySourceFile:
+    def test_picks_largest_non_test_non_doc_file(self) -> None:
+        files = [
+            {"path": "src/caretaker/state/tracker.py", "additions": 95, "deletions": 15},
+            {"path": "src/caretaker/self_heal_agent/agent.py", "additions": 20, "deletions": 0},
+            {"path": "tests/test_state_tracker.py", "additions": 85, "deletions": 0},
+            {"path": "docs/changelog.md", "additions": 5, "deletions": 0},
+        ]
+        assert _primary_source_file(files) == "src/caretaker/state/tracker.py"
+
+    def test_returns_none_when_only_tests_and_docs(self) -> None:
+        files = [
+            {"path": "tests/test_foo.py", "additions": 100, "deletions": 0},
+            {"path": "docs/guide.md", "additions": 50, "deletions": 0},
+            {"path": "uv.lock", "additions": 10, "deletions": 0},
+        ]
+        assert _primary_source_file(files) is None
+
+    def test_returns_none_for_empty_list(self) -> None:
+        assert _primary_source_file([]) is None
+
+    def test_tiebreaks_by_path_alphabetically(self) -> None:
+        files = [
+            {"path": "src/b.py", "additions": 10, "deletions": 0},
+            {"path": "src/a.py", "additions": 10, "deletions": 0},
+        ]
+        assert _primary_source_file(files) == "src/a.py"
+
+
+class TestBuildIssueLabelMap:
+    def test_maps_issues_to_their_labels(self) -> None:
+        issues = [
+            _issue(10, labels=["caretaker:self-heal", "bug"]),
+            _issue(11, labels=["maintainer:internal"]),
+            _issue(12, labels=[]),
+        ]
+        result = _build_issue_label_map(issues)
+        assert result[10] == frozenset({"caretaker:self-heal", "bug"})
+        assert result[11] == frozenset({"maintainer:internal"})
+        assert result[12] == frozenset()
+
+
+class TestSelfHealPrimaryFileDedupe:
+    """Generalizes the D2 upgrade dedupe pattern to self-heal PR races.
+
+    When three Copilot PRs all close different self-heal-labeled issues but
+    all primarily touch the same source file, they are racing on the same
+    underlying bug and the newer ones should be closed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_closes_duplicate_self_heal_prs_by_primary_file(self) -> None:
+        self_heal_issues = [
+            _issue(410, labels=["caretaker:self-heal", "bug"]),
+            _issue(412, labels=["caretaker:self-heal", "bug"]),
+            _issue(413, labels=["caretaker:self-heal", "bug"]),
+        ]
+        pr_411 = _pr(411, title="fix: handle 2500-comment limit")
+        pr_415 = _pr(415, title="fix(state): auto-rotate tracking issue")
+        pr_416 = _pr(416, title="fix: handle 2500-comment limit gracefully")
+        gh = make_github(issues=self_heal_issues, prs=[pr_411, pr_415, pr_416])
+
+        closing_by_pr = {411: [410], 415: [412], 416: [413]}
+        files_by_pr = {
+            411: [
+                {"path": "src/caretaker/state/tracker.py", "additions": 95, "deletions": 15},
+                {"path": "tests/test_state_tracker.py", "additions": 85, "deletions": 0},
+            ],
+            415: [
+                {"path": "src/caretaker/state/tracker.py", "additions": 39, "deletions": 7},
+                {"path": "src/caretaker/orchestrator.py", "additions": 4, "deletions": 1},
+            ],
+            416: [
+                {"path": "src/caretaker/state/tracker.py", "additions": 49, "deletions": 14},
+                {"path": "src/caretaker/github_client/api.py", "additions": 7, "deletions": 0},
+            ],
+        }
+        gh.get_closing_issue_numbers.side_effect = lambda owner, repo, n: closing_by_pr.get(n, [])
+        gh.list_pull_request_files.side_effect = lambda owner, repo, n: files_by_pr.get(n, [])
+
+        report = await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        assert report.duplicate_prs_closed == 2
+        closed_numbers = {
+            call.args[2]
+            for call in gh.update_issue.await_args_list
+            if call.kwargs.get("state") == "closed"
+        }
+        # Charlie keeps the canonical (oldest, lowest-number) PR and closes
+        # the rest. Here #411 is oldest → kept; #415 and #416 close.
+        assert 415 in closed_numbers
+        assert 416 in closed_numbers
+        assert 411 not in closed_numbers
+
+    @pytest.mark.asyncio
+    async def test_skips_non_copilot_prs(self) -> None:
+        self_heal_issues = [_issue(100, labels=["caretaker:self-heal"])]
+        human_pr = _pr(
+            200,
+            title="human PR",
+            user=User(login="alice", id=99, type="User"),
+            body="<!-- caretaker:task --> makes it 'managed'",
+        )
+        gh = make_github(issues=self_heal_issues, prs=[human_pr])
+
+        await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        gh.get_closing_issue_numbers.assert_not_awaited()
+        gh.list_pull_request_files.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_does_not_dedupe_when_closing_issue_not_self_heal(self) -> None:
+        issues = [_issue(50, labels=["maintainer:internal"])]
+        pr_a = _pr(300, title="work A")
+        pr_b = _pr(301, title="work B")
+        gh = make_github(issues=issues, prs=[pr_a, pr_b])
+        gh.get_closing_issue_numbers.side_effect = lambda owner, repo, n: [50]
+        gh.list_pull_request_files.side_effect = lambda owner, repo, n: [
+            {"path": "src/caretaker/foo.py", "additions": 10, "deletions": 0},
+        ]
+
+        report = await CharlieAgent(github=gh, owner="o", repo="r").run()
+
+        # No self-heal label on closing issue → no primary-file fingerprint applied
+        assert report.duplicate_prs_closed == 0

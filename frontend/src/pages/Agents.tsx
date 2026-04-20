@@ -17,10 +17,7 @@ export default function Agents() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {(data ?? []).map((agent) => (
-              <div
-                key={agent.name}
-                className="border border-[var(--color-border)] rounded-lg p-4 bg-[var(--color-card)]"
-              >
+              <div key={agent.name} className="panel p-4">
                 <h3 className="font-medium text-sm">{agent.name}</h3>
                 <div className="mt-3 space-y-2">
                   <div>
@@ -47,7 +44,11 @@ export default function Agents() {
                         {agent.events.map((e) => (
                           <span
                             key={e}
-                            className="px-1.5 py-0.5 text-[11px] rounded bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300"
+                            className="px-1.5 py-0.5 text-[11px] rounded-[var(--radius-sm)]"
+                            style={{
+                              backgroundColor: 'var(--color-primary-soft)',
+                              color: 'var(--color-primary)',
+                            }}
                           >
                             {e}
                           </span>

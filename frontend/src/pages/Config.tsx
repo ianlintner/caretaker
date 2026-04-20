@@ -14,7 +14,7 @@ export default function Config() {
         {isLoading ? (
           <p className="text-sm text-[var(--color-muted-foreground)]">Loading…</p>
         ) : (
-          <pre className="border border-[var(--color-border)] rounded-lg p-4 bg-[var(--color-card)] text-xs font-mono overflow-auto max-h-[calc(100vh-14rem)]">
+          <pre className="panel p-4 mono text-xs overflow-auto max-h-[calc(100vh-14rem)]">
             {JSON.stringify(data, null, 2)}
           </pre>
         )}

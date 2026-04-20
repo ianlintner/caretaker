@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.causal import make_causal_marker
 from caretaker.tools.debug_dump import render_debug_dump
 from caretaker.tools.github import GitHubIssueTools
 
@@ -172,6 +173,7 @@ class EscalationAgent:
         lines.append(render_debug_dump(debug_payload, title="Digest debug dump"))
 
         lines.append(f"\n---\n{ESCALATION_AGENT_MARKER} week:{week} -->")
+        lines.append(make_causal_marker("escalation-agent:digest"))
         return "\n".join(lines)
 
 
