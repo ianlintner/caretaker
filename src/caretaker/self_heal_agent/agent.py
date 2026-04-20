@@ -450,7 +450,7 @@ class SelfHealAgent:
 
 
 # Specific error patterns that indicate the tracking issue has hit GitHub's
-# 2 500-comment limit.  Classified before the generic INTEGRATION_ERROR path.
+# 2500-comment limit.  Classified before the generic INTEGRATION_ERROR path.
 _TRACKING_ISSUE_FULL_PATTERNS = [
     re.compile(r"Commenting is disabled on issues with more than", re.IGNORECASE),
     re.compile(r"2500 comments", re.IGNORECASE),
@@ -526,7 +526,7 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
             FailureKind.CONFIG_ERROR,
             "Tracking issue has reached GitHub's comment limit",
             "The caretaker orchestrator tracking issue has accumulated more than "
-            "2 500 comments and GitHub has disabled further commenting.\n\n"
+            "2500 comments and GitHub has disabled further commenting.\n\n"
             "The caretaker library will automatically close the full issue and "
             "create a replacement on the next run.  No manual action is needed "
             "once this fix is deployed.",

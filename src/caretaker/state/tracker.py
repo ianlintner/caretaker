@@ -32,7 +32,7 @@ RUN_HISTORY_COMMENT_MARKER = "<!-- caretaker:run-history -->"
 _RUN_HISTORY_KEEP = 10
 
 # Fragment that GitHub includes in the 403 response body when an issue has
-# accumulated more than 2 500 comments and commenting is disabled.
+# accumulated more than 2500 comments and commenting is disabled.
 _COMMENT_LIMIT_FRAGMENT = "2500 comments"
 
 
@@ -222,7 +222,7 @@ class StateTracker:
         """Close the full tracking issue and create a fresh replacement.
 
         Called automatically when GitHub returns a 403 because the current
-        tracking issue has accumulated more than 2 500 comments.  The old
+        tracking issue has accumulated more than 2500 comments.  The old
         issue is closed with an explanatory note; a new one is opened and
         :attr:`_tracking_issue_number` is updated so the next save lands on
         the new issue.
@@ -236,7 +236,7 @@ class StateTracker:
                     old_number,
                     state="closed",
                     body=(
-                        "This tracking issue has reached GitHub's 2 500-comment "
+                        "This tracking issue has reached GitHub's 2500-comment "
                         "limit.  A replacement tracking issue has been created "
                         "automatically — please use that one going forward."
                     ),
