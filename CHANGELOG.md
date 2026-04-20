@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-04-19
+
+PR-workflow noise reduction sweep. Three-sprint plan addressing the 60-day audit findings on caretaker self-instance, rust-oauth2-server, and portfolio.
+
+### Sprint 1 — kill the noise loops (#404)
+
+- One-shot legacy comment compaction: pre-#403 PRs with stale ownership:claim / readiness:update duplicates get collapsed to the single status comment on next cycle (A1b)
+- Dispatch-guard tightening: skip caretaker-marker comments regardless of authoring identity; expand bot-actor allowlist; skip Copilot reviewer reviews; downstream template gets a minimal version (B1)
+- `is_actionable_conclusion()` helper + `NON_ACTIONABLE_CONCLUSIONS` set — refuse to triage cancelled/skipped/neutral check runs (C1+C2)
+- `_handle_ci_fix` skips `@copilot` task posting when failure is UNKNOWN with empty error logs (C3)
+- Upgrade-issue marker dedupe: `<!-- caretaker:upgrade target=X.Y.Z -->` body marker with title-substring fallback + backfill, fixes the rust-oauth2-server #118/#121/#126/#129/#153 v0.5.0 dupe pattern (D1+D2)
+
+### Sprint 2 — comment idempotency, cooldowns, storm cap (#406)
+
+- `upsert_issue_comment(marker, body, *, legacy_markers, min_seconds_between_updates)` lifted into `GitHubClient` (A3)
+- `comment_cap_per_issue` (default 25) on `add_issue_comment` for caretaker-marker bodies (A4)
+- Orchestrator state and rolling run-history switched to upsert (was append-per-run; portfolio #121 hit 110 bot comments)
+- Escalation comments upserted by marker with 1h cooldown — no more 14-dupe escalation pings (portfolio #148)
+- Self-heal storm cap: max 5 issues/hour, 20/day. Catches the F1 retry-storm pattern (108 PRs in 90 min on 2026-04-14) (C4)
+- Per-event-class workflow concurrency: only cancel on `pull_request` events; serialize the rest. Reduces the 67% cancelled-run rate (B2)
+
+### Sprint 3 — stuck-PR age gate + retry-window reset (#407)
+
+- `stuck_age_hours` config (default 24, 0 disables) on PRAgentConfig — escalate PRs open longer than threshold without human approval. Catches portfolio #4 (10d) / #28 (7d) abandonment (E1)
+- Wire previously-unused `retry_window_hours` (default 24) — reset `copilot_attempts` when last attempt aged out (E3)
+- New `TrackedPR.last_copilot_attempt_at` timestamp field
+- Documentation note on unused `auto_approve_copilot` config
+
+### Test coverage
+
+- 769 tests pass (was 661 baseline at start of Sprint 1)
+- New test files: `tests/test_state_tracker.py`
+- New test classes: `TestCompactLegacyComments`, `TestIsActionableConclusion`, `TestUpgradeIssueMarkerDedupe`, `TestSelfHealStormCap`, `TestStuckPRAgeGate`, `TestRetryWindowHours`, plus upsert/cap/cooldown test cases on `tests/test_github_client_api.py`
+
 ## [2026-W16] - 2026-04-16
 
 - Add Charlie agent for janitorial cleanup of caretaker-managed issues and PRs (#237)

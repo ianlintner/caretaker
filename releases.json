@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "0.10.0",
+      "min_compatible": "0.10.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.10.0",
+      "upgrade_notes": "PR-workflow noise reduction. Single caretaker status comment migration with one-shot legacy compaction; tightened dispatch-guard against self-trigger loops; refused unclassifiable CI failures; upgrade-issue marker dedupe; upsert_issue_comment helper with cooldown; comment cap; orchestrator-state and run-history upserts; self-heal storm cap (5/hour, 20/day); per-event-class workflow concurrency; stuck-PR age gate; retry_window_hours wired.",
+      "breaking": false
+    },
+    {
+      "version": "0.9.0",
+      "min_compatible": "0.9.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.9.0",
+      "upgrade_notes": "Update to 0.9.0.",
+      "breaking": false
+    },
+    {
       "version": "0.8.0",
       "min_compatible": "0.8.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.8.0",
