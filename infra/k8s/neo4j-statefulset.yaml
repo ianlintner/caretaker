@@ -36,6 +36,10 @@ spec:
       labels:
         app: neo4j
     spec:
+      # Disable auto-injected service-link env vars (e.g. NEO4J_PORT_7687_TCP_PORT).
+      # Neo4j interprets any NEO4J_* env var as a config setting and its strict
+      # validator refuses to start when it sees the synthesized ones.
+      enableServiceLinks: false
       tolerations:
         - key: "kubernetes.azure.com/scalesetpriority"
           operator: "Equal"
