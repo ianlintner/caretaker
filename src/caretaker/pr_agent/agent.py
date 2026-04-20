@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.causal import make_causal_marker
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
@@ -773,8 +774,10 @@ class PRAgent:
             payload["debug"] = debug_data
 
         marker = "<!-- caretaker:escalation -->"
+        causal = make_causal_marker("pr-agent:escalation")
         body = (
-            f"{marker}\n\n"
+            f"{marker}\n"
+            f"{causal}\n\n"
             f"⚠️ **Caretaker Escalation**\n\n"
             f"This PR requires human attention.\n\n"
             f"**Reason:** {reason}\n\n"

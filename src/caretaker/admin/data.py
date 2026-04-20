@@ -14,7 +14,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from caretaker.admin.causal_store import CausalEventStore
 from caretaker.agents._registry_data import AGENT_MODES, EVENT_AGENT_MAP
+from caretaker.causal_chain import CausalEvent  # noqa: TC001 (runtime-used in helpers)
 from caretaker.config import MaintainerConfig  # noqa: TC001 (runtime-used)
 from caretaker.state.models import OrchestratorState  # noqa: TC001 (runtime-used)
 
@@ -71,15 +73,22 @@ class AdminDataAccess:
         state: OrchestratorState | None = None,
         memory_store: Any | None = None,  # MemoryStore
         insight_store: Any | None = None,  # InsightStore
+        causal_store: CausalEventStore | None = None,
     ) -> None:
         self._config = config
         self._state = state or OrchestratorState()
         self._memory = memory_store
         self._insights = insight_store
+        self._causal = causal_store or CausalEventStore()
 
     def set_state(self, state: OrchestratorState) -> None:
         """Update the cached orchestrator state (called after each run)."""
         self._state = state
+
+    # ── Causal event store access ────────────────────────────────────────
+    @property
+    def causal_store(self) -> CausalEventStore:
+        return self._causal
 
     # ── Orchestrator State ────────────────────────────────────────────────
 
@@ -382,6 +391,48 @@ class AdminDataAccess:
             agents.append(AgentInfo(name=name, modes=sorted(modes), events=events))
         return agents
 
+    # ── Causal events ─────────────────────────────────────────────────────
+
+    def get_causal_events(
+        self,
+        source: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> PaginatedResponse:
+        """Page through observed causal events, most recent first."""
+        events, total = self._causal.list_events(source=source, offset=offset, limit=limit)
+        items = [_causal_event_to_dict(e) for e in events]
+        return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
+
+    def get_causal_chain(
+        self,
+        event_id: str,
+        max_depth: int = 50,
+    ) -> dict[str, Any] | None:
+        """Walk the parent chain of ``event_id`` root-first."""
+        if self._causal.get(event_id) is None:
+            return None
+        chain = self._causal.walk(event_id, max_depth=max_depth)
+        return {
+            "id": event_id,
+            "events": [_causal_event_to_dict(e) for e in chain.events],
+            "truncated": chain.truncated,
+        }
+
+    def get_causal_descendants(
+        self,
+        event_id: str,
+        max_depth: int = 50,
+    ) -> dict[str, Any] | None:
+        """Return BFS descendants of ``event_id``."""
+        if self._causal.get(event_id) is None:
+            return None
+        descendants = self._causal.descendants(event_id, max_depth=max_depth)
+        return {
+            "id": event_id,
+            "events": [_causal_event_to_dict(e) for e in descendants],
+        }
+
     # ── Config ────────────────────────────────────────────────────────────
 
     def get_config(self) -> dict[str, Any]:
@@ -394,6 +445,25 @@ class AdminDataAccess:
         # Redact env var references that might contain secrets
         _redact_env_keys(data)
         return data
+
+
+def _causal_event_to_dict(event: CausalEvent) -> dict[str, Any]:
+    """Serialize a :class:`CausalEvent` to a JSON-safe dict."""
+    return {
+        "id": event.id,
+        "source": event.source,
+        "parent_id": event.parent_id,
+        "run_id": event.run_id,
+        "title": event.title,
+        "observed_at": event.observed_at.isoformat() if event.observed_at else None,
+        "ref": {
+            "kind": event.ref.kind,
+            "number": event.ref.number,
+            "comment_id": event.ref.comment_id,
+            "owner": event.ref.owner,
+            "repo": event.ref.repo,
+        },
+    }
 
 
 def _redact_env_keys(obj: Any) -> None:

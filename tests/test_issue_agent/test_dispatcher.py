@@ -8,7 +8,7 @@ import pytest
 
 from caretaker.github_client.models import Issue, User
 from caretaker.issue_agent.classifier import IssueClassification
-from caretaker.issue_agent.dispatcher import IssueDispatcher
+from caretaker.issue_agent.dispatcher import IssueDispatcher, build_assignment_body
 
 
 def make_issue(number: int = 1, title: str = "Bug report") -> Issue:
@@ -56,6 +56,38 @@ class TestIssueDispatcher:
         assert result is None
         github.create_issue.assert_not_called()
         github.update_issue.assert_not_called()
+
+    async def test_bug_simple_emits_causal_marker(self) -> None:
+        github = AsyncMock()
+        dispatcher = IssueDispatcher(github=github, owner="o", repo="r")
+        issue = make_issue()
+
+        await dispatcher.dispatch(issue, IssueClassification.BUG_SIMPLE)
+
+        comment_body = github.add_issue_comment.call_args.args[3]
+        assert "caretaker:causal" in comment_body
+        assert "source=issue-agent:dispatch" in comment_body
+
+    async def test_bug_simple_inherits_parent_causal_from_issue_body(self) -> None:
+        github = AsyncMock()
+        dispatcher = IssueDispatcher(github=github, owner="o", repo="r")
+        issue = Issue(
+            number=7,
+            title="Broken",
+            body="<!-- caretaker:causal id=run-42-devops source=devops -->\ndetail",
+            user=User(login="reporter", id=1, type="User"),
+        )
+
+        await dispatcher.dispatch(issue, IssueClassification.BUG_SIMPLE)
+
+        comment_body = github.add_issue_comment.call_args.args[3]
+        assert "parent=run-42-devops" in comment_body
+
+    async def test_build_assignment_body_emits_causal_marker(self) -> None:
+        issue = make_issue()
+        body = build_assignment_body(issue, IssueClassification.FEATURE_SMALL)
+        assert "caretaker:causal" in body
+        assert "source=issue-agent:dispatch" in body
 
     async def test_bug_simple_assigns_copilot_via_update_issue(self) -> None:
         """Dispatcher forwards both the logical Copilot assignee and repo routing metadata."""

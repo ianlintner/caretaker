@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from caretaker.admin.causal_store import CausalEventStore  # noqa: TC001 (runtime-used)
 from caretaker.agents._registry_data import AGENT_MODES, EVENT_AGENT_MAP
 from caretaker.graph.models import NodeType, RelType
 from caretaker.graph.store import GraphStore  # noqa: TC001 (runtime-used)
@@ -27,6 +28,7 @@ class GraphBuilder:
         self,
         state: OrchestratorState,
         insight_store: Any | None = None,
+        causal_store: CausalEventStore | None = None,
     ) -> dict[str, int]:
         """Perform a full graph sync.  Returns counts of created entities."""
         counts: dict[str, int] = {
@@ -36,6 +38,7 @@ class GraphBuilder:
             "goals": 0,
             "skills": 0,
             "runs": 0,
+            "causal_events": 0,
             "edges": 0,
         }
 
@@ -208,15 +211,50 @@ class GraphBuilder:
                     )
                     counts["edges"] += 1
 
+        # 8. Causal events + CAUSED_BY edges
+        if causal_store is not None:
+            for event in causal_store.index().values():
+                event_id = f"causal:{event.id}"
+                await self._store.merge_node(
+                    NodeType.CAUSAL_EVENT,
+                    event_id,
+                    {
+                        "name": event.id,
+                        "source": event.source,
+                        "run_id": event.run_id or "",
+                        "title": event.title,
+                        "ref_kind": event.ref.kind,
+                        "ref_number": event.ref.number if event.ref.number is not None else 0,
+                        "observed_at": event.observed_at.isoformat() if event.observed_at else "",
+                    },
+                )
+                counts["causal_events"] += 1
+
+            # Second pass so both endpoints exist before edges are merged.
+            for event in causal_store.index().values():
+                if not event.parent_id:
+                    continue
+                if causal_store.get(event.parent_id) is None:
+                    continue
+                await self._store.merge_edge(
+                    NodeType.CAUSAL_EVENT,
+                    f"causal:{event.id}",
+                    NodeType.CAUSAL_EVENT,
+                    f"causal:{event.parent_id}",
+                    RelType.CAUSED_BY,
+                )
+                counts["edges"] += 1
+
         logger.info(
             "Graph sync complete: %d agents, %d PRs, %d issues, %d goals, "
-            "%d skills, %d runs, %d edges",
+            "%d skills, %d runs, %d causal events, %d edges",
             counts["agents"],
             counts["prs"],
             counts["issues"],
             counts["goals"],
             counts["skills"],
             counts["runs"],
+            counts["causal_events"],
             counts["edges"],
         )
         return counts

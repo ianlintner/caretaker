@@ -99,6 +99,18 @@ class TestEscalationAgentCreatesDigest:
         assert '"item_numbers_by_label"' in body
 
     @pytest.mark.asyncio
+    async def test_digest_body_contains_causal_marker(self) -> None:
+        gh = make_github(
+            items_by_label={"security:finding": [_issue(10, "Critical CVE")]},
+        )
+        agent = EscalationAgent(github=gh, owner="o", repo="r")
+        await agent.run()
+
+        body = gh.create_issue.call_args.kwargs["body"]
+        assert "caretaker:causal" in body
+        assert "source=escalation-agent:digest" in body
+
+    @pytest.mark.asyncio
     async def test_assigns_notify_assignees(self) -> None:
         gh = make_github(
             items_by_label={"help wanted": [_issue(5, "Need help")]},

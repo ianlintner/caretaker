@@ -227,6 +227,13 @@ class GitHubClient:
             return None
         return self._parse_pr(data)
 
+    async def get_issue(self, owner: str, repo: str, number: int) -> Issue | None:
+        """Fetch a single issue by number. Returns ``None`` when missing."""
+        data = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
+        if data is None:
+            return None
+        return self._parse_issue(data)
+
     async def list_pull_request_files(
         self, owner: str, repo: str, number: int
     ) -> list[dict[str, Any]]:

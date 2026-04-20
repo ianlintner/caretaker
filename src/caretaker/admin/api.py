@@ -232,3 +232,43 @@ async def get_config(
 ) -> dict[str, Any]:
     """Return the current configuration (secrets redacted)."""
     return _get_data().get_config()
+
+
+# ── Causal chains ─────────────────────────────────────────────────────────
+
+
+@router.get("/causal")
+async def list_causal_events(
+    source: str | None = Query(default=None, description="Filter by event source"),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    _user: UserInfo = Depends(require_session),
+) -> PaginatedResponse:
+    """Page through observed causal events, most recent first."""
+    return _get_data().get_causal_events(source=source, offset=offset, limit=limit)
+
+
+@router.get("/causal/{event_id}")
+async def get_causal_chain(
+    event_id: str,
+    max_depth: int = Query(default=50, ge=1, le=500),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Walk the parent chain of ``event_id`` root-first."""
+    result = _get_data().get_causal_chain(event_id, max_depth=max_depth)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Causal event {event_id} not found")
+    return result
+
+
+@router.get("/causal/{event_id}/descendants")
+async def get_causal_descendants(
+    event_id: str,
+    max_depth: int = Query(default=50, ge=1, le=500),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Return BFS descendants of ``event_id``."""
+    result = _get_data().get_causal_descendants(event_id, max_depth=max_depth)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Causal event {event_id} not found")
+    return result
