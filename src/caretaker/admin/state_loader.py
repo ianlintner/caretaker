@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from caretaker.github_app import (
     AppJWTSigner,
@@ -25,7 +26,8 @@ from caretaker.github_app import (
 from caretaker.github_client.api import GitHubClient
 from caretaker.state.tracker import StateTracker
 
-from .data import AdminDataAccess
+if TYPE_CHECKING:
+    from .data import AdminDataAccess
 
 logger = logging.getLogger(__name__)
 

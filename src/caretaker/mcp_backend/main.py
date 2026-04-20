@@ -20,7 +20,7 @@ import asyncio
 import importlib.metadata
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -144,10 +144,8 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     task = getattr(application.state, "admin_refresh_task", None)
     if task is not None:
         task.cancel()
-        try:
+        with suppress(asyncio.CancelledError, Exception):
             await task
-        except (asyncio.CancelledError, Exception):
-            pass
 
 
 app = FastAPI(
