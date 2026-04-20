@@ -209,9 +209,7 @@ class PRAgent:
                 user = getattr(review, "user", None)
                 login = getattr(user, "login", "") if user else ""
                 # Only human approvals count — bot reviewers don't count
-                if login and not (
-                    "[bot]" in login or login.startswith("copilot")
-                ):
+                if login and not ("[bot]" in login or login.startswith("copilot")):
                     return False
         return True
 
@@ -482,7 +480,9 @@ class PRAgent:
                 logger.info(
                     "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
                     "outside %dh retry window)",
-                    pr.number, age_h, window_h,
+                    pr.number,
+                    age_h,
+                    window_h,
                 )
                 tracking.copilot_attempts = 0
 
