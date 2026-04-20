@@ -77,6 +77,25 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
         minter=minter, default_installation_id=installation_id
     )
 
+    neo4j_url = os.environ.get("NEO4J_URL", "").strip()
+
+    async def _sync_graph(state) -> None:  # type: ignore[no-untyped-def]
+        """Best-effort Neo4j sync. Swallows all errors — graph is optional."""
+        if not neo4j_url:
+            return
+        try:
+            from caretaker.graph.builder import GraphBuilder
+            from caretaker.graph.store import GraphStore
+
+            store = GraphStore()
+            try:
+                counts = await GraphBuilder(store).full_sync(state)
+                logger.debug("Graph sync counts: %s", counts)
+            finally:
+                await store.close()
+        except Exception:
+            logger.warning("Graph sync failed", exc_info=True)
+
     async def _loop() -> None:
         # WARNING level so the line is visible under uvicorn's default
         # root-logger config (which drops INFO from non-uvicorn loggers).
@@ -104,6 +123,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
                         len(state.tracked_issues),
                         len(state.run_history),
                     )
+                await _sync_graph(state)
             except asyncio.CancelledError:
                 raise
             except Exception:
