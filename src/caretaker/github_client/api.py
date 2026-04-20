@@ -227,6 +227,74 @@ class GitHubClient:
             return None
         return self._parse_pr(data)
 
+    async def list_pull_request_files(
+        self, owner: str, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        """Return the list of files changed in a pull request.
+
+        Each entry carries at minimum ``path``, ``additions``, ``deletions``,
+        and ``status``. Used by dedupe logic to fingerprint PRs by their
+        primary touched file.
+        """
+        data = await self._get(
+            f"/repos/{owner}/{repo}/pulls/{number}/files",
+            params={"per_page": 100},
+        )
+        if not data:
+            return []
+        return [
+            {
+                "path": f.get("filename", ""),
+                "additions": int(f.get("additions", 0)),
+                "deletions": int(f.get("deletions", 0)),
+                "status": f.get("status", ""),
+            }
+            for f in data
+        ]
+
+    async def get_closing_issue_numbers(
+        self, owner: str, repo: str, number: int
+    ) -> list[int]:
+        """Return issue numbers this PR will close when merged.
+
+        Uses the GraphQL ``closingIssuesReferences`` connection which reflects
+        both body-text ``Fixes #N`` references and the "Development" sidebar
+        links that Copilot-authored PRs rely on (body text is often absent).
+        Returns an empty list if the query fails or no issues are linked.
+        """
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            " repository(owner:$owner,name:$name){"
+            "  pullRequest(number:$number){"
+            "   closingIssuesReferences(first:20){nodes{number}}"
+            "  }"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={
+                    "query": query,
+                    "variables": {"owner": owner, "name": repo, "number": number},
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                "GraphQL closingIssuesReferences for PR #%d failed: %s", number, e
+            )
+            return []
+        if not result:
+            return []
+        try:
+            nodes = (
+                result["data"]["repository"]["pullRequest"]
+                ["closingIssuesReferences"]["nodes"]
+            )
+        except (KeyError, TypeError):
+            return []
+        return [int(n["number"]) for n in nodes if n and "number" in n]
+
     async def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = "squash"
     ) -> bool:

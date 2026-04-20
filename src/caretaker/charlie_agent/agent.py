@@ -116,6 +116,8 @@ class CharlieAgent:
 
         # Build issue → run_id map for cross-referencing PRs with related issues
         issue_run_map = _build_issue_run_map(managed_issues)
+        # Build issue → label set map so PR fingerprinting can gate on label class
+        issue_label_map = _build_issue_label_map(managed_issues)
 
         closed_issue_numbers: set[int] = set()
         closed_pr_numbers: set[int] = set()
@@ -125,8 +127,19 @@ class CharlieAgent:
                 managed_issues, report
             )
         if self._close_duplicate_prs:
+            # Fingerprint Copilot-authored managed PRs by primary touched file
+            # when they close a self-heal-labeled issue. Generalizes the D2
+            # upgrade dedupe pattern to self-heal PR races where Copilot opens
+            # N PRs for N distinct self-heal issues that all patch the same
+            # underlying bug (e.g. caretaker #411/#415/#416).
+            self_heal_primary_map = await self._build_self_heal_primary_map(
+                managed_prs, issue_label_map
+            )
             closed_pr_numbers |= await self._close_duplicate_prs_in_place(
-                managed_prs, report, issue_run_map=issue_run_map
+                managed_prs,
+                report,
+                issue_run_map=issue_run_map,
+                self_heal_primary_map=self_heal_primary_map,
             )
         if self._close_stale_issues:
             closed_issue_numbers |= await self._close_stale_issues_in_place(
@@ -172,8 +185,13 @@ class CharlieAgent:
         report: CharlieReport,
         *,
         issue_run_map: dict[int, str] | None = None,
+        self_heal_primary_map: dict[int, str] | None = None,
     ) -> set[int]:
-        groups = self._group_prs_by_work_key(prs, issue_run_map=issue_run_map)
+        groups = self._group_prs_by_work_key(
+            prs,
+            issue_run_map=issue_run_map,
+            self_heal_primary_map=self_heal_primary_map,
+        )
         closed: set[int] = set()
 
         for work_key, grouped_prs in groups.items():
@@ -324,12 +342,17 @@ class CharlieAgent:
         items: list[PullRequest],
         *,
         issue_run_map: dict[int, str] | None = None,
+        self_heal_primary_map: dict[int, str] | None = None,
     ) -> dict[str, list[PullRequest]]:
         grouped: dict[str, list[PullRequest]] = {}
         for item in items:
             work_key = _extract_work_key(item.title, item.body or "")
             if work_key is None and issue_run_map:
                 work_key = _resolve_pr_run_key(item.body or "", issue_run_map)
+            if work_key is None and self_heal_primary_map:
+                primary = self_heal_primary_map.get(item.number)
+                if primary:
+                    work_key = f"self_heal_primary:{primary}"
             if work_key is None:
                 continue
             grouped.setdefault(work_key, []).append(item)
@@ -337,6 +360,56 @@ class CharlieAgent:
         if issue_run_map:
             grouped = _merge_pr_groups_by_run(grouped, issue_run_map)
         return grouped
+
+    async def _build_self_heal_primary_map(
+        self,
+        prs: list[PullRequest],
+        issue_label_map: dict[int, frozenset[str]],
+    ) -> dict[int, str]:
+        """Fingerprint managed Copilot PRs by primary source file.
+
+        Returns ``{pr_number: primary_file_path}`` for each Copilot-authored
+        PR that (a) closes at least one issue labeled ``caretaker:self-heal``
+        and (b) touches at least one non-test, non-doc source file. The
+        primary file is the one with the largest ``additions+deletions``
+        count, tiebroken by path.
+        """
+        result: dict[int, str] = {}
+        for pr in prs:
+            if not pr.is_copilot_pr:
+                continue
+            try:
+                closing = await self._github.get_closing_issue_numbers(
+                    self._owner, self._repo, pr.number
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Charlie agent: failed to fetch closing issues for PR #%d: %s",
+                    pr.number,
+                    exc,
+                )
+                continue
+            closes_self_heal = any(
+                "caretaker:self-heal" in issue_label_map.get(n, frozenset())
+                for n in closing
+            )
+            if not closes_self_heal:
+                continue
+            try:
+                files = await self._github.list_pull_request_files(
+                    self._owner, self._repo, pr.number
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Charlie agent: failed to fetch files for PR #%d: %s",
+                    pr.number,
+                    exc,
+                )
+                continue
+            primary = _primary_source_file(files)
+            if primary:
+                result[pr.number] = primary
+        return result
 
     @staticmethod
     def _issue_preference_key(issue: Issue) -> tuple[int, datetime, int]:
@@ -441,3 +514,40 @@ def _merge_pr_groups_by_run(
             merged.setdefault(canonical_key, []).extend(combined)
 
     return merged
+
+
+def _build_issue_label_map(issues: list[Issue]) -> dict[int, frozenset[str]]:
+    """Map issue number → frozenset of label names."""
+    return {issue.number: frozenset(lbl.name for lbl in issue.labels) for issue in issues}
+
+
+_NON_SOURCE_PREFIXES = ("tests/", "test/", "docs/", "doc/")
+_NON_SOURCE_SUFFIXES = (".md", ".rst", ".txt", ".lock")
+
+
+def _primary_source_file(files: list[dict[str, object]]) -> str | None:
+    """Return the most-changed non-test, non-doc source file path, or ``None``.
+
+    Filters out test, doc, and lockfile entries so two PRs whose only
+    overlap is an incidental ``tests/`` touch don't get dedupe-merged.
+    Tie-breaks ties by path alphabetically for deterministic grouping.
+    """
+    candidates: list[tuple[int, str]] = []
+    for f in files:
+        path_obj = f.get("path", "")
+        path = path_obj if isinstance(path_obj, str) else ""
+        if not path:
+            continue
+        if any(path.startswith(p) for p in _NON_SOURCE_PREFIXES):
+            continue
+        if any(path.endswith(s) for s in _NON_SOURCE_SUFFIXES):
+            continue
+        adds_obj = f.get("additions", 0)
+        dels_obj = f.get("deletions", 0)
+        adds = int(adds_obj) if isinstance(adds_obj, int | str) else 0
+        dels = int(dels_obj) if isinstance(dels_obj, int | str) else 0
+        candidates.append((adds + dels, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    return candidates[0][1]

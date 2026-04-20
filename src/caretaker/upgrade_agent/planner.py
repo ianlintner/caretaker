@@ -13,6 +13,7 @@ _UPGRADE_MARKER_RE = re.compile(r"<!--\s*caretaker:upgrade target=([^\s>]+)\s*--
 if TYPE_CHECKING:
     from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
     from caretaker.upgrade_agent.release_checker import Release
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,8 @@ class UpgradePlanner:
 
         Returns the list of PR numbers closed.
         """
+        from caretaker.dedupe import close_superseded_prs
+
         title_substring = f"Upgrade to v{version}"
         try:
             prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
@@ -317,41 +320,20 @@ class UpgradePlanner:
             logger.warning("Failed to list open PRs for upgrade dedupe: %s", e)
             return []
 
-        matches = [p for p in prs if title_substring in (p.title or "")]
-        if len(matches) <= 1:
-            return []
+        def _key(pr: PullRequest) -> str | None:
+            return f"upgrade:{version}" if title_substring in (pr.title or "") else None
 
-        matches.sort(key=lambda p: p.number)
-        *to_close, keeper = matches
-        closed: list[int] = []
-        for pr in to_close:
-            try:
-                await self._github.add_issue_comment(
-                    self._owner,
-                    self._repo,
-                    pr.number,
-                    f"Superseded by #{keeper.number} (both target v{version}).",
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to add superseded comment on PR #%d: %s", pr.number, e
-                )
-            try:
-                await self._github.update_issue(
-                    self._owner, self._repo, pr.number, state="closed"
-                )
-                closed.append(pr.number)
-                logger.info(
-                    "Closed superseded upgrade PR #%d (kept #%d) for v%s",
-                    pr.number,
-                    keeper.number,
-                    version,
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to close superseded upgrade PR #%d: %s", pr.number, e
-                )
-        return closed
+        def _comment(closed: PullRequest, keeper: PullRequest) -> str:
+            return f"Superseded by #{keeper.number} (both target v{version})."
+
+        return await close_superseded_prs(
+            self._github,
+            self._owner,
+            self._repo,
+            prs,
+            bucket_key=_key,
+            comment=_comment,
+        )
 
     async def create_sync_issue(self, version: str) -> int:
         """Create a sync issue for the given version and return its number.
