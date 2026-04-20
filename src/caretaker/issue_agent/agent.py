@@ -281,13 +281,20 @@ class IssueAgent:
         if debug_data:
             payload["debug"] = debug_data
 
+        marker = "<!-- caretaker:escalation -->"
         body = (
+            f"{marker}\n\n"
             f"⚠️ **Caretaker Escalation**\n\n"
             f"**Reason:** {reason}\n\n"
             f"This issue needs human attention."
         )
         body += render_debug_dump(payload, title="Escalation debug dump")
-        await self._issues.comment(
-            issue.number,
-            body,
+        # Upsert: one escalation comment per issue, edited in place if reason
+        # changes. Without this, repeated escalation evaluations spammed the
+        # issue with identical comments (portfolio #148 saw 14 dupes).
+        # Cooldown: 1h between updates so human reviewers aren't re-pinged
+        # every cycle on issues that are already escalated.
+        await self._github.upsert_issue_comment(
+            self._owner, self._repo, issue.number, marker, body,
+            min_seconds_between_updates=3600,
         )
