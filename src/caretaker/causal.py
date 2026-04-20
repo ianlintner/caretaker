@@ -36,7 +36,7 @@ import uuid
 _CAUSAL_MARKER_RE = re.compile(
     r"<!--\s*caretaker:causal\s+"
     r"id=(?P<id>[A-Za-z0-9._:-]+)"
-    r"(?:\s+source=(?P<source>[A-Za-z0-9._-]+))?"
+    r"(?:\s+source=(?P<source>[A-Za-z0-9._:-]+))?"
     r"(?:\s+parent=(?P<parent>[A-Za-z0-9._:-]+))?"
     r"\s*-->",
     re.IGNORECASE,

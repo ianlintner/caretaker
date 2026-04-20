@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue, PullRequest
@@ -166,9 +168,11 @@ class CharlieAgent:
             for issue in grouped_issues:
                 if issue.number == canonical.number:
                     continue
+                causal = make_causal_marker("charlie:close-duplicate-issue")
                 await self._comment_and_close_issue(
                     issue.number,
                     (
+                        f"{causal}\n\n"
                         "🧹 Charlie work: closing this duplicate caretaker-managed issue in "
                         f"favor of #{canonical.number} (`{work_key}`)."
                     ),
@@ -202,9 +206,11 @@ class CharlieAgent:
             for pr in grouped_prs:
                 if pr.number == canonical.number:
                     continue
+                causal = make_causal_marker("charlie:close-duplicate-pr")
                 await self._comment_and_close_pr(
                     pr.number,
                     (
+                        f"{causal}\n\n"
                         "🧹 Charlie work: closing this duplicate caretaker-managed PR in "
                         f"favor of #{canonical.number} (`{work_key}`)."
                     ),
@@ -235,9 +241,11 @@ class CharlieAgent:
             if age_days < self._stale_days:
                 continue
 
+            causal = make_causal_marker("charlie:close-stale-issue")
             await self._comment_and_close_issue(
                 issue.number,
                 (
+                    f"{causal}\n\n"
                     "🧹 Charlie work: closing this caretaker-managed issue after "
                     f"{age_days} days without meaningful activity. Reopen if it still matters."
                 ),
@@ -266,9 +274,11 @@ class CharlieAgent:
             if age_days < self._stale_days:
                 continue
 
+            causal = make_causal_marker("charlie:close-stale-pr")
             await self._comment_and_close_pr(
                 pr.number,
                 (
+                    f"{causal}\n\n"
                     "🧹 Charlie work: closing this caretaker-managed PR after "
                     f"{age_days} days without meaningful activity. Reopen or recreate if needed."
                 ),

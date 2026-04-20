@@ -105,6 +105,9 @@ class TestCharlieAgent:
         assert report.duplicate_issues_closed == 1
         assert report.issues_closed == 1
         gh.add_issue_comment.assert_awaited_once()
+        comment_body = gh.add_issue_comment.call_args.args[3]
+        assert "caretaker:causal" in comment_body
+        assert "source=charlie:close-duplicate-issue" in comment_body
         gh.update_issue.assert_awaited_once_with("o", "r", 11, state="closed")
 
     @pytest.mark.asyncio

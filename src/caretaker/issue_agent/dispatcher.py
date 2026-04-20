@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.causal import extract_causal, make_causal_marker
 from caretaker.issue_agent.classifier import IssueClassification
 from caretaker.tools.github import GitHubIssueTools
 
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 def build_assignment_body(issue: Issue, classification: IssueClassification) -> str:
     """Build a structured assignment body for Copilot."""
+    parent_causal = extract_causal(issue.body or "")
+    parent_id = parent_causal["id"] if parent_causal else None
     lines = [
         f"## [Maintainer] Fix: {issue.title}",
         "",
@@ -26,6 +29,7 @@ def build_assignment_body(issue: Issue, classification: IssueClassification) -> 
         "@copilot Please implement this fix. "
         "See `.github/agents/maintainer-issue.md` for your workflow.",
         "",
+        make_causal_marker("issue-agent:dispatch", parent=parent_id),
         "<!-- caretaker:assignment -->",
         f"TYPE: {classification.value}",
         f"SOURCE_ISSUE: #{issue.number}",
@@ -91,10 +95,14 @@ class IssueDispatcher:
 
         # For simple bugs, just update the existing issue and assign to Copilot
         if classification == IssueClassification.BUG_SIMPLE:
+            parent_causal = extract_causal(issue.body or "")
+            parent_id = parent_causal["id"] if parent_causal else None
+            causal = make_causal_marker("issue-agent:dispatch", parent=parent_id)
             comment_body = (
                 f"@copilot This issue has been triaged as `{classification.value}`. "
                 "Please fix it.\n\n"
                 "See `.github/agents/maintainer-issue.md` for your workflow.\n\n"
+                f"{causal}\n"
                 "<!-- caretaker:assignment -->\n"
                 f"TYPE: {classification.value}\n"
                 "PRIORITY: medium\n"

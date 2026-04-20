@@ -202,6 +202,8 @@ class TestCIFixLifecycle:
         assert '"type": "pr_escalation"' in comment_body
         assert '"max_retries": 2' in comment_body
         assert "<!-- caretaker:escalation -->" in comment_body
+        assert "caretaker:causal" in comment_body
+        assert "source=pr-agent:escalation" in comment_body
 
     async def test_managed_pr_with_backlog_failure_is_closed_when_enabled(self) -> None:
         """A backlog-guard failure should close managed PRs when configured."""

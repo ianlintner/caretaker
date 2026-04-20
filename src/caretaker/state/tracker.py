@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
 from caretaker.tools.github import GitHubIssueTools
 
 from .models import OrchestratorState, RunSummary
@@ -182,7 +183,12 @@ class StateTracker:
 
     @staticmethod
     def _build_state_comment(state_json: str, summary: RunSummary | None = None) -> str:
-        lines = [STATE_COMMENT_MARKER, "", "## Orchestrator State Update\n"]
+        lines = [
+            STATE_COMMENT_MARKER,
+            make_causal_marker("state-tracker:orchestrator-state"),
+            "",
+            "## Orchestrator State Update\n",
+        ]
         if summary:
             lines.append(f"Run completed at {summary.run_at.isoformat()} (mode: {summary.mode})")
             lines.append(f"- PRs monitored: {summary.prs_monitored}")
@@ -203,6 +209,7 @@ class StateTracker:
         """Render a rolling history of recent runs as one upsertable body."""
         lines = [
             RUN_HISTORY_COMMENT_MARKER,
+            make_causal_marker("state-tracker:run-history"),
             "",
             f"## Maintainer Run History (last {len(runs)} runs)",
             "",

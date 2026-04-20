@@ -89,7 +89,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
 
             store = GraphStore()
             try:
-                counts = await GraphBuilder(store).full_sync(state)
+                counts = await GraphBuilder(store).full_sync(state, causal_store=data.causal_store)
                 logger.debug("Graph sync counts: %s", counts)
             finally:
                 await store.close()
@@ -105,6 +105,10 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
             try:
                 async with GitHubClient(credentials_provider=provider) as github:
                     state = await StateTracker(github, owner, name).load()
+                    try:
+                        await data.causal_store.refresh_from_github(github, owner, name, state)
+                    except Exception:
+                        logger.debug("Causal store refresh failed", exc_info=True)
                 data.set_state(state)
                 if first:
                     logger.warning(
