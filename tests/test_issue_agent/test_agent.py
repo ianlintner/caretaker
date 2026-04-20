@@ -190,7 +190,11 @@ class TestIssueAgent:
 
         assert 8 in report.escalated
         assert tracked[8].state == IssueTrackingState.ESCALATED
-        comment_body = github.add_issue_comment.call_args.args[3]
+        # Escalation comments are upserted by marker (Sprint 2 A3) — body is
+        # the 5th positional arg (owner, repo, number, marker, body).
+        github.upsert_issue_comment.assert_awaited()
+        comment_body = github.upsert_issue_comment.await_args.args[4]
         assert "Escalation debug dump" in comment_body
         assert '"type": "issue_escalation"' in comment_body
         assert '"classification": "INFRA_OR_CONFIG"' in comment_body
+        assert "<!-- caretaker:escalation -->" in comment_body
