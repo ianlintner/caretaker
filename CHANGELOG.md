@@ -4,81 +4,159 @@ All notable changes to this project will be documented in this file.
 
 ## [2026-W17] — 2026-04-20
 
-- add Charlie agent for janitorial cleanup of caretaker-managed issues and PRs (#237)
-- follow-up: add CI backlog guard (`close_managed_prs_on_backlog`) and refine PR agent CI triage (#238)
 - handle 403 rate-limit errors and guard state load against unhandled crash (#244)
 - docs build no longer fails on configure-pages API errors (#256)
-- remove committed site/ build artifacts; add CodeQL exclusion config (#259)
+- Remove committed site/ build artifacts; add CodeQL exclusion config (#259)
 - guard FailureType → TaskType conversion against unmapped values (#263)
 - treat 405/409/422 merge rejections as waiting, not errors (#265)
-- fix CI failure on main for Analyze (javascript-typescript) (#268)
+- [WIP] Fix CI failure on main for Analyze (javascript-typescript) (#268)
 - replace dynamic CodeQL javascript-typescript scan with explicit Python-only workflow (#269)
 - group related issues/PRs by workflow run_id (#272)
-- introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
+- Agentic (#274)
 - prevent duplicate @copilot task comments from concurrent workflow runs (#276)
-- resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
-- remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
-- self-heal: avoid env-noise “unknown error” titles by extracting from full job log (#286)
-- improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
-- fix caretaker self-heal for unknown failure with exit code 1 (#290)
-- route Copilot wake-up comments through COPILOT_PAT identity (#292)
-- self-heal: extract actionable unknown-failure messages from Actions logs (#293)
-- add sync issue builder for client workflow/file reconciliation (#295)
-- add installation of Claude agent from improvement repo (#297)
+- Resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
+- Remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
+- Self-heal: avoid env-noise “unknown error” titles by extracting from full job log (#286)
+- Improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
+- [WIP] Fix caretaker self-heal for unknown failure (#290)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Self-heal: extract actionable unknown-failure messages from Actions logs (#293)
+- Add sync issue builder for client workflow/file reconciliation (#295)
+- [WIP] Add installation of Claude agent from improvement repo (#297)
 - address agent/orchestrator missed-goal patterns from workflow analysis (#298)
-- handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
 - handle 422 "Reference already exists" gracefully in DocsAgent (#304)
 - handle 422 branch-already-exists gracefully (#306)
-- fix unknown caretaker failure with exit code 1 (#308)
+- [WIP] Fix unknown caretaker failure with exit code 1 (#308)
 - handle 403 "not permitted to create PRs" as warning, not error (#310)
-- multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
 - introduce goal-seeking subsystem with models and evaluation logic (#321)
-- implement simple memory storage for caretaker (#323)
-- adjust image width in README (#324)
-- optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
-- update docs and readme to reflect current features (#328)
+- [WIP] Implement simple memory storage for caretaker (#323)
+- Adjust image width in README (#324)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- [WIP] Update docs and readme to reflect current features (#328)
 - implement workflow approval for action-required CI runs (#329)
 - implement ReviewAgent (#330)
-- add Azure and MCP configuration options (#331)
+- Add Azure and MCP configuration options (#331)
 - reconcile CHANGELOG — 2026-W16 (#332)
 - implement authentication modes and update client logic (#333)
-- add GitHub App support: JWT signing, installation token minting, webhook verification, and docs agent robustness improvements (#334)
+- GitHub app (#334)
 - add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
-- update setup instructions for GitHub app and backend (#340)
+- [WIP] Update setup instructions for GitHub app and backend (#340)
 - point release manifest URL at ianlintner/caretaker (#341)
-- update releases and docs to 0.5.2 (#343)
-- create a plan for enhancing coding tasks with skills and agents (#345)
-- skip changelog update if entry for the week already exists (#346)
-- update versioning system to reflect latest releases (#348)
-- implement Azure backend with PostgreSQL, Redis, and MongoDB support (#349)
-- fix bump-version CI failure and duplicate Copilot PR creation (#351)
-- fix bump-version: use COPILOT_PAT for gh pr create in release.yml (#355)
+- Update releases and docs to 0.5.2 (#343)
+- [WIP] Create a plan for enhancing coding tasks with skills and agents (#345)
+- skip changelog update if entry for the week already (#346)
+- [WIP] Update versioning system to reflect latest releases (#348)
+- Implement Azure backend with PostgreSQL, Redis, and MongoDB support (#349)
+- Fix bump-version CI failure and duplicate Copilot PR creation (#351)
+- Fix bump-version: use COPILOT_PAT for gh pr create in release.yml (#355)
 - bump version to 0.6.4 (#357)
 - update release workflow for improved version bump handling (#360)
 - add `environment: pypi` to release publish job for trusted publishing (#363)
 - bump version to 0.6.5 (#365)
 - add PYPI_API_TOKEN fallback and skip_existing to release publish job (#367)
-- add GitHub App authentication with credentials provider abstraction and dynamic token selection (#369)
+- Ghapps (#369)
 - bump version to 0.7.0 (#370)
 - remove environment from PyPI OIDC claim to match trusted publisher config (#376)
 - bump version to 0.7.1 (#377)
-- fix overexcited jobs: throttle CI trigger conditions to reduce redundant workflow runs (#378)
+- Fixes overexcited jobs (#378)
 - separate build output dir to prevent dist/ template files poisoning PyPI publish (#380)
 - enhance PyPI publishing with token and OIDC support (#382)
 - bump version to 0.7.2 (#383)
 - correct twine upload path from dist/* to dist-packages/* (#387)
-- add evolutionary self-improvement engine (evolver, mutator, crystallizer, planner, reflection) (#389)
+- Genetic (#389)
 - bump version to 0.8.0 (#390)
-- enhance PR ownership management and PyPI publishing (#391)
-- rename PyPI package from `caretaker` to `caretaker-github` (#392)
-- build Foundry-backed coding executor with LLM tool-loop, git worktree workspace, and zero-default-change integration (#393)
-- enable Foundry executor with automatic Copilot fallback routing (#394)
+- Enhance PR ownership management and PyPI publishing (#391)
+- Depo2 (#392)
+- Built a Foundry-backed coding executo (#393)
+- Enable Foundry executor (auto routing) (#394)
 - bump version to 0.8.2 (#395)
 - recognize AZURE_AI_API_KEY for Foundry availability (#396)
-- add Claude Code GitHub workflow (#397)
+- Add Claude Code GitHub Workflow (#397)
 - add 5 Opus-powered agents and refactor agents.py (#398)
 - FastAPI admin dashboard + React SPA + Neo4j graph + AKS deploy workflow (#399)
 - single caretaker status comment + configurable review gate (#403)
+- Sprint 1: PR-workflow noise reduction (A1b, B1, C1+C2+C3, D1+D2) (#404)
+- Sprint 2: comment idempotency, cooldowns, and self-heal storm cap (A3+A4, B2, C4) (#406)
+- Sprint 3: stuck-PR age gate + retry-window reset (E1+E3) (#407)
+- fall back to userinfo endpoint when ID token lacks email (#408)
+- diag(admin): log token_data + ID-token claim keys on missing email (#409)
+- expand B3 markers + F3 chain-audit backend (#420)
+- dark mode + Grafana-inspired 2026 UI refresh (#421)
+- use correct caretaker-github distribution name (#422)
+
+## [Unreleased]
+
+### Sprint B3 + F3 — causal-chain audit trail
+
+Every caretaker-authored write now carries a hidden `<!-- caretaker:causal
+id=... source=... [parent=...] -->` marker. The admin dashboard harvests
+those markers into an in-memory store and exposes chain-walking
+endpoints so we can answer questions like "this self-heal issue was
+filed — what sequence of runs produced it?"
+
+- **B3 expansion** — causal markers now injected into PR-agent
+  escalation comments, issue-agent dispatch bodies/comments, Charlie
+  close comments (duplicate + stale for both issues and PRs),
+  escalation-agent digests, and state-tracker's orchestrator-state +
+  run-history comments. Parent causal id is inherited from the source
+  issue/PR body where applicable, so chains stitch across runs.
+- **F3-1/2/3** — new `caretaker.causal_chain` module with
+  `CausalEvent`, `CausalEventRef`, `Chain`, `walk_chain()` (root-first,
+  cycle-safe, depth-bounded) and `descendants()` (BFS).
+- **F3-4/5** — `CausalEventStore` hydrated every 60s by the admin
+  refresh loop (scans tracked issues/PRs + the orchestrator
+  tracking-issue comment stream). New `/api/admin/causal` endpoints:
+  list (paged, filter by source), fetch chain for an event, fetch
+  descendants.
+- **F3-6** — Neo4j sync persists `CausalEvent` nodes and `CAUSED_BY`
+  edges so graph queries can traverse provenance alongside existing
+  PR/Issue/Agent/Run nodes.
+- New `GitHubClient.get_issue(owner, repo, number)` helper (needed by
+  the causal store's per-issue fetch during refresh).
+- Causal marker regex now accepts colons in the `source=` value so
+  composite sources like `issue-agent:dispatch` and
+  `pr-agent:escalation` round-trip cleanly.
+
+Status comments intentionally skipped: `upsert_status_comment` uses a
+strict body-equality idempotency check, so a fresh run-scoped marker
+on every cycle would break the skip-if-unchanged path.
+
+## [0.10.0] - 2026-04-19
+
+PR-workflow noise reduction sweep. Three-sprint plan addressing the 60-day audit findings on caretaker self-instance, rust-oauth2-server, and portfolio.
+
+### Sprint 1 — kill the noise loops (#404)
+
+- One-shot legacy comment compaction: pre-#403 PRs with stale ownership:claim / readiness:update duplicates get collapsed to the single status comment on next cycle (A1b)
+- Dispatch-guard tightening: skip caretaker-marker comments regardless of authoring identity; expand bot-actor allowlist; skip Copilot reviewer reviews; downstream template gets a minimal version (B1)
+- `is_actionable_conclusion()` helper + `NON_ACTIONABLE_CONCLUSIONS` set — refuse to triage cancelled/skipped/neutral check runs (C1+C2)
+- `_handle_ci_fix` skips `@copilot` task posting when failure is UNKNOWN with empty error logs (C3)
+- Upgrade-issue marker dedupe: `<!-- caretaker:upgrade target=X.Y.Z -->` body marker with title-substring fallback + backfill, fixes the rust-oauth2-server #118/#121/#126/#129/#153 v0.5.0 dupe pattern (D1)
+- Upgrade-PR dedupe: when multiple open PRs race the same upgrade target, keep the newest and close the rest with a `Superseded by #N` comment. Addresses portfolio #144/#146 racing pattern (D2)
+
+### Sprint 2 — comment idempotency, cooldowns, storm cap (#406)
+
+- `upsert_issue_comment(marker, body, *, legacy_markers, min_seconds_between_updates)` lifted into `GitHubClient` (A3)
+- `comment_cap_per_issue` (default 25) on `add_issue_comment` for caretaker-marker bodies (A4)
+- Orchestrator state and rolling run-history switched to upsert (was append-per-run; portfolio #121 hit 110 bot comments)
+- Escalation comments upserted by marker with 1h cooldown — no more 14-dupe escalation pings (portfolio #148)
+- Self-heal storm cap: max 5 issues/hour, 20/day. Catches the F1 retry-storm pattern (108 PRs in 90 min on 2026-04-14) (C4)
+- Per-event-class workflow concurrency: only cancel on `pull_request` events; serialize the rest. Reduces the 67% cancelled-run rate (B2)
+
+### Sprint 3 — stuck-PR age gate + retry-window reset (#407)
+
+- `stuck_age_hours` config (default 24, 0 disables) on PRAgentConfig — escalate PRs open longer than threshold without human approval. Catches portfolio #4 (10d) / #28 (7d) abandonment (E1)
+- Wire previously-unused `retry_window_hours` (default 24) — reset `copilot_attempts` when last attempt aged out (E3)
+- New `TrackedPR.last_copilot_attempt_at` timestamp field
+- Documentation note on unused `auto_approve_copilot` config
+
+### Test coverage
+
+- 769 tests pass (was 661 baseline at start of Sprint 1)
+- New test files: `tests/test_state_tracker.py`
+- New test classes: `TestCompactLegacyComments`, `TestIsActionableConclusion`, `TestUpgradeIssueMarkerDedupe`, `TestSelfHealStormCap`, `TestStuckPRAgeGate`, `TestRetryWindowHours`, plus upsert/cap/cooldown test cases on `tests/test_github_client_api.py`
 
 ## [2026-W16] - 2026-04-16
 
@@ -94,30 +172,30 @@ All notable changes to this project will be documented in this file.
 - Group related issues/PRs by workflow run_id (#272)
 - Refactor: introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
 - Prevent duplicate @copilot task comments from concurrent workflow runs (#276)
-- resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
-- remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
+- Resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
+- Remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
 - Self-heal: avoid env-noise "unknown error" titles by extracting from full job log (#286)
-- improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
+- Improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
 - Fix caretaker self-heal for unknown failure (#290)
-- route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
 - Self-heal: extract actionable unknown-failure messages from Actions logs (#293)
-- add sync issue builder for client workflow/file reconciliation (#295)
+- Add sync issue builder for client workflow/file reconciliation (#295)
 - Add installation of Claude agent from improvement repo (#297)
 - Address agent/orchestrator missed-goal patterns from workflow analysis (#298)
-- handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
 - Handle 422 "Reference already exists" gracefully in DocsAgent (#304)
 - Handle 422 branch-already-exists gracefully (#306)
 - Fix unknown caretaker failure with exit code 1 (#308)
 - Handle 403 "not permitted to create PRs" as warning, not error (#310)
-- multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
 - Introduce goal-seeking subsystem with models and evaluation logic (#321)
 - Implement simple memory storage for caretaker (#323)
-- adjust image width in README (#324)
-- optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- Adjust image width in README (#324)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
 - Update docs and readme to reflect current features (#328)
 - Implement workflow approval for action-required CI runs (#329)
 - Implement ReviewAgent (#330)
-- add Azure and MCP configuration options (#331)
+- Add Azure and MCP configuration options (#331)
 
 ## [0.5.2] - Current
 
@@ -150,19 +228,19 @@ All notable changes to this project will be documented in this file.
 - Introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
 - Prevent duplicate @copilot task comments from concurrent workflow runs (#276)
 - Self-heal: avoid env-noise "unknown error" titles by extracting from full job log (#286, #288, #290, #293)
-- route Copilot wake-up comments through COPILOT_PAT identity (#292)
-- add sync issue builder for client workflow/file reconciliation (#295)
-- handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Add sync issue builder for client workflow/file reconciliation (#295)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
 - Handle 422 "Reference already exists" gracefully in DocsAgent (#304, #306)
 - Handle 403 "not permitted to create PRs" as warning, not error (#310)
-- multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
 - Introduce goal-seeking subsystem with models and evaluation logic (#321)
 - Implement simple memory storage for caretaker (#323)
-- optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
 - Update docs and readme to reflect current features (#328)
 - Implement workflow approval for action-required CI runs (#329)
 - Implement ReviewAgent (#330)
-- add Azure and MCP configuration options (#331)
+- Add Azure and MCP configuration options (#331)
 
 ## [0.5.0]
 
