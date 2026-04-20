@@ -415,6 +415,25 @@ class PRAgent:
                 pr.number,
                 merge_decision.reason,
             )
+            # E2 diagnosis: when a PR is approved but still blocked, emit a
+            # structured snapshot so the next occurrence (portfolio #151-class
+            # — approved + Copilot pushed a new commit post-approval) can be
+            # root-caused from logs rather than manual GitHub archaeology.
+            if evaluation.reviews.approved:
+                logger.info(
+                    "PR #%d merge-block diagnosis: blockers=%s ci_status=%s "
+                    "changes_requested=%s approving_reviewers=%s automated_comments=%d "
+                    "draft=%s mergeable=%s copilot_pr=%s",
+                    pr.number,
+                    merge_decision.blockers,
+                    evaluation.ci.status.value,
+                    evaluation.reviews.changes_requested,
+                    [r.user.login for r in evaluation.reviews.approving_reviews],
+                    len(evaluation.reviews.automated_review_comments),
+                    pr.draft,
+                    pr.mergeable,
+                    pr.is_copilot_pr,
+                )
             report.waiting.append(pr.number)
 
         return tracking

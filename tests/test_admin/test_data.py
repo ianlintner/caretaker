@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from caretaker.admin.data import AdminDataAccess
-from caretaker.state.models import OrchestratorState, RunSummary
+from caretaker.state.models import OrchestratorState, RunSummary, TrackedPR
 
 
 def _run(
@@ -84,3 +84,46 @@ class TestStormMetrics:
 
         assert metrics["escalations_total"] == 6
         assert metrics["avg_escalation_rate"] == 0.15
+
+
+class TestFanoutMetrics:
+    def test_no_prs_returns_zeros(self) -> None:
+        data = AdminDataAccess(state=OrchestratorState())
+        metrics = data.get_fanout_metrics()
+        assert metrics["tracked_prs"] == 0
+        assert metrics["hot_prs"] == []
+
+    def test_identifies_hot_prs(self) -> None:
+        state = OrchestratorState(
+            tracked_prs={
+                1: TrackedPR(number=1, fix_cycles=0, copilot_attempts=0),
+                2: TrackedPR(number=2, fix_cycles=3, copilot_attempts=2),
+                3: TrackedPR(number=3, fix_cycles=1, copilot_attempts=4),
+                4: TrackedPR(number=4, fix_cycles=2, copilot_attempts=1),
+            },
+        )
+        data = AdminDataAccess(state=state)
+
+        metrics = data.get_fanout_metrics(high_cycle_threshold=2)
+
+        assert metrics["tracked_prs"] == 4
+        assert metrics["max_fix_cycles"] == 3
+        assert metrics["max_copilot_attempts"] == 4
+        assert metrics["high_cycle_prs"] == 2  # PRs 2 & 4 at threshold 2
+        assert metrics["high_attempt_prs"] == 1  # PR 3 at attempts >= 3
+        hot_numbers = [p["number"] for p in metrics["hot_prs"]]
+        # PRs 2, 3, 4 are hot; PR 1 is cold.
+        assert 1 not in hot_numbers
+        assert set(hot_numbers) == {2, 3, 4}
+
+    def test_hot_prs_capped_at_twenty(self) -> None:
+        state = OrchestratorState(
+            tracked_prs={
+                i: TrackedPR(number=i, fix_cycles=5) for i in range(1, 30)
+            },
+        )
+        data = AdminDataAccess(state=state)
+
+        metrics = data.get_fanout_metrics()
+
+        assert len(metrics["hot_prs"]) == 20

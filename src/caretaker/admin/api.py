@@ -121,6 +121,15 @@ async def latest_run(
     return result
 
 
+@router.get("/metrics/fanout")
+async def fanout_metrics(
+    high_cycle_threshold: int = Query(default=2, ge=1, le=100),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Per-PR fan-out proxies (fix_cycles, copilot_attempts) for F1 monitoring."""
+    return _get_data().get_fanout_metrics(high_cycle_threshold=high_cycle_threshold)
+
+
 @router.get("/metrics/storm")
 async def storm_metrics(
     window: int = Query(default=20, ge=1, le=200),

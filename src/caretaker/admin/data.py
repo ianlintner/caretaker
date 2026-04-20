@@ -194,6 +194,63 @@ class AdminDataAccess:
             "run_window_end": runs[-1].run_at.isoformat() if runs[-1].run_at else None,
         }
 
+    def get_fanout_metrics(self, high_cycle_threshold: int = 2) -> dict[str, Any]:
+        """Per-PR proxies for caretaker comment fan-out.
+
+        True comment counts would require fetching GitHub comment lists per
+        PR on every refresh — expensive at scale. Instead, this surfaces
+        signals already tracked on ``TrackedPR``:
+
+        - ``fix_cycles`` — each cycle typically writes a status update +
+          task comment, so a high value correlates with heavy fan-out.
+        - ``copilot_attempts`` — same dynamic; each attempt spawns an
+          ``@copilot`` task comment plus surrounding status edits.
+
+        The admin UI can alert above ``high_cycle_threshold`` to catch
+        F1/F2/F9-class regressions before users notice.
+        """
+        prs = list(self._state.tracked_prs.values())
+        if not prs:
+            return {
+                "tracked_prs": 0,
+                "high_cycle_prs": 0,
+                "high_attempt_prs": 0,
+                "max_fix_cycles": 0,
+                "max_copilot_attempts": 0,
+                "hot_prs": [],
+            }
+        max_cycles = max(p.fix_cycles for p in prs)
+        max_attempts = max(p.copilot_attempts for p in prs)
+        high_cycle = [p for p in prs if p.fix_cycles >= high_cycle_threshold]
+        high_attempt = [p for p in prs if p.copilot_attempts >= high_cycle_threshold + 1]
+
+        hot_set = {p.number: p for p in high_cycle}
+        for p in high_attempt:
+            hot_set[p.number] = p
+        hot_sorted = sorted(
+            hot_set.values(),
+            key=lambda p: (p.fix_cycles, p.copilot_attempts),
+            reverse=True,
+        )[:20]
+
+        return {
+            "tracked_prs": len(prs),
+            "high_cycle_prs": len(high_cycle),
+            "high_attempt_prs": len(high_attempt),
+            "max_fix_cycles": max_cycles,
+            "max_copilot_attempts": max_attempts,
+            "hot_prs": [
+                {
+                    "number": p.number,
+                    "fix_cycles": p.fix_cycles,
+                    "copilot_attempts": p.copilot_attempts,
+                    "state": p.state,
+                    "escalated": p.escalated,
+                }
+                for p in hot_sorted
+            ],
+        }
+
     # ── Memory Store ──────────────────────────────────────────────────────
 
     def get_memory_namespaces(self) -> list[NamespaceSummary]:
