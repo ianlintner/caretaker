@@ -588,6 +588,18 @@ class GitHubClient:
         )
         return self._parse_comment(data)
 
+    async def delete_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> None:
+        """Delete an existing issue/PR comment by id via DELETE."""
+        await self._request(
+            "DELETE",
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+        )
+
     async def add_labels(
         self, owner: str, repo: str, number: int, labels: list[str]
     ) -> list[Label]:

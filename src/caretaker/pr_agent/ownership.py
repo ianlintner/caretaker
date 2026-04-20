@@ -87,6 +87,69 @@ async def upsert_status_comment(
     await github.edit_issue_comment(owner, repo, existing.id, body)
 
 
+_ARCHIVED_BODY = "*[archived — superseded by caretaker status comment above]*"
+
+
+async def compact_legacy_comments(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> int:
+    """Collapse multiple caretaker-marker comments down to one (the newest).
+
+    Pre-#403 caretaker versions posted a fresh ``caretaker:ownership:claim``
+    and ``caretaker:readiness:update`` comment on every cycle. PRs created
+    under those versions can carry dozens of stale duplicates. This function
+    keeps the highest-id matching comment (which the regular upsert path will
+    edit going forward) and removes the older ones via ``DELETE``. If a
+    delete fails (permissions, etc.) the body is rewritten to a one-line
+    archived marker so the duplicate at least stops being visual noise.
+
+    Returns the number of older comments successfully deleted or archived.
+    """
+    comments = await github.get_pr_comments(owner, repo, pr_number)
+    matches = [
+        c
+        for c in comments
+        if (c.body or "")
+        and (
+            STATUS_COMMENT_MARKER in c.body
+            or any(m in c.body for m in _LEGACY_STATUS_MARKERS)
+        )
+    ]
+    if len(matches) <= 1:
+        return 0
+
+    matches.sort(key=lambda c: c.id)
+    *to_remove, _keeper = matches
+    removed = 0
+    for comment in to_remove:
+        try:
+            await github.delete_issue_comment(owner, repo, comment.id)
+            removed += 1
+            continue
+        except Exception as e:
+            logger.warning(
+                "PR #%d: failed to delete legacy caretaker comment %d (%s); "
+                "falling back to archive edit",
+                pr_number,
+                comment.id,
+                e,
+            )
+        try:
+            await github.edit_issue_comment(owner, repo, comment.id, _ARCHIVED_BODY)
+            removed += 1
+        except Exception as e:
+            logger.warning(
+                "PR #%d: failed to archive legacy caretaker comment %d: %s",
+                pr_number,
+                comment.id,
+                e,
+            )
+    return removed
+
+
 @dataclass
 class OwnershipClaim:
     """Result of attempting to acquire or release ownership."""
