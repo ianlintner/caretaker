@@ -263,9 +263,37 @@ async def callback(
 
     token_data = token_resp.json()
 
+    # Diagnostic: log the keys returned (NOT the values, to avoid token leak).
+    # Helps catch OIDC providers that omit access_token or use non-standard
+    # field names in the token response.
+    logger.info(
+        "Token exchange returned keys=%s (access_token_len=%d, id_token_len=%d)",
+        sorted(token_data.keys()) if isinstance(token_data, dict) else "non-dict",
+        len(token_data.get("access_token", "") or ""),
+        len(token_data.get("id_token", "") or ""),
+    )
+
     # Decode ID token (basic validation — production should verify signature)
     id_token = token_data.get("id_token", "")
     user_info = await _extract_user_info(id_token, token_data)
+
+    # Diagnostic: when we couldn't extract email, log the ID-token claim names
+    # (without values) so we can identify which claim the issuer used.
+    if user_info.email is None and id_token:
+        try:
+            import base64
+
+            parts = id_token.split(".")
+            if len(parts) >= 2:
+                payload = parts[1]
+                payload += "=" * (4 - len(payload) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                logger.warning(
+                    "ID token did not yield an email claim. claims_keys=%s",
+                    sorted(claims.keys()) if isinstance(claims, dict) else "non-dict",
+                )
+        except Exception:
+            pass
 
     # Enforce email allowlist
     if _config.allowed_emails and user_info.email not in _config.allowed_emails:
