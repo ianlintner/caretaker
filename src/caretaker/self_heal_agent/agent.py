@@ -316,9 +316,11 @@ class SelfHealAgent:
 
     async def _fetch_job_log(self, job_id: int) -> str:
         try:
+            token = await self._github._creds.default_token()
             resp = await self._github._client.get(
                 f"/repos/{self._owner}/{self._repo}/actions/jobs/{job_id}/logs",
                 follow_redirects=True,
+                headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code == 200:
                 return _decode_job_log_payload(resp.content, resp.text)
@@ -448,6 +450,13 @@ class SelfHealAgent:
 # ── Failure classification ────────────────────────────────────────────────────
 
 
+# Specific error patterns that indicate the tracking issue has hit GitHub's
+# 2500-comment limit.  Classified before the generic INTEGRATION_ERROR path.
+_TRACKING_ISSUE_FULL_PATTERNS = [
+    re.compile(r"Commenting is disabled on issues with more than", re.IGNORECASE),
+    re.compile(r"2500 comments", re.IGNORECASE),
+]
+
 _CONFIG_PATTERNS = [
     re.compile(r"pydantic|ValidationError|extra fields|field required", re.IGNORECASE),
     re.compile(r"ValueError.*[Cc]onfig", re.IGNORECASE),
@@ -511,6 +520,17 @@ def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, s
             FailureKind.TRANSIENT,
             f"Transient failure in {job_name}",
             "Rate limit or network timeout — no action needed.",
+        )
+
+    if any(p.search(log_tail) for p in _TRACKING_ISSUE_FULL_PATTERNS):
+        return (
+            FailureKind.CONFIG_ERROR,
+            "Tracking issue has reached GitHub's comment limit",
+            "The caretaker orchestrator tracking issue has accumulated more than "
+            "2500 comments and GitHub has disabled further commenting.\n\n"
+            "The caretaker library will automatically close the full issue and "
+            "create a replacement on the next run.  No manual action is needed "
+            "once this fix is deployed.",
         )
 
     if any(p.search(log_tail) for p in _CONFIG_PATTERNS):
