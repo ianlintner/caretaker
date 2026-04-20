@@ -138,7 +138,7 @@ on:
         required: false
         default: 'full'
         type: choice
-        options: [full, pr-only, issue-only, upgrade-only, dry-run]
+        options: [full, pr-only, issue-only, upgrade, dry-run]
 
 permissions:
   contents: write
