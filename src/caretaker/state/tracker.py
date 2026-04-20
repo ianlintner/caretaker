@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.tools.github import GitHubIssueTools
 
 from .models import OrchestratorState, RunSummary
@@ -95,13 +96,44 @@ class StateTracker:
 
         state_json = self._state.model_dump_json(indent=2)
         body = self._build_state_comment(state_json, summary)
-        await self._github.upsert_issue_comment(
-            self._owner,
-            self._repo,
-            self._tracking_issue_number,
-            STATE_COMMENT_MARKER,
-            body,
-        )
+        await self._upsert_state_comment(body)
+
+    async def _upsert_state_comment(self, body: str) -> None:
+        """Upsert the state comment, rotating to a new tracking issue if needed.
+
+        GitHub disables commenting on issues that exceed 2500 comments.  When
+        that limit is hit the API returns a 403 with "Commenting is disabled on
+        issues with more than 2500 comments".  We handle this transparently by
+        creating a fresh tracking issue and retrying once.
+        """
+        assert self._tracking_issue_number is not None
+        try:
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                STATE_COMMENT_MARKER,
+                body,
+            )
+        except GitHubAPIError as e:
+            if "Commenting is disabled" in str(e):
+                logger.warning(
+                    "Tracking issue #%d has hit the GitHub 2500-comment limit — "
+                    "rotating to a new tracking issue",
+                    self._tracking_issue_number,
+                )
+                self._tracking_issue_number = None
+                await self._create_tracking_issue()
+                assert self._tracking_issue_number is not None
+                await self._github.upsert_issue_comment(
+                    self._owner,
+                    self._repo,
+                    self._tracking_issue_number,
+                    STATE_COMMENT_MARKER,
+                    body,
+                )
+            else:
+                raise
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
 
     async def post_run_summary(self, summary: RunSummary) -> None:

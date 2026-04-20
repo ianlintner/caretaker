@@ -9,10 +9,11 @@ producing unbounded growth (portfolio#121 hit 110 bot comments).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.state.models import RunSummary
 from caretaker.state.tracker import (
     RUN_HISTORY_COMMENT_MARKER,
@@ -113,3 +114,51 @@ class TestPostRunSummaryUsesUpsert:
         assert idx_latest != -1
         assert idx_one != -1
         assert idx_latest < idx_one
+
+
+@pytest.mark.asyncio
+class TestSaveRotatesOnCommentingDisabled:
+    """save() must rotate to a new tracking issue on GitHub's 2500-comment limit."""
+
+    async def test_save_creates_new_issue_on_commenting_disabled(self) -> None:
+        """When GitHub returns 403 'Commenting is disabled', save() creates a new tracking issue."""
+        github = AsyncMock()
+        # First call raises "Commenting is disabled", second call succeeds
+        err_msg = '{"message":"Commenting is disabled on issues with more than 2500 comments"}'
+        github.upsert_issue_comment = AsyncMock(
+            side_effect=[
+                GitHubAPIError(403, err_msg),
+                None,
+            ]
+        )
+        new_issue = AsyncMock()
+        new_issue.number = 42
+        github.create_issue = AsyncMock(return_value=new_issue)
+
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 1  # old issue with too many comments
+
+        with patch.object(tracker._issues, "create", return_value=new_issue):
+            await tracker.save(summary=_summary())
+
+        # Should have been called twice: once for issue #1 (fails), once for new issue #42
+        assert github.upsert_issue_comment.await_count == 2
+        first_call_issue = github.upsert_issue_comment.await_args_list[0].args[2]
+        second_call_issue = github.upsert_issue_comment.await_args_list[1].args[2]
+        assert first_call_issue == 1
+        assert second_call_issue == 42
+        # Tracker should now reference the new issue
+        assert tracker._tracking_issue_number == 42
+
+    async def test_save_reraises_non_commenting_disabled_403(self) -> None:
+        """A 403 that is NOT 'Commenting is disabled' is re-raised."""
+        github = AsyncMock()
+        github.upsert_issue_comment = AsyncMock(
+            side_effect=GitHubAPIError(403, '{"message":"Resource not accessible by integration"}')
+        )
+
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+
+        with pytest.raises(GitHubAPIError):
+            await tracker.save(summary=_summary())

@@ -504,7 +504,10 @@ class Orchestrator:
                     logger.warning("Failed to disconnect MCP client: %s", e)
 
         # Persist state (save also appends summary to history)
-        await self._state_tracker.save(summary)
+        try:
+            await self._state_tracker.save(summary)
+        except Exception as e:
+            logger.warning("Failed to persist orchestrator state: %s", e)
 
         # Save memory store snapshot (for artifact upload / rollback)
         if self._memory is not None:
