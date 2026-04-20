@@ -248,6 +248,39 @@ class TestCIFixLifecycle:
         assert updated.state == PRTrackingState.DISCOVERED
         assert 7 in report.waiting
 
+    async def test_skips_unknown_failure_with_empty_logs(self) -> None:
+        """Unknown failure with no log output must NOT post a Copilot task.
+
+        This is the upstream guard that prevents the
+        '[WIP] Fix CI failure (unknown)' PR storm: when log extraction
+        produced nothing, asking Copilot to "fix nothing" historically
+        resulted in noisy speculative PRs that get auto-closed.
+        """
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=8, user=copilot_user)
+        tracking = TrackedPR(number=8)
+        config = make_config(flaky_retries=0)
+        # An "unknown"-classified failure: no recognizable patterns and
+        # no captured output_summary or output_title.
+        failed_run = make_check_run(
+            name="cryptic-job",
+            conclusion=CheckConclusion.FAILURE,
+            output_summary="",
+            output_title="",
+        )
+
+        updated, report, agent = await self._run_handle_ci_fix(
+            pr,
+            tracking,
+            config,
+            failed_run=failed_run,
+        )
+
+        agent._copilot_bridge.request_ci_fix.assert_not_awaited()
+        assert 8 in report.waiting
+        assert updated.copilot_attempts == 0
+        assert updated.notes == "skipped_empty_unknown_failure"
+
 
 @pytest.mark.asyncio
 class TestOrchestratorWorkflowRunEvent:
