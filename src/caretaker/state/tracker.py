@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,21 @@ RUN_HISTORY_COMMENT_MARKER = "<!-- caretaker:run-history -->"
 
 # How many recent runs to keep visible in the rolling history comment.
 _RUN_HISTORY_KEEP = 10
+
+# Fragment that GitHub includes in the 403 response body when an issue has
+# accumulated more than 2 500 comments and commenting is disabled.
+_COMMENT_LIMIT_FRAGMENT = "2500 comments"
+
+
+def _is_comment_limit_error(exc: Exception) -> bool:
+    """Return True when *exc* is the GitHub 403 'too many comments' error."""
+    from caretaker.github_client.api import GitHubAPIError
+
+    return (
+        isinstance(exc, GitHubAPIError)
+        and exc.status_code == 403
+        and _COMMENT_LIMIT_FRAGMENT in exc.message
+    )
 
 
 class StateTracker:
@@ -95,13 +111,26 @@ class StateTracker:
 
         state_json = self._state.model_dump_json(indent=2)
         body = self._build_state_comment(state_json, summary)
-        await self._github.upsert_issue_comment(
-            self._owner,
-            self._repo,
-            self._tracking_issue_number,
-            STATE_COMMENT_MARKER,
-            body,
-        )
+        try:
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                STATE_COMMENT_MARKER,
+                body,
+            )
+        except Exception as exc:
+            if _is_comment_limit_error(exc):
+                await self._rotate_tracking_issue()
+                await self._github.upsert_issue_comment(
+                    self._owner,
+                    self._repo,
+                    self._tracking_issue_number,
+                    STATE_COMMENT_MARKER,
+                    body,
+                )
+            else:
+                raise
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
 
     async def post_run_summary(self, summary: RunSummary) -> None:
@@ -124,13 +153,26 @@ class StateTracker:
             recent = recent[-_RUN_HISTORY_KEEP:]
 
         body = self._build_history_comment(recent)
-        await self._github.upsert_issue_comment(
-            self._owner,
-            self._repo,
-            self._tracking_issue_number,
-            RUN_HISTORY_COMMENT_MARKER,
-            body,
-        )
+        try:
+            await self._github.upsert_issue_comment(
+                self._owner,
+                self._repo,
+                self._tracking_issue_number,
+                RUN_HISTORY_COMMENT_MARKER,
+                body,
+            )
+        except Exception as exc:
+            if _is_comment_limit_error(exc):
+                await self._rotate_tracking_issue()
+                await self._github.upsert_issue_comment(
+                    self._owner,
+                    self._repo,
+                    self._tracking_issue_number,
+                    RUN_HISTORY_COMMENT_MARKER,
+                    body,
+                )
+            else:
+                raise
 
     async def post_reflection(self, result: ReflectionResult) -> None:
         """Post a reflection analysis comment to the tracking issue."""
@@ -141,7 +183,14 @@ class StateTracker:
         assert self._tracking_issue_number is not None
 
         body = format_reflection_comment(result)
-        await self._issues.comment(self._tracking_issue_number, body)
+        try:
+            await self._issues.comment(self._tracking_issue_number, body)
+        except Exception as exc:
+            if _is_comment_limit_error(exc):
+                await self._rotate_tracking_issue()
+                await self._issues.comment(self._tracking_issue_number, body)
+            else:
+                raise
         logger.info(
             "Reflection posted to tracking issue #%d (triggered_by=%s)",
             self._tracking_issue_number,
@@ -168,6 +217,37 @@ class StateTracker:
         )
         self._tracking_issue_number = issue.number
         logger.info("Created tracking issue #%d", issue.number)
+
+    async def _rotate_tracking_issue(self) -> None:
+        """Close the full tracking issue and create a fresh replacement.
+
+        Called automatically when GitHub returns a 403 because the current
+        tracking issue has accumulated more than 2 500 comments.  The old
+        issue is closed with an explanatory note; a new one is opened and
+        :attr:`_tracking_issue_number` is updated so the next save lands on
+        the new issue.
+        """
+        old_number = self._tracking_issue_number
+        if old_number is not None:
+            with contextlib.suppress(Exception):
+                await self._github.update_issue(
+                    self._owner,
+                    self._repo,
+                    old_number,
+                    state="closed",
+                    body=(
+                        "This tracking issue has reached GitHub's 2 500-comment "
+                        "limit.  A replacement tracking issue has been created "
+                        "automatically — please use that one going forward."
+                    ),
+                )
+            logger.warning(
+                "Tracking issue #%d is full (≥2500 comments) — "
+                "closed and creating a new tracking issue",
+                old_number,
+            )
+        self._tracking_issue_number = None
+        await self._create_tracking_issue()
 
     @staticmethod
     def _extract_state(body: str) -> str | None:

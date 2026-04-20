@@ -398,3 +398,39 @@ class TestSelfHealStormCap:
             report = await agent.run()
 
         assert report.local_issues_created == [1]
+
+
+class TestClassifyFailureTrackingIssueFull:
+    """Failures caused by the 2500-comment limit should be classified as CONFIG_ERROR."""
+
+    _LOG_TEMPLATE = (
+        "2026-04-20T07:59:54Z INFO  caretaker.orchestrator — Handling event: workflow_run\n"
+        "2026-04-20T07:59:54Z INFO  httpx — HTTP Request: POST "
+        "https://api.github.com/repos/owner/repo/issues/1/comments "
+        '"HTTP/1.1 403 Forbidden"\n'
+        "2026-04-20T07:59:54Z Traceback (most recent call last):\n"
+        "  File ..., in save\n"
+        "    raise GitHubAPIError(resp.status_code, resp.text)\n"
+        "caretaker.github_client.api.GitHubAPIError: GitHub API error 403: "
+        '{{"message":"Commenting is disabled on issues with more than 2500 comments",'
+        '"documentation_url":"https://docs.github.com/rest","status":"403"}}\n'
+        "2026-04-20T07:59:54Z ##[error]Process completed with exit code 1.\n"
+    )
+
+    def test_classifies_as_config_error(self) -> None:
+        kind, title, details = _classify_failure("maintain", self._LOG_TEMPLATE)
+        assert kind == FailureKind.CONFIG_ERROR
+
+    def test_title_mentions_comment_limit(self) -> None:
+        _, title, _ = _classify_failure("maintain", self._LOG_TEMPLATE)
+        assert "comment" in title.lower() or "limit" in title.lower()
+
+    def test_not_classified_as_unknown(self) -> None:
+        kind, _, _ = _classify_failure("maintain", self._LOG_TEMPLATE)
+        assert kind != FailureKind.UNKNOWN
+
+    def test_message_fragment_only(self) -> None:
+        """The bare message fragment alone is enough to trigger the classifier."""
+        log = "Commenting is disabled on issues with more than 2500 comments\n"
+        kind, _, _ = _classify_failure("maintain", log)
+        assert kind == FailureKind.CONFIG_ERROR

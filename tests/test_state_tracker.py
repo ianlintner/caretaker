@@ -113,3 +113,88 @@ class TestPostRunSummaryUsesUpsert:
         assert idx_latest != -1
         assert idx_one != -1
         assert idx_latest < idx_one
+
+
+# ── Tracking-issue rotation on 403 comment-limit ─────────────────────────────
+
+
+def _make_full_issue_error() -> Exception:
+    """Return a GitHubAPIError that looks like GitHub's 'too many comments' 403."""
+    from caretaker.github_client.api import GitHubAPIError
+
+    return GitHubAPIError(
+        403,
+        '{"message":"Commenting is disabled on issues with more than 2500 comments",'
+        '"documentation_url":"https://docs.github.com/rest","status":"403"}',
+    )
+
+
+@pytest.mark.asyncio
+class TestTrackingIssueRotation:
+    """save() and post_run_summary() must rotate to a new issue on 403 comment limit."""
+
+    async def test_save_rotates_on_comment_limit_error(self) -> None:
+        """save() should create a new tracking issue when the current one is full."""
+        github = AsyncMock()
+        # First upsert raises the 403; second (on new issue) succeeds.
+        github.upsert_issue_comment = AsyncMock(side_effect=[_make_full_issue_error(), AsyncMock()])
+        new_issue = AsyncMock()
+        new_issue.number = 200
+        github.update_issue = AsyncMock()
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+        tracker._issues = AsyncMock()
+        tracker._issues.create = AsyncMock(return_value=new_issue)
+
+        await tracker.save(summary=_summary())
+
+        # Old issue should have been closed
+        github.update_issue.assert_awaited_once()
+        close_args = github.update_issue.await_args
+        assert close_args.args[2] == 99
+        assert close_args.kwargs.get("state") == "closed"
+
+        # A new tracking issue should have been created
+        tracker._issues.create.assert_awaited_once()
+
+        # The retry upsert must land on the new issue number
+        assert tracker._tracking_issue_number == 200
+        assert github.upsert_issue_comment.await_count == 2
+        retry_call = github.upsert_issue_comment.await_args
+        assert retry_call.args[2] == 200
+
+    async def test_save_does_not_rotate_on_other_errors(self) -> None:
+        """Non-comment-limit errors must propagate without rotation."""
+        from caretaker.github_client.api import GitHubAPIError
+
+        github = AsyncMock()
+        github.upsert_issue_comment = AsyncMock(
+            side_effect=GitHubAPIError(403, '{"message":"Resource not accessible"}')
+        )
+        github.update_issue = AsyncMock()
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+
+        with pytest.raises(GitHubAPIError):
+            await tracker.save(summary=_summary())
+
+        # update_issue must NOT be called — no rotation
+        github.update_issue.assert_not_awaited()
+
+    async def test_post_run_summary_rotates_on_comment_limit_error(self) -> None:
+        """post_run_summary() should rotate to a new issue on 403 comment limit."""
+        github = AsyncMock()
+        github.upsert_issue_comment = AsyncMock(side_effect=[_make_full_issue_error(), AsyncMock()])
+        new_issue = AsyncMock()
+        new_issue.number = 201
+        github.update_issue = AsyncMock()
+        tracker = StateTracker(github=github, owner="o", repo="r")
+        tracker._tracking_issue_number = 99
+        tracker._issues = AsyncMock()
+        tracker._issues.create = AsyncMock(return_value=new_issue)
+
+        await tracker.post_run_summary(_summary())
+
+        github.update_issue.assert_awaited_once()
+        assert tracker._tracking_issue_number == 201
+        assert github.upsert_issue_comment.await_count == 2
