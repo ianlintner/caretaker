@@ -78,19 +78,32 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
     )
 
     async def _loop() -> None:
-        logger.info("Admin state refresh started (repo=%s, interval=%ds)", repo, interval)
+        # WARNING level so the line is visible under uvicorn's default
+        # root-logger config (which drops INFO from non-uvicorn loggers).
+        logger.warning("Admin state refresh started (repo=%s, interval=%ds)", repo, interval)
+        first = True
         while True:
             try:
                 async with GitHubClient(credentials_provider=provider) as github:
                     state = await StateTracker(github, owner, name).load()
                 data.set_state(state)
-                logger.debug(
-                    "Admin state refreshed from %s: prs=%d issues=%d runs=%d",
-                    repo,
-                    len(state.tracked_prs),
-                    len(state.tracked_issues),
-                    len(state.run_history),
-                )
+                if first:
+                    logger.warning(
+                        "Admin state hydrated from %s: prs=%d issues=%d runs=%d",
+                        repo,
+                        len(state.tracked_prs),
+                        len(state.tracked_issues),
+                        len(state.run_history),
+                    )
+                    first = False
+                else:
+                    logger.debug(
+                        "Admin state refreshed from %s: prs=%d issues=%d runs=%d",
+                        repo,
+                        len(state.tracked_prs),
+                        len(state.tracked_issues),
+                        len(state.run_history),
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
