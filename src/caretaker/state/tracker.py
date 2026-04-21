@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from caretaker.causal import make_causal_marker
+from caretaker.github_client.api import RateLimitError
 from caretaker.tools.github import GitHubIssueTools
 
 from .models import OrchestratorState, RunSummary
@@ -105,8 +106,16 @@ class StateTracker:
             if len(self._state.run_history) > 20:
                 self._state.run_history = self._state.run_history[-20:]
 
-        if self._tracking_issue_number is None:
-            await self._create_tracking_issue()
+        try:
+            if self._tracking_issue_number is None:
+                await self._create_tracking_issue()
+        except RateLimitError as exc:
+            logger.warning(
+                "State save skipped: GitHub rate-limit while creating tracking issue (%s). "
+                "In-memory state is intact; next successful run will persist.",
+                exc,
+            )
+            return
 
         assert self._tracking_issue_number is not None
 
@@ -120,6 +129,13 @@ class StateTracker:
                 STATE_COMMENT_MARKER,
                 body,
             )
+        except RateLimitError as exc:
+            logger.warning(
+                "State save skipped: GitHub rate-limit while upserting state comment (%s). "
+                "In-memory state is intact; next successful run will persist.",
+                exc,
+            )
+            return
         except Exception as exc:
             if _is_comment_limit_error(exc):
                 await self._rotate_tracking_issue()
@@ -142,8 +158,15 @@ class StateTracker:
         replaces the previous append-per-run pattern that drove unbounded
         comment growth.
         """
-        if self._tracking_issue_number is None:
-            await self._create_tracking_issue()
+        try:
+            if self._tracking_issue_number is None:
+                await self._create_tracking_issue()
+        except RateLimitError as exc:
+            logger.warning(
+                "Run summary post skipped: GitHub rate-limit while creating tracking issue (%s)",
+                exc,
+            )
+            return
         assert self._tracking_issue_number is not None
 
         recent = list(self._state.run_history[-_RUN_HISTORY_KEEP:])
@@ -162,6 +185,12 @@ class StateTracker:
                 RUN_HISTORY_COMMENT_MARKER,
                 body,
             )
+        except RateLimitError as exc:
+            logger.warning(
+                "Run summary post skipped: GitHub rate-limit while upserting history comment (%s)",
+                exc,
+            )
+            return
         except Exception as exc:
             if _is_comment_limit_error(exc):
                 await self._rotate_tracking_issue()

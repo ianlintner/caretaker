@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
@@ -25,6 +26,11 @@ from .models import (
     User,
     is_copilot_login,
 )
+from .rate_limit import (
+    get_cooldown,
+    record_rate_limit_response,
+    record_response_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,28 @@ class GitHubAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"GitHub API error {status_code}: {message}")
+
+
+class RateLimitError(GitHubAPIError):
+    """Raised when GitHub refuses a request due to primary or secondary
+    rate limiting, or when the process is short-circuiting because a
+    prior rate-limit response is still in its cooldown window.
+
+    Carries ``retry_after_seconds`` (may be ``None`` if the server
+    didn't send a hint). Callers that can defer the work should catch
+    this specifically; callers that must make the call are free to
+    let it propagate.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(status_code, message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class GitHubClient:
@@ -104,23 +132,52 @@ class GitHubClient:
         path: str,
         **kwargs: Any,
     ) -> Any:
+        # Short-circuit if a prior response told us to back off. Every
+        # GitHubClient in the process shares this cooldown, so one agent
+        # hitting a rate limit pauses the rest of the run instead of
+        # burning more budget fire-and-forget.
+        cooldown = get_cooldown()
+        if cooldown.is_blocked():
+            remaining = cooldown.seconds_remaining()
+            snap = cooldown.snapshot()
+            raise RateLimitError(
+                429,
+                f"Short-circuit: GitHub rate-limit cooldown still active "
+                f"({remaining:.0f}s remaining, reason={snap.get('reason')!r}).",
+                retry_after_seconds=remaining,
+            )
+
         resp = await client.request(method, path, **kwargs)
+
+        # Always sample rate-limit headers — lets us soft-throttle before
+        # the bucket hits zero.
+        record_response_headers(resp)
+
         if resp.status_code == 404:
             return None
         if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After", "60")
-            raise GitHubAPIError(429, f"Rate limited. Retry after {retry_after}s")
+            until = record_rate_limit_response(resp, status_code=429)
+            retry_after = max(0.0, until - time.time())
+            raise RateLimitError(
+                429,
+                f"Rate limited. Retry after {retry_after:.0f}s.",
+                retry_after_seconds=retry_after,
+            )
         if resp.status_code == 403:
             # GitHub returns 403 (not 429) for installation/secondary rate limits.
-            retry_after = resp.headers.get("Retry-After")
             try:
                 body = resp.json()
                 message = body.get("message", "")
             except Exception:
                 message = resp.text
             if "rate limit" in message.lower():
-                detail = f"Retry after {retry_after}s" if retry_after else "No retry time specified"
-                raise GitHubAPIError(403, f"Rate limited. {detail}")
+                until = record_rate_limit_response(resp, status_code=403)
+                retry_after = max(0.0, until - time.time())
+                raise RateLimitError(
+                    403,
+                    f"Rate limited. Retry after {retry_after:.0f}s.",
+                    retry_after_seconds=retry_after,
+                )
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code >= 400:
             raise GitHubAPIError(resp.status_code, resp.text)

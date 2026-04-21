@@ -19,6 +19,16 @@ from caretaker.github_client.models import (
     ReviewState,
     User,
 )
+from caretaker.github_client.rate_limit import reset_for_tests as _reset_rate_limit
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_cooldown() -> None:
+    """The GitHub rate-limit cooldown is a process-wide singleton. Reset
+    before every test so state (e.g. a test intentionally triggering
+    the cooldown) doesn't leak into subsequent tests' HTTP stubs."""
+    _reset_rate_limit()
+
 
 # ── Users ────────────────────────────────────────────────────────────
 
