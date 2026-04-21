@@ -27,6 +27,7 @@ from caretaker.foundry.executor import CodingTask, ExecutorOutcome, ExecutorResu
 from caretaker.llm.copilot import CopilotTask, TaskType
 
 if TYPE_CHECKING:
+    from caretaker.claude_code_executor import ClaudeCodeExecutor
     from caretaker.config import ExecutorConfig
     from caretaker.foundry.executor import FoundryExecutor
     from caretaker.github_client.models import Comment, PullRequest
@@ -39,8 +40,9 @@ class RouteOutcome(StrEnum):
     """How a task was actually dispatched."""
 
     FOUNDRY = "FOUNDRY"  # Foundry handled it end-to-end
+    CLAUDE_CODE = "CLAUDE_CODE"  # claude-code-action hand-off dispatched
     COPILOT = "COPILOT"  # Copilot comment was posted (legacy path)
-    COPILOT_FALLBACK = "COPILOT_FALLBACK"  # Foundry escalated; Copilot posted
+    COPILOT_FALLBACK = "COPILOT_FALLBACK"  # custom executor escalated; Copilot posted
     REFUSED = "REFUSED"  # Label-based quarantine refused dispatch
 
 
@@ -114,9 +116,11 @@ class ExecutorDispatcher:
         config: ExecutorConfig,
         foundry_executor: FoundryExecutor | None,
         copilot_protocol: CopilotProtocol,
+        claude_code_executor: ClaudeCodeExecutor | None = None,
     ) -> None:
         self._config = config
         self._foundry = foundry_executor
+        self._claude_code = claude_code_executor
         self._copilot = copilot_protocol
 
     @property
@@ -134,6 +138,16 @@ class ExecutorDispatcher:
         if not self._config.foundry.enabled:
             return False
         return coding_task.task_type.value in self._config.foundry.allowed_task_types
+
+    def claude_code_eligible(self) -> bool:
+        """Return True if a Claude Code hand-off is configured and available."""
+        return self._claude_code is not None and self._config.claude_code.enabled
+
+    def _custom_executor_available(self) -> bool:
+        """Is at least one non-Copilot executor wired up?"""
+        return (
+            self._foundry is not None and self._config.foundry.enabled
+        ) or self.claude_code_eligible()
 
     async def route(
         self,
@@ -165,10 +179,10 @@ class ExecutorDispatcher:
                 reason="agent:quarantine label present",
             )
         if override == LABEL_AGENT_CUSTOM:
-            if self._foundry is None or not self._config.foundry.enabled:
+            if not self._custom_executor_available():
                 logger.warning(
-                    "agent:custom label on PR #%s but custom executor "
-                    "unavailable; falling back to Copilot",
+                    "agent:custom label on PR #%s but no custom executor "
+                    "is enabled; falling back to Copilot",
                     pr.number,
                 )
                 return await self._post_copilot(
@@ -177,16 +191,49 @@ class ExecutorDispatcher:
                     reason="agent:custom label set but custom executor unavailable",
                     is_fallback=True,
                 )
-            return await self._run_foundry(
+            # When both Foundry and Claude Code are configured, respect the
+            # ``executor.provider`` setting to decide which wins. If the
+            # provider is ``copilot`` (the original default) but the label
+            # says custom, prefer whichever custom executor is enabled.
+            if self.provider == "claude_code" and self.claude_code_eligible():
+                return await self._run_claude_code(
+                    pr, copilot_task, effective_task, reason="agent:custom label"
+                )
+            if self._foundry is not None and self._config.foundry.enabled:
+                return await self._run_foundry(
+                    pr, copilot_task, effective_task, reason="agent:custom label"
+                )
+            return await self._run_claude_code(
                 pr, copilot_task, effective_task, reason="agent:custom label"
             )
         if override == LABEL_AGENT_COPILOT:
             return await self._post_copilot(pr, copilot_task, reason="agent:copilot label")
 
+        # Claude Code provider — dispatch via label + mention comment.
+        if self.provider == "claude_code":
+            if not self.claude_code_eligible():
+                logger.warning(
+                    "executor.provider='claude_code' but claude_code.enabled=False "
+                    "or executor missing; routing to Copilot"
+                )
+                return await self._post_copilot(pr, copilot_task, reason="claude_code disabled")
+            return await self._run_claude_code(
+                pr, copilot_task, effective_task, reason="provider=claude_code"
+            )
+
         if self.provider == "copilot" or self._foundry is None:
             return await self._post_copilot(pr, copilot_task, reason="provider=copilot")
 
         if self.provider == "auto" and not self.foundry_eligible(effective_task):
+            # When auto-routing and Foundry is ineligible, try Claude Code
+            # as the next-cheapest custom executor before falling to Copilot.
+            if self.claude_code_eligible():
+                return await self._run_claude_code(
+                    pr,
+                    copilot_task,
+                    effective_task,
+                    reason="auto: foundry ineligible, claude_code eligible",
+                )
             return await self._post_copilot(
                 pr, copilot_task, reason="auto: task not Foundry-eligible"
             )
@@ -200,6 +247,49 @@ class ExecutorDispatcher:
 
         return await self._run_foundry(
             pr, copilot_task, effective_task, reason=f"provider={self.provider}"
+        )
+
+    async def _run_claude_code(
+        self,
+        pr: PullRequest,
+        copilot_task: CopilotTask,
+        effective_task: CodingTask,
+        *,
+        reason: str,
+    ) -> RouteResult:
+        """Invoke the Claude Code hand-off executor and handle fallback."""
+        assert self._claude_code is not None
+        try:
+            cc_result = await self._claude_code.run(effective_task, pr)
+        except Exception as exc:
+            logger.exception("ClaudeCodeExecutor.run raised: %s", exc)
+            return await self._post_copilot(
+                pr,
+                copilot_task,
+                reason=f"claude_code raised: {exc}",
+                is_fallback=True,
+            )
+
+        if cc_result.outcome == ExecutorOutcome.COMPLETED:
+            return RouteResult(
+                outcome=RouteOutcome.CLAUDE_CODE,
+                foundry_result=cc_result,  # reuse field; same shape
+                reason=f"{reason}: claude_code dispatched",
+            )
+
+        # ESCALATED / FAILED → fall back to Copilot.
+        logger.info(
+            "ClaudeCode outcome=%s reason=%s — falling back to Copilot",
+            cc_result.outcome,
+            cc_result.reason,
+        )
+        fallback_task = self._augment_copilot_task(copilot_task, cc_result)
+        return await self._post_copilot(
+            pr,
+            fallback_task,
+            reason=f"{reason}: claude_code {cc_result.outcome.value}: {cc_result.reason}",
+            is_fallback=True,
+            foundry_result=cc_result,
         )
 
     async def _run_foundry(

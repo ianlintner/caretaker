@@ -250,7 +250,11 @@ class Orchestrator:
         """
         executor_cfg = config.executor
         # Zero-config: exit preserves the legacy path (no dispatcher).
-        if executor_cfg.provider == "copilot" and not executor_cfg.foundry.enabled:
+        if (
+            executor_cfg.provider == "copilot"
+            and not executor_cfg.foundry.enabled
+            and not executor_cfg.claude_code.enabled
+        ):
             return None
 
         copilot_protocol = CopilotProtocol(github, owner, repo)
@@ -287,10 +291,27 @@ class Orchestrator:
                     executor_cfg.foundry.allowed_task_types,
                 )
 
+        claude_code_executor = None
+        if executor_cfg.claude_code.enabled:
+            from caretaker.claude_code_executor import ClaudeCodeExecutor
+
+            claude_code_executor = ClaudeCodeExecutor(
+                github=github,
+                owner=owner,
+                repo=repo,
+                config=executor_cfg.claude_code,
+            )
+            logger.info(
+                "ClaudeCodeExecutor ready: trigger_label=%s mention=%s",
+                executor_cfg.claude_code.trigger_label,
+                executor_cfg.claude_code.mention,
+            )
+
         return ExecutorDispatcher(
             config=executor_cfg,
             foundry_executor=foundry_executor,
             copilot_protocol=copilot_protocol,
+            claude_code_executor=claude_code_executor,
         )
 
     @classmethod
