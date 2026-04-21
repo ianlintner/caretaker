@@ -247,7 +247,11 @@ jobs:
 
       - name: Install caretaker (dogfood)
         run: |
-          pip install .
+          # ``llm-multi`` pulls in LiteLLM so the in-process Foundry
+          # executor can talk to Azure AI Foundry / Anthropic / OpenAI.
+          # Without it the orchestrator logs "LiteLLM provider is
+          # unavailable" and every dispatch falls through to Copilot.
+          pip install ".[llm-multi]"
 
       - name: Generate GitHub App token
         id: app-token
