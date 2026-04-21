@@ -88,6 +88,12 @@ admin = [
 llm-multi = [
     "litellm>=1.50,<2",
 ]
+# Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
+# docs/custom-coding-agent-plan.md. Only required on the caretaker
+# backend that spawns the worker Jobs; consumer repos do not need this.
+k8s-worker = [
+    "kubernetes>=30,<34",
+]
 
 [project.scripts]
 caretaker = "caretaker.cli:main"

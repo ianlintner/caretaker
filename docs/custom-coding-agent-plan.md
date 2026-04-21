@@ -165,21 +165,38 @@ the same GitHub Actions runner that already does orchestration.
   application, label-failure graceful degradation, attempt cap,
   dispatcher routing through every new path.
 
-### Phase 3 — scale out onto AKS
+### Phase 3 — scale out onto AKS *(shipped)*
 
-Only needed if Phase 1/2 traffic starts competing with the orchestrator
-run for GHA runner minutes. The piece we add:
+Live pieces:
 
-- `infra/k8s/caretaker-agent-worker-job.yaml` (`batch/v1 Job` with a
-  `generateName: caretaker-agent-` so each dispatch creates a fresh
-  pod).
-- `infra/k8s/caretaker-agent-worker-{sa,role,rolebinding}.yaml` — a
-  `ServiceAccount` with `Role` granting `create` on `jobs` in the
-  caretaker namespace, bound to the MCP pod.
-- Tiny shim in `caretaker.mcp_backend` that accepts
-  `POST /api/admin/agent-tasks` (admin-auth) and creates a Job via the
-  Kubernetes Python client.
-- Redis-backed de-dupe so the same issue doesn't spawn N pods.
+- `infra/k8s/caretaker-agent-worker.yaml` — ServiceAccount +
+  namespace-scoped Role (`create` on `jobs`) + RoleBinding + a
+  template Job with securityContext / resource limits / TTL /
+  activeDeadline. Cloned per dispatch.
+- `src/caretaker/k8s_worker/launcher.py::K8sAgentLauncher` — the
+  worker launcher. Pure-function `build_job_manifest()` synthesises
+  the Job spec from config + dispatch payload; `dispatch()` calls
+  `BatchV1Api.create_namespaced_job` and persists a Redis dedupe
+  pointer. The `kubernetes` Python client is an optional dependency
+  (`k8s-worker` extras group) — the launcher raises a structured
+  `K8sLauncherError` instead of `ImportError` when it's missing so
+  callers return 503 cleanly.
+- `src/caretaker/k8s_worker/api.py` — admin endpoints:
+  * `POST /api/admin/agent-tasks {repo, issue_number, task_type,
+    image?}` → spawn (or return deduped) Job.
+  * `GET  /api/admin/agent-tasks?limit=50` → list recent worker Jobs.
+- MCP backend wiring in `caretaker.mcp_backend.main`: the endpoints
+  only register when `executor.k8s_worker.enabled = true`, so the
+  backend doesn't need the optional k8s package unless the feature is
+  on.
+- `K8sAgentWorkerConfig` on `MaintainerConfig.executor` (`enabled`,
+  `namespace`, `image`, `service_account`, `template_job_name`,
+  `name_prefix`, `dedupe_ttl_seconds`, `ttl_seconds_after_finished`,
+  `active_deadline_seconds`). Off by default.
+
+Dedupe model: `caretaker:agent-dispatch:<repo>#<num>:<task_type>` ⇒
+Job name, with configurable TTL (default 900s). Protects against
+duplicate-submit storms if the admin UI retries.
 
 Azure Container Apps Jobs considered and rejected: caretaker already
 runs on AKS, reusing the cluster is one fewer Azure surface to

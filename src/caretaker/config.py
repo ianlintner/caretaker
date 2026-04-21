@@ -668,12 +668,46 @@ class ClaudeCodeExecutorConfig(StrictBaseModel):
     max_attempts: int = 2
 
 
+class K8sAgentWorkerConfig(StrictBaseModel):
+    """On-demand Kubernetes Job worker for the custom coding agent.
+
+    Opt-in Phase 3 rollout surface from
+    ``docs/custom-coding-agent-plan.md``. When enabled on the caretaker
+    backend, the admin API exposes ``POST /api/admin/agent-tasks``; each
+    call spawns a short-lived ``batch/v1 Job`` that runs the custom
+    executor against a single issue / PR. Uses the template + RBAC from
+    ``infra/k8s/caretaker-agent-worker.yaml``.
+
+    Consumers' own maintainer workflows do NOT invoke this path — they
+    continue to run the executor inline. This is an operator-facing
+    dispatch channel used by the admin dashboard / UI.
+    """
+
+    enabled: bool = False
+    namespace: str = "caretaker"
+    image: str | None = None
+    service_account: str = "caretaker-agent-worker"
+    # Name of the template Job we clone per dispatch. Matches the
+    # ``metadata.name`` in ``infra/k8s/caretaker-agent-worker.yaml``.
+    template_job_name: str = "caretaker-agent-worker-template"
+    # Generated Job names become ``{name_prefix}-{slug}-{short-sha}``.
+    name_prefix: str = "caretaker-agent"
+    # Redis-backed dedupe — an identical (repo, issue_number) dispatch
+    # within this window returns the existing Job name instead of
+    # creating a new pod. Set to 0 to disable dedupe.
+    dedupe_ttl_seconds: int = 900
+    # Mirrors the manifest defaults; overridable per-deployment.
+    ttl_seconds_after_finished: int = 600
+    active_deadline_seconds: int = 900
+
+
 class ExecutorConfig(StrictBaseModel):
     """Top-level switch deciding how coding tasks are executed."""
 
     provider: Literal["copilot", "foundry", "claude_code", "auto"] = "copilot"
     foundry: FoundryExecutorConfig = Field(default_factory=FoundryExecutorConfig)
     claude_code: ClaudeCodeExecutorConfig = Field(default_factory=ClaudeCodeExecutorConfig)
+    k8s_worker: K8sAgentWorkerConfig = Field(default_factory=K8sAgentWorkerConfig)
 
 
 class MaintainerConfig(StrictBaseModel):

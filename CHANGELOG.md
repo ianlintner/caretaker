@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Custom coding agent — Phase 3: on-demand Kubernetes worker
+
+Third phase of the custom-coding-agent plan. The MCP backend can now
+spawn a short-lived `batch/v1 Job` per coding task, running caretaker's
+custom executor in an isolated pod on the existing AKS cluster rather
+than competing with the orchestrator's GitHub Actions minutes.
+
+- New `K8sAgentLauncher` in `src/caretaker/k8s_worker/launcher.py`:
+  pure-function `build_job_manifest()` synthesises the Job spec; the
+  launcher calls `BatchV1Api.create_namespaced_job` and records a
+  Redis-backed dedupe pointer so a retried submit inside the TTL
+  window returns the existing Job name instead of spawning a second
+  pod.
+- New admin endpoints (mounted when `executor.k8s_worker.enabled`):
+  * `POST /api/admin/agent-tasks {repo, issue_number, task_type, image?}`
+  * `GET  /api/admin/agent-tasks?limit=50`
+  Both gated behind the existing OIDC session.
+- New `K8sAgentWorkerConfig` on `MaintainerConfig.executor` — all
+  knobs (namespace, image, service account, TTL, deadlines, dedupe
+  window) off by default.
+- `kubernetes` Python client added as an **optional** dependency in
+  the new `k8s-worker` extras group. When not installed, the launcher
+  raises `K8sLauncherError` instead of `ImportError` so the admin
+  endpoints return a structured 503.
+- Manifest skeleton `infra/k8s/caretaker-agent-worker.yaml` (shipped
+  inert in Phase 1) is now the template the launcher clones per
+  dispatch.
+- Plan doc Phase-3 section updated to reflect shipped state.
+- Tests: 17 new cases covering config defaults, Job name and manifest
+  synthesis, dedupe, API dispatch happy-path, 400/503 error paths.
+  Full pytest 907 passed.
+
 ### Custom coding agent — Phase 2: Claude Code hand-off executor
 
 Second phase of the custom-coding-agent plan. `ExecutorDispatcher` now

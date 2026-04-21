@@ -125,6 +125,53 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             except Exception:
                 logger.warning("Failed to initialise fleet admin API", exc_info=True)
 
+            # Kubernetes agent-worker admin endpoints. Opt-in via
+            # ``executor.k8s_worker.enabled`` in the config; defaults to
+            # off so the MCP backend doesn't need the optional
+            # ``kubernetes`` Python package unless the feature is on.
+            try:
+                from caretaker.config import MaintainerConfig
+                from caretaker.k8s_worker import (
+                    K8sAgentLauncher,
+                )
+                from caretaker.k8s_worker import (
+                    configure as configure_k8s,
+                )
+                from caretaker.k8s_worker import (
+                    router as k8s_router,
+                )
+
+                maint_cfg_path = os.environ.get(
+                    "CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml"
+                )
+                try:
+                    maint_cfg = MaintainerConfig.from_yaml(maint_cfg_path)
+                except Exception:
+                    maint_cfg = MaintainerConfig()
+                worker_cfg = maint_cfg.executor.k8s_worker
+                if worker_cfg.enabled:
+                    redis_client = None
+                    redis_url = os.environ.get("REDIS_URL", "").strip()
+                    if redis_url:
+                        try:
+                            from redis.asyncio import Redis as AsyncRedis
+
+                            redis_client = AsyncRedis.from_url(redis_url)
+                        except Exception:
+                            logger.warning(
+                                "k8s_worker: Redis unavailable, dedupe disabled",
+                                exc_info=True,
+                            )
+                    launcher = K8sAgentLauncher(config=worker_cfg, redis=redis_client)
+                    configure_k8s(launcher, worker_cfg)
+                    application.include_router(k8s_router)
+                    logger.info(
+                        "K8s agent-worker admin API enabled (namespace=%s)",
+                        worker_cfg.namespace,
+                    )
+            except Exception:
+                logger.warning("Failed to initialise k8s agent-worker admin API", exc_info=True)
+
             # Mount graph API if Neo4j is configured
             neo4j_url = os.environ.get("NEO4J_URL", "")
             if neo4j_url:
