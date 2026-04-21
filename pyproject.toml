@@ -87,6 +87,7 @@ admin = [
 # ``llm.provider: litellm`` in config to enable other backends.
 llm-multi = [
     "litellm>=1.50,<2",
+    "aiohttp>=3.13.3",  # security: CVE-2024-52304 NTLMv2 UNC SSRF fixed in 3.10.11; zip bomb fixed in 3.13.3
 ]
 # Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
 # docs/custom-coding-agent-plan.md. Only required on the caretaker
