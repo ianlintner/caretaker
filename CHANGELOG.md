@@ -2,15 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.10.4] — 2026-04-21
 
 ### Added
 
-- **PR Reviewer Agent** — dual-path automated code reviewer that activates when `pr_reviewer.enabled = true`:
+- **PR Reviewer Agent** — dual-path automated code reviewer (enabled by default):
   - **Routing engine** (`pr_reviewer/routing.py`): scores each PR 0–100 from LOC, file count, sensitive-file patterns (workflows, auth, migrations, infra), cross-package breadth, and label signals. Score ≥ threshold (default 40) → complex path; score < threshold → fast path.
   - **Inline LLM reviewer** (`pr_reviewer/inline_reviewer.py`): fetches the unified diff, calls the configured LLM, returns a structured `ReviewResult` (summary + verdict + per-line inline comments); posts directly as a GitHub pull-request review event (APPROVE / COMMENT / REQUEST_CHANGES).
   - **Claude Code hand-off** (`pr_reviewer/claude_code_reviewer.py`): for complex PRs applies the `claude-code` trigger label and posts a structured `@claude` mention comment; the `anthropics/claude-code-action` workflow handles the full review asynchronously.
-  - New `PRReviewerConfig` in `config.py` (opt-in, `enabled = false` default): `routing_threshold`, `max_diff_lines`, `post_inline_comments`, `skip_draft`, `skip_labels`, `review_event`, `claude_code_label`/`claude_code_mention`.
+  - `PRReviewerConfig` in `config.py`: `enabled = true` (opt-out with `enabled = false`); `webhook_only = true` means the agent is a no-op during scheduled polling runs — zero extra GitHub API calls; `trigger_actions = ["opened"]` limits reviews to newly-opened PRs by default; full options: `routing_threshold`, `max_diff_lines`, `post_inline_comments`, `skip_draft`, `skip_labels`, `review_event`, `claude_code_label`/`claude_code_mention`.
   - New GitHub API methods: `get_pull_diff()` (vnd.github.diff accept header), `create_review()` (POST pulls/{n}/reviews with inline comments), `request_reviewers()` (POST pulls/{n}/requested_reviewers).
   - `PRReviewerAgent` registered in the agent registry under mode `pr-reviewer`; `pull_request` events in both `github_app/events.py` and `agents/_registry_data.py` now route to it.
   - `.github/CODEOWNERS` — `* @the-care-taker` so the bot appears in the PR reviewer picker.
