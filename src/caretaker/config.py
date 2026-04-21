@@ -515,6 +515,37 @@ class TelemetryConfig(StrictBaseModel):
     application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
 
 
+class FleetRegistryConfig(StrictBaseModel):
+    """Opt-in fleet registry.
+
+    When ``enabled`` is ``True`` and ``endpoint`` is set, each successful
+    orchestrator run POSTs a small JSON heartbeat to a central caretaker
+    backend so an operator can see every consumer repo in one dashboard.
+
+    The feature is entirely opt-in: the default ``enabled = False`` keeps
+    caretaker's current behavior byte-identical. The endpoint URL is
+    intentionally not given a default — caretaker never phones home
+    unless the consumer explicitly configures a destination.
+
+    ``secret_env`` names an environment variable whose value is used as
+    an HMAC-SHA256 shared secret. When set, the emitter signs the POST
+    body and forwards the hex digest in ``X-Caretaker-Signature``; the
+    backend verifies before recording. When unset, heartbeats are
+    delivered without authentication (suitable for private networks /
+    trusted origins only).
+    """
+
+    enabled: bool = False
+    endpoint: str | None = None
+    secret_env: str = "CARETAKER_FLEET_SECRET"
+    timeout_seconds: float = 5.0
+    # When ``True`` the heartbeat body includes the full ``RunSummary``
+    # dump; when ``False`` only the curated set of summary counters is
+    # sent. Default False to minimise the risk of surfacing repo-private
+    # details (error log snippets, etc.) through the central dashboard.
+    include_full_summary: bool = False
+
+
 class GitHubAppConfig(StrictBaseModel):
     """Configuration for the optional GitHub App front-end.
 
@@ -578,22 +609,105 @@ class FoundryExecutorConfig(StrictBaseModel):
     )
     max_files_touched: int = 10
     max_diff_lines: int = 400
-    # MVP task types that are actually dispatched to Foundry today. ``UPGRADE``
-    # is intentionally omitted until ``UpgradePlanner`` routes via the
-    # dispatcher; users who wire an upstream-Copilot upgrade path to Foundry
-    # can opt in by overriding this list in their config.
+    # Task types dispatched to the custom executor. Expanded from the
+    # original MVP pair (``LINT_FAILURE``, ``REVIEW_COMMENT``) to include
+    # ``TEST_FAILURE`` — trivial test failures (assertion tweak, fixture
+    # rename) fit inside the same size budget as lint fixes and the
+    # executor's tool-loop already handles them.
+    #
+    # Still intentionally omitted:
+    # * ``UPGRADE``     — waits on ``UpgradePlanner`` wiring the dispatcher.
+    # * ``CI_FAILURE``  — too ambiguous; let Copilot take it until we have a
+    #                     classifier that routes only trivial CI breaks here.
+    # * ``BUILD_FAILURE`` — usually dependency / env issues outside the
+    #                     executor's write-denylist.
+    # * ``REFACTOR``, ``MIGRATION``, ``ARCHITECTURE_REVIEW``, ``PRD_GENERATION``
+    #                   — bigger than the size budget by definition.
     allowed_task_types: list[str] = Field(
-        default_factory=lambda: ["LINT_FAILURE", "REVIEW_COMMENT"]
+        default_factory=lambda: [
+            "LINT_FAILURE",
+            "REVIEW_COMMENT",
+            "TEST_FAILURE",
+        ]
     )
     route_same_repo_only: bool = True
     request_timeout_seconds: float = 120.0
 
 
+class ClaudeCodeExecutorConfig(StrictBaseModel):
+    """Configuration for the opt-in ``claude-code-action`` hand-off executor.
+
+    Caretaker does not run Claude Code inline; instead, when this executor
+    is selected for a task, it applies a configurable *trigger label* to
+    the host PR / issue, and posts a structured hand-off comment. The
+    upstream [``anthropics/claude-code-action``][cca] workflow, installed
+    separately in the consumer repo, listens for that label (or the `@claude`
+    mention in the comment) and produces the fix asynchronously.
+
+    The caretaker state machine then tracks the resulting commit / PR
+    through the same ``<!-- caretaker:result -->`` markers it already uses
+    for the Copilot + Foundry paths.
+
+    Feature is entirely opt-in: ``enabled = False`` by default; in addition
+    the consumer repo must have the upstream action installed and
+    authorised on its own.
+
+    [cca]: https://github.com/anthropics/claude-code-action
+    """
+
+    enabled: bool = False
+    # Label caretaker applies to trigger the upstream workflow.
+    trigger_label: str = "claude-code"
+    # Mention string included in the hand-off comment so the upstream
+    # auto-detector can pick it up even if a repo has a different label
+    # listener name configured.
+    mention: str = "@claude"
+    # Maximum attempts per task before caretaker stops re-applying the
+    # trigger label; prevents ping-pong if the upstream action can't
+    # complete the work.
+    max_attempts: int = 2
+
+
+class K8sAgentWorkerConfig(StrictBaseModel):
+    """On-demand Kubernetes Job worker for the custom coding agent.
+
+    Opt-in Phase 3 rollout surface from
+    ``docs/custom-coding-agent-plan.md``. When enabled on the caretaker
+    backend, the admin API exposes ``POST /api/admin/agent-tasks``; each
+    call spawns a short-lived ``batch/v1 Job`` that runs the custom
+    executor against a single issue / PR. Uses the template + RBAC from
+    ``infra/k8s/caretaker-agent-worker.yaml``.
+
+    Consumers' own maintainer workflows do NOT invoke this path — they
+    continue to run the executor inline. This is an operator-facing
+    dispatch channel used by the admin dashboard / UI.
+    """
+
+    enabled: bool = False
+    namespace: str = "caretaker"
+    image: str | None = None
+    service_account: str = "caretaker-agent-worker"
+    # Name of the template Job we clone per dispatch. Matches the
+    # ``metadata.name`` in ``infra/k8s/caretaker-agent-worker.yaml``.
+    template_job_name: str = "caretaker-agent-worker-template"
+    # Generated Job names become ``{name_prefix}-{slug}-{short-sha}``.
+    name_prefix: str = "caretaker-agent"
+    # Redis-backed dedupe — an identical (repo, issue_number) dispatch
+    # within this window returns the existing Job name instead of
+    # creating a new pod. Set to 0 to disable dedupe.
+    dedupe_ttl_seconds: int = 900
+    # Mirrors the manifest defaults; overridable per-deployment.
+    ttl_seconds_after_finished: int = 600
+    active_deadline_seconds: int = 900
+
+
 class ExecutorConfig(StrictBaseModel):
     """Top-level switch deciding how coding tasks are executed."""
 
-    provider: Literal["copilot", "foundry", "auto"] = "copilot"
+    provider: Literal["copilot", "foundry", "claude_code", "auto"] = "copilot"
     foundry: FoundryExecutorConfig = Field(default_factory=FoundryExecutorConfig)
+    claude_code: ClaudeCodeExecutorConfig = Field(default_factory=ClaudeCodeExecutorConfig)
+    k8s_worker: K8sAgentWorkerConfig = Field(default_factory=K8sAgentWorkerConfig)
 
 
 class MaintainerConfig(StrictBaseModel):
@@ -630,6 +744,7 @@ class MaintainerConfig(StrictBaseModel):
     audit_log: AuditLogConfig = Field(default_factory=AuditLogConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    fleet_registry: FleetRegistryConfig = Field(default_factory=FleetRegistryConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)

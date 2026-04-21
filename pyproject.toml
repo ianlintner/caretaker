@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "caretaker-github"
-version = "0.10.0"
+version = "0.10.1"
 description = "Autonomous GitHub repository maintenance powered by Copilot"
 readme = "README.md"
 license = "MIT"
@@ -87,6 +87,12 @@ admin = [
 # ``llm.provider: litellm`` in config to enable other backends.
 llm-multi = [
     "litellm>=1.50,<2",
+]
+# Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
+# docs/custom-coding-agent-plan.md. Only required on the caretaker
+# backend that spawns the worker Jobs; consumer repos do not need this.
+k8s-worker = [
+    "kubernetes>=30,<34",
 ]
 
 [project.scripts]

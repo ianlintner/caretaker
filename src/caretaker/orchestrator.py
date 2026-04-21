@@ -250,7 +250,11 @@ class Orchestrator:
         """
         executor_cfg = config.executor
         # Zero-config: exit preserves the legacy path (no dispatcher).
-        if executor_cfg.provider == "copilot" and not executor_cfg.foundry.enabled:
+        if (
+            executor_cfg.provider == "copilot"
+            and not executor_cfg.foundry.enabled
+            and not executor_cfg.claude_code.enabled
+        ):
             return None
 
         copilot_protocol = CopilotProtocol(github, owner, repo)
@@ -287,10 +291,27 @@ class Orchestrator:
                     executor_cfg.foundry.allowed_task_types,
                 )
 
+        claude_code_executor = None
+        if executor_cfg.claude_code.enabled:
+            from caretaker.claude_code_executor import ClaudeCodeExecutor
+
+            claude_code_executor = ClaudeCodeExecutor(
+                github=github,
+                owner=owner,
+                repo=repo,
+                config=executor_cfg.claude_code,
+            )
+            logger.info(
+                "ClaudeCodeExecutor ready: trigger_label=%s mention=%s",
+                executor_cfg.claude_code.trigger_label,
+                executor_cfg.claude_code.mention,
+            )
+
         return ExecutorDispatcher(
             config=executor_cfg,
             foundry_executor=foundry_executor,
             copilot_protocol=copilot_protocol,
+            claude_code_executor=claude_code_executor,
         )
 
     @classmethod
@@ -330,6 +351,27 @@ class Orchestrator:
             self._owner,
             self._repo,
         )
+
+        # Honour any in-process rate-limit cooldown from a previous run
+        # (same runner, same python process is rare in GHA but possible
+        # for local loops or the K8s agent-worker that reuses the pod).
+        # For the common GHA case, the cooldown state starts fresh on
+        # every workflow invocation, so this is a no-op most of the
+        # time and a safety net the rest.
+        from caretaker.github_client.rate_limit import get_cooldown
+
+        _cooldown = get_cooldown()
+        if _cooldown.is_blocked():
+            remaining = _cooldown.seconds_remaining()
+            cooldown_snap = _cooldown.snapshot()
+            logger.warning(
+                "Orchestrator deferring: GitHub rate-limit cooldown still active "
+                "(%.0fs remaining, reason=%s). Exiting cleanly so the next "
+                "scheduled run picks up after the window closes.",
+                remaining,
+                cooldown_snap.get("reason"),
+            )
+            return 0
 
         # Load persisted state
         state = OrchestratorState()
@@ -505,6 +547,17 @@ class Orchestrator:
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
+
+        # Opt-in fleet-registry heartbeat. Fail-open: the emitter logs
+        # and swallows any error so a missing / misconfigured endpoint
+        # can never fail the orchestrator run.
+        if self._config.fleet_registry.enabled:
+            try:
+                from caretaker.fleet import emit_heartbeat
+
+                await emit_heartbeat(self._config, summary)
+            except Exception as e:
+                logger.warning("Fleet heartbeat failed: %s", e)
 
         # Save memory store snapshot (for artifact upload / rollback)
         if self._memory is not None:

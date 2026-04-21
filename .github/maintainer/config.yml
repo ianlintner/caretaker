@@ -20,7 +20,13 @@ pr_agent:
     context_injection: true
   ci:
     flaky_retries: 1
-    ignore_jobs: []
+    # Ignore caretaker's own published readiness check when evaluating
+    # upstream CI. Otherwise the PR state machine sees it as pending /
+    # action_required on every cycle and never transitions to
+    # ci_failing, which deadlocks the custom-agent dispatcher against
+    # its own gate.
+    ignore_jobs:
+      - caretaker/pr-readiness
     # When the repo-wide PR CI backlog guard trips, close caretaker-managed PRs
     # instead of asking Copilot to "fix" queue pressure.
     close_managed_prs_on_backlog: true

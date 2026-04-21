@@ -93,6 +93,14 @@ jobs:
 
       - name: Apply manifests
         run: |
+          # ServiceAccounts and RBAC must exist before the Deployment is
+          # (re)created, otherwise the pod fails to start with
+          # ``ServiceAccount "caretaker-mcp" not found``.
+          kubectl apply \
+            -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
+            -f infra/k8s/caretaker-mcp-serviceaccount.yaml \
+            -f infra/k8s/caretaker-agent-worker.yaml
+
           # `replace --force` deletes and recreates the Deployment to reconcile
           # stale unmanaged fields from a prior manual `kubectl apply` — a
           # regular apply/server-side-apply cannot remove an unmanaged `value`

@@ -1,0 +1,299 @@
+"""Tests for the opt-in fleet-registry feature.
+
+Covers:
+* Config defaults are safe (feature disabled unless explicitly enabled).
+* Emitter fails open on unreachable endpoints / network errors.
+* HMAC signing produces a deterministic hex digest the backend can
+  verify with ``hmac.compare_digest``.
+* ``POST /api/fleet/heartbeat`` records clients into the singleton
+  store; ``GET /api/admin/fleet`` (when configured) reads them back.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+from datetime import UTC, datetime
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from caretaker.config import FleetRegistryConfig, MaintainerConfig
+from caretaker.fleet import (
+    FleetHeartbeat,
+    build_heartbeat,
+    emit_heartbeat,
+    get_store,
+    public_router,
+    reset_store_for_tests,
+    sign_payload,
+)
+from caretaker.state.models import RunSummary
+
+# ── Config defaults ───────────────────────────────────────────────────────
+
+
+def test_fleet_config_defaults_disabled() -> None:
+    cfg = MaintainerConfig()
+    assert cfg.fleet_registry.enabled is False
+    assert cfg.fleet_registry.endpoint is None
+    assert cfg.fleet_registry.secret_env == "CARETAKER_FLEET_SECRET"
+    assert cfg.fleet_registry.include_full_summary is False
+
+
+def test_fleet_config_round_trip(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    yaml_path = tmp_path / "config.yml"
+    yaml_path.write_text(
+        "version: v1\n"
+        "fleet_registry:\n"
+        "  enabled: true\n"
+        "  endpoint: https://example.invalid/api/fleet/heartbeat\n"
+    )
+    cfg = MaintainerConfig.from_yaml(yaml_path)
+    assert cfg.fleet_registry.enabled is True
+    assert cfg.fleet_registry.endpoint == "https://example.invalid/api/fleet/heartbeat"
+
+
+# ── Heartbeat builder ─────────────────────────────────────────────────────
+
+
+def _summary_fixture() -> RunSummary:
+    return RunSummary(
+        run_at=datetime(2026, 4, 20, 23, 0, 0, tzinfo=UTC),
+        mode="full",
+        prs_monitored=3,
+        prs_merged=1,
+        issues_triaged=2,
+        goal_health=0.82,
+        errors=["boom"],
+    )
+
+
+def test_build_heartbeat_shape(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    cfg = MaintainerConfig(fleet_registry=FleetRegistryConfig(enabled=True))
+    hb = build_heartbeat(cfg, _summary_fixture())
+    assert isinstance(hb, FleetHeartbeat)
+    assert hb.repo == "ianlintner/demo"
+    assert hb.mode == "full"
+    assert hb.counters["prs_monitored"] == 3
+    assert hb.counters["prs_merged"] == 1
+    assert hb.counters["issues_triaged"] == 2
+    assert hb.goal_health == pytest.approx(0.82)
+    assert hb.error_count == 1
+    assert hb.summary is None  # include_full_summary default False
+
+
+def test_build_heartbeat_full_summary_opt_in(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(enabled=True, include_full_summary=True)
+    )
+    hb = build_heartbeat(cfg, _summary_fixture())
+    assert hb.summary is not None
+    assert hb.summary["prs_monitored"] == 3
+
+
+# ── HMAC signing ──────────────────────────────────────────────────────────
+
+
+def test_sign_payload_matches_stdlib_hmac() -> None:
+    body = b'{"repo":"a/b"}'
+    secret = "s3cret"
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    assert sign_payload(body, secret) == expected
+
+
+# ── Emitter fail-open behaviour ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_emitter_returns_false_when_disabled() -> None:
+    cfg = MaintainerConfig()  # default disabled
+    assert await emit_heartbeat(cfg, _summary_fixture()) is False
+
+
+@pytest.mark.asyncio
+async def test_emitter_returns_false_when_endpoint_empty() -> None:
+    cfg = MaintainerConfig(fleet_registry=FleetRegistryConfig(enabled=True))
+    assert await emit_heartbeat(cfg, _summary_fixture()) is False
+
+
+@pytest.mark.asyncio
+async def test_emitter_fails_open_on_transport_error(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(
+            enabled=True,
+            endpoint="http://127.0.0.1:1/doesnotexist",  # reserved port
+            timeout_seconds=0.5,
+        )
+    )
+    # Must return False, never raise.
+    result = await emit_heartbeat(cfg, _summary_fixture())
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_emitter_posts_signed_request(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(
+            enabled=True,
+            endpoint="https://fleet.example/heartbeat",
+        )
+    )
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = request.content
+        return httpx.Response(202, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        ok = await emit_heartbeat(cfg, _summary_fixture(), client=client)
+    assert ok is True
+    assert captured["url"] == "https://fleet.example/heartbeat"
+    body = captured["body"]
+    assert isinstance(body, (bytes, bytearray))
+    sig = captured["headers"]["x-caretaker-signature"]  # httpx lowercases
+    assert sig.startswith("sha256=")
+    expected = hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
+    assert sig.split("=", 1)[1] == expected
+
+
+# ── Backend endpoints ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fleet_client(monkeypatch):  # type: ignore[no-untyped-def]
+    """FastAPI client that mounts the public + admin routers without
+    the full MCP lifespan (which pulls in OIDC config). Admin endpoints
+    are exercised with the dependency override shortcut."""
+    from caretaker.admin import auth as admin_auth
+    from caretaker.fleet import admin_router
+
+    reset_store_for_tests()
+    monkeypatch.delenv("CARETAKER_FLEET_SECRET", raising=False)
+
+    app = FastAPI()
+    app.include_router(public_router)
+    app.include_router(admin_router)
+
+    # Bypass OIDC — the admin endpoints call ``require_session`` which
+    # in turn depends on a session cookie. Override it so the test can
+    # exercise the admin surface without spinning up OIDC.
+    async def _fake_user():  # noqa: ANN202
+        return admin_auth.UserInfo(sub="test", email="test@example.com", name="Test", picture=None)
+
+    app.dependency_overrides[admin_auth.require_session] = _fake_user
+    return TestClient(app)
+
+
+def test_heartbeat_roundtrip_no_secret(fleet_client) -> None:  # type: ignore[no-untyped-def]
+    body = {
+        "schema_version": 1,
+        "repo": "ianlintner/demo",
+        "caretaker_version": "0.11.0",
+        "run_at": datetime.now(UTC).isoformat(),
+        "mode": "full",
+        "enabled_agents": ["pr_agent", "issue_agent"],
+        "goal_health": 0.9,
+        "error_count": 0,
+        "counters": {"prs_monitored": 2},
+    }
+    resp = fleet_client.post("/api/fleet/heartbeat", json=body)
+    assert resp.status_code == 200
+    assert resp.json()["repo"] == "ianlintner/demo"
+
+    listed = fleet_client.get("/api/admin/fleet")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["repo"] == "ianlintner/demo"
+    assert payload["items"][0]["last_counters"]["prs_monitored"] == 2
+
+    summary = fleet_client.get("/api/admin/fleet/summary")
+    assert summary.status_code == 200
+    s = summary.json()
+    assert s["total_clients"] == 1
+    assert s["version_distribution"] == {"0.11.0": 1}
+
+
+def test_heartbeat_rejects_missing_signature_when_secret_configured(  # type: ignore[no-untyped-def]
+    fleet_client, monkeypatch
+) -> None:
+    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
+    resp = fleet_client.post(
+        "/api/fleet/heartbeat", json={"repo": "a/b", "caretaker_version": "0.11.0"}
+    )
+    assert resp.status_code == 401
+
+
+def test_heartbeat_accepts_valid_signature(fleet_client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
+    body = json.dumps({"repo": "a/b", "caretaker_version": "0.11.0"}).encode()
+    sig = "sha256=" + hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
+    resp = fleet_client.post(
+        "/api/fleet/heartbeat",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Caretaker-Signature": sig},
+    )
+    assert resp.status_code == 200
+
+
+def test_heartbeat_rejects_invalid_signature(fleet_client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
+    body = json.dumps({"repo": "a/b", "caretaker_version": "0.11.0"}).encode()
+    resp = fleet_client.post(
+        "/api/fleet/heartbeat",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Caretaker-Signature": "sha256=deadbeef",
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_heartbeat_rejects_empty_body(fleet_client) -> None:  # type: ignore[no-untyped-def]
+    resp = fleet_client.post(
+        "/api/fleet/heartbeat",
+        content=b"",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+def test_heartbeat_rejects_missing_repo(fleet_client) -> None:  # type: ignore[no-untyped-def]
+    resp = fleet_client.post(
+        "/api/fleet/heartbeat",
+        json={"caretaker_version": "0.11.0"},
+    )
+    assert resp.status_code == 400
+
+
+def test_admin_single_repo_fetch(fleet_client) -> None:  # type: ignore[no-untyped-def]
+    fleet_client.post(
+        "/api/fleet/heartbeat",
+        json={"repo": "ianlintner/demo", "caretaker_version": "0.11.0"},
+    )
+    resp = fleet_client.get("/api/admin/fleet/ianlintner/demo")
+    assert resp.status_code == 200
+    assert resp.json()["repo"] == "ianlintner/demo"
+
+    missing = fleet_client.get("/api/admin/fleet/other/missing")
+    assert missing.status_code == 404
+
+
+def test_store_singleton_survives_test_reset() -> None:
+    store = get_store()
+    reset_store_for_tests()
+    assert get_store() is not store

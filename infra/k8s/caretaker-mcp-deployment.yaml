@@ -14,6 +14,7 @@ spec:
       labels:
         app: caretaker-mcp
     spec:
+      serviceAccountName: caretaker-mcp
       tolerations:
         - key: "kubernetes.azure.com/scalesetpriority"
           operator: "Equal"
