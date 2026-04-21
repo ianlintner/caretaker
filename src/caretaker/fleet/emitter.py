@@ -211,4 +211,5 @@ async def emit_heartbeat(
 
 def heartbeat_as_dict(heartbeat: FleetHeartbeat) -> dict[str, Any]:
     """Small helper for callers that want the JSON-safe dict."""
-    return json.loads(heartbeat.model_dump_json())
+    result: dict[str, Any] = json.loads(heartbeat.model_dump_json())
+    return result
