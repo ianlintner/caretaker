@@ -1,0 +1,123 @@
+name: Caretaker custom agent
+
+# Drop this workflow into `.github/workflows/agent-custom.yml` to opt
+# into caretaker's custom (non-Copilot) coding agent. The workflow fires
+# when an issue or PR is labeled `agent:custom`, runs the Foundry
+# executor against the target, and opens a draft PR with the fix.
+#
+# See docs/custom-coding-agent-plan.md for the full rationale and
+# security model (path denylist, draft-only PRs, branch protection
+# requirements).
+
+on:
+  issues:
+    types: [labeled]
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue / PR number to operate on"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Never run two custom-agent jobs against the same issue simultaneously.
+  group: agent-custom-${{ github.event.issue.number || github.event.pull_request.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.guard.outputs.should_run }}
+      target_number: ${{ steps.guard.outputs.target_number }}
+    steps:
+      - id: guard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ev = context.eventName;
+            const payload = context.payload || {};
+            let targetNumber = null;
+            let labels = [];
+
+            if (ev === "workflow_dispatch") {
+              targetNumber = context.payload.inputs?.issue_number;
+              if (!targetNumber) {
+                core.setFailed("workflow_dispatch requires issue_number input");
+                return;
+              }
+            } else if (ev === "issues") {
+              targetNumber = payload.issue?.number;
+              labels = (payload.issue?.labels || []).map(l => l.name);
+              const applied = payload.label?.name;
+              if (applied && applied !== "agent:custom") {
+                core.notice(`skip: labeled event was ${applied}, not agent:custom`);
+                core.setOutput("should_run", "false");
+                return;
+              }
+            } else if (ev === "pull_request_target") {
+              targetNumber = payload.pull_request?.number;
+              labels = (payload.pull_request?.labels || []).map(l => l.name);
+              const applied = payload.label?.name;
+              if (applied && applied !== "agent:custom") {
+                core.notice(`skip: labeled event was ${applied}, not agent:custom`);
+                core.setOutput("should_run", "false");
+                return;
+              }
+            }
+
+            if (labels.includes("agent:quarantine")) {
+              core.notice("skip: agent:quarantine label present");
+              core.setOutput("should_run", "false");
+              return;
+            }
+
+            core.setOutput("target_number", String(targetNumber));
+            core.setOutput("should_run", "true");
+
+  run-agent:
+    needs: guard
+    if: ${{ needs.guard.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install caretaker
+        run: |
+          VERSION=$(cat .github/maintainer/.version)
+          pip install "git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
+
+      - name: Run custom coding agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          CARETAKER_EVENT_TYPE: ${{ github.event_name }}
+          CARETAKER_TARGET_NUMBER: ${{ needs.guard.outputs.target_number }}
+        run: |
+          # Caretaker's full run loop will pick up the target issue / PR
+          # via the normal event-payload flow. The `agent:custom` label
+          # already routes execution to the custom executor inside
+          # caretaker (see src/caretaker/foundry/dispatcher.py routing
+          # overrides); running `caretaker run --mode full` honours that.
+          # A dedicated `--mode custom-agent` CLI entry that operates on
+          # a single issue is tracked for a follow-up PR.
+          caretaker run \
+            --config .github/maintainer/config.yml \
+            --mode full \
+            --event-type "$CARETAKER_EVENT_TYPE" \
+            --event-payload "$(jq -cn --arg num "$CARETAKER_TARGET_NUMBER" '{issue: {number: ($num|tonumber)}}')"

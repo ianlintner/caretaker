@@ -6,6 +6,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from caretaker.causal import extract_causal, make_causal_marker
+from caretaker.foundry.dispatcher import (
+    LABEL_AGENT_COPILOT,
+    LABEL_AGENT_CUSTOM,
+    LABEL_AGENT_QUARANTINE,
+    routing_override,
+)
 from caretaker.issue_agent.classifier import IssueClassification
 from caretaker.tools.github import GitHubIssueTools
 
@@ -90,8 +96,44 @@ class IssueDispatcher:
             logger.info("Issue #%d (%s) not dispatchable", issue.number, classification.value)
             return None
 
+        # Label overrides honored at the issue level too. The custom-executor
+        # route for issues is opt-in via the consumer-side
+        # ``agent-custom.yml`` workflow that picks up the label; here we
+        # skip the Copilot assignment and apply the routing label so the
+        # GHA workflow (or an operator) can take it from there.
+        override = routing_override(issue.labels)
+        if override == LABEL_AGENT_QUARANTINE:
+            logger.info(
+                "Issue #%d not dispatched: agent:quarantine label present",
+                issue.number,
+            )
+            return None
+        if override == LABEL_AGENT_CUSTOM:
+            parent_causal = extract_causal(issue.body or "")
+            parent_id = parent_causal["id"] if parent_causal else None
+            causal = make_causal_marker("issue-agent:dispatch", parent=parent_id)
+            await self._issues.comment(
+                issue.number,
+                (
+                    f"@{issue.user.login} this issue is labeled `{LABEL_AGENT_CUSTOM}` "
+                    "and will be picked up by the caretaker custom coding agent "
+                    "rather than Copilot. See `docs/custom-coding-agent-plan.md` for details.\n\n"
+                    f"{causal}"
+                ),
+            )
+            logger.info(
+                "Issue #%d deferred to custom executor via agent:custom label", issue.number
+            )
+            return None
+
         body = build_assignment_body(issue, classification)
         copilot_assignment = self._issues.default_copilot_assignment()
+
+        # agent:copilot is an explicit no-op override (just keeps the
+        # default Copilot path) but we annotate the log so operators can
+        # see the decision was label-driven, not config-driven.
+        if override == LABEL_AGENT_COPILOT:
+            logger.info("Issue #%d routed to Copilot by agent:copilot label", issue.number)
 
         # For simple bugs, just update the existing issue and assign to Copilot
         if classification == IssueClassification.BUG_SIMPLE:

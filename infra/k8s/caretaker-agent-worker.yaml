@@ -1,0 +1,154 @@
+# Caretaker custom coding-agent worker
+#
+# This manifest is the *Phase 3* rollout surface from
+# docs/custom-coding-agent-plan.md: an on-demand worker that the MCP pod
+# can spawn per dispatch, so agent runs don't compete with the
+# orchestrator's GitHub Actions minutes.
+#
+# Phase 1 (the "wire the dispatcher" PR that introduced this file)
+# runs the custom executor inline inside the caretaker GHA run. These
+# resources are inert until:
+#   1. You extend `caretaker.mcp_backend` with a POST endpoint that
+#      creates a Job from `caretaker-agent-worker-template` below, and
+#   2. You grant the MCP pod the ServiceAccount / Role / RoleBinding at
+#      the bottom of this file so it can create Jobs in its namespace.
+#
+# We ship the skeleton now so the infra review + secrets + ACR image
+# pull can be approved ahead of the code that uses it.
+
+---
+# ServiceAccount the MCP pod uses to create Job resources.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: caretaker-agent-worker
+  labels:
+    app: caretaker-agent-worker
+
+---
+# Namespace-scoped Role: only `create` on `jobs`. No delete, no exec.
+# Pods the Job creates are garbage-collected by Kubernetes when the Job
+# finishes (ttlSecondsAfterFinished on the Job spec below).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: caretaker-agent-worker-job-creator
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: caretaker-agent-worker-binding
+subjects:
+  - kind: ServiceAccount
+    name: caretaker-mcp # the MCP pod's SA; adjust if yours differs
+roleRef:
+  kind: Role
+  name: caretaker-agent-worker-job-creator
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Template Job. The MCP backend copies this spec, overrides
+# metadata.name (via generateName) and the CARETAKER_TARGET_NUMBER env
+# var, and POSTs to the Kubernetes API. We keep the Job visible here
+# so infra reviewers can audit the container image, resources, and
+# mounted secrets in one place.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: caretaker-agent-worker-template
+  labels:
+    app: caretaker-agent-worker
+    role: template
+  annotations:
+    caretaker.io/description: >-
+      Template spec for per-dispatch coding-agent workers. NOT meant to
+      run as-is; the MCP backend clones this manifest per dispatch.
+spec:
+  ttlSecondsAfterFinished: 600 # cleaned up 10 minutes after completion
+  backoffLimit: 0 # no retries — the orchestrator / state machine decides
+  activeDeadlineSeconds: 900 # 15-minute hard cap
+  template:
+    metadata:
+      labels:
+        app: caretaker-agent-worker
+    spec:
+      serviceAccountName: caretaker-agent-worker
+      restartPolicy: Never
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          # Replace `your-acr.azurecr.io` with your ACR hostname.
+          image: your-acr.azurecr.io/caretaker-agent-worker:v1.0.0
+          imagePullPolicy: Always
+          args:
+            - "caretaker"
+            - "run"
+            - "--config"
+            - "/workspace/.github/maintainer/config.yml"
+            - "--mode"
+            - "full"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: GITHUB_REPOSITORY
+              value: "MUST_BE_OVERRIDDEN_BY_MCP_BACKEND"
+            - name: CARETAKER_TARGET_NUMBER
+              value: "MUST_BE_OVERRIDDEN_BY_MCP_BACKEND"
+            - name: CARETAKER_EVENT_TYPE
+              value: "issues"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: anthropic-api-key
+                  optional: true
+            - name: AZURE_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-key
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-installation-token
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

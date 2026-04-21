@@ -609,12 +609,26 @@ class FoundryExecutorConfig(StrictBaseModel):
     )
     max_files_touched: int = 10
     max_diff_lines: int = 400
-    # MVP task types that are actually dispatched to Foundry today. ``UPGRADE``
-    # is intentionally omitted until ``UpgradePlanner`` routes via the
-    # dispatcher; users who wire an upstream-Copilot upgrade path to Foundry
-    # can opt in by overriding this list in their config.
+    # Task types dispatched to the custom executor. Expanded from the
+    # original MVP pair (``LINT_FAILURE``, ``REVIEW_COMMENT``) to include
+    # ``TEST_FAILURE`` — trivial test failures (assertion tweak, fixture
+    # rename) fit inside the same size budget as lint fixes and the
+    # executor's tool-loop already handles them.
+    #
+    # Still intentionally omitted:
+    # * ``UPGRADE``     — waits on ``UpgradePlanner`` wiring the dispatcher.
+    # * ``CI_FAILURE``  — too ambiguous; let Copilot take it until we have a
+    #                     classifier that routes only trivial CI breaks here.
+    # * ``BUILD_FAILURE`` — usually dependency / env issues outside the
+    #                     executor's write-denylist.
+    # * ``REFACTOR``, ``MIGRATION``, ``ARCHITECTURE_REVIEW``, ``PRD_GENERATION``
+    #                   — bigger than the size budget by definition.
     allowed_task_types: list[str] = Field(
-        default_factory=lambda: ["LINT_FAILURE", "REVIEW_COMMENT"]
+        default_factory=lambda: [
+            "LINT_FAILURE",
+            "REVIEW_COMMENT",
+            "TEST_FAILURE",
+        ]
     )
     route_same_repo_only: bool = True
     request_timeout_seconds: float = 120.0
