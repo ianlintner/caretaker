@@ -109,6 +109,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
             counts = await GraphBuilder(persistent_store).full_sync(
                 state,
                 causal_store=data.causal_store,
+                repo=f"{owner}/{name}",
             )
             logger.debug("Graph sync counts: %s", counts)
         except Exception:

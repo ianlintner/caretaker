@@ -17,6 +17,20 @@ class NodeType(StrEnum):
     AUDIT_EVENT = "AuditEvent"
     MUTATION = "Mutation"
     CAUSAL_EVENT = "CausalEvent"
+    # ── Added in M3 of the memory-graph plan ────────────────────────────
+    # Tenant + attribution nodes. Every other node in the graph also
+    # grows a ``repo`` scalar so cypher queries can scope via
+    # ``WHERE n.repo = $repo``; the dedicated ``:Repo`` node is the
+    # anchor point for the future ``BELONGS_TO`` edge and cross-repo
+    # fleet queries. ``Comment`` and ``CheckRun`` complete the PR /
+    # Issue attribution chain so "which comment spawned this chain?"
+    # and "which check failed on this PR?" are one-hop queries.
+    # ``Executor`` captures copilot / foundry / claude_code provenance
+    # on the PR it handled.
+    REPO = "Repo"
+    COMMENT = "Comment"
+    CHECK_RUN = "CheckRun"
+    EXECUTOR = "Executor"
 
 
 class RelType(StrEnum):
