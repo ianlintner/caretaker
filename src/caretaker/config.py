@@ -370,6 +370,34 @@ class ReviewAgentConfig(StrictBaseModel):
     use_llm_for_retro: bool = True
 
 
+class PRReviewerConfig(StrictBaseModel):
+    """Configuration for the dual-path PR code reviewer.
+
+    When ``enabled`` is ``True``, caretaker reviews opened/updated PRs:
+    - Low-complexity PRs (score < ``routing_threshold``) get an inline
+      LLM review posted as a GitHub pull-request review.
+    - High-complexity PRs get handed off to the ``claude-code-action``
+      workflow via a trigger label + structured ``@claude`` comment.
+    """
+
+    enabled: bool = False
+    # Score threshold: score >= threshold → claude-code hand-off; else inline LLM.
+    routing_threshold: int = 40
+    # Label/mention used for the claude-code-action hand-off.
+    claude_code_label: str = "claude-code"
+    claude_code_mention: str = "@claude"
+    # Maximum diff lines fetched for inline review (excess is truncated).
+    max_diff_lines: int = 2000
+    # Whether to post per-file inline comments (in addition to the review body).
+    post_inline_comments: bool = True
+    # Skip PRs marked as draft.
+    skip_draft: bool = True
+    # Skip PRs that already carry any of these labels (prevents re-review).
+    skip_labels: list[str] = Field(default_factory=lambda: ["caretaker:reviewed"])
+    # Review event forced on all inline reviews — "AUTO" lets the LLM decide.
+    review_event: Literal["AUTO", "COMMENT", "APPROVE", "REQUEST_CHANGES"] = "AUTO"
+
+
 class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
@@ -753,6 +781,7 @@ class MaintainerConfig(StrictBaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
+    pr_reviewer: PRReviewerConfig = Field(default_factory=PRReviewerConfig)
     principal_agent: PrincipalAgentConfig = Field(default_factory=PrincipalAgentConfig)
     test_agent: TestAgentConfig = Field(default_factory=TestAgentConfig)
     refactor_agent: RefactorAgentConfig = Field(default_factory=RefactorAgentConfig)

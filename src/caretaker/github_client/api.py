@@ -421,6 +421,67 @@ class GitHubClient:
         data = await self._get(f"/repos/{owner}/{repo}/issues/{number}/comments")
         return [self._parse_comment(c) for c in (data or [])]
 
+    async def get_pull_diff(self, owner: str, repo: str, number: int) -> str:
+        """Return the unified diff for a pull request as a string."""
+        token = await self._creds.default_token()
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.diff",
+            },
+        )
+        if resp.status_code == 404:
+            return ""
+        if resp.status_code >= 400:
+            raise GitHubAPIError(resp.status_code, resp.text)
+        return resp.text
+
+    async def create_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_sha: str,
+        body: str,
+        event: str = "COMMENT",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Submit a pull request review.
+
+        Args:
+            event: One of ``APPROVE``, ``REQUEST_CHANGES``, ``COMMENT``.
+            comments: Optional list of inline comments — each dict should
+                carry ``path``, ``line``, ``body`` and optionally ``side``.
+        """
+        payload: dict[str, Any] = {
+            "commit_id": commit_sha,
+            "body": body,
+            "event": event,
+        }
+        if comments:
+            payload["comments"] = comments
+        data = await self._post(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", json=payload)
+        return data if data else {}
+
+    async def request_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        reviewers: list[str],
+        team_reviewers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Request specific reviewers for a pull request."""
+        payload: dict[str, Any] = {"reviewers": reviewers}
+        if team_reviewers:
+            payload["team_reviewers"] = team_reviewers
+        data = await self._post(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
+            json=payload,
+        )
+        return data if data else {}
+
     # ── Check Runs (CI) ────────────────────────────────────────
 
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[CheckRun]:
