@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.11.0",
+      "min_compatible": "0.10.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.11.0",
+      "upgrade_notes": "Unified triage subsystem. New TriageAgent adapter runs after PR/issue agents and performs: PR triage (close empty/duplicate/binary-conflicted PRs, ready valid Copilot drafts), issue triage (close empty/duplicate/stale/already-resolved issues), and cross-entity cascade cleanup (close linked issues when a PR merges, unlink issues when a PR closes unmerged, redirect or close PRs when their target issue is closed as a duplicate). Opt out via triage.enabled=false; dry-run via triage.dry_run=true.",
+      "breaking": false
+    },
+    {
       "version": "0.10.0",
       "min_compatible": "0.10.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.10.0",

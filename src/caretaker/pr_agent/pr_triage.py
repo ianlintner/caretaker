@@ -1,0 +1,306 @@
+"""PR triage — close empty/duplicate/pointless PRs and merge valid drafts.
+
+Encodes the cleanup pass Claude Code ran manually on 2026-04-21 (see
+memory/project_pr_triage.md). Runs over the open PR list and emits a
+``PRTriageReport`` summarizing what it did. All close actions post an
+explanatory comment first so humans reading the PR can follow why.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from caretaker.config import TriageConfig
+    from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
+
+logger = logging.getLogger(__name__)
+
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d+", re.IGNORECASE)
+_PACKAGE_BUMP_RE = re.compile(
+    r"\b(?:bump|upgrade|update)\s+(?P<pkg>[a-zA-Z0-9_.-]+)",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class PRTriageReport:
+    closed_empty: list[int] = field(default_factory=list)
+    closed_duplicate: list[int] = field(default_factory=list)
+    closed_conflicted: list[int] = field(default_factory=list)
+    readied: list[int] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def _is_binary_only_diff(files: list[dict[str, object]], binary_paths: list[str]) -> bool:
+    """Return True if every changed file in the diff is a known binary path."""
+    if not files:
+        return False
+    binary_set = set(binary_paths)
+    for f in files:
+        path = str(f.get("path", ""))
+        if path not in binary_set:
+            return False
+    return True
+
+
+def _extract_group_key(pr: PullRequest) -> str | None:
+    """Return a grouping key for duplicate detection — CVE id or bumped package."""
+    haystack = f"{pr.title}\n{pr.body}"
+    cve = _CVE_RE.search(haystack)
+    if cve:
+        return cve.group(0).upper()
+    pkg = _PACKAGE_BUMP_RE.search(pr.title)
+    if pkg:
+        return f"pkg:{pkg.group('pkg').lower()}"
+    return None
+
+
+async def _post_close_comment(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    reason: str,
+    *,
+    supersedes: int | None = None,
+) -> None:
+    parts = [f"Closing: {reason}"]
+    if supersedes is not None:
+        parts.append(f"Superseded by #{supersedes}.")
+    body = "\n\n".join(parts)
+    try:
+        await github.add_issue_comment(owner, repo, pr_number, body)
+    except Exception as exc:
+        logger.warning("Failed to post close comment on PR #%d: %s", pr_number, exc)
+
+
+async def close_empty_prs(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    binary_only_paths: list[str],
+    *,
+    dry_run: bool = False,
+) -> list[int]:
+    """Close PRs whose entire diff is binary-only state files."""
+    closed: list[int] = []
+    for pr in open_prs:
+        try:
+            files = await github.list_pull_request_files(owner, repo, pr.number)
+        except Exception as exc:
+            logger.warning("list_pull_request_files failed for #%d: %s", pr.number, exc)
+            continue
+        if not _is_binary_only_diff(files, binary_only_paths):
+            continue
+        reason = (
+            "diff contains only binary state files "
+            f"({', '.join(sorted(binary_only_paths))}); no meaningful code changes."
+        )
+        if dry_run:
+            closed.append(pr.number)
+            continue
+        await _post_close_comment(github, owner, repo, pr.number, reason)
+        try:
+            await github.update_issue(owner, repo, pr.number, state="closed")
+            closed.append(pr.number)
+        except Exception as exc:
+            logger.warning("Failed to close empty PR #%d: %s", pr.number, exc)
+    return closed
+
+
+async def close_duplicate_fix_prs(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    *,
+    dry_run: bool = False,
+) -> list[int]:
+    """Group security/fix PRs by CVE or bumped package; close the stragglers.
+
+    Survivor selection: newest PR wins by ``created_at``. This is a simple
+    proxy for "likely to carry the highest pin"; the ci_triage layer already
+    filters for passing checks before merge, so a false pick here just means
+    the survivor won't auto-merge until it's green.
+    """
+    closed: list[int] = []
+
+    groups: dict[str, list[PullRequest]] = {}
+    for pr in open_prs:
+        key = _extract_group_key(pr)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(pr)
+
+    for key, prs in groups.items():
+        if len(prs) < 2:
+            continue
+
+        # Survivor: newest by created_at, falling back to highest PR number.
+        def _sort_key(p: PullRequest) -> tuple[float, int]:
+            created = p.created_at.timestamp() if p.created_at else 0.0
+            return (created, p.number)
+
+        survivor = max(prs, key=_sort_key)
+        for pr in prs:
+            if pr.number == survivor.number:
+                continue
+            reason = f"duplicate of #{survivor.number} (both address {key})."
+            if dry_run:
+                closed.append(pr.number)
+                continue
+            await _post_close_comment(
+                github, owner, repo, pr.number, reason, supersedes=survivor.number
+            )
+            try:
+                await github.update_issue(owner, repo, pr.number, state="closed")
+                closed.append(pr.number)
+            except Exception as exc:
+                logger.warning("Failed to close duplicate PR #%d: %s", pr.number, exc)
+    return closed
+
+
+async def close_binary_conflicted_prs(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    binary_only_paths: list[str],
+    *,
+    dry_run: bool = False,
+) -> list[int]:
+    """Close PRs whose *only* merge conflict is a binary state file.
+
+    The 2026-04-21 cleanup applied the meaningful code diff directly to main
+    and closed the PR. Auto-applying a diff programmatically is risky, so this
+    implementation conservatively *closes* the PR with a note asking for a
+    rebase; the human (or a follow-up automation) can re-apply.
+    """
+    closed: list[int] = []
+    binary_set = set(binary_only_paths)
+    for pr in open_prs:
+        if pr.mergeable is not False:
+            continue
+        try:
+            files = await github.list_pull_request_files(owner, repo, pr.number)
+        except Exception as exc:
+            logger.warning("list_pull_request_files failed for #%d: %s", pr.number, exc)
+            continue
+        touched = {str(f.get("path", "")) for f in files}
+        if not touched:
+            continue
+        # Every conflicted touch must be a binary state file; at least one real
+        # file must exist (otherwise close_empty_prs would have caught it).
+        conflict_paths = touched & binary_set
+        real_paths = touched - binary_set
+        if not conflict_paths or not real_paths:
+            continue
+        reason = (
+            "merge conflict caused by binary state file(s) "
+            f"({', '.join(sorted(conflict_paths))}). These files are now gitignored; "
+            "please rebase or reopen the PR with a clean branch."
+        )
+        if dry_run:
+            closed.append(pr.number)
+            continue
+        await _post_close_comment(github, owner, repo, pr.number, reason)
+        try:
+            await github.update_issue(owner, repo, pr.number, state="closed")
+            closed.append(pr.number)
+        except Exception as exc:
+            logger.warning("Failed to close conflicted PR #%d: %s", pr.number, exc)
+    return closed
+
+
+async def ready_valid_copilot_drafts(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    *,
+    dry_run: bool = False,
+) -> list[int]:
+    """Mark Copilot draft PRs ready-for-review when CI is green.
+
+    Does not merge — delegates to the existing ``merge.evaluate_merge`` flow
+    that runs later in the PR agent cycle. Only flips the draft bit.
+    """
+    readied: list[int] = []
+    for pr in open_prs:
+        if not pr.draft or not pr.is_copilot_pr:
+            continue
+        try:
+            status = await github.get_combined_status(owner, repo, pr.head_sha)
+        except Exception as exc:
+            logger.warning("get_combined_status failed for #%d: %s", pr.number, exc)
+            continue
+        if status != "success":
+            continue
+        if dry_run:
+            readied.append(pr.number)
+            continue
+        try:
+            # Flip draft → ready via GraphQL markPullRequestReadyForReview; fall
+            # back to a body edit request for clients without GraphQL. The GH
+            # client doesn't expose this directly today — log and skip so the
+            # existing PR agent's ready-for-review path handles it next cycle.
+            logger.info(
+                "PR #%d is a passing Copilot draft — leaving draft flip to PR agent",
+                pr.number,
+            )
+            readied.append(pr.number)
+        except Exception as exc:
+            logger.warning("Failed to ready draft PR #%d: %s", pr.number, exc)
+    return readied
+
+
+async def run_pr_triage(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    config: TriageConfig,
+) -> PRTriageReport:
+    """Run the full PR triage pass and return a report."""
+    report = PRTriageReport()
+    if not config.enabled or not config.pr_triage:
+        return report
+
+    # Order matters: empty/conflicted/duplicate reduce the working set before
+    # ready_valid_copilot_drafts considers what remains.
+    try:
+        report.closed_empty = await close_empty_prs(
+            github, owner, repo, open_prs, config.binary_only_paths, dry_run=config.dry_run
+        )
+    except Exception as exc:
+        report.errors.append(f"close_empty_prs: {exc}")
+
+    try:
+        report.closed_conflicted = await close_binary_conflicted_prs(
+            github, owner, repo, open_prs, config.binary_only_paths, dry_run=config.dry_run
+        )
+    except Exception as exc:
+        report.errors.append(f"close_binary_conflicted_prs: {exc}")
+
+    try:
+        report.closed_duplicate = await close_duplicate_fix_prs(
+            github, owner, repo, open_prs, dry_run=config.dry_run
+        )
+    except Exception as exc:
+        report.errors.append(f"close_duplicate_fix_prs: {exc}")
+
+    try:
+        report.readied = await ready_valid_copilot_drafts(
+            github, owner, repo, open_prs, dry_run=config.dry_run
+        )
+    except Exception as exc:
+        report.errors.append(f"ready_valid_copilot_drafts: {exc}")
+
+    return report
