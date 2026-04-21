@@ -660,12 +660,21 @@ class GitHubClient:
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(
-                owner,
-                repo,
-                issue.number,
-                assignment=copilot_assignment,
-            )
+            try:
+                await self.assign_copilot_to_issue(
+                    owner,
+                    repo,
+                    issue.number,
+                    assignment=copilot_assignment,
+                )
+            except GitHubAPIError as exc:
+                logger.warning(
+                    "Copilot assignment failed for issue #%d in %s/%s (non-fatal): %s",
+                    issue.number,
+                    owner,
+                    repo,
+                    exc,
+                )
 
         return issue
 
@@ -715,12 +724,21 @@ class GitHubClient:
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(
-                owner,
-                repo,
-                number,
-                assignment=copilot_assignment,
-            )
+            try:
+                await self.assign_copilot_to_issue(
+                    owner,
+                    repo,
+                    number,
+                    assignment=copilot_assignment,
+                )
+            except GitHubAPIError as exc:
+                logger.warning(
+                    "Copilot assignment failed for issue #%d in %s/%s (non-fatal): %s",
+                    number,
+                    owner,
+                    repo,
+                    exc,
+                )
 
         return issue
 

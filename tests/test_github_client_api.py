@@ -797,3 +797,49 @@ async def test_add_issue_comment_cap_zero_disables_check() -> None:
         await client.add_issue_comment("o", "r", 1, body)
     # When cap is disabled, we should NOT even bother fetching existing comments
     get_mock.assert_not_awaited()
+
+
+# ── Copilot assignment non-fatal ──────────────────────────────────────────────
+
+
+def _issue_payload(number: int = 42) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": "Test issue",
+        "body": "body",
+        "state": "open",
+        "user": {"login": "bot", "id": 1},
+        "labels": [],
+        "assignees": [],
+        "html_url": f"https://github.com/o/r/issues/{number}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_issue_copilot_assignment_404_is_non_fatal() -> None:
+    """A 404 from the Copilot assignees endpoint must not raise — issue is returned."""
+    client = GitHubClient(
+        credentials_provider=StaticCredentialsProvider(default_token="x"),
+    )
+    with (
+        patch.object(client, "_post", AsyncMock(return_value=_issue_payload(99))),
+        patch.object(client, "_copilot_post", AsyncMock(return_value=None)),
+    ):
+        issue = await client.create_issue("o", "r", "title", "body", assignees=["copilot"])
+
+    assert issue.number == 99
+
+
+@pytest.mark.asyncio
+async def test_update_issue_copilot_assignment_404_is_non_fatal() -> None:
+    """A 404 from the Copilot assignees endpoint during update_issue must not raise."""
+    client = GitHubClient(
+        credentials_provider=StaticCredentialsProvider(default_token="x"),
+    )
+    with (
+        patch.object(client, "_patch", AsyncMock(return_value=_issue_payload(55))),
+        patch.object(client, "_copilot_post", AsyncMock(return_value=None)),
+    ):
+        issue = await client.update_issue("o", "r", 55, assignees=["copilot"])
+
+    assert issue.number == 55
