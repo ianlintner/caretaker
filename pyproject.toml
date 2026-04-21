@@ -87,6 +87,7 @@ admin = [
 # ``llm.provider: litellm`` in config to enable other backends.
 llm-multi = [
     "litellm>=1.50,<2",
+    "aiohttp>=3.13.4",  # security: CVE-2026-34516 multipart header size bypass fixed in 3.13.4
 ]
 # Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
 # docs/custom-coding-agent-plan.md. Only required on the caretaker
