@@ -634,11 +634,46 @@ class FoundryExecutorConfig(StrictBaseModel):
     request_timeout_seconds: float = 120.0
 
 
+class ClaudeCodeExecutorConfig(StrictBaseModel):
+    """Configuration for the opt-in ``claude-code-action`` hand-off executor.
+
+    Caretaker does not run Claude Code inline; instead, when this executor
+    is selected for a task, it applies a configurable *trigger label* to
+    the host PR / issue, and posts a structured hand-off comment. The
+    upstream [``anthropics/claude-code-action``][cca] workflow, installed
+    separately in the consumer repo, listens for that label (or the `@claude`
+    mention in the comment) and produces the fix asynchronously.
+
+    The caretaker state machine then tracks the resulting commit / PR
+    through the same ``<!-- caretaker:result -->`` markers it already uses
+    for the Copilot + Foundry paths.
+
+    Feature is entirely opt-in: ``enabled = False`` by default; in addition
+    the consumer repo must have the upstream action installed and
+    authorised on its own.
+
+    [cca]: https://github.com/anthropics/claude-code-action
+    """
+
+    enabled: bool = False
+    # Label caretaker applies to trigger the upstream workflow.
+    trigger_label: str = "claude-code"
+    # Mention string included in the hand-off comment so the upstream
+    # auto-detector can pick it up even if a repo has a different label
+    # listener name configured.
+    mention: str = "@claude"
+    # Maximum attempts per task before caretaker stops re-applying the
+    # trigger label; prevents ping-pong if the upstream action can't
+    # complete the work.
+    max_attempts: int = 2
+
+
 class ExecutorConfig(StrictBaseModel):
     """Top-level switch deciding how coding tasks are executed."""
 
-    provider: Literal["copilot", "foundry", "auto"] = "copilot"
+    provider: Literal["copilot", "foundry", "claude_code", "auto"] = "copilot"
     foundry: FoundryExecutorConfig = Field(default_factory=FoundryExecutorConfig)
+    claude_code: ClaudeCodeExecutorConfig = Field(default_factory=ClaudeCodeExecutorConfig)
 
 
 class MaintainerConfig(StrictBaseModel):

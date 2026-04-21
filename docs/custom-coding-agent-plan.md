@@ -132,18 +132,38 @@ by task type.
 No new infra. Runs inside the existing `caretaker run` invocation, i.e.
 the same GitHub Actions runner that already does orchestration.
 
-### Phase 2 — additional executors
+### Phase 2 — additional executors *(shipped)*
 
-- Extract `ExecutorProtocol` interface: `async run(task, pr) ->
-  ExecutorResult`. Foundry is one implementation.
-- Add `ClaudeCodeExecutor` that either:
-  - Triggers the upstream [`anthropics/claude-code-action`][cca] via
-    `repository_dispatch` / `workflow_dispatch`, or
-  - Drops the `claude` label on the issue for a workflow that's
-    already listening (simpler; keeps caretaker stateless).
-- Config: `executor.provider = "claude_code"` + a `claude_code` config
-  block (model, GitHub App token env var).
-- Tests.
+- `ClaudeCodeExecutor` added in `src/caretaker/claude_code_executor.py`.
+  Conforms to the same `async run(task, pr) -> ExecutorResult` shape
+  as `FoundryExecutor`, so the dispatcher routes to either with no
+  special-casing.
+- Hand-off model (simpler than running the upstream action inline):
+  executor posts a structured comment that carries `@claude` +
+  caretaker's task details, then applies a configurable trigger label
+  (`claude-code` by default). The upstream
+  [`anthropics/claude-code-action`][cca] workflow picks up the
+  mention / label and produces the fix asynchronously; caretaker's
+  existing `<!-- caretaker:result -->` state machine reads the result
+  commit back.
+- Config: `executor.provider = "claude_code"` plus a new
+  `claude_code` block (`enabled`, `trigger_label`, `mention`,
+  `max_attempts`).
+- Attempt cap: executor counts prior hand-offs on the PR via a
+  marker comment (`<!-- caretaker:claude-code-handoff -->`); beyond
+  `max_attempts` it escalates to Copilot to avoid ping-pong if the
+  upstream action can't complete the work.
+- Dispatcher extended with:
+  * `RouteOutcome.CLAUDE_CODE` — successful hand-off.
+  * `provider = "claude_code"` support.
+  * `provider = "auto"` now tries Claude Code when Foundry is
+    ineligible but Claude Code is enabled, before falling to Copilot.
+  * `agent:custom` label honours whichever custom executor is
+    currently active (Foundry first if both configured, else Claude
+    Code).
+- Tests: 12 new cases covering config defaults, comment + label
+  application, label-failure graceful degradation, attempt cap,
+  dispatcher routing through every new path.
 
 ### Phase 3 — scale out onto AKS
 

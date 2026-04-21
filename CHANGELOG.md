@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Custom coding agent — Phase 2: Claude Code hand-off executor
+
+Second phase of the custom-coding-agent plan. `ExecutorDispatcher` now
+routes to a second non-Copilot executor that hands tasks off to the
+upstream `anthropics/claude-code-action` workflow.
+
+- New `ClaudeCodeExecutor` (`src/caretaker/claude_code_executor.py`).
+  Conforms to the same `async run(task, pr) -> ExecutorResult` shape
+  as `FoundryExecutor` so the dispatcher treats it as a peer.
+  Dispatch model: post `@claude` mention comment + apply trigger
+  label; upstream workflow produces the fix asynchronously; existing
+  `<!-- caretaker:result -->` markers close the loop.
+- New `ClaudeCodeExecutorConfig` on `MaintainerConfig.executor`:
+  `enabled`, `trigger_label` (default `claude-code`), `mention`
+  (default `@claude`), `max_attempts` (default 2). Feature is off by
+  default; `executor.provider` extended to `copilot | foundry |
+  claude_code | auto`.
+- Dispatcher adds `RouteOutcome.CLAUDE_CODE`. `provider=auto` now
+  tries Claude Code when Foundry is ineligible but Claude Code is
+  enabled, before falling to Copilot. `agent:custom` label honours
+  whichever custom executor is currently active.
+- Attempt cap prevents ping-pong: executor counts prior hand-off
+  comments (marker `<!-- caretaker:claude-code-handoff -->`); beyond
+  `max_attempts` it escalates to Copilot.
+- Tests: 12 new cases, full pytest 890 passed.
+- Plan doc Phase-2 section updated to reflect shipped state.
+
 ### Fleet Registry — opt-in cross-repo client roster
 
 New opt-in telemetry surface so an operator can see every
