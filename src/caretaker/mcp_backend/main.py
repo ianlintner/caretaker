@@ -187,11 +187,18 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             neo4j_url = os.environ.get("NEO4J_URL", "")
             if neo4j_url:
                 try:
+                    from caretaker.admin.graph_api import (
+                        admin_router as graph_admin_router,
+                    )
                     from caretaker.admin.graph_api import configure as configure_graph
                     from caretaker.admin.graph_api import router as graph_router
 
                     await configure_graph()
                     application.include_router(graph_router)
+                    # M4 compaction endpoint — lives on ``/api/admin``
+                    # but shares the same store handle as the graph
+                    # router so we mount it in the same branch.
+                    application.include_router(graph_admin_router)
                     logger.info("Graph API enabled (Neo4j at %s)", neo4j_url)
                 except Exception:
                     logger.warning("Failed to initialise graph API", exc_info=True)

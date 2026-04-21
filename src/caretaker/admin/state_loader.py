@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 from caretaker.github_app import (
@@ -87,6 +88,12 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
     # nonlocal-assignable variable so the closure below can mutate it.
     persistent_store: Any = None
     writer_started = False
+    # M4: track the wall-clock of the last nightly compaction pass so the
+    # refresh loop only kicks it off once every 24h even though the loop
+    # itself runs every minute. Stored as a monotonic timestamp so clock
+    # skew on the host doesn't cause us to skip or double-fire.
+    last_compaction_at: float | None = None
+    compaction_interval_seconds = 24 * 60 * 60
 
     async def _sync_graph(state) -> None:  # type: ignore[no-untyped-def]
         """Best-effort Neo4j sync. Swallows all errors — graph is optional."""
@@ -114,6 +121,35 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
             logger.debug("Graph sync counts: %s", counts)
         except Exception:
             logger.warning("Graph sync failed", exc_info=True)
+
+    async def _maybe_run_compaction() -> None:
+        """Fire :func:`compaction.run_nightly` at most once per 24h.
+
+        Compaction is best-effort (``docs/memory-graph-plan.md`` §10):
+        a Neo4j hiccup must never wedge the refresh loop, so every
+        failure is logged and swallowed. The last-run timestamp is
+        tracked in the closure scope rather than on the store to keep
+        the scheduling state local to the refresh task.
+        """
+        nonlocal last_compaction_at
+        if persistent_store is None:
+            return
+        now = time.monotonic()
+        if last_compaction_at is not None and (
+            now - last_compaction_at < compaction_interval_seconds
+        ):
+            return
+        try:
+            from caretaker.graph import compaction
+
+            counts = await compaction.run_nightly(persistent_store, f"{owner}/{name}")
+            logger.info("Nightly graph compaction for %s: %s", repo, counts)
+        except Exception:
+            logger.warning("Nightly graph compaction failed for %s", repo, exc_info=True)
+        finally:
+            # Mark the attempt regardless of outcome so a persistently
+            # broken Neo4j doesn't turn the loop into a hot spin.
+            last_compaction_at = now
 
     async def _loop() -> None:
         # WARNING level so the line is visible under uvicorn's default
@@ -147,6 +183,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
                         len(state.run_history),
                     )
                 await _sync_graph(state)
+                await _maybe_run_compaction()
             except asyncio.CancelledError:
                 raise
             except Exception:

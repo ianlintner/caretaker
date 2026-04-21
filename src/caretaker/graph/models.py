@@ -31,6 +31,14 @@ class NodeType(StrEnum):
     COMMENT = "Comment"
     CHECK_RUN = "CheckRun"
     EXECUTOR = "Executor"
+    # ── Added in M4 of the memory-graph plan ────────────────────────────
+    # Tier-1 rollup node emitted by the nightly compaction job. Each
+    # ``:RunSummaryWeek`` aggregates every ``:Run`` whose ``run_at``
+    # falls inside one ISO week for a given repo so raw tier-0 rows
+    # can be pruned after 30 days without losing weekly telemetry.
+    # Skills that are crystallised out of a weekly rollup link back
+    # via ``Skill-[:LEARNED_IN]->RunSummaryWeek`` provenance.
+    RUN_SUMMARY_WEEK = "RunSummaryWeek"
 
 
 class RelType(StrEnum):
@@ -59,6 +67,11 @@ class RelType(StrEnum):
     VALIDATED_BY = "VALIDATED_BY"  # Skill → CausalEvent
     AFFECTED = "AFFECTED"  # Run → Goal (with before/after score)
     HANDLED_BY = "HANDLED_BY"  # PR → Executor (copilot / foundry / claude_code)
+    # ── Added in M4 of the memory-graph plan ────────────────────────────
+    # Skill → RunSummaryWeek provenance: lets callers answer "which
+    # weekly rollup was this skill crystallised from?" once the
+    # tier-0 → tier-1 compaction pass learns a new skill.
+    LEARNED_IN = "LEARNED_IN"
 
 
 class GraphNode(BaseModel):

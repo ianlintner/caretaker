@@ -51,6 +51,8 @@ class GraphStore:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Comment) REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (cr:CheckRun) REQUIRE cr.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:Executor) REQUIRE e.id IS UNIQUE",
+            # M4: tier-1 weekly rollup node constraint.
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (w:RunSummaryWeek) REQUIRE w.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:
@@ -88,6 +90,47 @@ class GraphStore:
         async with self._driver.session(database=self._database) as session:
             await session.run("MATCH (n) DETACH DELETE n")
         logger.warning("Graph store cleared")
+
+    # ── Compaction primitives (M4) ────────────────────────────────────────
+    #
+    # These are the minimum store-level hooks the tiered compaction job
+    # needs so the raw cypher stays out of ``compaction.py`` and the fake
+    # stores used by unit tests can mirror them without speaking Neo4j.
+
+    async def list_nodes_with_properties(
+        self,
+        label: str,
+        *,
+        where: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return raw property dicts for every ``label`` node matching ``where``.
+
+        ``where`` is an optional cypher fragment that may reference the node
+        alias ``n`` (e.g. ``"n.repo = $repo"``). ``params`` are passed
+        through to the driver. The returned list preserves insertion order
+        from Neo4j and each entry is the plain ``dict(n)`` representation
+        — callers that need degree or relationships should go through
+        ``get_neighbors`` instead.
+        """
+        clause = f"WHERE {where} " if where else ""
+        query = f"MATCH (n:{label}) {clause}RETURN n"
+        rows: list[dict[str, Any]] = []
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, **(params or {}))
+            async for record in result:
+                rows.append(dict(record["n"]))
+        return rows
+
+    async def delete_node(self, label: str, node_id: str) -> None:
+        """Detach-delete a single node by ``id``.
+
+        Used by the tiered compaction prune pass (M4). Missing nodes are a
+        no-op — the query simply matches zero rows.
+        """
+        query = f"MATCH (n:{label} {{id: $id}}) DETACH DELETE n"
+        async with self._driver.session(database=self._database) as session:
+            await session.run(query, id=node_id)
 
     # ── Read operations ───────────────────────────────────────────────────
 

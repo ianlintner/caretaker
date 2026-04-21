@@ -8,9 +8,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from caretaker.admin.auth import UserInfo, require_session
+from caretaker.graph import compaction
 from caretaker.graph.models import GraphStats, SubGraph  # noqa: TC001 (response models)
 from caretaker.graph.store import GraphStore  # noqa: TC001 (runtime-used)
 
@@ -101,3 +102,37 @@ async def pr_lifecycle(
 ) -> SubGraph:
     """Return the full lifecycle graph for a PR."""
     return await _get_store().get_neighbors(f"pr:{number}", depth=2)
+
+
+# ── Compaction (M4) ────────────────────────────────────────────────────────
+
+
+# Mounted on a sibling ``/api/admin`` path rather than ``/api/graph`` so
+# it sits alongside the rest of the dashboard's state-mutation endpoints
+# (see ``admin.api``). The OIDC session dependency is identical so the
+# same allowlist governs who can kick off compaction.
+admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@admin_router.post("/graph/compact")
+async def trigger_graph_compaction(
+    payload: dict[str, Any] = Body(..., description="{'repo': 'owner/name'}"),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, int]:
+    """Run the nightly compaction pass on-demand.
+
+    Rolls up the last ISO week of ``:Run`` nodes for ``repo`` into a
+    single ``:RunSummaryWeek`` node then prunes low-salience tier-0
+    rows older than 30 days. Returns the same counter dict that the
+    24-hour heartbeat emits so operators can compare on-demand vs
+    nightly runs.
+    """
+    repo = str(payload.get("repo", "")).strip()
+    if not repo or "/" not in repo:
+        raise HTTPException(
+            status_code=400,
+            detail="Body requires {'repo': '<owner>/<name>'}",
+        )
+    counts = await compaction.run_nightly(_get_store(), repo)
+    logger.info("Manual graph compaction on %s: %s", repo, counts)
+    return counts
