@@ -90,6 +90,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Memory graph — M4: tiered compaction + salience scoring
+
+Fourth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
+§4). Turns the unbounded tier-0 firehose of `:Run` / `:AuditEvent` /
+`:CausalEvent` nodes into a bounded, tiered memory: runs older than 30
+days roll up into weekly `:RunSummaryWeek` nodes and low-salience rows
+get pruned on a nightly heartbeat. Goals, skills, and pinned nodes are
+never candidates — safety over completeness.
+
+- New `NodeType.RUN_SUMMARY_WEEK` plus `RelType.LEARNED_IN` so the
+  skill crystalliser can link a promoted skill back to the ISO-week
+  rollup it was learned in. Uniqueness constraint shipped in
+  `GraphStore.ensure_indexes`.
+- New `src/caretaker/graph/compaction.py`: pure-stdlib
+  `compute_salience` implementing the weighted sum from the plan
+  (`0.3 * escalation_count + 0.3 * unexpected_outcome +
+  0.2 * recency_decay + 0.2 * connectivity`), plus async
+  `compact_tier0_to_tier1`, `prune_low_salience`, and a `run_nightly`
+  one-shot that chains them. Every pruning path is gated on the
+  `pinned: true` flag, a 30-day age cutoff, and tenant scoping via
+  `n.repo = $repo` so cross-tenant data can't leak into another
+  repo's compaction.
+- New `GraphStore.list_nodes_with_properties` + `delete_node`
+  compaction primitives so the cypher stays out of the compaction
+  module and unit tests can swap in a fake store trivially.
+- New `POST /api/admin/graph/compact {repo}` endpoint mounted on the
+  existing OIDC-gated router, returning the same `{rolled_up_runs,
+  pruned}` counter dict the nightly loop emits.
+- `admin.state_loader.build_refresh_task` now fires
+  `compaction.run_nightly` at most once every 24 hours, tracked via a
+  monotonic timestamp in the refresh-loop closure. All failures are
+  logged and swallowed — a degraded Neo4j must never wedge the
+  refresh task.
+- 10 new tests in `tests/test_graph_compaction.py` exercise salience
+  bounds, escalation-count dominance, weekly rollup counters, the
+  age + pinned + label-whitelist pruning gates, and the nightly
+  orchestrator's combined behaviour via a `RecordingCompactionStore`
+  extending the M3 fake-store pattern.
+
 ### Memory graph — M8: OTel GenAI span instrumentation
 
 Eighth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
