@@ -26,12 +26,19 @@ The launcher is designed to be *fail-safe*:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from caretaker.observability.metrics import (
+    record_worker_job,
+    set_worker_queue_depth,
+)
 
 if TYPE_CHECKING:
     from caretaker.config import K8sAgentWorkerConfig
@@ -261,7 +268,16 @@ class K8sAgentLauncher:
         extra_env: dict[str, str] | None = None,
     ) -> DispatchRecord:
         """Create (or re-use a deduped) Job for a single coding task."""
+        _start = time.perf_counter()
+        _outcome = "success"
         if not self._config.enabled:
+            _outcome = "failure"
+            with contextlib.suppress(Exception):  # pragma: no cover
+                record_worker_job(
+                    job="k8s-agent-worker-dispatch",
+                    outcome=_outcome,
+                    duration=time.perf_counter() - _start,
+                )
             raise K8sLauncherError("k8s_worker.enabled is False")
         if not repo or "/" not in repo:
             raise K8sLauncherError(f"repo must be in 'owner/name' form (got {repo!r})")
@@ -342,6 +358,12 @@ class K8sAgentLauncher:
             issue_number,
             task_type,
         )
+        with contextlib.suppress(Exception):  # pragma: no cover
+            record_worker_job(
+                job="k8s-agent-worker-dispatch",
+                outcome="success",
+                duration=time.perf_counter() - _start,
+            )
         return record
 
     async def list_recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -378,4 +400,21 @@ class K8sAgentLauncher:
                 }
             )
         items.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
+        # Publish the live "pending + active" depth for
+        # ``worker_queue_depth{queue="caretaker-agent-worker"}``. We
+        # consider a Job "in-flight" when its ``active`` count is set
+        # (running pod) or when ``succeeded`` and ``failed`` are both
+        # absent (queued, not yet started).
+        try:
+            active = sum(
+                1
+                for item in items
+                if (item.get("active") or 0) > 0
+                or (item.get("succeeded") is None and item.get("failed") is None)
+            )
+            set_worker_queue_depth("caretaker-agent-worker", active)
+        except Exception:  # pragma: no cover
+            pass
+
         return items

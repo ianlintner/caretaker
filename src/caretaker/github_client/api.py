@@ -140,6 +140,14 @@ class GitHubClient:
         if cooldown.is_blocked():
             remaining = cooldown.seconds_remaining()
             snap = cooldown.snapshot()
+            # Short-circuited call still counts as a ratelimit error
+            # event for error-budget dashboards.
+            try:
+                from caretaker.observability.metrics import record_error
+
+                record_error("ratelimit")
+            except Exception:  # pragma: no cover - observability must never cascade
+                pass
             raise RateLimitError(
                 429,
                 f"Short-circuit: GitHub rate-limit cooldown still active "
@@ -147,7 +155,42 @@ class GitHubClient:
                 retry_after_seconds=remaining,
             )
 
-        resp = await client.request(method, path, **kwargs)
+        # Time the call for http_client_* metrics. The start timestamp
+        # is captured outside the try/except so network-level failures
+        # still produce a latency sample with status_code=0.
+        import time as _time
+
+        _start = _time.perf_counter()
+        status_code = 0
+        try:
+            resp = await client.request(method, path, **kwargs)
+            status_code = resp.status_code
+        except Exception:
+            try:
+                from caretaker.observability.metrics import record_error, record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=0,
+                    duration=_time.perf_counter() - _start,
+                )
+                record_error("upstream")
+            except Exception:  # pragma: no cover
+                pass
+            raise
+        else:
+            try:
+                from caretaker.observability.metrics import record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=status_code,
+                    duration=_time.perf_counter() - _start,
+                )
+            except Exception:  # pragma: no cover
+                pass
 
         # Always sample rate-limit headers — lets us soft-throttle before
         # the bucket hits zero.
@@ -377,6 +420,67 @@ class GitHubClient:
     async def get_pr_comments(self, owner: str, repo: str, number: int) -> list[Comment]:
         data = await self._get(f"/repos/{owner}/{repo}/issues/{number}/comments")
         return [self._parse_comment(c) for c in (data or [])]
+
+    async def get_pull_diff(self, owner: str, repo: str, number: int) -> str:
+        """Return the unified diff for a pull request as a string."""
+        token = await self._creds.default_token()
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.diff",
+            },
+        )
+        if resp.status_code == 404:
+            return ""
+        if resp.status_code >= 400:
+            raise GitHubAPIError(resp.status_code, resp.text)
+        return resp.text
+
+    async def create_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_sha: str,
+        body: str,
+        event: str = "COMMENT",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Submit a pull request review.
+
+        Args:
+            event: One of ``APPROVE``, ``REQUEST_CHANGES``, ``COMMENT``.
+            comments: Optional list of inline comments — each dict should
+                carry ``path``, ``line``, ``body`` and optionally ``side``.
+        """
+        payload: dict[str, Any] = {
+            "commit_id": commit_sha,
+            "body": body,
+            "event": event,
+        }
+        if comments:
+            payload["comments"] = comments
+        data = await self._post(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", json=payload)
+        return data if data else {}
+
+    async def request_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        reviewers: list[str],
+        team_reviewers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Request specific reviewers for a pull request."""
+        payload: dict[str, Any] = {"reviewers": reviewers}
+        if team_reviewers:
+            payload["team_reviewers"] = team_reviewers
+        data = await self._post(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
+            json=payload,
+        )
+        return data if data else {}
 
     # ── Check Runs (CI) ────────────────────────────────────────
 

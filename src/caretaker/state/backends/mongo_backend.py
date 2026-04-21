@@ -28,6 +28,8 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from caretaker.observability.metrics import timed_op
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -98,6 +100,7 @@ class MongoMemoryBackend:
 
     # ── Read ──────────────────────────────────────────────────────────────
 
+    @timed_op(db_system="mongo", operation="get")
     def get(self, namespace: str, key: str) -> str | None:
         now = datetime.now(UTC)
         doc = self._col.find_one(
@@ -147,6 +150,7 @@ class MongoMemoryBackend:
 
     # ── Write ─────────────────────────────────────────────────────────────
 
+    @timed_op(db_system="mongo", operation="set")
     def set(
         self,
         namespace: str,
@@ -187,6 +191,7 @@ class MongoMemoryBackend:
     ) -> None:
         self.set(namespace, key, json.dumps(value), ttl_seconds=ttl_seconds)
 
+    @timed_op(db_system="mongo", operation="delete")
     def delete(self, namespace: str, key: str) -> None:
         self._col.delete_one({"namespace": namespace, "key": key})
 

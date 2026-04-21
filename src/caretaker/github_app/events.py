@@ -21,7 +21,7 @@ from __future__ import annotations
 # values in ``caretaker.agents.AGENT_MODES``).
 EVENT_AGENT_MAP: dict[str, list[str]] = {
     # PR lifecycle
-    "pull_request": ["pr"],
+    "pull_request": ["pr", "pr-reviewer"],
     "pull_request_review": ["pr"],
     "pull_request_review_comment": ["pr"],
     # Check runs / CI

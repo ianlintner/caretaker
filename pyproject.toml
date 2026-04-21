@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "caretaker-github"
-version = "0.10.1"
+version = "0.10.4"
 description = "Autonomous GitHub repository maintenance powered by Copilot"
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,11 @@ dependencies = [
     "pydantic>=2,<3",
     "anthropic>=0.40,<1",
     "packaging>=24,<25",
+    # Observability — Prometheus metrics (paved-path SKILL §1-§10).
+    # Both libraries are tiny (pure-Python, no C deps) and always-on so
+    # operators never have to install an extra to get /metrics exposed.
+    "prometheus-client>=0.20,<1",
+    "prometheus-fastapi-instrumentator>=7.0,<8",
 ]
 
 [project.optional-dependencies]

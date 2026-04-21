@@ -128,6 +128,24 @@ class ClaudeClient:
         _log_response(feature, response.text, response)
         return response.text
 
+    async def complete(
+        self,
+        feature: str,
+        prompt: str,
+        max_tokens: int = 2000,
+        *,
+        system: str | None = None,
+    ) -> str:
+        """General-purpose completion method.
+
+        Prepends an optional ``system`` instruction to the user prompt before
+        calling the underlying LLM.  Intended for callers (e.g. pr_reviewer)
+        that need a free-form system prompt rather than a domain-specific
+        method from the public feature API below.
+        """
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        return await self._complete(feature, full_prompt, max_tokens)
+
     # ── Public feature API ──────────────────────────────────────────────────
 
     async def analyze_ci_logs(self, logs: str, context: str = "") -> str:
