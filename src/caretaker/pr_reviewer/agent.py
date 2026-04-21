@@ -126,8 +126,10 @@ class PRReviewerAgent(BaseAgent):
             return
 
         # Skip if already reviewed by caretaker this cycle
-        pr_labels = [lbl.get("name", "") if isinstance(lbl, dict) else str(lbl)
-                     for lbl in pr.get("labels", [])]
+        pr_labels = [
+            lbl.get("name", "") if isinstance(lbl, dict) else str(lbl)
+            for lbl in pr.get("labels", [])
+        ]
         if any(lbl in cfg.skip_labels for lbl in pr_labels):
             report.skipped.append(pr_number)
             return
@@ -191,8 +193,11 @@ class PRReviewerAgent(BaseAgent):
                 try:
                     reviewed_label = "caretaker:reviewed"
                     await self._ctx.github.ensure_label(
-                        owner, repo, reviewed_label,
-                        color="0075ca", description="Reviewed by caretaker",
+                        owner,
+                        repo,
+                        reviewed_label,
+                        color="0075ca",
+                        description="Reviewed by caretaker",
                     )
                     await self._ctx.github.add_labels(owner, repo, pr_number, [reviewed_label])
                 except Exception:

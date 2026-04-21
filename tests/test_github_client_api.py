@@ -779,7 +779,6 @@ async def test_add_issue_comment_cap_does_not_apply_to_non_caretaker_body() -> N
 
 @pytest.mark.asyncio
 async def test_add_issue_comment_cap_zero_disables_check() -> None:
-
     client = GitHubClient(
         credentials_provider=StaticCredentialsProvider(default_token="x"),
         comment_cap_per_issue=0,  # disabled

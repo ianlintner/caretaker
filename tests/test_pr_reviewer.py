@@ -128,9 +128,7 @@ async def test_inline_review_success() -> None:
         {
             "summary": "Looks good overall.",
             "verdict": "APPROVE",
-            "comments": [
-                {"path": "src/foo.py", "line": 10, "body": "Consider a docstring here."}
-            ],
+            "comments": [{"path": "src/foo.py", "line": 10, "body": "Consider a docstring here."}],
         }
     )
 

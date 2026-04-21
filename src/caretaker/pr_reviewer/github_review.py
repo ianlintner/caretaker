@@ -78,9 +78,7 @@ async def post_review(
             exc,
         )
         # Fallback: post as plain comment so the review is not lost
-        fallback_body = (
-            f"{_REVIEW_MARKER}\n**PR Review ({result.verdict})**\n\n{result.summary}"
-        )
+        fallback_body = f"{_REVIEW_MARKER}\n**PR Review ({result.verdict})**\n\n{result.summary}"
         if result.comments:
             fallback_body += "\n\n**Comments:**\n"
             for c in result.comments[:8]:
