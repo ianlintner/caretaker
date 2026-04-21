@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Sprint B3 + F3 — causal-chain audit trail
+
+Every caretaker-authored write now carries a hidden `<!-- caretaker:causal
+id=... source=... [parent=...] -->` marker. The admin dashboard harvests
+those markers into an in-memory store and exposes chain-walking
+endpoints so we can answer questions like "this self-heal issue was
+filed — what sequence of runs produced it?"
+
+- **B3 expansion** — causal markers now injected into PR-agent
+  escalation comments, issue-agent dispatch bodies/comments, Charlie
+  close comments (duplicate + stale for both issues and PRs),
+  escalation-agent digests, and state-tracker's orchestrator-state +
+  run-history comments. Parent causal id is inherited from the source
+  issue/PR body where applicable, so chains stitch across runs.
+- **F3-1/2/3** — new `caretaker.causal_chain` module with
+  `CausalEvent`, `CausalEventRef`, `Chain`, `walk_chain()` (root-first,
+  cycle-safe, depth-bounded) and `descendants()` (BFS).
+- **F3-4/5** — `CausalEventStore` hydrated every 60s by the admin
+  refresh loop (scans tracked issues/PRs + the orchestrator
+  tracking-issue comment stream). New `/api/admin/causal` endpoints:
+  list (paged, filter by source), fetch chain for an event, fetch
+  descendants.
+- **F3-6** — Neo4j sync persists `CausalEvent` nodes and `CAUSED_BY`
+  edges so graph queries can traverse provenance alongside existing
+  PR/Issue/Agent/Run nodes.
+- New `GitHubClient.get_issue(owner, repo, number)` helper (needed by
+  the causal store's per-issue fetch during refresh).
+- Causal marker regex now accepts colons in the `source=` value so
+  composite sources like `issue-agent:dispatch` and
+  `pr-agent:escalation` round-trip cleanly.
+
+Status comments intentionally skipped: `upsert_status_comment` uses a
+strict body-equality idempotency check, so a fresh run-scoped marker
+on every cycle would break the skip-if-unchanged path.
+
+
 ## [2026-W17] — 2026-04-20
 
 - handle 403 rate-limit errors and guard state load against unhandled crash (#244)
@@ -82,45 +120,11 @@ All notable changes to this project will be documented in this file.
 - stuck-PR age gate + retry-window reset: `stuck_age_hours` escalation and `retry_window_hours` copilot-attempt reset (#407)
 - fall back to userinfo endpoint when ID token lacks email (#408)
 - log token_data and ID-token claim keys on missing email for admin diagnostics (#409)
+- handle GitHub 2500-comment limit on tracking issue; fix self-heal log auth (#411)
 - expand causal markers (B3) and add chain-audit backend with walk/descendants endpoints (F3) (#420)
 - dark mode + Grafana-inspired 2026 UI refresh for admin dashboard (#421)
 - use correct caretaker-github distribution name (#422)
-## [Unreleased]
-
-### Sprint B3 + F3 — causal-chain audit trail
-
-Every caretaker-authored write now carries a hidden `<!-- caretaker:causal
-id=... source=... [parent=...] -->` marker. The admin dashboard harvests
-those markers into an in-memory store and exposes chain-walking
-endpoints so we can answer questions like "this self-heal issue was
-filed — what sequence of runs produced it?"
-
-- **B3 expansion** — causal markers now injected into PR-agent
-  escalation comments, issue-agent dispatch bodies/comments, Charlie
-  close comments (duplicate + stale for both issues and PRs),
-  escalation-agent digests, and state-tracker's orchestrator-state +
-  run-history comments. Parent causal id is inherited from the source
-  issue/PR body where applicable, so chains stitch across runs.
-- **F3-1/2/3** — new `caretaker.causal_chain` module with
-  `CausalEvent`, `CausalEventRef`, `Chain`, `walk_chain()` (root-first,
-  cycle-safe, depth-bounded) and `descendants()` (BFS).
-- **F3-4/5** — `CausalEventStore` hydrated every 60s by the admin
-  refresh loop (scans tracked issues/PRs + the orchestrator
-  tracking-issue comment stream). New `/api/admin/causal` endpoints:
-  list (paged, filter by source), fetch chain for an event, fetch
-  descendants.
-- **F3-6** — Neo4j sync persists `CausalEvent` nodes and `CAUSED_BY`
-  edges so graph queries can traverse provenance alongside existing
-  PR/Issue/Agent/Run nodes.
-- New `GitHubClient.get_issue(owner, repo, number)` helper (needed by
-  the causal store's per-issue fetch during refresh).
-- Causal marker regex now accepts colons in the `source=` value so
-  composite sources like `issue-agent:dispatch` and
-  `pr-agent:escalation` round-trip cleanly.
-
-Status comments intentionally skipped: `upsert_status_comment` uses a
-strict body-equality idempotency check, so a fresh run-scoped marker
-on every cycle would break the skip-if-unchanged path.
+- rename maintainer mode `upgrade-only` to `upgrade` (#423)
 
 ## [0.10.0] - 2026-04-19
 

@@ -18,6 +18,7 @@ from caretaker.pr_agent.ownership import (
     STATUS_COMMENT_MARKER,
     build_status_comment,
     claim_ownership,
+    compact_legacy_comments,
     find_status_comment,
     release_ownership,
     upsert_status_comment,
@@ -40,6 +41,7 @@ def _mock_github(existing: list[Comment] | None = None) -> AsyncMock:
     gh.get_pr_comments = AsyncMock(return_value=list(existing or []))
     gh.add_issue_comment = AsyncMock()
     gh.edit_issue_comment = AsyncMock()
+    gh.delete_issue_comment = AsyncMock()
     gh.add_labels = AsyncMock()
     return gh
 
@@ -227,3 +229,92 @@ class TestBuildStatusCommentTransitions:
         assert "🎉 Merged" in body
         assert "Released:" in body
         assert "Duration:" in body
+
+
+# ── compact_legacy_comments ───────────────────────────────────────────────────
+
+
+class TestCompactLegacyComments:
+    @pytest.mark.asyncio
+    async def test_no_op_when_no_caretaker_comments(self) -> None:
+        gh = _mock_github([_comment(1, "human comment")])
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+        assert removed == 0
+        gh.delete_issue_comment.assert_not_awaited()
+        gh.edit_issue_comment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_only_one_caretaker_comment(self) -> None:
+        gh = _mock_github([_comment(7, f"{STATUS_COMMENT_MARKER}\nbody")])
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+        assert removed == 0
+        gh.delete_issue_comment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_collapses_many_legacy_keeping_newest(self) -> None:
+        """11 ownership-claim + 10 readiness-update → keeps highest id, deletes 20."""
+        comments: list[Comment] = []
+        for i in range(11):
+            comments.append(_comment(100 + i, "<!-- caretaker:ownership:claim -->\nclaim"))
+        for i in range(10):
+            comments.append(_comment(200 + i, "<!-- caretaker:readiness:update -->\nready"))
+        gh = _mock_github(comments)
+
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+
+        assert removed == 20
+        assert gh.delete_issue_comment.await_count == 20
+        deleted_ids = {call.args[2] for call in gh.delete_issue_comment.await_args_list}
+        # The newest (id 209) must NOT be deleted; everything else is.
+        assert 209 not in deleted_ids
+        assert len(deleted_ids) == 20
+
+    @pytest.mark.asyncio
+    async def test_keeps_newest_when_mix_of_status_and_legacy(self) -> None:
+        gh = _mock_github(
+            [
+                _comment(1, "<!-- caretaker:ownership:claim -->\nold"),
+                _comment(2, "<!-- caretaker:readiness:update -->\nold"),
+                _comment(3, f"{STATUS_COMMENT_MARKER}\nnew"),
+            ]
+        )
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+        assert removed == 2
+        deleted_ids = {call.args[2] for call in gh.delete_issue_comment.await_args_list}
+        assert deleted_ids == {1, 2}
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_archive_edit_when_delete_fails(self) -> None:
+        gh = _mock_github(
+            [
+                _comment(10, "<!-- caretaker:ownership:claim -->\na"),
+                _comment(11, "<!-- caretaker:ownership:claim -->\nb"),
+            ]
+        )
+        gh.delete_issue_comment.side_effect = Exception("403 forbidden")
+
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+
+        assert removed == 1
+        gh.edit_issue_comment.assert_awaited_once()
+        edited_args = gh.edit_issue_comment.await_args.args
+        assert edited_args[2] == 10  # the older comment
+        assert "archived" in edited_args[3].lower()
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_all_deletes_and_edits_fail(self) -> None:
+        gh = _mock_github(
+            [
+                _comment(10, "<!-- caretaker:ownership:claim -->\na"),
+                _comment(11, "<!-- caretaker:ownership:claim -->\nb"),
+            ]
+        )
+        gh.delete_issue_comment.side_effect = Exception("delete failed")
+        gh.edit_issue_comment.side_effect = Exception("edit failed")
+        removed = await compact_legacy_comments(gh, "o", "r", 1)
+        assert removed == 0
+
+
+class TestTrackedPRCompactionFlag:
+    def test_default_is_false(self) -> None:
+        assert TrackedPR(number=1).legacy_comments_compacted is False

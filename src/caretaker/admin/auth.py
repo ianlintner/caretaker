@@ -263,14 +263,54 @@ async def callback(
 
     token_data = token_resp.json()
 
+    # Diagnostic: log the keys returned (NOT the values, to avoid token leak).
+    # Helps catch OIDC providers that omit access_token or use non-standard
+    # field names in the token response.
+    logger.warning(
+        "Token exchange returned keys=%s (access_token_len=%d, id_token_len=%d) raw_prefix=%r",
+        sorted(token_data.keys()) if isinstance(token_data, dict) else "non-dict",
+        len(token_data.get("access_token", "") or ""),
+        len(token_data.get("id_token", "") or ""),
+        token_resp.text[:200],
+    )
+
     # Decode ID token (basic validation — production should verify signature)
     id_token = token_data.get("id_token", "")
     user_info = await _extract_user_info(id_token, token_data)
 
-    # Enforce email allowlist
-    if _config.allowed_emails and user_info.email not in _config.allowed_emails:
-        logger.warning("Login denied for email=%s (not in allowlist)", user_info.email)
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Diagnostic: when we couldn't extract email, log the ID-token claim names
+    # (without values) so we can identify which claim the issuer used.
+    if user_info.email is None and id_token:
+        try:
+            import base64
+
+            parts = id_token.split(".")
+            if len(parts) >= 2:
+                payload = parts[1]
+                payload += "=" * (4 - len(payload) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                logger.warning(
+                    "ID token did not yield an email claim. claims_keys=%s",
+                    sorted(claims.keys()) if isinstance(claims, dict) else "non-dict",
+                )
+        except Exception:
+            pass
+
+    # Enforce allowlist. Primary key is email, but some OIDC providers (e.g.
+    # roauth2) never populate the email claim in the ID token and require a
+    # bearer-authenticated userinfo call we can't always complete. Accept a
+    # ``sub`` match as a fallback so operators can pin access by stable subject
+    # identifier when email extraction is unreliable.
+    if _config.allowed_emails:
+        email_match = bool(user_info.email) and user_info.email in _config.allowed_emails
+        sub_match = bool(user_info.sub) and user_info.sub in _config.allowed_emails
+        if not email_match and not sub_match:
+            logger.warning(
+                "Login denied: email=%s sub=%s not in allowlist (add either to allowed-emails)",
+                user_info.email,
+                user_info.sub,
+            )
+            raise HTTPException(status_code=403, detail="Access denied")
 
     # Create session
     sid = str(uuid.uuid4())
@@ -297,45 +337,64 @@ async def callback(
 
 
 async def _extract_user_info(id_token: str, token_data: dict[str, Any]) -> UserInfo:
-    """Extract user info from the ID token or userinfo endpoint."""
-    # Try decoding JWT payload without signature verification (signature
-    # was already verified by the OIDC provider during token exchange).
+    """Extract user info from the ID token, with userinfo endpoint as fallback.
+
+    Some OIDC providers (e.g. roauth2) put the ``sub`` claim in the ID token
+    but only return ``email`` / ``name`` / ``picture`` from the userinfo
+    endpoint. Merge both: ID-token claims first, then fill any missing
+    profile fields from userinfo.
+    """
+    sub = ""
+    email: str | None = None
+    name: str | None = None
+    picture: str | None = None
+
+    # Step 1: decode ID-token JWT payload (signature was verified during exchange).
     if id_token:
         import base64
 
         parts = id_token.split(".")
         if len(parts) >= 2:
-            # Pad base64
             payload = parts[1]
             payload += "=" * (4 - len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            return UserInfo(
-                sub=claims.get("sub", ""),
-                email=claims.get("email"),
-                name=claims.get("name"),
-                picture=claims.get("picture"),
-            )
+            try:
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                sub = claims.get("sub", "")
+                email = claims.get("email")
+                name = claims.get("name")
+                picture = claims.get("picture")
+            except Exception as e:
+                logger.warning("Failed to decode ID token payload: %s", e)
 
-    # Fallback: call userinfo endpoint
-    if _oidc_metadata and "userinfo_endpoint" in _oidc_metadata:
+    # Step 2: if ID token didn't carry the profile fields we need, try userinfo.
+    if not email and _oidc_metadata and "userinfo_endpoint" in _oidc_metadata:
         import httpx
 
         access_token = token_data.get("access_token", "")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                _oidc_metadata["userinfo_endpoint"],
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    _oidc_metadata["userinfo_endpoint"],
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
             if resp.status_code == 200:
                 data = resp.json()
-                return UserInfo(
-                    sub=data.get("sub", ""),
-                    email=data.get("email"),
-                    name=data.get("name"),
-                    picture=data.get("picture"),
+                # Userinfo claims fill any gap from the ID token.
+                sub = sub or data.get("sub", "")
+                email = email or data.get("email")
+                name = name or data.get("name")
+                picture = picture or data.get("picture")
+            else:
+                logger.warning(
+                    "userinfo endpoint returned %s: %s", resp.status_code, resp.text[:200]
                 )
+        except Exception as e:
+            logger.warning("Failed to call userinfo endpoint: %s", e)
 
-    raise HTTPException(status_code=502, detail="Could not extract user info")
+    if not sub:
+        raise HTTPException(status_code=502, detail="Could not extract user info (no sub)")
+
+    return UserInfo(sub=sub, email=email, name=name, picture=picture)
 
 
 @router.post("/logout")

@@ -53,13 +53,20 @@ env:
   # Additional stricter throttle for issue_comment-triggered runs.
   ISSUE_COMMENT_COOLDOWN_MINUTES: "5"
 
-# Prevent duplicate runs for the same PR / branch.  Concurrent check_suite,
-# pull_request, and workflow_run events for the same head can fire within
-# seconds of each other; without this guard every run posts its own @copilot
-# comment (the root cause of the spam seen on PR #269).
+# Concurrency strategy (Sprint 2 B2):
+#
+# For ``pull_request`` events a new commit makes the prior run obsolete, so we
+# cancel the older run. For every other event class — ``issue_comment``,
+# ``check_suite``, ``workflow_run``, ``schedule``, etc. — each event carries
+# fresh signal that the in-progress run hasn't seen yet, so cancellation just
+# loses work. We let those serialize via the dispatch-guard cooldown instead.
+#
+# Driving change: in the 60-day audit, 67% of caretaker workflow runs ended
+# in ``cancelled`` because comment-event cascades were cancelling each other
+# rather than queueing.
 concurrency:
   group: caretaker-${{ github.event.pull_request.number || github.event.check_suite.head_branch || github.event.workflow_run.head_branch || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dispatch-guard:
@@ -97,10 +104,26 @@ jobs:
             // Issue comments need extra filtering to avoid chatter storms and self loops.
             if (eventName === "issue_comment") {
               const actor = payload.comment?.user?.login || context.actor || "unknown";
-              const body = (payload.comment?.body || "").toLowerCase();
+              const rawBody = payload.comment?.body || "";
+              const body = rawBody.toLowerCase();
+
+              // Skip any caretaker-marker comment regardless of who authored it.
+              // PAT-routed caretaker comments come from a write-capable user
+              // identity, not a bot, so an actor-only filter misses them.
+              if (/<!--\s*caretaker:[a-z0-9:_-]+/i.test(rawBody)) {
+                skip("issue_comment carries caretaker marker (self-trigger loop guard)");
+                return;
+              }
 
               // Ignore bot-authored comments to avoid self-trigger loops.
-              if (actor === "the-care-taker[bot]" || actor === "github-actions[bot]") {
+              const botActors = new Set([
+                "the-care-taker[bot]",
+                "github-actions[bot]",
+                "copilot-swe-agent[bot]",
+                "anthropic-code-agent[bot]",
+                "copilot-pull-request-reviewer[bot]",
+              ]);
+              if (botActors.has(actor)) {
                 skip(`bot-authored issue_comment from ${actor}`);
                 return;
               }
@@ -113,6 +136,16 @@ jobs:
 
               if (!hasExplicitCommand) {
                 skip("issue_comment missing explicit maintainer command/mention");
+                return;
+              }
+            }
+
+            // Reviews submitted by the Copilot reviewer bot are not human signals
+            // and should not trigger a caretaker run on their own.
+            if (eventName === "pull_request_review") {
+              const reviewer = payload.review?.user?.login || "";
+              if (reviewer === "copilot-pull-request-reviewer[bot]") {
+                skip(`pull_request_review by ${reviewer} (bot reviewer; not a human signal)`);
                 return;
               }
             }

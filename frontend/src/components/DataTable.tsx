@@ -21,47 +21,62 @@ export function DataTable<T>({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="border border-[var(--color-border)] rounded-lg p-8 text-center text-sm text-[var(--color-muted-foreground)]">
+      <div className="panel p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         {empty || 'No data.'}
       </div>
     )
   }
 
   return (
-    <div className="border border-[var(--color-border)] rounded-lg overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="bg-[var(--color-muted)]">
-          <tr>
-            {columns.map((c) => (
-              <th
-                key={c.key}
-                style={c.width ? { width: c.width } : undefined}
-                className="text-left px-4 py-2.5 font-medium text-[var(--color-muted-foreground)]"
-              >
-                {c.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr
-              key={i}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
-              className={cn(
-                'border-t border-[var(--color-border)]',
-                onRowClick && 'cursor-pointer hover:bg-[var(--color-muted)]',
-              )}
-            >
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm tnum">
+          <thead className="bg-[var(--color-muted)]/60 backdrop-blur-sm sticky top-0 z-[1]">
+            <tr>
               {columns.map((c) => (
-                <td key={c.key} className="px-4 py-2.5 align-middle">
-                  {c.render(row)}
-                </td>
+                <th
+                  key={c.key}
+                  style={c.width ? { width: c.width } : undefined}
+                  className={cn(
+                    'text-left px-4 py-2.5 font-medium',
+                    'text-[11px] uppercase tracking-[0.08em]',
+                    'text-[var(--color-muted-foreground)]',
+                    'border-b border-[var(--color-border)]',
+                  )}
+                >
+                  {c.header}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr
+                key={i}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                className={cn(
+                  'group border-t border-[var(--color-border)]',
+                  'transition-colors duration-[var(--motion-fast)]',
+                  onRowClick &&
+                    'cursor-pointer hover:bg-[var(--color-primary-soft)]',
+                )}
+              >
+                {columns.map((c) => (
+                  <td
+                    key={c.key}
+                    className={cn(
+                      'px-4 py-2.5 align-middle',
+                      'text-[var(--color-foreground)]',
+                    )}
+                  >
+                    {c.render(row)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

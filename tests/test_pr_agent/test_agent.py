@@ -193,10 +193,17 @@ class TestCIFixLifecycle:
 
         assert updated.state == PRTrackingState.ESCALATED
         assert 5 in report.escalated
-        comment_body = github.add_issue_comment.call_args.args[3]
+        # Escalation comments are upserted by marker now (Sprint 2 A3) — the
+        # body is the 5th positional arg of upsert_issue_comment(owner, repo,
+        # number, marker, body).
+        github.upsert_issue_comment.assert_awaited()
+        comment_body = github.upsert_issue_comment.await_args.args[4]
         assert "Escalation debug dump" in comment_body
         assert '"type": "pr_escalation"' in comment_body
         assert '"max_retries": 2' in comment_body
+        assert "<!-- caretaker:escalation -->" in comment_body
+        assert "caretaker:causal" in comment_body
+        assert "source=pr-agent:escalation" in comment_body
 
     async def test_managed_pr_with_backlog_failure_is_closed_when_enabled(self) -> None:
         """A backlog-guard failure should close managed PRs when configured."""
@@ -247,6 +254,39 @@ class TestCIFixLifecycle:
         agent._github.update_issue.assert_not_awaited()
         assert updated.state == PRTrackingState.DISCOVERED
         assert 7 in report.waiting
+
+    async def test_skips_unknown_failure_with_empty_logs(self) -> None:
+        """Unknown failure with no log output must NOT post a Copilot task.
+
+        This is the upstream guard that prevents the
+        '[WIP] Fix CI failure (unknown)' PR storm: when log extraction
+        produced nothing, asking Copilot to "fix nothing" historically
+        resulted in noisy speculative PRs that get auto-closed.
+        """
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=8, user=copilot_user)
+        tracking = TrackedPR(number=8)
+        config = make_config(flaky_retries=0)
+        # An "unknown"-classified failure: no recognizable patterns and
+        # no captured output_summary or output_title.
+        failed_run = make_check_run(
+            name="cryptic-job",
+            conclusion=CheckConclusion.FAILURE,
+            output_summary="",
+            output_title="",
+        )
+
+        updated, report, agent = await self._run_handle_ci_fix(
+            pr,
+            tracking,
+            config,
+            failed_run=failed_run,
+        )
+
+        agent._copilot_bridge.request_ci_fix.assert_not_awaited()
+        assert 8 in report.waiting
+        assert updated.copilot_attempts == 0
+        assert updated.notes == "skipped_empty_unknown_failure"
 
 
 @pytest.mark.asyncio
@@ -1214,3 +1254,234 @@ class TestHandleEventPRNumberExtraction:
         pr_calls = [c for c in mock_run_one.call_args_list if c.args[0].name == "pr"]
         assert len(pr_calls) == 1
         assert pr_calls[0].kwargs.get("event_payload") == {"_pr_number": 33}
+
+
+@pytest.mark.asyncio
+class TestStuckPRAgeGate:
+    """Sprint 3 E1: escalate PRs open longer than stuck_age_hours that have
+    no human approval. Catches portfolio #4 (10 days), #28 (7 days)."""
+
+    async def _run_process_pr(self, pr, tracking, config, *, reviews=None):
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+
+        github = AsyncMock()
+        github.get_check_runs = AsyncMock(return_value=[])
+        github.get_pr_reviews = AsyncMock(return_value=reviews or [])
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        report = PRAgentReport()
+        updated = await agent._process_pr(pr, tracking, report)
+        return updated, report, agent
+
+    async def test_old_pr_with_no_human_approval_escalates(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=1,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(hours=48),  # 48h old, threshold 24h
+        )
+        tracking = TrackedPR(number=1)
+        config = make_config()
+        config.stuck_age_hours = 24
+
+        updated, report, _ = await self._run_process_pr(pr, tracking, config)
+
+        assert updated.state == PRTrackingState.ESCALATED
+        assert updated.escalated is True
+        assert 1 in report.escalated
+
+    async def test_recent_pr_does_not_escalate(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=2,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(hours=2),  # well under 24h
+        )
+        tracking = TrackedPR(number=2)
+        config = make_config()
+        config.stuck_age_hours = 24
+
+        updated, report, _ = await self._run_process_pr(pr, tracking, config)
+        assert updated.state != PRTrackingState.ESCALATED
+        assert 2 not in report.escalated
+
+    async def test_old_pr_with_human_approval_does_not_escalate(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=3,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(days=5),
+        )
+        human_approval = make_review(
+            user=User(login="ian", id=10, type="User"),
+            state=ReviewState.APPROVED,
+        )
+        tracking = TrackedPR(number=3)
+        config = make_config()
+        config.stuck_age_hours = 24
+
+        updated, report, _ = await self._run_process_pr(
+            pr, tracking, config, reviews=[human_approval]
+        )
+
+        # Human approved → not stuck, regardless of age
+        assert updated.state != PRTrackingState.ESCALATED
+        assert 3 not in report.escalated
+
+    async def test_bot_approval_does_not_count_as_human_signal(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=4,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(hours=48),
+        )
+        bot_approval = make_review(
+            user=User(login="copilot-pull-request-reviewer[bot]", id=99, type="Bot"),
+            state=ReviewState.APPROVED,
+        )
+        tracking = TrackedPR(number=4)
+        config = make_config()
+        config.stuck_age_hours = 24
+
+        updated, report, _ = await self._run_process_pr(
+            pr, tracking, config, reviews=[bot_approval]
+        )
+        assert updated.state == PRTrackingState.ESCALATED
+        assert 4 in report.escalated
+
+    async def test_already_escalated_pr_is_not_re_escalated(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=5,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(days=5),
+        )
+        tracking = TrackedPR(number=5, escalated=True, state=PRTrackingState.ESCALATED)
+        config = make_config()
+        config.stuck_age_hours = 24
+
+        _updated, report, _ = await self._run_process_pr(pr, tracking, config)
+        # report.escalated should NOT include this PR (no re-escalation)
+        assert 5 not in report.escalated
+
+    async def test_gate_disabled_when_stuck_age_hours_zero(self) -> None:
+        from datetime import timedelta
+
+        pr = make_pr(
+            number=6,
+            user=User(login="copilot[bot]", id=1, type="Bot"),
+            created_at=datetime.now(UTC) - timedelta(days=30),
+        )
+        tracking = TrackedPR(number=6)
+        config = make_config()
+        config.stuck_age_hours = 0  # disabled
+
+        _updated, report, _ = await self._run_process_pr(pr, tracking, config)
+        assert 6 not in report.escalated
+
+
+@pytest.mark.asyncio
+class TestRetryWindowHours:
+    """Sprint 3 E3: when the prior copilot attempt is older than
+    retry_window_hours, copilot_attempts resets to 0 instead of escalating."""
+
+    async def _run_handle_ci_fix(self, pr, tracking, config):
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.states import CIEvaluation, CIStatus, PRStateEvaluation
+
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        failed_run = make_check_run(name="lint", conclusion=CheckConclusion.FAILURE)
+        ci_eval = CIEvaluation(
+            status=CIStatus.FAILING,
+            failed_runs=[failed_run],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=MagicMock(changes_requested=False),
+            readiness=make_readiness_evaluation(),
+            recommended_state=PRTrackingState.CI_FAILING,
+            recommended_action="request_fix",
+        )
+        mock_result = MagicMock()
+        mock_result.comment_id = 99
+        agent._copilot_bridge.request_ci_fix = AsyncMock(return_value=mock_result)
+        agent._copilot_bridge._protocol._github = github
+        report = PRAgentReport()
+        updated = await agent._handle_ci_fix(pr, evaluation, tracking, report)
+        return updated, report, agent
+
+    async def test_old_attempt_resets_counter_instead_of_escalating(self) -> None:
+        from datetime import timedelta
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=10, user=copilot_user)
+        tracking = TrackedPR(
+            number=10,
+            copilot_attempts=2,
+            last_copilot_attempt_at=datetime.now(UTC) - timedelta(hours=48),
+        )
+        config = make_config(max_retries=2)
+        config.copilot.retry_window_hours = 24
+
+        updated, report, agent = await self._run_handle_ci_fix(pr, tracking, config)
+
+        assert updated.state != PRTrackingState.ESCALATED
+        assert 10 not in report.escalated
+        assert 10 in report.fix_requested
+        agent._copilot_bridge.request_ci_fix.assert_awaited_once()
+        assert updated.copilot_attempts == 1
+
+    async def test_recent_attempt_within_window_still_escalates(self) -> None:
+        from datetime import timedelta
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=11, user=copilot_user)
+        tracking = TrackedPR(
+            number=11,
+            copilot_attempts=2,
+            last_copilot_attempt_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        config = make_config(max_retries=2)
+        config.copilot.retry_window_hours = 24
+
+        updated, report, _agent = await self._run_handle_ci_fix(pr, tracking, config)
+        assert updated.state == PRTrackingState.ESCALATED
+        assert 11 in report.escalated
+
+    async def test_window_zero_disables_reset(self) -> None:
+        from datetime import timedelta
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=12, user=copilot_user)
+        tracking = TrackedPR(
+            number=12,
+            copilot_attempts=2,
+            last_copilot_attempt_at=datetime.now(UTC) - timedelta(days=30),
+        )
+        config = make_config(max_retries=2)
+        config.copilot.retry_window_hours = 0
+
+        updated, report, _agent = await self._run_handle_ci_fix(pr, tracking, config)
+        assert updated.state == PRTrackingState.ESCALATED
+        assert 12 in report.escalated
+
+    async def test_attempt_records_timestamp(self) -> None:
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=13, user=copilot_user)
+        tracking = TrackedPR(number=13)
+        config = make_config(max_retries=2)
+
+        updated, _report, _agent = await self._run_handle_ci_fix(pr, tracking, config)
+        assert updated.last_copilot_attempt_at is not None
+        delta = (datetime.now(UTC) - updated.last_copilot_attempt_at).total_seconds()
+        assert 0 <= delta < 5

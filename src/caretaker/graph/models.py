@@ -16,6 +16,7 @@ class NodeType(StrEnum):
     RUN = "Run"
     AUDIT_EVENT = "AuditEvent"
     MUTATION = "Mutation"
+    CAUSAL_EVENT = "CausalEvent"
 
 
 class RelType(StrEnum):
@@ -31,6 +32,7 @@ class RelType(StrEnum):
     PRODUCED = "PRODUCED"
     EVALUATED = "EVALUATED"
     MUTATED_BY = "MUTATED_BY"
+    CAUSED_BY = "CAUSED_BY"
 
 
 class GraphNode(BaseModel):

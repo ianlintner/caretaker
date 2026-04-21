@@ -6,9 +6,11 @@ import pytest
 
 from caretaker.github_client.models import CheckConclusion
 from caretaker.pr_agent.ci_triage import (
+    NON_ACTIONABLE_CONCLUSIONS,
     FailureType,
     build_fix_instructions,
     classify_failure,
+    is_actionable_conclusion,
     triage_failure,
 )
 from tests.conftest import make_check_run
@@ -116,3 +118,41 @@ class TestTriageFailure:
         result = await triage_failure(cr)
         assert result.failure_type == FailureType.LINT_FAILURE
         assert result.error_summary == "E501 line too long"
+
+
+class TestIsActionableConclusion:
+    @pytest.mark.parametrize(
+        "conclusion",
+        [
+            CheckConclusion.CANCELLED,
+            CheckConclusion.SKIPPED,
+            CheckConclusion.NEUTRAL,
+        ],
+    )
+    def test_non_actionable_enum(self, conclusion: CheckConclusion) -> None:
+        assert is_actionable_conclusion(conclusion) is False
+
+    @pytest.mark.parametrize("value", ["cancelled", "skipped", "neutral"])
+    def test_non_actionable_string(self, value: str) -> None:
+        assert is_actionable_conclusion(value) is False
+
+    def test_none_is_not_actionable(self) -> None:
+        # in-progress / unreported runs should not trigger triage
+        assert is_actionable_conclusion(None) is False
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        [
+            CheckConclusion.FAILURE,
+            CheckConclusion.TIMED_OUT,
+            CheckConclusion.SUCCESS,  # actionable in the sense that it's a real result
+            CheckConclusion.ACTION_REQUIRED,
+        ],
+    )
+    def test_actionable(self, conclusion: CheckConclusion) -> None:
+        assert is_actionable_conclusion(conclusion) is True
+
+    def test_constant_set_complete(self) -> None:
+        # Sentinel: if someone adds a new conclusion value, force them to
+        # decide whether it's actionable.
+        assert set(NON_ACTIONABLE_CONCLUSIONS) == {"cancelled", "skipped", "neutral"}

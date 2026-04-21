@@ -52,6 +52,12 @@ class TrackedPR(BaseModel):
     merged_at: datetime | None = None
     ci_attempts: int = 0
     copilot_attempts: int = 0
+    # Timestamp of the most recent @copilot fix-request comment posted on
+    # this PR. Used by `retry_window_hours`: when the prior attempt was
+    # longer ago than the window, copilot_attempts resets to 0 instead of
+    # tripping max_retries. This avoids escalating long-lived PRs whose
+    # earlier failed attempts have aged out of relevance.
+    last_copilot_attempt_at: datetime | None = None
     last_task_comment_id: int | None = None
     last_checked: datetime | None = None
     escalated: bool = False
@@ -72,6 +78,12 @@ class TrackedPR(BaseModel):
     fix_cycles: int = 0
     last_state_change_at: datetime | None = None
     stuck_reflection_done: bool = False
+
+    # One-shot legacy comment compaction. Pre-#403 PRs accumulated separate
+    # ownership-claim / readiness-update comments per cycle; this flag tracks
+    # whether the cleanup pass has already collapsed them into the single
+    # caretaker:status comment.
+    legacy_comments_compacted: bool = False
 
 
 class TrackedIssue(BaseModel):

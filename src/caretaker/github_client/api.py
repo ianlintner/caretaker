@@ -51,6 +51,7 @@ class GitHubClient:
         token: str | None = None,
         copilot_token: str | None = None,
         credentials_provider: GitHubCredentialsProvider | None = None,
+        comment_cap_per_issue: int = 25,
     ) -> None:
         if credentials_provider is not None:
             self._creds: GitHubCredentialsProvider = credentials_provider
@@ -61,6 +62,11 @@ class GitHubClient:
         # In-process read cache: avoids redundant GET calls within a single run.
         # Keys are "path?param=value&..." strings; values are parsed JSON responses.
         self._read_cache: dict[str, Any] = {}
+        # Defensive belt: refuse to post a *new* caretaker-marker comment to an
+        # issue that already has this many caretaker-marker comments. Catches
+        # future regressions of the duplicate-comment-storm pattern. Set to 0
+        # to disable. Upserts and edits are unaffected.
+        self._comment_cap_per_issue = max(0, comment_cap_per_issue)
 
     @staticmethod
     def _build_client() -> httpx.AsyncClient:
@@ -220,6 +226,74 @@ class GitHubClient:
         if data is None:
             return None
         return self._parse_pr(data)
+
+    async def get_issue(self, owner: str, repo: str, number: int) -> Issue | None:
+        """Fetch a single issue by number. Returns ``None`` when missing."""
+        data = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
+        if data is None:
+            return None
+        return self._parse_issue(data)
+
+    async def list_pull_request_files(
+        self, owner: str, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        """Return the list of files changed in a pull request.
+
+        Each entry carries at minimum ``path``, ``additions``, ``deletions``,
+        and ``status``. Used by dedupe logic to fingerprint PRs by their
+        primary touched file.
+        """
+        data = await self._get(
+            f"/repos/{owner}/{repo}/pulls/{number}/files",
+            params={"per_page": 100},
+        )
+        if not data:
+            return []
+        return [
+            {
+                "path": f.get("filename", ""),
+                "additions": int(f.get("additions", 0)),
+                "deletions": int(f.get("deletions", 0)),
+                "status": f.get("status", ""),
+            }
+            for f in data
+        ]
+
+    async def get_closing_issue_numbers(self, owner: str, repo: str, number: int) -> list[int]:
+        """Return issue numbers this PR will close when merged.
+
+        Uses the GraphQL ``closingIssuesReferences`` connection which reflects
+        both body-text ``Fixes #N`` references and the "Development" sidebar
+        links that Copilot-authored PRs rely on (body text is often absent).
+        Returns an empty list if the query fails or no issues are linked.
+        """
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            " repository(owner:$owner,name:$name){"
+            "  pullRequest(number:$number){"
+            "   closingIssuesReferences(first:20){nodes{number}}"
+            "  }"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={
+                    "query": query,
+                    "variables": {"owner": owner, "name": repo, "number": number},
+                },
+            )
+        except Exception as e:
+            logger.warning("GraphQL closingIssuesReferences for PR #%d failed: %s", number, e)
+            return []
+        if not result:
+            return []
+        try:
+            nodes = result["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+        except (KeyError, TypeError):
+            return []
+        return [int(n["number"]) for n in nodes if n and "number" in n]
 
     async def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = "squash"
@@ -561,7 +635,29 @@ class GitHubClient:
         ``@copilot`` (or carry a maintainer task marker) are routed through the
         PAT-backed client so GitHub attributes them to the configured write-capable
         identity instead of the default workflow bot.
+
+        Defensive cap: if ``body`` carries a ``caretaker:`` marker AND the
+        target issue already has at least ``comment_cap_per_issue`` such
+        marker comments, the post is refused with a ``GitHubAPIError``
+        (status 0). This is a belt-and-suspenders safeguard against future
+        duplicate-comment-storm regressions; the normal path uses
+        ``upsert_issue_comment`` which never trips the cap.
         """
+        if self._comment_cap_per_issue > 0 and "caretaker:" in body:
+            try:
+                existing = await self.get_pr_comments(owner, repo, number)
+            except Exception:
+                existing = []  # if we can't read, don't block writes
+            caretaker_count = sum(1 for c in existing if c.body and "caretaker:" in c.body)
+            if caretaker_count >= self._comment_cap_per_issue:
+                msg = (
+                    f"Refusing to add caretaker comment to {owner}/{repo}#{number}: "
+                    f"cap {self._comment_cap_per_issue} caretaker-marker comments "
+                    "already present. Likely a duplicate-comment-storm bug."
+                )
+                logger.warning(msg)
+                raise GitHubAPIError(0, msg)
+
         post = self._post
         if use_copilot_token is True or (
             use_copilot_token is None and self._should_use_copilot_comment_client(body)
@@ -587,6 +683,92 @@ class GitHubClient:
             json={"body": body},
         )
         return self._parse_comment(data)
+
+    async def delete_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> None:
+        """Delete an existing issue/PR comment by id via DELETE."""
+        await self._request(
+            "DELETE",
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+        )
+
+    async def upsert_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        marker: str,
+        body: str,
+        *,
+        legacy_markers: tuple[str, ...] = (),
+        min_seconds_between_updates: int = 0,
+    ) -> Comment:
+        """Post or edit a single issue/PR comment identified by ``marker``.
+
+        ``marker`` MUST be a unique HTML-comment substring (e.g.
+        ``"<!-- caretaker:orchestrator-state -->"``) and MUST appear in
+        ``body``. The first comment whose body contains ``marker`` (or any
+        ``legacy_markers`` entry, when supplied) is edited in place; if none
+        exists, a new comment is posted. Idempotent: a no-op if an existing
+        matching comment already has the same body.
+
+        ``legacy_markers`` lets callers migrate from older marker spellings
+        without leaving stale duplicates behind.
+
+        ``min_seconds_between_updates`` enforces a per-marker cooldown: when
+        > 0, an existing matching comment whose ``updated_at`` (or
+        ``created_at`` if never edited) is more recent than that many seconds
+        ago is left untouched (cooldown active). New posts and edits beyond
+        the cooldown are unaffected. This guards against rapid retrigger
+        loops independent of the per-issue count cap on
+        :meth:`add_issue_comment`.
+        """
+        if marker not in body:
+            raise ValueError(f"upsert body missing marker {marker!r}")
+
+        all_markers = (marker, *legacy_markers)
+        comments = await self.get_pr_comments(owner, repo, issue_number)
+
+        existing: Comment | None = None
+        for c in comments:
+            if not (c.body or ""):
+                continue
+            if any(m in c.body for m in all_markers) and (existing is None or c.id > existing.id):
+                existing = c
+
+        if existing is None:
+            return await self.add_issue_comment(owner, repo, issue_number, body)
+
+        if (existing.body or "").strip() == body.strip():
+            return existing
+
+        if min_seconds_between_updates > 0:
+            from datetime import UTC
+            from datetime import datetime as _dt
+
+            ref = existing.updated_at or existing.created_at
+            if ref is not None:
+                if ref.tzinfo is None:
+                    ref = ref.replace(tzinfo=UTC)
+                age = (_dt.now(UTC) - ref).total_seconds()
+                if age < min_seconds_between_updates:
+                    logger.info(
+                        "upsert cooldown active on %s/%s#%d marker=%s "
+                        "(age=%.0fs < cooldown=%ds) — skipping update",
+                        owner,
+                        repo,
+                        issue_number,
+                        marker,
+                        age,
+                        min_seconds_between_updates,
+                    )
+                    return existing
+
+        return await self.edit_issue_comment(owner, repo, existing.id, body)
 
     async def add_labels(
         self, owner: str, repo: str, number: int, labels: list[str]

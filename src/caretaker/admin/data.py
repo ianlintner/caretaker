@@ -14,7 +14,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from caretaker.admin.causal_store import CausalEventStore
 from caretaker.agents._registry_data import AGENT_MODES, EVENT_AGENT_MAP
+from caretaker.causal_chain import CausalEvent  # noqa: TC001 (runtime-used in helpers)
 from caretaker.config import MaintainerConfig  # noqa: TC001 (runtime-used)
 from caretaker.state.models import OrchestratorState  # noqa: TC001 (runtime-used)
 
@@ -71,15 +73,22 @@ class AdminDataAccess:
         state: OrchestratorState | None = None,
         memory_store: Any | None = None,  # MemoryStore
         insight_store: Any | None = None,  # InsightStore
+        causal_store: CausalEventStore | None = None,
     ) -> None:
         self._config = config
         self._state = state or OrchestratorState()
         self._memory = memory_store
         self._insights = insight_store
+        self._causal = causal_store or CausalEventStore()
 
     def set_state(self, state: OrchestratorState) -> None:
         """Update the cached orchestrator state (called after each run)."""
         self._state = state
+
+    # ── Causal event store access ────────────────────────────────────────
+    @property
+    def causal_store(self) -> CausalEventStore:
+        return self._causal
 
     # ── Orchestrator State ────────────────────────────────────────────────
 
@@ -150,6 +159,104 @@ class AdminDataAccess:
         for goal_id, snapshots in self._state.goal_history.items():
             result[goal_id] = [json.loads(s.model_dump_json()) for s in snapshots]
         return result
+
+    # ── Metrics ───────────────────────────────────────────────────────────
+
+    def get_storm_metrics(self, window_runs: int = 20) -> dict[str, Any]:
+        """Aggregate self-heal + escalation activity across the most recent runs.
+
+        Used by the admin dashboard to surface storm-class regressions early —
+        the 2026-04-14 incident opened 108 self-heal PRs in 90 minutes; a
+        rolling rate across the last N runs would have flagged it near run #5.
+
+        Counts come from ``RunSummary`` fields already persisted per run, so
+        no new instrumentation is needed.
+        """
+        runs = self._state.run_history[-window_runs:] if self._state.run_history else []
+        if not runs:
+            return {
+                "window_runs": 0,
+                "self_heal_total": 0,
+                "self_heal_max_single_run": 0,
+                "escalations_total": 0,
+                "avg_escalation_rate": 0.0,
+                "run_window_start": None,
+                "run_window_end": None,
+            }
+        self_heal_per_run = [
+            r.self_heal_local_issues + r.self_heal_upstream_bugs + r.self_heal_upstream_features
+            for r in runs
+        ]
+        escalations_total = sum(
+            r.prs_escalated + r.issues_escalated + r.stale_assignments_escalated for r in runs
+        )
+        avg_esc = sum(r.escalation_rate for r in runs) / len(runs) if runs else 0.0
+        return {
+            "window_runs": len(runs),
+            "self_heal_total": sum(self_heal_per_run),
+            "self_heal_max_single_run": max(self_heal_per_run) if self_heal_per_run else 0,
+            "escalations_total": escalations_total,
+            "avg_escalation_rate": round(avg_esc, 4),
+            "run_window_start": runs[0].run_at.isoformat() if runs[0].run_at else None,
+            "run_window_end": runs[-1].run_at.isoformat() if runs[-1].run_at else None,
+        }
+
+    def get_fanout_metrics(self, high_cycle_threshold: int = 2) -> dict[str, Any]:
+        """Per-PR proxies for caretaker comment fan-out.
+
+        True comment counts would require fetching GitHub comment lists per
+        PR on every refresh — expensive at scale. Instead, this surfaces
+        signals already tracked on ``TrackedPR``:
+
+        - ``fix_cycles`` — each cycle typically writes a status update +
+          task comment, so a high value correlates with heavy fan-out.
+        - ``copilot_attempts`` — same dynamic; each attempt spawns an
+          ``@copilot`` task comment plus surrounding status edits.
+
+        The admin UI can alert above ``high_cycle_threshold`` to catch
+        F1/F2/F9-class regressions before users notice.
+        """
+        prs = list(self._state.tracked_prs.values())
+        if not prs:
+            return {
+                "tracked_prs": 0,
+                "high_cycle_prs": 0,
+                "high_attempt_prs": 0,
+                "max_fix_cycles": 0,
+                "max_copilot_attempts": 0,
+                "hot_prs": [],
+            }
+        max_cycles = max(p.fix_cycles for p in prs)
+        max_attempts = max(p.copilot_attempts for p in prs)
+        high_cycle = [p for p in prs if p.fix_cycles >= high_cycle_threshold]
+        high_attempt = [p for p in prs if p.copilot_attempts >= high_cycle_threshold + 1]
+
+        hot_set = {p.number: p for p in high_cycle}
+        for p in high_attempt:
+            hot_set[p.number] = p
+        hot_sorted = sorted(
+            hot_set.values(),
+            key=lambda p: (p.fix_cycles, p.copilot_attempts),
+            reverse=True,
+        )[:20]
+
+        return {
+            "tracked_prs": len(prs),
+            "high_cycle_prs": len(high_cycle),
+            "high_attempt_prs": len(high_attempt),
+            "max_fix_cycles": max_cycles,
+            "max_copilot_attempts": max_attempts,
+            "hot_prs": [
+                {
+                    "number": p.number,
+                    "fix_cycles": p.fix_cycles,
+                    "copilot_attempts": p.copilot_attempts,
+                    "state": p.state,
+                    "escalated": p.escalated,
+                }
+                for p in hot_sorted
+            ],
+        }
 
     # ── Memory Store ──────────────────────────────────────────────────────
 
@@ -284,6 +391,48 @@ class AdminDataAccess:
             agents.append(AgentInfo(name=name, modes=sorted(modes), events=events))
         return agents
 
+    # ── Causal events ─────────────────────────────────────────────────────
+
+    def get_causal_events(
+        self,
+        source: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> PaginatedResponse:
+        """Page through observed causal events, most recent first."""
+        events, total = self._causal.list_events(source=source, offset=offset, limit=limit)
+        items = [_causal_event_to_dict(e) for e in events]
+        return PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
+
+    def get_causal_chain(
+        self,
+        event_id: str,
+        max_depth: int = 50,
+    ) -> dict[str, Any] | None:
+        """Walk the parent chain of ``event_id`` root-first."""
+        if self._causal.get(event_id) is None:
+            return None
+        chain = self._causal.walk(event_id, max_depth=max_depth)
+        return {
+            "id": event_id,
+            "events": [_causal_event_to_dict(e) for e in chain.events],
+            "truncated": chain.truncated,
+        }
+
+    def get_causal_descendants(
+        self,
+        event_id: str,
+        max_depth: int = 50,
+    ) -> dict[str, Any] | None:
+        """Return BFS descendants of ``event_id``."""
+        if self._causal.get(event_id) is None:
+            return None
+        descendants = self._causal.descendants(event_id, max_depth=max_depth)
+        return {
+            "id": event_id,
+            "events": [_causal_event_to_dict(e) for e in descendants],
+        }
+
     # ── Config ────────────────────────────────────────────────────────────
 
     def get_config(self) -> dict[str, Any]:
@@ -296,6 +445,25 @@ class AdminDataAccess:
         # Redact env var references that might contain secrets
         _redact_env_keys(data)
         return data
+
+
+def _causal_event_to_dict(event: CausalEvent) -> dict[str, Any]:
+    """Serialize a :class:`CausalEvent` to a JSON-safe dict."""
+    return {
+        "id": event.id,
+        "source": event.source,
+        "parent_id": event.parent_id,
+        "run_id": event.run_id,
+        "title": event.title,
+        "observed_at": event.observed_at.isoformat() if event.observed_at else None,
+        "ref": {
+            "kind": event.ref.kind,
+            "number": event.ref.number,
+            "comment_id": event.ref.comment_id,
+            "owner": event.ref.owner,
+            "repo": event.ref.repo,
+        },
+    }
 
 
 def _redact_env_keys(obj: Any) -> None:

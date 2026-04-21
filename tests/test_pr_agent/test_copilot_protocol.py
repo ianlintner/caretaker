@@ -43,6 +43,8 @@ class TestCopilotTask:
         assert "ATTEMPT: 1 of 2" in body
         assert "PRIORITY: high" in body
         assert "AssertionError in test_foo" in body
+        assert "caretaker:causal" in body
+        assert "source=pr-agent-task" in body
 
     def test_to_comment_with_context(self) -> None:
         task = CopilotTask(
