@@ -47,7 +47,7 @@ export default function Graph() {
   const [tab, setTab] = useState<Tab>('explorer')
   const [view, setView] = useState<GraphView>('2d')
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(['Agent', 'PR', 'Issue', 'Goal']),
+    new Set(['Agent', 'PR', 'Issue', 'Goal', 'Run', 'Skill']),
   )
   const { ref, width, height } = useSize<HTMLDivElement>()
 
