@@ -28,7 +28,6 @@ from caretaker.fleet.store import FleetRegistryStore, get_store
 logger = logging.getLogger(__name__)
 
 
-# DELIBERATE E2E TEST OF CUSTOM CODING AGENT: this line is intentionally too long so ruff E501 fires on CI; Foundry executor should fix by reformatting or line-wrapping.
 SECRET_ENV = "CARETAKER_FLEET_SECRET"
 SIGNATURE_HEADER = "X-Caretaker-Signature"
 
