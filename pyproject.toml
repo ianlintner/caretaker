@@ -157,3 +157,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
+
+[tool.uv]
+# Security: override transitive aiohttp pin from litellm to fix CVE-2026-34525
+# (duplicate Host headers accepted; patched in aiohttp>=3.13.4).
+override-dependencies = [
+    "aiohttp>=3.13.4",
+]
