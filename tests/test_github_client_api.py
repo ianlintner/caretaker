@@ -60,7 +60,15 @@ async def test_403_rate_limit_raises_githubapieerror() -> None:
     error = exc_info.value
     assert error.status_code == 403
     assert "Rate limited" in str(error)
-    assert "No retry time specified" in str(error)
+    # RateLimitError subclass carries a retry_after_seconds; when the
+    # server omits both Retry-After and X-RateLimit-Reset, the client
+    # falls back to a 60s cushion rather than propagating an
+    # unbounded "no retry time specified" sentinel.
+    from caretaker.github_client.api import RateLimitError
+
+    assert isinstance(error, RateLimitError)
+    assert error.retry_after_seconds is not None
+    assert error.retry_after_seconds > 0
 
 
 @pytest.mark.asyncio
