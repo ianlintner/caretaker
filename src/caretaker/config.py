@@ -378,9 +378,19 @@ class PRReviewerConfig(StrictBaseModel):
       LLM review posted as a GitHub pull-request review.
     - High-complexity PRs get handed off to the ``claude-code-action``
       workflow via a trigger label + structured ``@claude`` comment.
+
+    Set ``enabled = false`` to disable. The agent only fires on webhook
+    events by default (``webhook_only = true``), so it consumes no extra
+    GitHub API quota during scheduled polling runs.
     """
 
-    enabled: bool = False
+    enabled: bool = True
+    # When True, skip the polling fallback — only act on webhook-delivered
+    # pull_request events. Keeps GitHub API usage near-zero.
+    webhook_only: bool = True
+    # PR actions that trigger a review. Defaults to "opened" only to avoid
+    # reviewing every push to an existing PR.
+    trigger_actions: list[str] = Field(default_factory=lambda: ["opened"])
     # Score threshold: score >= threshold → claude-code hand-off; else inline LLM.
     routing_threshold: int = 40
     # Label/mention used for the claude-code-action hand-off.

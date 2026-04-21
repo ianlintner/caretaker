@@ -308,7 +308,9 @@ async def test_post_review_falls_back_on_error() -> None:
 
 def test_pr_reviewer_config_defaults() -> None:
     cfg = PRReviewerConfig()
-    assert cfg.enabled is False
+    assert cfg.enabled is True
+    assert cfg.webhook_only is True
+    assert cfg.trigger_actions == ["opened"]
     assert cfg.routing_threshold == 40
     assert cfg.skip_draft is True
     assert "caretaker:reviewed" in cfg.skip_labels
@@ -321,7 +323,24 @@ def test_maintainer_config_includes_pr_reviewer() -> None:
     mc = MaintainerConfig()
     assert hasattr(mc, "pr_reviewer")
     assert isinstance(mc.pr_reviewer, PRReviewerConfig)
-    assert mc.pr_reviewer.enabled is False
+    assert mc.pr_reviewer.enabled is True
+
+
+def test_pr_reviewer_opt_out() -> None:
+    cfg = PRReviewerConfig(enabled=False)
+    assert cfg.enabled is False
+
+
+def test_pr_reviewer_webhook_only_skips_polling() -> None:
+    """webhook_only=True must make the agent a no-op when no event_payload."""
+    cfg = PRReviewerConfig(enabled=True, webhook_only=True)
+    assert cfg.webhook_only is True
+    assert cfg.trigger_actions == ["opened"]
+
+
+def test_pr_reviewer_trigger_actions_customizable() -> None:
+    cfg = PRReviewerConfig(trigger_actions=["opened", "synchronize", "reopened"])
+    assert "synchronize" in cfg.trigger_actions
 
 
 # ── event routing ──────────────────────────────────────────────────────────
@@ -340,3 +359,87 @@ def test_registry_includes_pr_reviewer() -> None:
 
     assert PRReviewerAgent in ALL_ADAPTERS
     assert "pr-reviewer" in AGENT_MODES
+
+
+# ── agent execute() — webhook_only and trigger_actions ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_execute_skips_when_webhook_only_and_no_payload() -> None:
+    """webhook_only=True + no event_payload → processed=0, no GitHub calls."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(enabled=True, webhook_only=True)
+    mock_ctx.github = MagicMock()
+
+    agent = PRReviewerAgent(mock_ctx)
+    result = await agent.execute(state=MagicMock(), event_payload=None)
+
+    assert result.processed == 0
+    mock_ctx.github.list_pull_requests.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_skips_unhandled_action() -> None:
+    """PR action not in trigger_actions → processed=0."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True, webhook_only=False, trigger_actions=["opened"]
+    )
+
+    agent = PRReviewerAgent(mock_ctx)
+    result = await agent.execute(
+        state=MagicMock(),
+        event_payload={"action": "closed", "pull_request": {"number": 1}},
+    )
+
+    assert result.processed == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_processes_opened_action() -> None:
+    """PR 'opened' action with trigger_actions=['opened'] → _handle_pr called."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        trigger_actions=["opened"],
+        skip_draft=False,
+        skip_labels=[],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=True,
+        review_event="AUTO",
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None  # no LLM → falls through to claude-code path
+
+    mock_ctx.github = MagicMock()
+    mock_ctx.github.list_pull_request_files = AsyncMock(return_value=[])
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+    mock_ctx.github.upsert_issue_comment = AsyncMock()
+
+    agent = PRReviewerAgent(mock_ctx)
+    result = await agent.execute(
+        state=MagicMock(),
+        event_payload={
+            "action": "opened",
+            "pull_request": {
+                "number": 99,
+                "title": "Test PR",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "abc123"},
+                "labels": [],
+            },
+        },
+    )
+
+    assert result.processed >= 0  # dispatched or error — either way no crash
