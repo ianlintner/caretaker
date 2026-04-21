@@ -90,6 +90,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Memory graph — M2: missing edges + bitemporal edge properties
+
+Second milestone of the memory-graph plan. The writer + builder now
+emit richer, direction-aware edges stamped with bitemporal
+properties, so "what state was PR #420 in when run R executed?" is a
+one-hop query.
+
+- New `RelType` values: `REFERENCES`, `RESOLVED_BY`, `EXECUTED`,
+  `USED`, `VALIDATED_BY`, `AFFECTED`, `HANDLED_BY`.
+- Every builder edge now carries `observed_at` + `valid_from`
+  properties (and `valid_to` implicitly-null for still-current
+  facts). The `GraphWriter` stamps `observed_at` automatically.
+- `StateTracker._emit_run_graph` publishes the Run→Goal edge as
+  `AFFECTED` with the run's goal-health score and escalation rate.
+- `GraphBuilder.full_sync` adds PR→Issue `REFERENCES` and Issue→PR
+  `RESOLVED_BY` derived from `TrackedIssue.assigned_pr`, plus
+  Run→Agent `EXECUTED` edges derived from `RunSummary.mode` and
+  Run→Goal `AFFECTED` with the run's score. Run ids are now
+  `run:<run_at_iso>` so nodes survive the rolling 20-run window.
+- Synthetic `goal:overall` aggregate node is merged by both the
+  builder and the live writer, so Run→Goal edges can MATCH both
+  endpoints regardless of ordering.
+- 5 new tests in `tests/test_graph_builder_m2.py` cover PR↔Issue
+  edge pairs, mode-based EXECUTED fan-out, AFFECTED score payload,
+  synthetic Goal aggregate, and full-mode dispatch fan-out.
+
 ### Memory graph — M1: event-driven GraphWriter
 
 First milestone of the memory-graph plan (`docs/memory-graph-plan.md`).

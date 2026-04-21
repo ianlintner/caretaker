@@ -180,14 +180,28 @@ class StateTracker:
             },
         )
         if summary.goal_health is not None:
+            # Ensure the synthetic aggregate goal node exists before
+            # the edge merge — the GraphBuilder full-sync also merges
+            # it but live writes can land before the first sync.
+            writer.record_node(
+                NodeType.GOAL,
+                "goal:overall",
+                {"name": "overall", "aggregate": True},
+            )
+            # AFFECTED is the M2 edge — semantically "this run moved the
+            # goal score by this much." `valid_from` is the run's wall
+            # clock; `valid_to` stays unset because the score only
+            # ceases to reflect a given run's contribution when a newer
+            # run supersedes it, and that's an analysis-layer concern.
             writer.record_edge(
                 NodeType.RUN,
                 run_id,
                 NodeType.GOAL,
                 "goal:overall",
-                RelType.CONTRIBUTES_TO,
+                RelType.AFFECTED,
                 {
                     "score": summary.goal_health,
+                    "escalation_rate": summary.escalation_rate,
                     "valid_from": summary.run_at.isoformat(),
                 },
             )
