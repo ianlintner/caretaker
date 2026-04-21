@@ -9,8 +9,9 @@ updated PR it:
 3. Posts the review via the GitHub Reviews API (inline path) or
    applies a trigger label + hand-off comment (claude-code path).
 
-The agent is opt-in: ``pr_reviewer.enabled = false`` (default) keeps
-existing behavior byte-identical.
+Enabled by default; set ``pr_reviewer.enabled = false`` to disable.
+With ``webhook_only = true`` (default) the agent only acts on webhook-
+delivered events, so polling runs incur zero extra GitHub API calls.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HANDLED_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
+_DEFAULT_HANDLED_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
 
 
 @dataclass
@@ -55,10 +56,18 @@ class PRReviewerAgent(BaseAgent):
         state: OrchestratorState,
         event_payload: dict[str, Any] | None = None,
     ) -> AgentResult:
+        cfg = self._ctx.config.pr_reviewer
         report = _PRReviewReport()
 
+        # Webhook-only mode: skip entirely when called from a polling run.
+        if cfg.webhook_only and not event_payload:
+            return AgentResult(processed=0)
+
         action = (event_payload or {}).get("action", "")
-        if action and action not in _HANDLED_ACTIONS:
+        handled = (
+            frozenset(cfg.trigger_actions) if cfg.trigger_actions else _DEFAULT_HANDLED_ACTIONS
+        )
+        if action and action not in handled:
             return AgentResult(processed=0)
 
         pr_data = (event_payload or {}).get("pull_request") if event_payload else None
@@ -66,7 +75,7 @@ class PRReviewerAgent(BaseAgent):
         if pr_data:
             prs = [pr_data]
         else:
-            # Polling fallback: review open PRs that have not been reviewed yet
+            # Polling fallback (only reached when webhook_only=False).
             try:
                 prs = await self._ctx.github.list_pull_requests(
                     self._ctx.owner, self._ctx.repo, state="open"
