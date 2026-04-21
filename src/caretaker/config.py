@@ -546,6 +546,28 @@ class FleetRegistryConfig(StrictBaseModel):
     include_full_summary: bool = False
 
 
+class FleetConfig(StrictBaseModel):
+    """M6 — fleet-tier graph + :GlobalSkill promotion.
+
+    Distinct from :class:`FleetRegistryConfig`, which governs the outbound
+    heartbeat emitter: this block governs the inbound / server-side
+    behaviour of the fleet graph. The default keeps every knob off so
+    existing installs see byte-identical behaviour.
+
+    * ``share_skills`` is the master switch for cross-repo skill
+      promotion. When ``False`` (the default), ``promote_global_skills``
+      is a no-op even if ``min_repos_for_promotion`` is met — privacy
+      over ergonomics.
+    * ``min_repos_for_promotion`` is the gate on how many distinct
+      ``repo`` values a ``:Skill`` signature must appear in before it
+      is eligible for the two-gate promotion (the other gate being the
+      abstraction pass in ``caretaker.fleet.abstraction``).
+    """
+
+    share_skills: bool = False
+    min_repos_for_promotion: int = 3
+
+
 class GitHubAppConfig(StrictBaseModel):
     """Configuration for the optional GitHub App front-end.
 
@@ -745,6 +767,7 @@ class MaintainerConfig(StrictBaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     fleet_registry: FleetRegistryConfig = Field(default_factory=FleetRegistryConfig)
+    fleet: FleetConfig = Field(default_factory=FleetConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)

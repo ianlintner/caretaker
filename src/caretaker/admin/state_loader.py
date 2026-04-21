@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from caretaker.github_app import (
@@ -33,6 +34,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_INTERVAL_SECONDS = 60
+
+# M6 fleet-tier :GlobalSkill promotion is an expensive pass (scans every
+# :Skill node and runs the abstraction pass). Only run once per day so
+# the admin loop doesn't re-redact on every 60-second tick. The 23h
+# cutoff leaves a little slack around cron-adjacent schedules.
+_PROMOTION_COOLDOWN = timedelta(hours=23)
 
 
 def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
@@ -94,10 +101,15 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
     # skew on the host doesn't cause us to skip or double-fire.
     last_compaction_at: float | None = None
     compaction_interval_seconds = 24 * 60 * 60
+    # M6 — tracks the last time :GlobalSkill promotion ran so we enforce
+    # the 24h cooldown in the closure without reaching for a module-
+    # level timestamp. ``None`` means "never run" which is always
+    # eligible on the next tick.
+    last_promotion_at: datetime | None = None
 
     async def _sync_graph(state) -> None:  # type: ignore[no-untyped-def]
         """Best-effort Neo4j sync. Swallows all errors — graph is optional."""
-        nonlocal persistent_store, writer_started
+        nonlocal persistent_store, writer_started, last_promotion_at, last_compaction_at
         if not neo4j_url:
             return
         try:
@@ -121,6 +133,44 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
             logger.debug("Graph sync counts: %s", counts)
         except Exception:
             logger.warning("Graph sync failed", exc_info=True)
+
+        # M6 fleet-tier sync runs after the main builder so every other
+        # node (:Agent, goal:overall, per-repo :Skill rows) already
+        # exists in the graph before we merge the RUNS_AGENT /
+        # GOAL_HEALTH / SHARES_SKILL edges that point at them.
+        try:
+            from caretaker.fleet.graph import (
+                promote_global_skills,
+                sync_repos_to_graph,
+            )
+            from caretaker.fleet.store import get_store as _get_fleet_store
+
+            if persistent_store is None:
+                return
+
+            fleet_counts = await sync_repos_to_graph(persistent_store, _get_fleet_store())
+            logger.debug("Fleet graph sync counts: %s", fleet_counts)
+
+            cfg = data.config
+            share_skills = bool(cfg and cfg.fleet.share_skills)
+            min_repos = cfg.fleet.min_repos_for_promotion if cfg else 3
+            now = datetime.now(UTC)
+            due = last_promotion_at is None or (now - last_promotion_at) >= _PROMOTION_COOLDOWN
+            if share_skills and due:
+                promoted = await promote_global_skills(
+                    persistent_store,
+                    data.insight_store,
+                    min_repos=min_repos,
+                    share_skills=True,
+                )
+                last_promotion_at = now
+                if promoted:
+                    logger.info(
+                        "Fleet promotion: %d signatures promoted to :GlobalSkill",
+                        len(promoted),
+                    )
+        except Exception:
+            logger.warning("Fleet graph sync failed", exc_info=True)
 
     async def _maybe_run_compaction() -> None:
         """Fire :func:`compaction.run_nightly` at most once per 24h.
