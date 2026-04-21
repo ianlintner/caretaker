@@ -193,6 +193,50 @@ Add `ANTHROPIC_API_KEY` to unlock enhanced AI features:
 
 ---
 
+## What's new
+
+### Fleet registry (opt-in)
+
+Each consumer repo's successful `caretaker run` can POST a small
+heartbeat to a central caretaker backend so an operator sees every
+managed repository in one dashboard — without running an org-wide
+GitHub crawl.
+
+Enable in `.github/maintainer/config.yml`:
+
+```yaml
+fleet_registry:
+  enabled: true
+  endpoint: https://<your-caretaker-backend>/api/fleet/heartbeat
+```
+
+See [docs/fleet-registry.md](docs/fleet-registry.md) for architecture,
+payload shape, and HMAC-signed delivery.
+
+### Custom coding agent
+
+Small tasks (lint fixes, trivial test failures, review comments) no
+longer have to go to `copilot-swe-agent[bot]`. A configurable
+executor routes them to caretaker's own Foundry tool-loop or to an
+`anthropics/claude-code-action` hand-off, with a size-budget guard
+and an explicit escalation path back to Copilot.
+
+Three routing labels let operators steer individual items:
+
+- `agent:custom` — force the custom executor.
+- `agent:copilot` — force the legacy path.
+- `agent:quarantine` — refuse dispatch (for hostile or confusing issues).
+
+On AKS deployments, the MCP backend exposes
+`POST /api/admin/agent-tasks` which spawns a short-lived
+`batch/v1 Job` per dispatch. See
+[docs/custom-coding-agent-plan.md](docs/custom-coding-agent-plan.md)
+for the full design, phased rollout, size budget, and security model;
+[docs/custom-coding-agent-e2e.md](docs/custom-coding-agent-e2e.md)
+for the operator runbook.
+
+---
+
 ## Configuration
 
 See [setup-templates/templates/config-default.yml](setup-templates/templates/config-default.yml) for the full config schema.
