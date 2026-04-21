@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fleet Registry — opt-in cross-repo client roster
+
+New opt-in telemetry surface so an operator can see every
+caretaker-managed repository in one dashboard without running an
+org-wide GitHub crawl.
+
+- **Emitter** — at the end of each successful `caretaker run`, if
+  `fleet_registry.enabled: true` and `fleet_registry.endpoint` is set,
+  the orchestrator POSTs a small JSON heartbeat with the repo slug,
+  caretaker version, run mode, enabled agents, and 20 curated
+  `RunSummary` counters. HMAC-SHA256 signed with the optional
+  `CARETAKER_FLEET_SECRET` shared secret. Fail-open: network /
+  configuration errors log a warning and never fail the run.
+- **Backend** — new `POST /api/fleet/heartbeat` (unauthenticated, HMAC
+  verified when the backend also has `CARETAKER_FLEET_SECRET` set) and
+  `GET /api/admin/fleet`, `/api/admin/fleet/summary`,
+  `/api/admin/fleet/{owner}/{repo}` behind the existing OIDC gate.
+  First cut uses an async-safe in-memory `FleetRegistryStore` —
+  persistence can plug in later without changing the API.
+- **Dashboard** — new `/fleet` route with StatPanel strip (total,
+  stale >7d, version mix, opt-in status) + hairline DataTable of every
+  known client.
+- **Opt-in, off by default.** No heartbeat unless both `enabled` and
+  `endpoint` are set; caretaker never phones home.
+- **Docs** — `docs/fleet-registry.md` walks through configuration,
+  operation, payload shape, and design notes.
+
 ### Sprint B3 + F3 — causal-chain audit trail
 
 Every caretaker-authored write now carries a hidden `<!-- caretaker:causal

@@ -8,6 +8,7 @@ import {
   Sparkles,
   Users,
   Network,
+  Boxes,
   Settings,
   LogOut,
   ChevronRight,
@@ -27,6 +28,7 @@ const NAV = [
   { to: '/skills', label: 'Skills', icon: Sparkles },
   { to: '/agents', label: 'Agents', icon: Users },
   { to: '/graph', label: 'Graph', icon: Network },
+  { to: '/fleet', label: 'Fleet', icon: Boxes },
   { to: '/config', label: 'Config', icon: Settings },
 ]
 

@@ -515,6 +515,37 @@ class TelemetryConfig(StrictBaseModel):
     application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
 
 
+class FleetRegistryConfig(StrictBaseModel):
+    """Opt-in fleet registry.
+
+    When ``enabled`` is ``True`` and ``endpoint`` is set, each successful
+    orchestrator run POSTs a small JSON heartbeat to a central caretaker
+    backend so an operator can see every consumer repo in one dashboard.
+
+    The feature is entirely opt-in: the default ``enabled = False`` keeps
+    caretaker's current behavior byte-identical. The endpoint URL is
+    intentionally not given a default — caretaker never phones home
+    unless the consumer explicitly configures a destination.
+
+    ``secret_env`` names an environment variable whose value is used as
+    an HMAC-SHA256 shared secret. When set, the emitter signs the POST
+    body and forwards the hex digest in ``X-Caretaker-Signature``; the
+    backend verifies before recording. When unset, heartbeats are
+    delivered without authentication (suitable for private networks /
+    trusted origins only).
+    """
+
+    enabled: bool = False
+    endpoint: str | None = None
+    secret_env: str = "CARETAKER_FLEET_SECRET"
+    timeout_seconds: float = 5.0
+    # When ``True`` the heartbeat body includes the full ``RunSummary``
+    # dump; when ``False`` only the curated set of summary counters is
+    # sent. Default False to minimise the risk of surfacing repo-private
+    # details (error log snippets, etc.) through the central dashboard.
+    include_full_summary: bool = False
+
+
 class GitHubAppConfig(StrictBaseModel):
     """Configuration for the optional GitHub App front-end.
 
@@ -630,6 +661,7 @@ class MaintainerConfig(StrictBaseModel):
     audit_log: AuditLogConfig = Field(default_factory=AuditLogConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    fleet_registry: FleetRegistryConfig = Field(default_factory=FleetRegistryConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
