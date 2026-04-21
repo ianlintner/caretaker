@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **M7 — Graph UI v2**: Five-tab admin graph page replacing the single explorer view.
+  - **Explorer** tab: existing 2D/3D subgraph view with extended node-type filter list covering all M3–M6 node types (Repo, Comment, CheckRun, Executor, RunSummaryWeek, GlobalSkill, AgentCoreMemory).
+  - **Timeline** tab: recharts run-history sparkline + scrollable run list on the left; click any run to load its N-hop Neo4j neighbourhood on the right. Depth selector (1–3).
+  - **Goal Impact** tab: goal selector + ReactFlow DAG of the N-hop neighbourhood around the selected goal node.
+  - **Causal Chain** tab: paginated causal-event list with source filter; click an event to split-view ancestor chain (left) and BFS descendants (right).
+  - **Fleet** tab: ReactFlow force-layout where each node is a fleet repository (size and colour driven by `last_goal_health`); GlobalSkill shared-skill edges overlaid from the graph subgraph.
+- **Memory page v2**: three-tab layout — KV Namespaces (existing), Core Memory (agent selector + live `AgentCoreMemory` graph-node display + recent-actions list), Skills (searchable skill table with confidence / run counts + skill drilldown showing causal-event graph neighbourhood).
+- Shared `nodeColors.ts` constant covering all 17 node types (including the 7 added in M3–M6); consumed by Graph2DView, Graph3DView, and all new views — single source of truth for node colour palette.
+- `Graph2DView` now accepts an optional `onNodeClick(nodeId, nodeType)` callback; used by upstream views that need node-click interactivity.
+
 ## [2026-W17] — 2026-04-21
 
 - introduce agent protocol abstraction (AgentContext/AgentResult/BaseAgent) and improve registry type safety (#274)

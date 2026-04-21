@@ -138,3 +138,23 @@ export type GraphStats = {
   total_nodes: number
   total_edges: number
 }
+
+export type CausalEvent = {
+  id: string
+  source: string
+  parent_id: string | null
+  run_id: string | null
+  title: string
+  observed_at: string | null
+}
+
+export type CausalChainResult = {
+  id: string
+  events: CausalEvent[]
+  truncated?: boolean
+}
+
+export type CausalDescendantsResult = {
+  id: string
+  events: CausalEvent[]
+}
