@@ -56,6 +56,17 @@ _ADMIN_STATIC_DIR = Path(__file__).resolve().parent.parent / "admin" / "static"
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     """App lifespan: initialise admin dashboard if configured."""
+    # M8 of the memory-graph plan — initialise OpenTelemetry GenAI
+    # tracing. A no-op when the ``otel`` extra is missing or
+    # ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset, so the default install
+    # doesn't pay the SDK cost. ``init_tracing`` never raises.
+    try:
+        from caretaker.observability import init_tracing
+
+        init_tracing("caretaker-mcp")
+    except Exception:
+        logger.debug("OpenTelemetry init skipped", exc_info=True)
+
     # Unconditionally register the unauthenticated fleet-heartbeat
     # receiver so consumer caretaker runs can register themselves
     # regardless of whether the full admin dashboard is enabled on

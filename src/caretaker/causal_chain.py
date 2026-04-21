@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from caretaker.causal import extract_causal
+from caretaker.observability import current_span_ids
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -38,7 +39,16 @@ class CausalEventRef:
 
 @dataclass
 class CausalEvent:
-    """One causal marker lifted out of a GitHub body/comment."""
+    """One causal marker lifted out of a GitHub body/comment.
+
+    M8 of the memory-graph plan adds optional OTel span provenance
+    (``span_id`` + ``parent_span_id``) so a ``:CausalEvent`` node can
+    cross-link to the trace backend (Phoenix / Datadog / LangSmith)
+    with a one-hop join. These fields default to ``None`` and are
+    populated automatically from the active OTel span via
+    :func:`caretaker.observability.current_span_ids` when the helper
+    extractors in this module are called inside a span context.
+    """
 
     id: str
     source: str
@@ -47,6 +57,8 @@ class CausalEvent:
     run_id: str | None = None
     title: str = ""
     observed_at: datetime | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
 
 def parse_run_id(causal_id: str) -> str | None:
@@ -70,6 +82,7 @@ def extract_from_body(
     if fields is None:
         return None
     cid = fields["id"]
+    span_id, parent_span_id = current_span_ids()
     return CausalEvent(
         id=cid,
         source=fields.get("source", ""),
@@ -78,6 +91,8 @@ def extract_from_body(
         run_id=parse_run_id(cid),
         title=title,
         observed_at=observed_at,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
     )
 
 

@@ -94,6 +94,18 @@ llm-multi = [
 k8s-worker = [
     "kubernetes>=30,<34",
 ]
+# M8 of the memory-graph plan — OpenTelemetry GenAI agent spans. When
+# installed AND ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, caretaker emits
+# one ``invoke_agent`` span per agent run, mirroring the span id into
+# CausalEvent rows. Default install does not pull these in — operators
+# opt in by installing this extra and pointing the env var at any
+# GenAI-aware backend (Phoenix, Datadog, LangSmith). See
+# docs/memory-graph-plan.md §6.
+otel = [
+    "opentelemetry-api>=1.25,<2",
+    "opentelemetry-sdk>=1.25,<2",
+    "opentelemetry-exporter-otlp>=1.25,<2",
+]
 
 [project.scripts]
 caretaker = "caretaker.cli:main"
@@ -140,4 +152,8 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["neo4j", "neo4j.*", "itsdangerous", "itsdangerous.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
