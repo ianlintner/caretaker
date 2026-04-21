@@ -110,6 +110,14 @@ jobs:
         run: |
           VERSION=$(cat .github/maintainer/.version)
           pip install "git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
+          # LiteLLM is the ``llm-multi`` extra from caretaker's
+          # pyproject.toml; installing it separately keeps the install
+          # line above compatible with both the pre- and post-v0.8.1
+          # distribution rename (``caretaker`` vs ``caretaker-github``).
+          # Harmless when ``executor.foundry.enabled=false`` — no model
+          # is called — but required when the repo opts into the
+          # custom coding agent (see docs/custom-coding-agent-plan.md).
+          pip install "litellm>=1.50,<2"
 
       - name: Run
         env:
@@ -158,6 +166,14 @@ jobs:
         run: |
           VERSION=$(cat .github/maintainer/.version)
           pip install "git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
+          # LiteLLM is the ``llm-multi`` extra from caretaker's
+          # pyproject.toml; installing it separately keeps the install
+          # line above compatible with both the pre- and post-v0.8.1
+          # distribution rename (``caretaker`` vs ``caretaker-github``).
+          # Harmless when ``executor.foundry.enabled=false`` — no model
+          # is called — but required when the repo opts into the
+          # custom coding agent (see docs/custom-coding-agent-plan.md).
+          pip install "litellm>=1.50,<2"
 
       - name: Self-heal — analyse own failure
         env:
