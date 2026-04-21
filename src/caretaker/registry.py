@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from caretaker.observability import agent_span
+
 if TYPE_CHECKING:
     from caretaker.agent_protocol import AgentResult, BaseAgent
     from caretaker.state.models import OrchestratorState, RunSummary
@@ -88,12 +90,20 @@ class AgentRegistry:
             logger.info("[DRY RUN] %s agent would run", agent.name)
             return None
 
-        try:
-            result = await agent.execute(state, event_payload=event_payload)
-            agent.apply_summary(result, summary)
-            summary.errors.extend(result.errors)
-            return result
-        except Exception as exc:
-            logger.error("%s agent error: %s", agent.name, exc, exc_info=True)
-            summary.errors.append(f"{agent.name}: {exc}")
-            return None
+        # M8 of the memory-graph plan — emit one ``invoke_agent`` OTel
+        # GenAI span per agent dispatch. No-op when the OTel SDK is not
+        # installed or ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset. The
+        # ``caretaker.run_id`` attribute mirrors the run_at timestamp so
+        # spans can be joined against ``RunSummary`` / graph ``Run`` nodes.
+        run_id = summary.run_at.isoformat() if summary.run_at else ""
+        with agent_span(agent_name=agent.name, operation="run") as span:
+            span.set_attribute("caretaker.run_id", run_id)
+            try:
+                result = await agent.execute(state, event_payload=event_payload)
+                agent.apply_summary(result, summary)
+                summary.errors.extend(result.errors)
+                return result
+            except Exception as exc:
+                logger.error("%s agent error: %s", agent.name, exc, exc_info=True)
+                summary.errors.append(f"{agent.name}: {exc}")
+                return None

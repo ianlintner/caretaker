@@ -1,0 +1,26 @@
+# Local OpenTelemetry trace viewer — Arize Phoenix (OSS).
+#
+# Part of M8 of the memory-graph plan (see docs/memory-graph-plan.md §6).
+# Phoenix accepts OTLP/gRPC on :4317 and serves a UI on :6006, so a
+# local dev loop can view ``invoke_agent`` spans without any cloud
+# account or API key.
+#
+# Usage:
+#   docker compose up phoenix
+#   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+#   uvicorn caretaker.mcp_backend.main:app --reload
+#
+# Phoenix UI: http://localhost:6006
+#
+# Production deployments should point OTEL_EXPORTER_OTLP_ENDPOINT at a
+# managed GenAI-aware backend (Phoenix Cloud, Datadog, LangSmith, etc.)
+# instead — the caretaker code is portable across any OTLP collector.
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      PHOENIX_PORT: 6006

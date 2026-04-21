@@ -283,6 +283,25 @@ Adopt OpenTelemetry GenAI semantic conventions (shipped Apr 2026):
 
 No backend lock-in — just the portable SDK.
 
+### Local dev loop
+
+M8 ships the wiring as an **optional** install — default `pip install
+caretaker-github` does not pull in the OTel SDK, so the observability
+helpers degrade to no-ops when the packages or the OTLP endpoint are
+missing. To view `invoke_agent` spans locally:
+
+```bash
+pip install 'caretaker-github[otel]'
+docker compose up phoenix
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+uvicorn caretaker.mcp_backend.main:app --reload
+# Phoenix UI: http://localhost:6006
+```
+
+The `docker-compose.override.yml` in the repo root runs
+`arizephoenix/phoenix` with OTLP/gRPC on `:4317` and the trace UI on
+`:6006`. No API key, no cloud account — strictly local.
+
 ---
 
 ## 7. UI

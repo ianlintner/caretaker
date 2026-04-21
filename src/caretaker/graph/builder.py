@@ -414,7 +414,11 @@ class GraphBuilder:
                     )
                     counts["edges"] += 1
 
-        # 8. Causal events + CAUSED_BY edges
+        # 8. Causal events + CAUSED_BY edges. M8 of the memory-graph
+        # plan adds ``span_id`` + ``parent_span_id`` properties when the
+        # CausalEvent was captured inside an OTel ``invoke_agent``
+        # span — makes "which span caused this escalation" a one-hop
+        # cypher query that can be joined against the trace backend.
         if causal_store is not None:
             for event in causal_store.index().values():
                 event_id = f"causal:{event.id}"
@@ -430,6 +434,8 @@ class GraphBuilder:
                         "ref_number": event.ref.number if event.ref.number is not None else 0,
                         "observed_at": event.observed_at.isoformat() if event.observed_at else "",
                         "repo": repo_slug,
+                        "span_id": event.span_id or "",
+                        "parent_span_id": event.parent_span_id or "",
                     },
                 )
                 counts["causal_events"] += 1

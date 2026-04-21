@@ -90,42 +90,42 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Memory graph — M3: tenant scoping + new node types
+### Memory graph — M8: OTel GenAI span instrumentation
 
-Third milestone of the memory-graph plan. The graph gains a dedicated
-`:Repo` tenant anchor, three attribution node types that were sitting
-in the plan waiting for a home, and a `repo` scalar on every node so
-cypher queries can scope by tenant in a single `WHERE n.repo = $repo`
-clause.
+Eighth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
+§6). Every agent dispatch now emits one `invoke_agent` OpenTelemetry
+span following the April 2026 GenAI semantic conventions, and the
+CausalEvent model carries the span provenance so "which span caused
+this escalation" is a one-hop graph or trace-backend join.
 
-- New `NodeType` values: `REPO`, `COMMENT`, `CHECK_RUN`, `EXECUTOR`.
-  Uniqueness constraints shipped for each label in
-  `GraphStore.ensure_indexes`.
-- `GraphBuilder.full_sync` now takes an `owner/name` slug via a new
-  `repo=` kwarg (defaults to `"unknown/unknown"` for legacy callers),
-  merges a single `:Repo` node first, and stamps `repo=<slug>` onto
-  every downstream node merge (`:Agent`, `:PR`, `:Issue`, `:Goal`,
-  `:Run`, `:Skill`, `:CausalEvent`, and the synthetic `goal:overall`).
-- PR attribution: when `TrackedPR.owned_by` is one of `copilot`,
-  `foundry`, `claude_code` the builder mints an `:Executor{provider}`
-  node plus a `(PR)-[:HANDLED_BY {valid_from}]->(Executor)` edge
-  (bitemporal, using `ownership_acquired_at` when known). The default
-  `"caretaker"` ownership — i.e. no external delegation — is skipped
-  so queries like "which executor fixed this PR" don't have to filter
-  the self-ownership case.
-- `CheckRun` node emission deferred to M5 alongside the live event
-  feed — `TrackedPR` carries only a `ci_attempts` counter, so the
-  per-check metadata the schema calls for isn't available from state
-  alone. Label + constraint are shipped now so M5 can merge straight
-  in.
-- `admin.state_loader.build_refresh_task` now passes the actual
-  `owner/name` slug through to the builder so the admin reconciliation
-  loop produces a tenant-scoped subgraph in Neo4j.
-- 7 new tests in `tests/test_graph_builder_m3.py` cover Repo-node
-  merge with a real slug, the `unknown/unknown` fallback, tenant
-  `repo` scalar on every node, Executor + HANDLED_BY for each of the
-  three external providers, and the no-executor case for
-  `owned_by="caretaker"`.
+- New optional `otel` extra in `pyproject.toml` pulling
+  `opentelemetry-api`, `opentelemetry-sdk`, and
+  `opentelemetry-exporter-otlp`. The default install is unchanged —
+  the observability helpers degrade to no-op stubs when the SDK is
+  missing or `OTEL_EXPORTER_OTLP_ENDPOINT` is unset.
+- New `src/caretaker/observability/otel.py` exposing `init_tracing`,
+  `agent_span`, and `current_span_ids`. `init_tracing` is idempotent
+  and never raises; `agent_span` yields a `_NullSpan` stub when OTel
+  is unavailable so call sites stay branch-free.
+- `AgentRegistry.run_one` now wraps each `agent.execute` call in an
+  `invoke_agent` span with `gen_ai.agent.name`,
+  `gen_ai.operation.name`, and `caretaker.run_id` attributes. The MCP
+  backend's FastAPI lifespan calls `init_tracing("caretaker-mcp")` on
+  startup.
+- `CausalEvent` gains optional `span_id` + `parent_span_id` fields,
+  populated automatically by `extract_from_body` via
+  `current_span_ids()`. `GraphBuilder.full_sync` writes both
+  properties onto `:CausalEvent` nodes so the graph can join against
+  the trace backend.
+- New `docker-compose.override.yml` runs an Arize Phoenix sidecar
+  (OTLP/gRPC on `:4317`, UI on `:6006`) for zero-cloud local trace
+  viewing. `docs/memory-graph-plan.md` §6 documents the
+  `docker compose up phoenix` + `OTEL_EXPORTER_OTLP_ENDPOINT` loop.
+- 7 new tests in `tests/test_observability_otel.py` cover the no-op
+  `init_tracing`, the `_NullSpan` fallback, `current_span_ids`
+  outside a span, and the SDK-present init path (skipped when the
+  `otel` extra is not installed).
+
 
 ### Memory graph — M2: missing edges + bitemporal edge properties
 
