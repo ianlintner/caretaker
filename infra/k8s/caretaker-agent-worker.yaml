@@ -75,6 +75,11 @@ spec:
   ttlSecondsAfterFinished: 600 # cleaned up 10 minutes after completion
   backoffLimit: 0 # no retries — the orchestrator / state machine decides
   activeDeadlineSeconds: 900 # 15-minute hard cap
+  # CRITICAL: template Job starts suspended. Applying this manifest
+  # on its own must not spawn a pod with the placeholder env vars
+  # (``MUST_BE_OVERRIDDEN_BY_MCP_BACKEND``). The backend clones the
+  # spec per dispatch and sets ``suspend: false`` on the clone.
+  suspend: true
   template:
     metadata:
       labels:
