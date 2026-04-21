@@ -39,6 +39,16 @@ class NodeType(StrEnum):
     # Skills that are crystallised out of a weekly rollup link back
     # via ``Skill-[:LEARNED_IN]->RunSummaryWeek`` provenance.
     RUN_SUMMARY_WEEK = "RunSummaryWeek"
+    # ── Added in M6 of the memory-graph plan ────────────────────────────
+    # Fleet-tier distilled procedural skill. Lives outside the per-repo
+    # scope: one :GlobalSkill node can back many per-repo :Skill nodes
+    # via PROMOTED_TO once a signature has been seen in N distinct
+    # repos and passed the abstraction pass (see
+    # ``caretaker.fleet.abstraction``). The label itself is the
+    # privacy boundary — cypher queries against :Skill always see
+    # per-repo data; queries against :GlobalSkill only ever see text
+    # that has been run through the redactor.
+    GLOBAL_SKILL = "GlobalSkill"
 
 
 class RelType(StrEnum):
@@ -72,6 +82,22 @@ class RelType(StrEnum):
     # weekly rollup was this skill crystallised from?" once the
     # tier-0 → tier-1 compaction pass learns a new skill.
     LEARNED_IN = "LEARNED_IN"
+    # ── Added in M6 of the memory-graph plan ────────────────────────────
+    # Fleet-tier edges. ``PROMOTED_TO`` is the audit trail for a
+    # per-repo :Skill that passed the two-gate promotion (present in
+    # ≥ N repos + abstraction pass). ``SHARES_SKILL`` joins a tenant
+    # :Repo to the distilled :GlobalSkill so "which repos share this
+    # procedural skill" is a one-hop query. ``RUNS_AGENT`` + ``GOAL_HEALTH``
+    # are built from the fleet registry heartbeat payload
+    # (``enabled_agents`` and ``last_goal_health`` respectively); the
+    # heartbeat arrives asynchronously so these edges are the one
+    # authoritative place a caretaker backend learns which agents a
+    # consumer repo is actually running today and how its goals
+    # trended on its last run.
+    PROMOTED_TO = "PROMOTED_TO"  # Skill → GlobalSkill
+    SHARES_SKILL = "SHARES_SKILL"  # Repo → GlobalSkill
+    RUNS_AGENT = "RUNS_AGENT"  # Repo → Agent
+    GOAL_HEALTH = "GOAL_HEALTH"  # Repo → Goal (with {score, as_of})
 
 
 class GraphNode(BaseModel):

@@ -53,6 +53,11 @@ class GraphStore:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:Executor) REQUIRE e.id IS UNIQUE",
             # M4: tier-1 weekly rollup node constraint.
             "CREATE CONSTRAINT IF NOT EXISTS FOR (w:RunSummaryWeek) REQUIRE w.id IS UNIQUE",
+            # M6: fleet-tier GlobalSkill. Uniqueness by ``id`` mirrors
+            # every other label; the ``signature`` property carries the
+            # cross-repo skill fingerprint (the abstracted SOP text is
+            # stored on the node itself).
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (g:GlobalSkill) REQUIRE g.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:
@@ -298,6 +303,40 @@ class GraphStore:
                         )
 
         return SubGraph(nodes=list(seen_nodes.values()), edges=list(seen_edges.values()))
+
+    async def list_skill_rows(self) -> list[dict[str, Any]]:
+        """Return one row per ``:Skill`` node — ``{id, signature, repo, sop_text}``.
+
+        Used by M6 fleet promotion to group skills by signature across
+        all tenant subgraphs. Missing properties default to the empty
+        string so the cross-repo grouper always has a scalar to hash
+        on. Callers are responsible for filtering out ``Unknown``-
+        tenant rows if they wish; the query deliberately returns them
+        so the promotion audit log can see when a skill landed under
+        the ``unknown/unknown`` placeholder.
+        """
+        rows: list[dict[str, Any]] = []
+        query = (
+            "MATCH (s:Skill) "
+            "RETURN s.id AS id, "
+            "       coalesce(s.signature, '') AS signature, "
+            "       coalesce(s.repo, '') AS repo, "
+            "       coalesce(s.name, '') AS name, "
+            "       coalesce(s.category, '') AS category"
+        )
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            async for record in result:
+                rows.append(
+                    {
+                        "id": record["id"],
+                        "signature": record["signature"],
+                        "repo": record["repo"],
+                        "name": record["name"],
+                        "category": record["category"],
+                    }
+                )
+        return rows
 
     async def get_stats(self) -> GraphStats:
         """Return node and edge counts by type."""

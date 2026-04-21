@@ -90,6 +90,22 @@ class AdminDataAccess:
     def causal_store(self) -> CausalEventStore:
         return self._causal
 
+    # ── Insight (skill) store access ─────────────────────────────────────
+    @property
+    def insight_store(self) -> Any | None:
+        """Return the optional :class:`InsightStore`. ``None`` when unset.
+
+        Needed by the M6 fleet-graph sync to pull SOP text for the
+        :GlobalSkill abstraction pass; all other admin endpoints reach
+        through helper methods rather than this raw accessor.
+        """
+        return self._insights
+
+    # ── Config access ────────────────────────────────────────────────────
+    @property
+    def config(self) -> MaintainerConfig | None:
+        return self._config
+
     # ── Orchestrator State ────────────────────────────────────────────────
 
     def get_state(self) -> dict[str, Any]:
