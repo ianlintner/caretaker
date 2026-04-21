@@ -71,9 +71,23 @@ class PRStateEvaluation:
     recommended_action: str = "wait"
 
 
+_ALWAYS_IGNORED_CHECK_NAMES: frozenset[str] = frozenset(
+    {
+        # caretaker publishes its own readiness check run on every
+        # evaluation cycle. Treating it as upstream CI would create a
+        # self-gating deadlock: the PR state machine sees pending /
+        # action_required on the check caretaker itself owns, decides to
+        # wait, never transitions to ``ci_failing``, and never dispatches
+        # a fix. The check is always irrelevant to external CI health —
+        # it's strictly an output of caretaker's own evaluation.
+        "caretaker/pr-readiness",
+    }
+)
+
+
 def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None) -> CIEvaluation:
     """Evaluate CI status from check runs."""
-    ignore = set(ignore_jobs or [])
+    ignore = set(ignore_jobs or []) | _ALWAYS_IGNORED_CHECK_NAMES
     relevant = [cr for cr in check_runs if cr.name not in ignore]
 
     if not relevant:
