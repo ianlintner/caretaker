@@ -33,6 +33,18 @@ class RelType(StrEnum):
     EVALUATED = "EVALUATED"
     MUTATED_BY = "MUTATED_BY"
     CAUSED_BY = "CAUSED_BY"
+    # ── Added in M2 of the memory-graph plan ────────────────────────────
+    # Richer, direction-aware edges so downstream queries don't have to
+    # fan out through generic LINKED_TO / CONTRIBUTES_TO rels. Every
+    # emitter is expected to stamp `observed_at` (automatic via the
+    # writer) and, when known, bitemporal `valid_from` / `valid_to`.
+    REFERENCES = "REFERENCES"  # PR → Issue (from "fixes #N" / TrackedIssue.assigned_pr)
+    RESOLVED_BY = "RESOLVED_BY"  # Issue → PR
+    EXECUTED = "EXECUTED"  # Run → Agent
+    USED = "USED"  # Agent → Skill (per-run, distinct from LEARNED lifetime)
+    VALIDATED_BY = "VALIDATED_BY"  # Skill → CausalEvent
+    AFFECTED = "AFFECTED"  # Run → Goal (with before/after score)
+    HANDLED_BY = "HANDLED_BY"  # PR → Executor (copilot / foundry / claude_code)
 
 
 class GraphNode(BaseModel):

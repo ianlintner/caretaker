@@ -7,6 +7,7 @@ the graph nodes and relationships.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from caretaker.admin.causal_store import CausalEventStore  # noqa: TC001 (runtime-used)
@@ -16,6 +17,64 @@ from caretaker.graph.store import GraphStore  # noqa: TC001 (runtime-used)
 from caretaker.state.models import OrchestratorState  # noqa: TC001 (runtime-used)
 
 logger = logging.getLogger(__name__)
+
+
+def _bitemporal(
+    valid_from: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return edge properties stamped with ``observed_at`` + bitemporal keys.
+
+    M2 of the memory-graph plan: every edge grows ``observed_at`` (when
+    caretaker recorded the fact), ``valid_from`` (when it became true),
+    and ``valid_to`` (when it stopped, ``None`` == still current). The
+    :class:`~caretaker.graph.writer.GraphWriter` fills ``observed_at``
+    automatically; callers pass through ``valid_from`` when they know
+    it. For the full-sync we synthesise ``valid_from = observed_at``
+    because the sync can't know the true moment the fact became true.
+    """
+    now = datetime.now(UTC).isoformat()
+    props: dict[str, Any] = {"observed_at": now, "valid_from": valid_from or now}
+    if extra:
+        props.update(extra)
+    return props
+
+
+# Which agents a given run *mode* dispatches. Mode values come from the
+# RunSummary.mode field; unknown modes fall back to the full set so the
+# graph never silently drops a run.
+_MODE_TO_AGENTS: dict[str, tuple[str, ...]] = {
+    "full": (
+        "pr",
+        "issue",
+        "devops",
+        "security",
+        "deps",
+        "docs",
+        "charlie",
+        "self-heal",
+        "upgrade",
+        "stale",
+        "test",
+        "release",
+        "escalation",
+        "review",
+    ),
+    "pr": ("pr",),
+    "issue": ("issue",),
+    "charlie": ("charlie",),
+    "devops": ("devops",),
+    "security": ("security",),
+    "deps": ("deps",),
+    "docs": ("docs",),
+    "self-heal": ("self-heal",),
+    "upgrade": ("upgrade",),
+    "stale": ("stale",),
+    "release": ("release",),
+    "review": ("review",),
+    "escalation": ("escalation",),
+    "test": ("test",),
+}
 
 
 class GraphBuilder:
@@ -103,16 +162,29 @@ class GraphBuilder:
             )
             counts["issues"] += 1
 
-            # Issue → PR linkage
+            # Issue ↔ PR linkage. Two directional edges landed in M2 so
+            # "which PR resolves this issue" and "which issues does this
+            # PR reference" are both one-hop queries — previously both
+            # required walking the generic LINKED_TO rel.
             if issue.assigned_pr is not None:
+                pr_id = f"pr:{issue.assigned_pr}"
                 await self._store.merge_edge(
                     NodeType.PR,
-                    f"pr:{issue.assigned_pr}",
+                    pr_id,
                     NodeType.ISSUE,
                     issue_id,
-                    RelType.LINKED_TO,
+                    RelType.REFERENCES,
+                    _bitemporal(),
                 )
-                counts["edges"] += 1
+                await self._store.merge_edge(
+                    NodeType.ISSUE,
+                    issue_id,
+                    NodeType.PR,
+                    pr_id,
+                    RelType.RESOLVED_BY,
+                    _bitemporal(),
+                )
+                counts["edges"] += 2
 
             # Agent triage relationship
             await self._store.merge_edge(
@@ -124,7 +196,16 @@ class GraphBuilder:
             )
             counts["edges"] += 1
 
-        # 4. Goals
+        # 4. Goals. ``goal:overall`` is a synthetic aggregate that the
+        # Run→Goal AFFECTED edge targets — ensuring it exists here so
+        # the edge merge below can match both endpoints without
+        # relying on per-run merge ordering.
+        await self._store.merge_node(
+            NodeType.GOAL,
+            "goal:overall",
+            {"name": "overall", "aggregate": True},
+        )
+        counts["goals"] += 1
         for goal_id, snapshots in state.goal_history.items():
             latest = snapshots[-1] if snapshots else None
             await self._store.merge_node(
@@ -160,21 +241,63 @@ class GraphBuilder:
 
         # 6. Run history
         for i, run in enumerate(state.run_history):
-            run_id = f"run:{i}"
+            # Prefer run_at-based id so the node survives across the
+            # rolling 20-run window in state.run_history; falling back
+            # to the index keeps the builder robust for fixtures that
+            # omit timestamps.
+            run_id = f"run:{run.run_at.isoformat()}" if run.run_at else f"run:{i}"
+            run_at_iso = run.run_at.isoformat() if run.run_at else ""
             await self._store.merge_node(
                 NodeType.RUN,
                 run_id,
                 {
                     "name": f"Run {i}",
-                    "run_at": run.run_at.isoformat() if run.run_at else "",
+                    "run_at": run_at_iso,
                     "mode": run.mode,
                     "prs_merged": run.prs_merged,
                     "issues_triaged": run.issues_triaged,
-                    "goal_health": run.goal_health,
+                    "goal_health": run.goal_health if run.goal_health is not None else 0.0,
                     "escalation_rate": run.escalation_rate,
+                    "valid_from": run_at_iso,
                 },
             )
             counts["runs"] += 1
+
+            # Run → Agent EXECUTED edges (M2). The mapping is
+            # mode-based: a "pr" run dispatches the PR agent, a "full"
+            # run dispatches everything. valid_from marks the moment
+            # the run started.
+            agents_for_mode = _MODE_TO_AGENTS.get(run.mode, _MODE_TO_AGENTS["full"])
+            for agent_name in agents_for_mode:
+                await self._store.merge_edge(
+                    NodeType.RUN,
+                    run_id,
+                    NodeType.AGENT,
+                    f"agent:{agent_name}",
+                    RelType.EXECUTED,
+                    _bitemporal(valid_from=run_at_iso or None),
+                )
+                counts["edges"] += 1
+
+            # Run → Goal AFFECTED with the run's contribution to
+            # overall goal health. Matches the edge written by
+            # StateTracker._emit_run_graph for live runs.
+            if run.goal_health is not None:
+                await self._store.merge_edge(
+                    NodeType.RUN,
+                    run_id,
+                    NodeType.GOAL,
+                    "goal:overall",
+                    RelType.AFFECTED,
+                    _bitemporal(
+                        valid_from=run_at_iso or None,
+                        extra={
+                            "score": run.goal_health,
+                            "escalation_rate": run.escalation_rate,
+                        },
+                    ),
+                )
+                counts["edges"] += 1
 
         # 7. Skills from InsightStore
         if insight_store is not None:

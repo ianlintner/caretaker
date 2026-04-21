@@ -334,13 +334,49 @@ class InsightStore:
 
     def record_success(self, category: str, signature: str, sop: str) -> None:
         """Upsert a skill and increment its success counter."""
-        self._backend.upsert_skill_success(_skill_id(category, signature), category, signature, sop)
+        skill_id = _skill_id(category, signature)
+        self._backend.upsert_skill_success(skill_id, category, signature, sop)
         logger.debug("InsightStore: recorded success for '%s/%s'", category, signature)
+        self._emit_skill_node(skill_id, category, signature)
 
     def record_failure(self, category: str, signature: str) -> None:
         """Upsert a skill and increment its failure counter."""
-        self._backend.upsert_skill_failure(_skill_id(category, signature), category, signature)
+        skill_id = _skill_id(category, signature)
+        self._backend.upsert_skill_failure(skill_id, category, signature)
         logger.debug("InsightStore: recorded failure for '%s/%s'", category, signature)
+        self._emit_skill_node(skill_id, category, signature)
+
+    def _emit_skill_node(self, skill_id: str, category: str, signature: str) -> None:
+        """Publish the latest skill counters to the event-driven graph writer.
+
+        The lookup after the backend write is deliberate — the counters we
+        just bumped are the ones the graph should reflect. Failures to read
+        back (e.g. a race with another writer) are swallowed: the daily
+        reconciliation pass in ``GraphBuilder.full_sync`` will heal drift.
+        """
+        from caretaker.graph.models import NodeType
+        from caretaker.graph.writer import get_writer
+
+        writer = get_writer()
+        try:
+            skill = self._backend.get_skill(skill_id)
+        except Exception:
+            return
+        if skill is None:
+            return
+        writer.record_node(
+            NodeType.SKILL,
+            f"skill:{skill.id}",
+            {
+                "name": skill.signature,
+                "category": category,
+                "signature": signature,
+                "confidence": skill.confidence,
+                "success_count": skill.success_count,
+                "fail_count": skill.fail_count,
+                "last_used_at": skill.last_used_at.isoformat() if skill.last_used_at else "",
+            },
+        )
 
     def get_relevant(
         self,

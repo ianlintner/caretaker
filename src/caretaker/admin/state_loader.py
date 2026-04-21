@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from caretaker.github_app import (
     AppJWTSigner,
@@ -79,20 +79,38 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
 
     neo4j_url = os.environ.get("NEO4J_URL", "").strip()
 
+    # Persistent graph store shared by the 60-second reconciliation pass
+    # AND the process-wide ``GraphWriter`` (M1 of the memory-graph plan).
+    # Holding one store across ticks avoids opening/closing a Neo4j driver
+    # session on every refresh and lets agent call sites publish facts
+    # directly without waiting for the next full_sync. Captured in a
+    # nonlocal-assignable variable so the closure below can mutate it.
+    persistent_store: Any = None
+    writer_started = False
+
     async def _sync_graph(state) -> None:  # type: ignore[no-untyped-def]
         """Best-effort Neo4j sync. Swallows all errors — graph is optional."""
+        nonlocal persistent_store, writer_started
         if not neo4j_url:
             return
         try:
             from caretaker.graph.builder import GraphBuilder
             from caretaker.graph.store import GraphStore
+            from caretaker.graph.writer import get_writer
 
-            store = GraphStore()
-            try:
-                counts = await GraphBuilder(store).full_sync(state, causal_store=data.causal_store)
-                logger.debug("Graph sync counts: %s", counts)
-            finally:
-                await store.close()
+            if persistent_store is None:
+                persistent_store = GraphStore()
+                writer = get_writer()
+                writer.configure(persistent_store)
+                if not writer_started:
+                    await writer.start()
+                    writer_started = True
+
+            counts = await GraphBuilder(persistent_store).full_sync(
+                state,
+                causal_store=data.causal_store,
+            )
+            logger.debug("Graph sync counts: %s", counts)
         except Exception:
             logger.warning("Graph sync failed", exc_info=True)
 

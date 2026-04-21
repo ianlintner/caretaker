@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from caretaker.causal import make_causal_marker
 from caretaker.github_client.api import RateLimitError
+from caretaker.graph.models import NodeType, RelType
+from caretaker.graph.writer import get_writer
 from caretaker.tools.github import GitHubIssueTools
 
 from .models import OrchestratorState, RunSummary
@@ -149,6 +151,60 @@ class StateTracker:
             else:
                 raise
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
+        if summary is not None:
+            self._emit_run_graph(summary)
+
+    def _emit_run_graph(self, summary: RunSummary) -> None:
+        """Publish the just-saved run to the event-driven graph writer.
+
+        Called at the end of :meth:`save` so a dropped graph write cannot
+        prevent state from being persisted to the tracking issue — GitHub
+        is the source of truth, Neo4j is a projection.
+        """
+        run_id = f"run:{summary.run_at.isoformat()}"
+        writer = get_writer()
+        writer.record_node(
+            NodeType.RUN,
+            run_id,
+            {
+                "name": f"run-{summary.run_at.strftime('%Y%m%dT%H%M%S')}",
+                "run_at": summary.run_at.isoformat(),
+                "mode": summary.mode,
+                "prs_monitored": summary.prs_monitored,
+                "prs_merged": summary.prs_merged,
+                "issues_triaged": summary.issues_triaged,
+                "goal_health": summary.goal_health if summary.goal_health is not None else 0.0,
+                "escalation_rate": summary.escalation_rate,
+                "repo": f"{self._owner}/{self._repo}",
+                "valid_from": summary.run_at.isoformat(),
+            },
+        )
+        if summary.goal_health is not None:
+            # Ensure the synthetic aggregate goal node exists before
+            # the edge merge — the GraphBuilder full-sync also merges
+            # it but live writes can land before the first sync.
+            writer.record_node(
+                NodeType.GOAL,
+                "goal:overall",
+                {"name": "overall", "aggregate": True},
+            )
+            # AFFECTED is the M2 edge — semantically "this run moved the
+            # goal score by this much." `valid_from` is the run's wall
+            # clock; `valid_to` stays unset because the score only
+            # ceases to reflect a given run's contribution when a newer
+            # run supersedes it, and that's an analysis-layer concern.
+            writer.record_edge(
+                NodeType.RUN,
+                run_id,
+                NodeType.GOAL,
+                "goal:overall",
+                RelType.AFFECTED,
+                {
+                    "score": summary.goal_health,
+                    "escalation_rate": summary.escalation_rate,
+                    "valid_from": summary.run_at.isoformat(),
+                },
+            )
 
     async def post_run_summary(self, summary: RunSummary) -> None:
         """Post a human-readable run summary to the tracking issue.
