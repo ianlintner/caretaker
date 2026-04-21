@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from caretaker.memory.core import AgentCoreMemory
+from caretaker.memory.core import publish as publish_core_memory
 from caretaker.observability import agent_span
 
 if TYPE_CHECKING:
@@ -98,6 +100,19 @@ class AgentRegistry:
         run_id = summary.run_at.isoformat() if summary.run_at else ""
         with agent_span(agent_name=agent.name, operation="run") as span:
             span.set_attribute("caretaker.run_id", run_id)
+            # M5: publish per-agent working memory once per dispatch. The
+            # writer enqueues asynchronously so this stays off the hot path.
+            ctx = agent._ctx
+            repo_slug = f"{ctx.owner}/{ctx.repo}" if ctx.owner and ctx.repo else "unknown/unknown"
+            publish_core_memory(
+                AgentCoreMemory(
+                    agent=agent.name,
+                    run_id=run_id,
+                    repo=repo_slug,
+                    identity=agent.name,
+                    active_goal=getattr(summary, "primary_goal_id", None),
+                )
+            )
             try:
                 result = await agent.execute(state, event_payload=event_payload)
                 agent.apply_summary(result, summary)

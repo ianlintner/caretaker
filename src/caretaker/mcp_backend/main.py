@@ -203,6 +203,31 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
                 except Exception:
                     logger.warning("Failed to initialise graph API", exc_info=True)
 
+            # MCP memory adapter (M5) — wires the existing causal store
+            # plus (when present) the graph + insight stores into the
+            # read-only HTTP surface described in
+            # ``docs/memory-graph-plan.md`` §4.4. Each endpoint returns
+            # 503 independently when its backing store is unset, so a
+            # partially configured backend still serves whatever is
+            # available.
+            try:
+                from caretaker.mcp_backend import memory_tools
+
+                try:
+                    from caretaker.admin.graph_api import _store as _graph_store_mod
+                except Exception:
+                    _graph_store_mod = None
+
+                memory_tools.configure(
+                    graph_store=_graph_store_mod,
+                    causal_store=data.causal_store,
+                    insight_store=getattr(data, "_insights", None),
+                )
+                application.include_router(memory_tools.router)
+                logger.info("MCP memory adapter enabled")
+            except Exception:
+                logger.warning("Failed to initialise MCP memory adapter", exc_info=True)
+
             # Serve SPA static files
             if _ADMIN_STATIC_DIR.is_dir():
                 application.mount(

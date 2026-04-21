@@ -58,6 +58,8 @@ class GraphStore:
             # cross-repo skill fingerprint (the abstracted SOP text is
             # stored on the node itself).
             "CREATE CONSTRAINT IF NOT EXISTS FOR (g:GlobalSkill) REQUIRE g.id IS UNIQUE",
+            # M5: per-agent working memory node.
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (acm:AgentCoreMemory) REQUIRE acm.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:
