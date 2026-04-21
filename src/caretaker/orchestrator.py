@@ -352,6 +352,27 @@ class Orchestrator:
             self._repo,
         )
 
+        # Honour any in-process rate-limit cooldown from a previous run
+        # (same runner, same python process is rare in GHA but possible
+        # for local loops or the K8s agent-worker that reuses the pod).
+        # For the common GHA case, the cooldown state starts fresh on
+        # every workflow invocation, so this is a no-op most of the
+        # time and a safety net the rest.
+        from caretaker.github_client.rate_limit import get_cooldown
+
+        _cooldown = get_cooldown()
+        if _cooldown.is_blocked():
+            remaining = _cooldown.seconds_remaining()
+            snap = _cooldown.snapshot()
+            logger.warning(
+                "Orchestrator deferring: GitHub rate-limit cooldown still active "
+                "(%.0fs remaining, reason=%s). Exiting cleanly so the next "
+                "scheduled run picks up after the window closes.",
+                remaining,
+                snap.get("reason"),
+            )
+            return 0
+
         # Load persisted state
         state = OrchestratorState()
         summary = RunSummary(mode=mode, run_at=datetime.utcnow())
