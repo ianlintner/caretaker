@@ -6,17 +6,26 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from caretaker.github_client.models import Issue, User
+from caretaker.foundry.dispatcher import (
+    LABEL_AGENT_CUSTOM,
+    LABEL_AGENT_QUARANTINE,
+)
+from caretaker.github_client.models import Issue, Label, User
 from caretaker.issue_agent.classifier import IssueClassification
 from caretaker.issue_agent.dispatcher import IssueDispatcher, build_assignment_body
 
 
-def make_issue(number: int = 1, title: str = "Bug report") -> Issue:
+def make_issue(
+    number: int = 1,
+    title: str = "Bug report",
+    labels: list[str] | None = None,
+) -> Issue:
     return Issue(
         number=number,
         title=title,
         body="something is broken",
         user=User(login="reporter", id=1, type="User"),
+        labels=[Label(name=n) for n in (labels or [])],
     )
 
 
@@ -104,3 +113,30 @@ class TestIssueDispatcher:
         assignment = call_kwargs.get("copilot_assignment")
         assert assignment is not None
         assert assignment.to_api_payload()["target_repo"] == "o/r"
+
+    async def test_agent_quarantine_label_refuses_dispatch(self) -> None:
+        github = AsyncMock()
+        dispatcher = IssueDispatcher(github=github, owner="o", repo="r")
+        issue = make_issue(labels=[LABEL_AGENT_QUARANTINE])
+
+        result = await dispatcher.dispatch(issue, IssueClassification.BUG_SIMPLE)
+
+        assert result is None
+        github.update_issue.assert_not_called()
+        github.create_issue.assert_not_called()
+        github.add_issue_comment.assert_not_called()
+
+    async def test_agent_custom_label_defers_to_custom_executor(self) -> None:
+        github = AsyncMock()
+        dispatcher = IssueDispatcher(github=github, owner="o", repo="r")
+        issue = make_issue(labels=[LABEL_AGENT_CUSTOM])
+
+        result = await dispatcher.dispatch(issue, IssueClassification.BUG_SIMPLE)
+
+        # No Copilot assignment; a single announcement comment is posted.
+        assert result is None
+        github.update_issue.assert_not_called()
+        github.add_issue_comment.assert_awaited_once()
+        comment_body = github.add_issue_comment.call_args.args[3]
+        assert LABEL_AGENT_CUSTOM in comment_body
+        assert "custom coding agent" in comment_body
