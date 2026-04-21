@@ -241,7 +241,7 @@ class K8sAgentLauncher:
         if self._batch_api is not None:
             return self._batch_api
         try:
-            from kubernetes import client  # type: ignore[import-untyped]
+            from kubernetes import client  # type: ignore[import-not-found]
             from kubernetes import config as kube_config
         except ImportError as exc:
             raise K8sLauncherError(
