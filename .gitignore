@@ -49,3 +49,4 @@ src/caretaker/evolution/backends/mongo_backend.py
 
 # Claude Code local state
 .claude/
+.caretaker-memory*.db
