@@ -25,7 +25,7 @@ from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
 
 if TYPE_CHECKING:
-    from caretaker.state.models import OrchestratorState
+    from caretaker.state.models import OrchestratorState, RunSummary
 
 logger = logging.getLogger(__name__)
 
@@ -219,5 +219,5 @@ class PRReviewerAgent(BaseAgent):
         else:
             report.errors.append(f"claude-code dispatch failed for #{pr_number}")
 
-    def apply_summary(self, result: AgentResult, summary: Any) -> None:  # type: ignore[override]
+    def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         pass
