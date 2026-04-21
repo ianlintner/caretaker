@@ -63,6 +63,7 @@ function layout(subgraph: SubGraph): { nodes: FlowNode[]; edges: FlowEdge[] } {
   return { nodes: flowNodes, edges: flowEdges }
 }
 
+
 type TooltipState = {
   node: GraphNode
   x: number
@@ -78,6 +79,33 @@ function NodeTooltip({ state }: { state: TooltipState }) {
     <div
       className="fixed z-50 pointer-events-none"
       style={{ left: state.x + 14, top: state.y - 10 }}
+
+export default function Graph2DView({
+  subgraph,
+  onNodeClick,
+}: {
+  subgraph: SubGraph
+  onNodeClick?: (nodeId: string, nodeType: string) => void
+}) {
+  const { nodes, edges } = useMemo(() => layout(subgraph), [subgraph])
+
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_evt, node) => {
+      if (!onNodeClick) return
+      const original = subgraph.nodes.find((n) => n.id === node.id)
+      onNodeClick(node.id, original?.type ?? 'Unknown')
+    },
+    [onNodeClick, subgraph.nodes],
+  )
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      fitView
+      fitViewOptions={{ padding: 0.2 }}
+      minZoom={0.1}
+      onNodeClick={onNodeClick ? handleNodeClick : undefined}
     >
       <div
         style={{

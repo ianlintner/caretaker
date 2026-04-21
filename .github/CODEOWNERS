@@ -1,0 +1,11 @@
+# CODEOWNERS — auto-request reviewers on pull requests.
+#
+# Caretaker bot is listed as a reviewer for all files so it appears in the
+# "Reviewers" picker and can be requested by contributors. The bot uses its
+# own PR reviewer agent (pr_reviewer/) to post automated code reviews.
+#
+# See docs on CODEOWNERS:
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global fallback — caretaker reviews everything
+* @the-care-taker

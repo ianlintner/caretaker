@@ -13,6 +13,7 @@ from caretaker.issue_agent.adapter import IssueAgentAdapter
 from caretaker.migration_agent.agent import MigrationAgent
 from caretaker.perf_agent.agent import PerformanceAgent
 from caretaker.pr_agent.adapter import PRAgentAdapter
+from caretaker.pr_reviewer.agent import PRReviewerAgent
 from caretaker.principal_agent.agent import PrincipalAgent
 from caretaker.refactor_agent.agent import RefactorAgent
 from caretaker.review_agent.agent import ReviewAgent
@@ -44,6 +45,7 @@ ALL_ADAPTERS: list[type[BaseAgent]] = [
     RefactorAgent,
     PerformanceAgent,
     MigrationAgent,
+    PRReviewerAgent,
 ]
 
 # Maps agent name -> set of run modes that include it
@@ -65,11 +67,12 @@ AGENT_MODES: dict[str, set[str]] = {
     "refactor": {"full", "refactor"},
     "perf": {"full", "perf"},
     "migration": {"full", "migration"},
+    "pr-reviewer": {"full", "pr-only", "pr-reviewer"},
 }
 
 # Maps GitHub event types -> list of agent names to run
 EVENT_AGENT_MAP: dict[str, list[str]] = {
-    "pull_request": ["pr", "principal", "test", "perf"],
+    "pull_request": ["pr", "pr-reviewer", "principal", "test", "perf"],
     "pull_request_review": ["pr"],
     "check_run": ["pr"],
     "check_suite": ["pr"],
