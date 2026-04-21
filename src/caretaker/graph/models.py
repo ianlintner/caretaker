@@ -49,6 +49,13 @@ class NodeType(StrEnum):
     # per-repo data; queries against :GlobalSkill only ever see text
     # that has been run through the redactor.
     GLOBAL_SKILL = "GlobalSkill"
+    # ── Added in M5 of the memory-graph plan ────────────────────────────
+    # Per-agent working-memory node — one row per agent-run carrying the
+    # identity / active-goal / recent-action-ring payload described in
+    # §4.3. Written from the dispatch choke-point via the event-driven
+    # :class:`~caretaker.graph.writer.GraphWriter` so agents publish the
+    # fact they started a run without waiting on Neo4j.
+    AGENT_CORE_MEMORY = "AgentCoreMemory"
 
 
 class RelType(StrEnum):
@@ -83,21 +90,15 @@ class RelType(StrEnum):
     # tier-0 → tier-1 compaction pass learns a new skill.
     LEARNED_IN = "LEARNED_IN"
     # ── Added in M6 of the memory-graph plan ────────────────────────────
-    # Fleet-tier edges. ``PROMOTED_TO`` is the audit trail for a
-    # per-repo :Skill that passed the two-gate promotion (present in
-    # ≥ N repos + abstraction pass). ``SHARES_SKILL`` joins a tenant
-    # :Repo to the distilled :GlobalSkill so "which repos share this
-    # procedural skill" is a one-hop query. ``RUNS_AGENT`` + ``GOAL_HEALTH``
-    # are built from the fleet registry heartbeat payload
-    # (``enabled_agents`` and ``last_goal_health`` respectively); the
-    # heartbeat arrives asynchronously so these edges are the one
-    # authoritative place a caretaker backend learns which agents a
-    # consumer repo is actually running today and how its goals
-    # trended on its last run.
     PROMOTED_TO = "PROMOTED_TO"  # Skill → GlobalSkill
     SHARES_SKILL = "SHARES_SKILL"  # Repo → GlobalSkill
     RUNS_AGENT = "RUNS_AGENT"  # Repo → Agent
     GOAL_HEALTH = "GOAL_HEALTH"  # Repo → Goal (with {score, as_of})
+    # ── Added in M5 of the memory-graph plan ────────────────────────────
+    # Per-agent working memory (``:AgentCoreMemory`` → ``:Agent``) —
+    # mirrors the CoALA "working memory" scope. One edge per agent-run,
+    # replaced in-place so the "current core memory" stays at the head.
+    CORE_MEMORY_OF = "CORE_MEMORY_OF"
 
 
 class GraphNode(BaseModel):

@@ -90,51 +90,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Memory graph — M6: fleet graph + GlobalSkill promotion
+### Memory graph — M5: agent core memory + MCP memory adapter
 
-Sixth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
-§5). Projects the fleet-registry heartbeat payload into the graph and
-adds a two-gate, privacy-first promotion pipeline for cross-repo
-skills.
+Fifth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
+§4.3–§4.5). Agents now publish a per-run "core memory block" (CoALA
+working-memory scope) into the graph at dispatch time, the per-agent
+SQLite key-value store grows a shared cross-namespace query API, and
+three new HTTP endpoints give external MCP clients the same causal /
+skill / recent-action surface caretaker uses internally.
 
-- New `NodeType.GLOBAL_SKILL` label with uniqueness constraint in
-  `GraphStore.ensure_indexes` so the M7 fleet-overlay UI has a
-  stable join key.
-- New `RelType` values: `PROMOTED_TO` (Skill → GlobalSkill),
-  `SHARES_SKILL` (Repo → GlobalSkill), `RUNS_AGENT` (Repo → Agent),
-  `GOAL_HEALTH` (Repo → Goal, carrying `{score, as_of}`).
-- New `FleetConfig` block on `MaintainerConfig` (`fleet.share_skills:
-  bool = False`, `fleet.min_repos_for_promotion: int = 3`). Defaults
-  keep every consumer byte-identical; `share_skills = True` is the
-  explicit opt-in required before any cross-repo promotion runs.
-- New `src/caretaker/fleet/graph.py` with two entry points:
-  `sync_repos_to_graph(store, fleet_store)` merges a `:Repo` node +
-  RUNS_AGENT edges + a GOAL_HEALTH edge per known fleet client on
-  every admin refresh; `promote_global_skills(store, insight_store,
-  min_repos, *, share_skills)` groups `:Skill` nodes by signature
-  across tenants and promotes those seen in ≥ N distinct repos into
-  `:GlobalSkill` nodes after running the SOP text through the
-  abstraction pass.
-- New `src/caretaker/fleet/abstraction.py` with a pure-function
-  `abstract_sop(text, deny_list)` that strips four identifier
-  classes — GitHub `owner/name` repo slugs, `@handle` mentions,
-  `#123` PR/issue refs, and paths embedding a denylisted token — and
-  is idempotent by construction. Flagged as a best-effort redactor
-  (plan §5.4 territory): pairs with the per-repo `share_skills`
-  opt-in for privacy, not a substitute for it.
-- `admin.state_loader.build_refresh_task` calls `sync_repos_to_graph`
-  on every refresh tick and, when `fleet.share_skills=True`, runs
-  `promote_global_skills` at most once per 24h (tracked in the
-  closure alongside the existing `persistent_store` handle).
-- `AdminDataAccess` grows two accessor properties (`insight_store`,
-  `config`) so the refresh loop can thread through the skill store
-  + config block without reaching into private attributes.
-- 14 new tests in `tests/test_fleet_graph.py` cover the two-client
-  heartbeat → Repo+RUNS_AGENT+GOAL_HEALTH projection, the four
-  identifier classes + idempotence of the abstraction pass, the
-  `min_repos` gate, the `share_skills=False` block, the mandatory
-  abstraction on SOP text, tolerance of missing insight store, and
-  `FleetConfig` defaults / YAML round-trip.
+- New `NodeType.AGENT_CORE_MEMORY` + `RelType.CORE_MEMORY_OF` in
+  `src/caretaker/graph/models.py`, with a matching uniqueness
+  constraint in `GraphStore.ensure_indexes`.
+- New `src/caretaker/memory/core.py`: the `AgentCoreMemory` dataclass
+  plus a non-blocking `publish(...)` helper that enqueues one
+  `:AgentCoreMemory{id=acm:<agent>:<run_id>}` node and a
+  `[:CORE_MEMORY_OF]` edge back to `:Agent{id=agent:<name>}` through
+  the event-driven `GraphWriter`. Writes are upsert-only — `publish`
+  never deletes prior memory.
+- `AgentRegistry.run_one` wires `publish(...)` in immediately after
+  the M8 `agent_span(...)` context manager so one core-memory row
+  lands per agent-run, with no extra orchestrator plumbing and no IO
+  on the hot path.
+- `MemoryStore.query(namespace_glob, since, limit)` adds a shared
+  cross-namespace read path over SQLite's `GLOB` operator. Expired
+  rows are filtered out; results come back newest-first. A new
+  `MemoryStore.recent_keys(namespace, n)` helper returns the last
+  ``n`` keys for a single namespace, backed by a new
+  `idx_memory_ns_updated` composite index.
+- New `src/caretaker/mcp_backend/memory_tools.py`: three read-only
+  endpoints behind the existing OIDC `require_session` dependency —
+  `GET /api/mcp/memory/recent-actions`,
+  `GET /api/mcp/memory/causal-chain/{event_id}`, and
+  `GET /api/mcp/memory/skill-sop` — wired into the MCP backend
+  lifespan alongside the admin graph API. Each endpoint returns
+  `503` independently when its backing store is unset so a partially
+  configured replica still serves the rest.
+- New test modules `tests/test_memory_core.py`,
+  `tests/test_memory_store_query.py`, `tests/test_mcp_memory_tools.py`.
+
 
 
 ### Memory graph — M8: OTel GenAI span instrumentation

@@ -18,11 +18,45 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MemoryEntry:
+    """Single row returned by :meth:`MemoryStore.query`."""
+
+    namespace: str
+    key: str
+    value: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime | None
+
+
+def _parse_dt(value: str) -> datetime:
+    """Parse an ISO-formatted timestamp, forcing UTC when naive."""
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _row_to_entry(row: tuple[Any, ...]) -> MemoryEntry:
+    namespace, key, value, created_at, updated_at, expires_at = row
+    return MemoryEntry(
+        namespace=namespace,
+        key=key,
+        value=value,
+        created_at=_parse_dt(created_at),
+        updated_at=_parse_dt(updated_at),
+        expires_at=_parse_dt(expires_at) if expires_at is not None else None,
+    )
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS memory (
@@ -34,6 +68,7 @@ CREATE TABLE IF NOT EXISTS memory (
     expires_at  TEXT,
     PRIMARY KEY (namespace, key)
 );
+CREATE INDEX IF NOT EXISTS idx_memory_ns_updated ON memory(namespace, updated_at);
 """
 
 
@@ -148,6 +183,73 @@ class MemoryStore:
             ORDER BY updated_at DESC
             """,
             (namespace, now),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def query(
+        self,
+        namespace_glob: str,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[MemoryEntry]:
+        """Return entries whose namespace matches ``namespace_glob``.
+
+        Uses SQLite's ``GLOB`` operator for shell-style pattern matching
+        (e.g. ``pr-*`` matches every PR-agent namespace). Expired rows
+        are filtered out. The ``since`` cutoff compares against
+        ``updated_at`` so callers can tail the store without paging all
+        history. Ordered newest-first (``updated_at DESC``).
+
+        Args:
+            namespace_glob: SQLite GLOB pattern. ``"*"`` returns every
+                namespace; ``"pr-*"`` only the PR-prefixed ones.
+            since: Optional UTC cutoff — only rows with
+                ``updated_at > since`` are returned.
+            limit: Maximum number of rows to return (``> 0``).
+        """
+        if limit <= 0:
+            return []
+        now_iso = datetime.now(UTC).isoformat()
+        params: list[Any] = [namespace_glob, now_iso]
+        clauses = [
+            "namespace GLOB ?",
+            "(expires_at IS NULL OR expires_at > ?)",
+        ]
+        if since is not None:
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=UTC)
+            clauses.append("updated_at > ?")
+            params.append(since.isoformat())
+        where = " AND ".join(clauses)
+        query = (
+            "SELECT namespace, key, value, created_at, updated_at, expires_at "
+            "FROM memory "
+            f"WHERE {where} "
+            "ORDER BY updated_at DESC "
+            "LIMIT ?"
+        )
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [_row_to_entry(row) for row in rows]
+
+    def recent_keys(self, namespace: str, n: int = 10) -> list[str]:
+        """Return the last ``n`` keys in ``namespace`` by ``updated_at`` desc.
+
+        A thin helper over :meth:`list_keys` that caps the result size so
+        agents can tail their own ring buffer without paging the whole
+        namespace. Expired rows are filtered out.
+        """
+        if n <= 0:
+            return []
+        now = datetime.now(UTC).isoformat()
+        rows = self._conn.execute(
+            """
+            SELECT key FROM memory
+            WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (namespace, now, n),
         ).fetchall()
         return [row[0] for row in rows]
 
