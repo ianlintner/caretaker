@@ -174,6 +174,7 @@ def record_response_headers(response: httpx.Response) -> None:
     _blocked_until, remaining = parse_rate_limit_headers(response)
     if remaining is not None:
         _COOLDOWN.update_remaining(remaining)
+        _publish_rate_limit_metrics()
         if remaining <= _LOW_REMAINING_THRESHOLD:
             # Soft throttle: add a small blocking window so bursts don't
             # blow the rest of the budget in one run.
@@ -182,6 +183,7 @@ def record_response_headers(response: httpx.Response) -> None:
                 until,
                 reason=f"soft throttle: only {remaining} requests remain",
             )
+            _publish_rate_limit_metrics()
 
 
 def record_rate_limit_response(response: httpx.Response, *, status_code: int) -> float:
@@ -197,7 +199,34 @@ def record_rate_limit_response(response: httpx.Response, *, status_code: int) ->
         until,
         reason=f"HTTP {status_code} rate-limited",
     )
+    _publish_rate_limit_metrics()
     return until
+
+
+def _publish_rate_limit_metrics() -> None:
+    """Mirror the cooldown snapshot into the Prometheus gauges.
+
+    The import is deferred so that the ``rate_limit`` module stays
+    dependency-free when :mod:`caretaker.observability.metrics` is not
+    yet importable (e.g. during partial test collection).
+    """
+    try:
+        from caretaker.observability.metrics import (
+            set_rate_limit_cooldown,
+            set_rate_limit_remaining,
+        )
+    except Exception:  # pragma: no cover - observability must never cascade
+        return
+    try:
+        snap = _COOLDOWN.snapshot()
+        seconds_remaining = snap.get("seconds_remaining")
+        if isinstance(seconds_remaining, int | float):
+            set_rate_limit_cooldown("github", float(seconds_remaining))
+        last_remaining = snap.get("last_remaining")
+        if isinstance(last_remaining, int):
+            set_rate_limit_remaining("github", last_remaining)
+    except Exception:  # pragma: no cover
+        pass
 
 
 __all__ = [

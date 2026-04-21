@@ -23,6 +23,8 @@ import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.observability.metrics import timed_op
+
 if TYPE_CHECKING:
     import pymongo
     import pymongo.collection
@@ -170,6 +172,7 @@ class MongoEvolutionBackend:
 
     # ── Skill operations ──────────────────────────────────────────────────
 
+    @timed_op(db_system="mongo", operation="upsert_skill_success")
     def upsert_skill_success(self, skill_id: str, category: str, signature: str, sop: str) -> None:
         now = datetime.now(UTC)
         self._skills.update_one(
@@ -192,6 +195,7 @@ class MongoEvolutionBackend:
         )
         logger.debug("MongoEvolutionBackend: success upsert for %s/%s", category, signature)
 
+    @timed_op(db_system="mongo", operation="upsert_skill_failure")
     def upsert_skill_failure(self, skill_id: str, category: str, signature: str) -> None:
         now = datetime.now(UTC)
         self._skills.update_one(
@@ -256,6 +260,7 @@ class MongoEvolutionBackend:
 
     # ── Mutation operations ───────────────────────────────────────────────
 
+    @timed_op(db_system="mongo", operation="upsert_mutation")
     def upsert_mutation(self, mutation: Any) -> None:
         doc: dict[str, Any] = {
             "_id": mutation.id,

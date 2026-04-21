@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from caretaker.graph.models import GraphEdge, GraphNode, GraphStats, SubGraph
+from caretaker.observability.metrics import timed_op
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +69,14 @@ class GraphStore:
 
     # ── Write operations ──────────────────────────────────────────────────
 
+    @timed_op(db_system="neo4j", operation="merge_node")
     async def merge_node(self, label: str, node_id: str, properties: dict[str, Any]) -> None:
         """Create or update a node."""
         query = f"MERGE (n:{label} {{id: $id}}) SET n += $props"
         async with self._driver.session(database=self._database) as session:
             await session.run(query, id=node_id, props=properties)
 
+    @timed_op(db_system="neo4j", operation="merge_edge")
     async def merge_edge(
         self,
         source_label: str,
@@ -92,6 +95,7 @@ class GraphStore:
         async with self._driver.session(database=self._database) as session:
             await session.run(query, src_id=source_id, tgt_id=target_id, props=properties or {})
 
+    @timed_op(db_system="neo4j", operation="clear_all")
     async def clear_all(self) -> None:
         """Delete all nodes and relationships (use with caution)."""
         async with self._driver.session(database=self._database) as session:
@@ -141,6 +145,7 @@ class GraphStore:
 
     # ── Read operations ───────────────────────────────────────────────────
 
+    @timed_op(db_system="neo4j", operation="get_nodes")
     async def get_nodes(
         self,
         node_type: str | None = None,
