@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from caretaker.memory.core import AgentCoreMemory
 from caretaker.memory.core import publish as publish_core_memory
-from caretaker.observability import agent_span
+from caretaker.observability import agent_span, record_worker_job
 
 if TYPE_CHECKING:
     from caretaker.agent_protocol import AgentResult, BaseAgent
@@ -113,12 +114,30 @@ class AgentRegistry:
                     active_goal=getattr(summary, "primary_goal_id", None),
                 )
             )
+            _start = time.perf_counter()
+            outcome = "success"
             try:
                 result = await agent.execute(state, event_payload=event_payload)
                 agent.apply_summary(result, summary)
                 summary.errors.extend(result.errors)
+                if result.errors:
+                    outcome = "failure"
                 return result
             except Exception as exc:
+                outcome = "failure"
                 logger.error("%s agent error: %s", agent.name, exc, exc_info=True)
                 summary.errors.append(f"{agent.name}: {exc}")
                 return None
+            finally:
+                # Paved-path Prometheus worker metrics. Emits
+                # ``worker_jobs_total`` + ``worker_job_duration_seconds``
+                # with the agent name as the ``job`` label so per-agent
+                # success rates and p95 latency are dashboard-ready.
+                try:
+                    record_worker_job(
+                        job=agent.name,
+                        outcome=outcome,
+                        duration=time.perf_counter() - _start,
+                    )
+                except Exception:  # pragma: no cover - obs must never cascade
+                    logger.debug("worker metric emit failed", exc_info=True)

@@ -67,6 +67,22 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     except Exception:
         logger.debug("OpenTelemetry init skipped", exc_info=True)
 
+    # Prometheus metrics (paved-path SKILL §1-§10). RED-floor HTTP
+    # metrics + http_client_* + db_client_* + worker_* are emitted
+    # unconditionally; /metrics is served on a separate cluster-internal
+    # port (default 9090) so scraping never contends with user traffic.
+    try:
+        from caretaker.observability import init_metrics, start_metrics_server
+
+        init_metrics(application, service="caretaker-mcp")
+        metrics_port = int(os.environ.get("CARETAKER_METRICS_PORT", "9090"))
+        # Opt out by setting the port to 0 — useful for in-process
+        # tests that don't want a background asyncio server.
+        if metrics_port > 0:
+            application.state.metrics_server_task = start_metrics_server(port=metrics_port)
+    except Exception:
+        logger.warning("Prometheus metrics init failed", exc_info=True)
+
     # Unconditionally register the unauthenticated fleet-heartbeat
     # receiver so consumer caretaker runs can register themselves
     # regardless of whether the full admin dashboard is enabled on
@@ -261,6 +277,15 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await task
+
+    # Stop the metrics server side-car cleanly so tests that re-enter
+    # the lifespan don't leak a port binding.
+    try:
+        from caretaker.observability import stop_metrics_server
+
+        await stop_metrics_server()
+    except Exception:
+        logger.debug("Prometheus metrics server shutdown skipped", exc_info=True)
 
 
 app = FastAPI(

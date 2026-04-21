@@ -8,6 +8,18 @@ is a no-op when the SDK is missing or the endpoint is unset, so call
 sites never branch on availability.
 """
 
+from caretaker.observability.metrics import (
+    init_metrics,
+    record_error,
+    record_http_client,
+    record_worker_job,
+    set_rate_limit_cooldown,
+    set_rate_limit_remaining,
+    set_worker_queue_depth,
+    start_metrics_server,
+    stop_metrics_server,
+    timed_op,
+)
 from caretaker.observability.otel import (
     agent_span,
     current_span_ids,
@@ -17,5 +29,15 @@ from caretaker.observability.otel import (
 __all__ = [
     "agent_span",
     "current_span_ids",
+    "init_metrics",
     "init_tracing",
+    "record_error",
+    "record_http_client",
+    "record_worker_job",
+    "set_rate_limit_cooldown",
+    "set_rate_limit_remaining",
+    "set_worker_queue_depth",
+    "start_metrics_server",
+    "stop_metrics_server",
+    "timed_op",
 ]

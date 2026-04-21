@@ -17,6 +17,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from caretaker.observability.metrics import timed_op
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -71,6 +73,7 @@ class RedisDedup:
                     )
         return self._client
 
+    @timed_op(db_system="redis", operation="set_nx")
     async def is_new(self, delivery_id: str) -> bool:
         """Return ``True`` if this delivery id has not been seen before.
 

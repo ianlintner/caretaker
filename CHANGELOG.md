@@ -90,44 +90,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Memory graph — M5: agent core memory + MCP memory adapter
+### Observability — Prometheus metrics + cluster scrape config
 
-Fifth milestone of the memory-graph plan (`docs/memory-graph-plan.md`
-§4.3–§4.5). Agents now publish a per-run "core memory block" (CoALA
-working-memory scope) into the graph at dispatch time, the per-agent
-SQLite key-value store grows a shared cross-namespace query API, and
-three new HTTP endpoints give external MCP clients the same causal /
-skill / recent-action surface caretaker uses internally.
+Completes the observability side of the paved-path rollout. Caretaker's
+MCP backend now emits the RED-floor HTTP metrics, the outbound
+`http_client_*` counterpart for every GitHub call, the `db_client_*`
+family for Redis / MongoDB / Neo4j, and `worker_jobs_total` /
+`worker_job_duration_seconds` for agent dispatch — all on the curated
+§3 histogram buckets, all on a separate cluster-internal port so scrape
+never contends with user traffic.
 
-- New `NodeType.AGENT_CORE_MEMORY` + `RelType.CORE_MEMORY_OF` in
-  `src/caretaker/graph/models.py`, with a matching uniqueness
-  constraint in `GraphStore.ensure_indexes`.
-- New `src/caretaker/memory/core.py`: the `AgentCoreMemory` dataclass
-  plus a non-blocking `publish(...)` helper that enqueues one
-  `:AgentCoreMemory{id=acm:<agent>:<run_id>}` node and a
-  `[:CORE_MEMORY_OF]` edge back to `:Agent{id=agent:<name>}` through
-  the event-driven `GraphWriter`. Writes are upsert-only — `publish`
-  never deletes prior memory.
-- `AgentRegistry.run_one` wires `publish(...)` in immediately after
-  the M8 `agent_span(...)` context manager so one core-memory row
-  lands per agent-run, with no extra orchestrator plumbing and no IO
-  on the hot path.
-- `MemoryStore.query(namespace_glob, since, limit)` adds a shared
-  cross-namespace read path over SQLite's `GLOB` operator. Expired
-  rows are filtered out; results come back newest-first. A new
-  `MemoryStore.recent_keys(namespace, n)` helper returns the last
-  ``n`` keys for a single namespace, backed by a new
-  `idx_memory_ns_updated` composite index.
-- New `src/caretaker/mcp_backend/memory_tools.py`: three read-only
-  endpoints behind the existing OIDC `require_session` dependency —
-  `GET /api/mcp/memory/recent-actions`,
-  `GET /api/mcp/memory/causal-chain/{event_id}`, and
-  `GET /api/mcp/memory/skill-sop` — wired into the MCP backend
-  lifespan alongside the admin graph API. Each endpoint returns
-  `503` independently when its backing store is unset so a partially
-  configured replica still serves the rest.
-- New test modules `tests/test_memory_core.py`,
-  `tests/test_memory_store_query.py`, `tests/test_mcp_memory_tools.py`.
+- New `prometheus-client>=0.20` + `prometheus-fastapi-instrumentator>=7.0`
+  in the main dependency set (both are tiny, always-on — no extras
+  flag needed).
+- New `src/caretaker/observability/metrics.py` + templated-route HTTP
+  middleware + `/metrics` sidecar on `:9090`.
+- GitHub client, Neo4j, Mongo, Redis wrapped with `timed_op` emitting
+  `http_client_*` / `db_client_*`. Registry wraps each agent dispatch
+  with `worker_jobs_total` / `worker_job_duration_seconds`.
+- K8s manifests publish named port `metrics` + `prometheus.io/*`
+  scrape annotations + standard `app.kubernetes.io/*` labels.
+- `docs/metrics-plan.md` captures the phase-1 audit + cardinality budget.
+- 8 new tests in `tests/test_metrics.py` — RED counter increment,
+  histogram bucket pinning, templated route regression guard,
+  cardinality bound, `timed_op` success/failure outcomes.
+
 
 
 

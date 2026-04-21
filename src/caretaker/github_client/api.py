@@ -140,6 +140,14 @@ class GitHubClient:
         if cooldown.is_blocked():
             remaining = cooldown.seconds_remaining()
             snap = cooldown.snapshot()
+            # Short-circuited call still counts as a ratelimit error
+            # event for error-budget dashboards.
+            try:
+                from caretaker.observability.metrics import record_error
+
+                record_error("ratelimit")
+            except Exception:  # pragma: no cover - observability must never cascade
+                pass
             raise RateLimitError(
                 429,
                 f"Short-circuit: GitHub rate-limit cooldown still active "
@@ -147,7 +155,42 @@ class GitHubClient:
                 retry_after_seconds=remaining,
             )
 
-        resp = await client.request(method, path, **kwargs)
+        # Time the call for http_client_* metrics. The start timestamp
+        # is captured outside the try/except so network-level failures
+        # still produce a latency sample with status_code=0.
+        import time as _time
+
+        _start = _time.perf_counter()
+        status_code = 0
+        try:
+            resp = await client.request(method, path, **kwargs)
+            status_code = resp.status_code
+        except Exception:
+            try:
+                from caretaker.observability.metrics import record_error, record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=0,
+                    duration=_time.perf_counter() - _start,
+                )
+                record_error("upstream")
+            except Exception:  # pragma: no cover
+                pass
+            raise
+        else:
+            try:
+                from caretaker.observability.metrics import record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=status_code,
+                    duration=_time.perf_counter() - _start,
+                )
+            except Exception:  # pragma: no cover
+                pass
 
         # Always sample rate-limit headers — lets us soft-throttle before
         # the bucket hits zero.
