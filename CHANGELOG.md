@@ -2,7 +2,179 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-W17] — 2026-04-21
+
+- Agentic (#274)
+- prevent duplicate @copilot task comments from concurrent workflow runs (#276)
+- Resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
+- Remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
+- Self-heal: avoid env-noise “unknown error” titles by extracting from full job log (#286)
+- Improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
+- [WIP] Fix caretaker self-heal for unknown failure (#290)
+- Route Copilot wake-up comments through COPILOT_PAT identity (#292)
+- Self-heal: extract actionable unknown-failure messages from Actions logs (#293)
+- Add sync issue builder for client workflow/file reconciliation (#295)
+- [WIP] Add installation of Claude agent from improvement repo (#297)
+- address agent/orchestrator missed-goal patterns from workflow analysis (#298)
+- Handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
+- handle 422 "Reference already exists" gracefully in DocsAgent (#304)
+- handle 422 branch-already-exists gracefully (#306)
+- [WIP] Fix unknown caretaker failure with exit code 1 (#308)
+- handle 403 "not permitted to create PRs" as warning, not error (#310)
+- Multi-layer dedup to prevent duplicate issues for same CI failures (#314)
+- introduce goal-seeking subsystem with models and evaluation logic (#321)
+- [WIP] Implement simple memory storage for caretaker (#323)
+- Adjust image width in README (#324)
+- Optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
+- [WIP] Update docs and readme to reflect current features (#328)
+- implement workflow approval for action-required CI runs (#329)
+- implement ReviewAgent (#330)
+- Add Azure and MCP configuration options (#331)
+- reconcile CHANGELOG — 2026-W16 (#332)
+- implement authentication modes and update client logic (#333)
+- GitHub app (#334)
+- add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
+- [WIP] Update setup instructions for GitHub app and backend (#340)
+- point release manifest URL at ianlintner/caretaker (#341)
+- Update releases and docs to 0.5.2 (#343)
+- [WIP] Create a plan for enhancing coding tasks with skills and agents (#345)
+- skip changelog update if entry for the week already (#346)
+- [WIP] Update versioning system to reflect latest releases (#348)
+- Implement Azure backend with PostgreSQL, Redis, and MongoDB support (#349)
+- Fix bump-version CI failure and duplicate Copilot PR creation (#351)
+- Fix bump-version: use COPILOT_PAT for gh pr create in release.yml (#355)
+- bump version to 0.6.4 (#357)
+- update release workflow for improved version bump handling (#360)
+- add `environment: pypi` to release publish job for trusted publishing (#363)
+- bump version to 0.6.5 (#365)
+- add PYPI_API_TOKEN fallback and skip_existing to release publish job (#367)
+- Ghapps (#369)
+- bump version to 0.7.0 (#370)
+- remove environment from PyPI OIDC claim to match trusted publisher config (#376)
+- bump version to 0.7.1 (#377)
+- Fixes overexcited jobs (#378)
+- separate build output dir to prevent dist/ template files poisoning PyPI publish (#380)
+- enhance PyPI publishing with token and OIDC support (#382)
+- bump version to 0.7.2 (#383)
+- correct twine upload path from dist/* to dist-packages/* (#387)
+- Genetic (#389)
+- bump version to 0.8.0 (#390)
+- Enhance PR ownership management and PyPI publishing (#391)
+- Depo2 (#392)
+- Built a Foundry-backed coding executo (#393)
+- Enable Foundry executor (auto routing) (#394)
+- bump version to 0.8.2 (#395)
+- recognize AZURE_AI_API_KEY for Foundry availability (#396)
+- Add Claude Code GitHub Workflow (#397)
+- add 5 Opus-powered agents and refactor agents.py (#398)
+- FastAPI admin dashboard + React SPA + Neo4j graph + AKS deploy workflow (#399)
+- single caretaker status comment + configurable review gate (#403)
+- Sprint 1: PR-workflow noise reduction (A1b, B1, C1+C2+C3, D1+D2) (#404)
+- Sprint 2: comment idempotency, cooldowns, and self-heal storm cap (A3+A4, B2, C4) (#406)
+- Sprint 3: stuck-PR age gate + retry-window reset (E1+E3) (#407)
+- fall back to userinfo endpoint when ID token lacks email (#408)
+- diag(admin): log token_data + ID-token claim keys on missing email (#409)
+- handle GitHub 2500-comment limit on tracking issue; fix self-heal log auth (#411)
+- expand B3 markers + F3 chain-audit backend (#420)
+- dark mode + Grafana-inspired 2026 UI refresh (#421)
+- use correct caretaker-github distribution name (#422)
+- rename maintainer mode upgrade-only → upgrade (#423)
+- opt-in cross-repo client roster (#425)
+- label-based routing + expanded task allowlist (Phase 1) (#426)
+- Phase 2 — Claude Code hand-off executor (#427)
+- Phase 3 — on-demand Kubernetes worker (#428)
+- wire MCP ServiceAccount + agent-worker manifest (#429)
+- suspend agent-worker template Job + add e2e runbook (#430)
+- install llm-multi extra so Foundry executor is reachable (#432)
+- always ignore caretaker/pr-readiness in CI eval (self-deadlock) (#433)
+
 ## [Unreleased]
+
+### Custom coding agent — Phase 3: on-demand Kubernetes worker
+
+Third phase of the custom-coding-agent plan. The MCP backend can now
+spawn a short-lived `batch/v1 Job` per coding task, running caretaker's
+custom executor in an isolated pod on the existing AKS cluster rather
+than competing with the orchestrator's GitHub Actions minutes.
+
+- New `K8sAgentLauncher` in `src/caretaker/k8s_worker/launcher.py`:
+  pure-function `build_job_manifest()` synthesises the Job spec; the
+  launcher calls `BatchV1Api.create_namespaced_job` and records a
+  Redis-backed dedupe pointer so a retried submit inside the TTL
+  window returns the existing Job name instead of spawning a second
+  pod.
+- New admin endpoints (mounted when `executor.k8s_worker.enabled`):
+  * `POST /api/admin/agent-tasks {repo, issue_number, task_type, image?}`
+  * `GET  /api/admin/agent-tasks?limit=50`
+  Both gated behind the existing OIDC session.
+- New `K8sAgentWorkerConfig` on `MaintainerConfig.executor` — all
+  knobs (namespace, image, service account, TTL, deadlines, dedupe
+  window) off by default.
+- `kubernetes` Python client added as an **optional** dependency in
+  the new `k8s-worker` extras group. When not installed, the launcher
+  raises `K8sLauncherError` instead of `ImportError` so the admin
+  endpoints return a structured 503.
+- Manifest skeleton `infra/k8s/caretaker-agent-worker.yaml` (shipped
+  inert in Phase 1) is now the template the launcher clones per
+  dispatch.
+- Plan doc Phase-3 section updated to reflect shipped state.
+- Tests: 17 new cases covering config defaults, Job name and manifest
+  synthesis, dedupe, API dispatch happy-path, 400/503 error paths.
+  Full pytest 907 passed.
+
+### Custom coding agent — Phase 2: Claude Code hand-off executor
+
+Second phase of the custom-coding-agent plan. `ExecutorDispatcher` now
+routes to a second non-Copilot executor that hands tasks off to the
+upstream `anthropics/claude-code-action` workflow.
+
+- New `ClaudeCodeExecutor` (`src/caretaker/claude_code_executor.py`).
+  Conforms to the same `async run(task, pr) -> ExecutorResult` shape
+  as `FoundryExecutor` so the dispatcher treats it as a peer.
+  Dispatch model: post `@claude` mention comment + apply trigger
+  label; upstream workflow produces the fix asynchronously; existing
+  `<!-- caretaker:result -->` markers close the loop.
+- New `ClaudeCodeExecutorConfig` on `MaintainerConfig.executor`:
+  `enabled`, `trigger_label` (default `claude-code`), `mention`
+  (default `@claude`), `max_attempts` (default 2). Feature is off by
+  default; `executor.provider` extended to `copilot | foundry |
+  claude_code | auto`.
+- Dispatcher adds `RouteOutcome.CLAUDE_CODE`. `provider=auto` now
+  tries Claude Code when Foundry is ineligible but Claude Code is
+  enabled, before falling to Copilot. `agent:custom` label honours
+  whichever custom executor is currently active.
+- Attempt cap prevents ping-pong: executor counts prior hand-off
+  comments (marker `<!-- caretaker:claude-code-handoff -->`); beyond
+  `max_attempts` it escalates to Copilot.
+- Tests: 12 new cases, full pytest 890 passed.
+- Plan doc Phase-2 section updated to reflect shipped state.
+
+### Fleet Registry — opt-in cross-repo client roster
+
+New opt-in telemetry surface so an operator can see every
+caretaker-managed repository in one dashboard without running an
+org-wide GitHub crawl.
+
+- **Emitter** — at the end of each successful `caretaker run`, if
+  `fleet_registry.enabled: true` and `fleet_registry.endpoint` is set,
+  the orchestrator POSTs a small JSON heartbeat with the repo slug,
+  caretaker version, run mode, enabled agents, and 20 curated
+  `RunSummary` counters. HMAC-SHA256 signed with the optional
+  `CARETAKER_FLEET_SECRET` shared secret. Fail-open: network /
+  configuration errors log a warning and never fail the run.
+- **Backend** — new `POST /api/fleet/heartbeat` (unauthenticated, HMAC
+  verified when the backend also has `CARETAKER_FLEET_SECRET` set) and
+  `GET /api/admin/fleet`, `/api/admin/fleet/summary`,
+  `/api/admin/fleet/{owner}/{repo}` behind the existing OIDC gate.
+  First cut uses an async-safe in-memory `FleetRegistryStore` —
+  persistence can plug in later without changing the API.
+- **Dashboard** — new `/fleet` route with StatPanel strip (total,
+  stale >7d, version mix, opt-in status) + hairline DataTable of every
+  known client.
+- **Opt-in, off by default.** No heartbeat unless both `enabled` and
+  `endpoint` are set; caretaker never phones home.
+- **Docs** — `docs/fleet-registry.md` walks through configuration,
+  operation, payload shape, and design notes.
 
 ### Sprint B3 + F3 — causal-chain audit trail
 
@@ -38,93 +210,6 @@ filed — what sequence of runs produced it?"
 Status comments intentionally skipped: `upsert_status_comment` uses a
 strict body-equality idempotency check, so a fresh run-scoped marker
 on every cycle would break the skip-if-unchanged path.
-
-
-## [2026-W17] — 2026-04-20
-
-- handle 403 rate-limit errors and guard state load against unhandled crash (#244)
-- docs build no longer fails on configure-pages API errors (#256)
-- remove committed site/ build artifacts; add CodeQL exclusion config (#259)
-- guard FailureType → TaskType conversion against unmapped values (#263)
-- treat 405/409/422 merge rejections as waiting, not errors (#265)
-- fix CI failure on main for Analyze (javascript-typescript) (#268)
-- replace dynamic CodeQL javascript-typescript scan with explicit Python-only workflow (#269)
-- group related issues/PRs by workflow run_id (#272)
-- introduce agent protocol abstraction (BaseAgent, AgentContext, AgentResult) with registry type-safety improvements (#274)
-- prevent duplicate @copilot task comments from concurrent workflow runs (#276)
-- resolve CodeQL `Analyze (python)` failure by removing conflicting advanced workflow (#279)
-- remove conflicting advanced CodeQL workflow causing `Analyze (python)` failures on `main` (#283)
-- self-heal: avoid env-noise "unknown error" titles by extracting from full job log (#286)
-- improve self-heal unknown failure extraction to avoid environment-noise issue titles (#288)
-- fix caretaker self-heal for unknown failure with exit code 1 (#290)
-- route Copilot wake-up comments through COPILOT_PAT identity (#292)
-- self-heal: extract actionable unknown-failure messages from Actions logs (#293)
-- add sync issue builder for client workflow/file reconciliation (#295)
-- add installation of Claude agent from improvement repo (#297)
-- address agent/orchestrator missed-goal patterns from workflow analysis (#298)
-- handle mixed naive/aware datetimes in orchestrator reconciliation (#300)
-- handle 422 "Reference already exists" gracefully in DocsAgent (#304)
-- handle 422 branch-already-exists gracefully (#306)
-- fix unknown caretaker failure with exit code 1 (#308)
-- handle 403 "not permitted to create PRs" as warning, not error (#310)
-- multi-layer dedup to prevent duplicate issues for same CI failures (#314)
-- introduce goal-seeking subsystem with models and evaluation logic (#321)
-- implement simple memory storage for caretaker (#323)
-- adjust image width in README (#324)
-- optimize GitHub API calls: PR-number fast path + in-process read cache (#326)
-- update docs and readme to reflect current features (#328)
-- implement workflow approval for action-required CI runs (#329)
-- implement ReviewAgent (#330)
-- add Azure and MCP configuration options (#331)
-- reconcile CHANGELOG — 2026-W16 (#332)
-- implement authentication modes and update client logic (#333)
-- add GitHub App support: JWT signing, installation token minting, webhook verification, and docs agent robustness improvements (#334)
-- add missing CheckStatus values and prevent docs agent 409 on stale branch (#336)
-- update setup instructions for GitHub app and backend (#340)
-- point release manifest URL at ianlintner/caretaker (#341)
-- update releases and docs to 0.5.2 (#343)
-- create a plan for enhancing coding tasks with skills and agents (#345)
-- skip changelog update if entry for the week already exists (#346)
-- update versioning system to reflect latest releases (#348)
-- implement Azure backend with PostgreSQL, Redis, and MongoDB support (#349)
-- fix bump-version CI failure and duplicate Copilot PR creation (#351)
-- fix bump-version: use COPILOT_PAT for gh pr create in release.yml (#355)
-- bump version to 0.6.4 (#357)
-- update release workflow for improved version bump handling (#360)
-- add `environment: pypi` to release publish job for trusted publishing (#363)
-- bump version to 0.6.5 (#365)
-- add PYPI_API_TOKEN fallback and skip_existing to release publish job (#367)
-- add GitHub App authentication with credentials provider abstraction and dynamic token selection (#369)
-- bump version to 0.7.0 (#370)
-- remove environment from PyPI OIDC claim to match trusted publisher config (#376)
-- bump version to 0.7.1 (#377)
-- fix overexcited jobs: throttle CI trigger conditions to reduce redundant workflow runs (#378)
-- separate build output dir to prevent dist/ template files poisoning PyPI publish (#380)
-- enhance PyPI publishing with token and OIDC support (#382)
-- bump version to 0.7.2 (#383)
-- correct twine upload path from dist/* to dist-packages/* (#387)
-- add evolutionary self-improvement engine (evolver, mutator, crystallizer, planner, reflection) (#389)
-- bump version to 0.8.0 (#390)
-- enhance PR ownership management and PyPI publishing (#391)
-- rename PyPI package from `caretaker` to `caretaker-github` (#392)
-- build Foundry-backed coding executor with LLM tool-loop, git worktree workspace, and zero-default-change integration (#393)
-- enable Foundry executor with automatic Copilot fallback routing (#394)
-- bump version to 0.8.2 (#395)
-- recognize AZURE_AI_API_KEY for Foundry availability (#396)
-- add Claude Code GitHub workflow (#397)
-- add 5 Opus-powered agents and refactor agents.py (#398)
-- FastAPI admin dashboard + React SPA + Neo4j graph + AKS deploy workflow (#399)
-- single caretaker status comment + configurable review gate (#403)
-- PR-workflow noise reduction: one-shot comment compaction, dispatch-guard tightening, non-actionable CI skip, upgrade dedup (#404)
-- comment idempotency, cooldowns, and self-heal storm cap: upsert helpers, per-event concurrency, escalation cooldowns (#406)
-- stuck-PR age gate + retry-window reset: `stuck_age_hours` escalation and `retry_window_hours` copilot-attempt reset (#407)
-- fall back to userinfo endpoint when ID token lacks email (#408)
-- log token_data and ID-token claim keys on missing email for admin diagnostics (#409)
-- handle GitHub 2500-comment limit on tracking issue; fix self-heal log auth (#411)
-- expand causal markers (B3) and add chain-audit backend with walk/descendants endpoints (F3) (#420)
-- dark mode + Grafana-inspired 2026 UI refresh for admin dashboard (#421)
-- use correct caretaker-github distribution name (#422)
-- rename maintainer mode `upgrade-only` to `upgrade` (#423)
 
 ## [0.10.0] - 2026-04-19
 
