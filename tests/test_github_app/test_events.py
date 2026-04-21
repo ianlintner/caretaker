@@ -10,7 +10,9 @@ from caretaker.github_app.events import (
 
 
 def test_pull_request_routes_to_pr_agent() -> None:
-    assert agents_for_event("pull_request") == ["pr"]
+    agents = agents_for_event("pull_request")
+    assert "pr" in agents
+    assert "pr-reviewer" in agents
 
 
 def test_workflow_run_routes_to_devops_self_heal_and_pr() -> None:
@@ -43,14 +45,15 @@ def test_unknown_event_returns_empty_list() -> None:
 
 
 def test_event_names_are_normalized() -> None:
-    assert agents_for_event("  Pull_Request ") == ["pr"]
+    assert "pr" in agents_for_event("  Pull_Request ")
     assert normalize_event_name("  PUSH\n") == "push"
 
 
 def test_mapping_is_not_aliased_across_calls() -> None:
     first = agents_for_event("pull_request")
+    original_len = len(first)
     first.append("mutated")
-    assert agents_for_event("pull_request") == ["pr"]
+    assert len(agents_for_event("pull_request")) == original_len
 
 
 def test_map_is_well_formed() -> None:

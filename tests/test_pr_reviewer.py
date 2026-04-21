@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from caretaker.config import PRReviewerConfig
 from caretaker.pr_reviewer.inline_reviewer import InlineReviewComment, ReviewResult
-from caretaker.pr_reviewer.routing import RoutingDecision, decide
-
+from caretaker.pr_reviewer.routing import decide
 
 # ── routing tests ──────────────────────────────────────────────────────────
 
@@ -141,7 +140,8 @@ async def test_inline_review_success() -> None:
     mock_llm.claude.complete = AsyncMock(return_value=mock_response)
 
     mock_github = MagicMock()
-    mock_github.get_pull_diff = AsyncMock(return_value="--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y")
+    diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y"
+    mock_github.get_pull_diff = AsyncMock(return_value=diff)
 
     from caretaker.pr_reviewer.inline_reviewer import review
 
