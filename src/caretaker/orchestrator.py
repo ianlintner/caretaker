@@ -506,6 +506,17 @@ class Orchestrator:
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
 
+        # Opt-in fleet-registry heartbeat. Fail-open: the emitter logs
+        # and swallows any error so a missing / misconfigured endpoint
+        # can never fail the orchestrator run.
+        if self._config.fleet_registry.enabled:
+            try:
+                from caretaker.fleet import emit_heartbeat
+
+                await emit_heartbeat(self._config, summary)
+            except Exception as e:
+                logger.warning("Fleet heartbeat failed: %s", e)
+
         # Save memory store snapshot (for artifact upload / rollback)
         if self._memory is not None:
             self._memory.prune_expired()

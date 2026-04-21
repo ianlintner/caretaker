@@ -12,6 +12,7 @@ import Memory from '@/pages/Memory'
 import Skills from '@/pages/Skills'
 import Agents from '@/pages/Agents'
 import Graph from '@/pages/Graph'
+import Fleet from '@/pages/Fleet'
 import Config from '@/pages/Config'
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
               <Route path="/skills" element={<Skills />} />
               <Route path="/agents" element={<Agents />} />
               <Route path="/graph" element={<Graph />} />
+              <Route path="/fleet" element={<Fleet />} />
               <Route path="/config" element={<Config />} />
             </Route>
           </Routes>

@@ -56,6 +56,19 @@ _ADMIN_STATIC_DIR = Path(__file__).resolve().parent.parent / "admin" / "static"
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     """App lifespan: initialise admin dashboard if configured."""
+    # Unconditionally register the unauthenticated fleet-heartbeat
+    # receiver so consumer caretaker runs can register themselves
+    # regardless of whether the full admin dashboard is enabled on
+    # this backend instance. The corresponding *admin* list endpoints
+    # are mounted inside the admin branch below.
+    try:
+        from caretaker.fleet import public_router as fleet_public_router
+
+        application.include_router(fleet_public_router)
+        logger.info("Fleet registry heartbeat endpoint enabled")
+    except Exception:
+        logger.warning("Failed to initialise fleet heartbeat endpoint", exc_info=True)
+
     admin_enabled = os.environ.get("CARETAKER_ADMIN_ENABLED", "").lower() in ("1", "true", "yes")
 
     if admin_enabled:
@@ -99,6 +112,18 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
 
             application.include_router(admin_auth.router)
             application.include_router(admin_api.router)
+
+            # Fleet registry — authenticated list endpoints for the
+            # admin dashboard. The public heartbeat receiver is
+            # registered below (outside the admin gate) so consumer CI
+            # runners can post without a session cookie.
+            try:
+                from caretaker.fleet import admin_router as fleet_admin_router
+
+                application.include_router(fleet_admin_router)
+                logger.info("Fleet registry admin API enabled")
+            except Exception:
+                logger.warning("Failed to initialise fleet admin API", exc_info=True)
 
             # Mount graph API if Neo4j is configured
             neo4j_url = os.environ.get("NEO4J_URL", "")
