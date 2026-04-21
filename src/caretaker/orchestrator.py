@@ -363,13 +363,13 @@ class Orchestrator:
         _cooldown = get_cooldown()
         if _cooldown.is_blocked():
             remaining = _cooldown.seconds_remaining()
-            snap = _cooldown.snapshot()
+            cooldown_snap = _cooldown.snapshot()
             logger.warning(
                 "Orchestrator deferring: GitHub rate-limit cooldown still active "
                 "(%.0fs remaining, reason=%s). Exiting cleanly so the next "
                 "scheduled run picks up after the window closes.",
                 remaining,
-                snap.get("reason"),
+                cooldown_snap.get("reason"),
             )
             return 0
 
