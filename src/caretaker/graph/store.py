@@ -46,6 +46,11 @@ class GraphStore:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:AuditEvent) REQUIRE e.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Mutation) REQUIRE m.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:CausalEvent) REQUIRE c.id IS UNIQUE",
+            # M3: tenant + attribution node constraints.
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Repo) REQUIRE r.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Comment) REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (cr:CheckRun) REQUIRE cr.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:Executor) REQUIRE e.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:

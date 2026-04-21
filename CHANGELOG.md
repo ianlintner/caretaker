@@ -90,6 +90,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Memory graph — M3: tenant scoping + new node types
+
+Third milestone of the memory-graph plan. The graph gains a dedicated
+`:Repo` tenant anchor, three attribution node types that were sitting
+in the plan waiting for a home, and a `repo` scalar on every node so
+cypher queries can scope by tenant in a single `WHERE n.repo = $repo`
+clause.
+
+- New `NodeType` values: `REPO`, `COMMENT`, `CHECK_RUN`, `EXECUTOR`.
+  Uniqueness constraints shipped for each label in
+  `GraphStore.ensure_indexes`.
+- `GraphBuilder.full_sync` now takes an `owner/name` slug via a new
+  `repo=` kwarg (defaults to `"unknown/unknown"` for legacy callers),
+  merges a single `:Repo` node first, and stamps `repo=<slug>` onto
+  every downstream node merge (`:Agent`, `:PR`, `:Issue`, `:Goal`,
+  `:Run`, `:Skill`, `:CausalEvent`, and the synthetic `goal:overall`).
+- PR attribution: when `TrackedPR.owned_by` is one of `copilot`,
+  `foundry`, `claude_code` the builder mints an `:Executor{provider}`
+  node plus a `(PR)-[:HANDLED_BY {valid_from}]->(Executor)` edge
+  (bitemporal, using `ownership_acquired_at` when known). The default
+  `"caretaker"` ownership — i.e. no external delegation — is skipped
+  so queries like "which executor fixed this PR" don't have to filter
+  the self-ownership case.
+- `CheckRun` node emission deferred to M5 alongside the live event
+  feed — `TrackedPR` carries only a `ci_attempts` counter, so the
+  per-check metadata the schema calls for isn't available from state
+  alone. Label + constraint are shipped now so M5 can merge straight
+  in.
+- `admin.state_loader.build_refresh_task` now passes the actual
+  `owner/name` slug through to the builder so the admin reconciliation
+  loop produces a tenant-scoped subgraph in Neo4j.
+- 7 new tests in `tests/test_graph_builder_m3.py` cover Repo-node
+  merge with a real slug, the `unknown/unknown` fallback, tenant
+  `repo` scalar on every node, Executor + HANDLED_BY for each of the
+  three external providers, and the no-executor case for
+  `owned_by="caretaker"`.
+
 ### Memory graph — M2: missing edges + bitemporal edge properties
 
 Second milestone of the memory-graph plan. The writer + builder now

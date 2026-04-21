@@ -77,6 +77,16 @@ _MODE_TO_AGENTS: dict[str, tuple[str, ...]] = {
 }
 
 
+# M3: ``owned_by`` values in :class:`TrackedPR` are free-form strings, but
+# in the wild they collapse to one of four constants: ``copilot``,
+# ``foundry``, ``claude_code`` (external executors), and ``caretaker``
+# (the orchestrator itself — i.e. no delegation). Only the first three
+# are modelled as :class:`NodeType.EXECUTOR` nodes with a ``HANDLED_BY``
+# edge; ``caretaker`` and any unknown value is treated as "no executor"
+# so we don't pollute the graph with spurious self-loops.
+_EXECUTOR_PROVIDERS: frozenset[str] = frozenset({"copilot", "foundry", "claude_code"})
+
+
 class GraphBuilder:
     """Populates the Neo4j graph from caretaker data sources."""
 
@@ -88,8 +98,17 @@ class GraphBuilder:
         state: OrchestratorState,
         insight_store: Any | None = None,
         causal_store: CausalEventStore | None = None,
+        repo: str | None = None,
     ) -> dict[str, int]:
-        """Perform a full graph sync.  Returns counts of created entities."""
+        """Perform a full graph sync.  Returns counts of created entities.
+
+        ``repo`` is the ``owner/name`` slug for the tenant being synced.
+        When provided, a dedicated ``:Repo`` node is merged and every
+        other node gains a ``repo`` scalar so cypher queries can scope
+        by tenant (M3 of the memory-graph plan). Defaults to
+        ``"unknown/unknown"`` so the builder stays callable from legacy
+        call sites that have not yet been threaded with the slug.
+        """
         counts: dict[str, int] = {
             "agents": 0,
             "prs": 0,
@@ -98,10 +117,24 @@ class GraphBuilder:
             "skills": 0,
             "runs": 0,
             "causal_events": 0,
+            "executors": 0,
             "edges": 0,
         }
 
         await self._store.ensure_indexes()
+
+        # 0. Tenant Repo node. Every other node merged below carries
+        # ``repo=<slug>`` so the whole per-tenant subgraph is scopable.
+        # Callers that haven't yet been plumbed with the slug get the
+        # ``unknown/unknown`` placeholder — easier to detect in prod
+        # than silently dropping the scope property.
+        repo_slug = repo or "unknown/unknown"
+        repo_id = f"repo:{repo_slug}"
+        await self._store.merge_node(
+            NodeType.REPO,
+            repo_id,
+            {"slug": repo_slug, "repo": repo_slug},
+        )
 
         # 1. Agents
         for agent_name, modes in AGENT_MODES.items():
@@ -113,6 +146,7 @@ class GraphBuilder:
                     "name": agent_name,
                     "modes": list(modes),
                     "events": events,
+                    "repo": repo_slug,
                 },
             )
             counts["agents"] += 1
@@ -132,6 +166,7 @@ class GraphBuilder:
                     "ci_attempts": pr.ci_attempts,
                     "fix_cycles": pr.fix_cycles,
                     "escalated": pr.escalated,
+                    "repo": repo_slug,
                 },
             )
             counts["prs"] += 1
@@ -147,6 +182,47 @@ class GraphBuilder:
                 )
                 counts["edges"] += 1
 
+            # M3: PR → Executor attribution. ``owned_by`` narrows to one
+            # of the known providers before we merge an :Executor node;
+            # ``caretaker`` (self) and unknown values skip the edge so
+            # queries like "which executor fixed this PR" don't have to
+            # filter out the default no-delegation case.
+            if pr.owned_by in _EXECUTOR_PROVIDERS:
+                executor_id = f"executor:{pr.owned_by}"
+                await self._store.merge_node(
+                    NodeType.EXECUTOR,
+                    executor_id,
+                    {
+                        "provider": pr.owned_by,
+                        "repo": repo_slug,
+                    },
+                )
+                counts["executors"] += 1
+                # Use ownership_acquired_at when known so ``valid_from``
+                # marks when this executor actually took the PR, not
+                # when the sync happened to notice.
+                acquired = (
+                    pr.ownership_acquired_at.isoformat() if pr.ownership_acquired_at else None
+                )
+                await self._store.merge_edge(
+                    NodeType.PR,
+                    pr_id,
+                    NodeType.EXECUTOR,
+                    executor_id,
+                    RelType.HANDLED_BY,
+                    _bitemporal(valid_from=acquired),
+                )
+                counts["edges"] += 1
+
+            # NOTE: ``:CheckRun`` node emission (name / conclusion /
+            # run_id / PR→CheckRun edge) lives with the live event
+            # feed planned for M5 — :class:`TrackedPR` tracks
+            # ``ci_attempts`` as a counter but doesn't carry the
+            # per-check metadata the schema calls for, so synthesising
+            # one here would mean inventing data. Skipped
+            # intentionally; the constraint + NodeType are shipped
+            # now so the M5 writer has something to merge into.
+
         # 3. Tracked Issues
         for number, issue in state.tracked_issues.items():
             issue_id = f"issue:{number}"
@@ -158,6 +234,7 @@ class GraphBuilder:
                     "state": issue.state,
                     "classification": issue.classification,
                     "escalated": issue.escalated,
+                    "repo": repo_slug,
                 },
             )
             counts["issues"] += 1
@@ -203,7 +280,7 @@ class GraphBuilder:
         await self._store.merge_node(
             NodeType.GOAL,
             "goal:overall",
-            {"name": "overall", "aggregate": True},
+            {"name": "overall", "aggregate": True, "repo": repo_slug},
         )
         counts["goals"] += 1
         for goal_id, snapshots in state.goal_history.items():
@@ -216,6 +293,7 @@ class GraphBuilder:
                     "score": latest.score if latest else 0.0,
                     "status": latest.status if latest else "unknown",
                     "history_length": len(snapshots),
+                    "repo": repo_slug,
                 },
             )
             counts["goals"] += 1
@@ -259,6 +337,7 @@ class GraphBuilder:
                     "goal_health": run.goal_health if run.goal_health is not None else 0.0,
                     "escalation_rate": run.escalation_rate,
                     "valid_from": run_at_iso,
+                    "repo": repo_slug,
                 },
             )
             counts["runs"] += 1
@@ -313,6 +392,7 @@ class GraphBuilder:
                             "confidence": skill.confidence,
                             "success_count": skill.success_count,
                             "fail_count": skill.fail_count,
+                            "repo": repo_slug,
                         },
                     )
                     counts["skills"] += 1
@@ -349,6 +429,7 @@ class GraphBuilder:
                         "ref_kind": event.ref.kind,
                         "ref_number": event.ref.number if event.ref.number is not None else 0,
                         "observed_at": event.observed_at.isoformat() if event.observed_at else "",
+                        "repo": repo_slug,
                     },
                 )
                 counts["causal_events"] += 1
@@ -370,7 +451,7 @@ class GraphBuilder:
 
         logger.info(
             "Graph sync complete: %d agents, %d PRs, %d issues, %d goals, "
-            "%d skills, %d runs, %d causal events, %d edges",
+            "%d skills, %d runs, %d causal events, %d executors, %d edges",
             counts["agents"],
             counts["prs"],
             counts["issues"],
@@ -378,6 +459,7 @@ class GraphBuilder:
             counts["skills"],
             counts["runs"],
             counts["causal_events"],
+            counts["executors"],
             counts["edges"],
         )
         return counts
