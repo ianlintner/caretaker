@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   ReactFlow,
   Background,
@@ -6,21 +6,11 @@ import {
   MiniMap,
   type Node as FlowNode,
   type Edge as FlowEdge,
+  type NodeMouseHandler,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { SubGraph } from '@/lib/types'
-
-const NODE_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  Agent: { bg: '#ddd6fe', border: '#7c3aed', text: '#4c1d95' },
-  PR: { bg: '#d1fae5', border: '#059669', text: '#064e3b' },
-  Issue: { bg: '#fee2e2', border: '#dc2626', text: '#7f1d1d' },
-  Goal: { bg: '#fef3c7', border: '#d97706', text: '#78350f' },
-  Skill: { bg: '#dbeafe', border: '#2563eb', text: '#1e3a8a' },
-  Run: { bg: '#e5e7eb', border: '#6b7280', text: '#1f2937' },
-  AuditEvent: { bg: '#f3e8ff', border: '#a855f7', text: '#581c87' },
-  Mutation: { bg: '#fce7f3', border: '#db2777', text: '#831843' },
-  Unknown: { bg: '#f4f4f5', border: '#a1a1aa', text: '#27272a' },
-}
+import { NODE_COLOR_MAP } from '@/lib/nodeColors'
 
 function layout(subgraph: SubGraph): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const byType = new Map<string, { id: string; label: string }[]>()
@@ -44,7 +34,7 @@ function layout(subgraph: SubGraph): { nodes: FlowNode[]; edges: FlowEdge[] } {
   })
 
   const flowNodes: FlowNode[] = subgraph.nodes.map((n) => {
-    const color = NODE_COLORS[n.type] || NODE_COLORS.Unknown
+    const color = NODE_COLOR_MAP[n.type] ?? NODE_COLOR_MAP.Unknown
     return {
       id: n.id,
       position: positions.get(n.id) || { x: 0, y: 0 },
@@ -73,8 +63,24 @@ function layout(subgraph: SubGraph): { nodes: FlowNode[]; edges: FlowEdge[] } {
   return { nodes: flowNodes, edges: flowEdges }
 }
 
-export default function Graph2DView({ subgraph }: { subgraph: SubGraph }) {
+export default function Graph2DView({
+  subgraph,
+  onNodeClick,
+}: {
+  subgraph: SubGraph
+  onNodeClick?: (nodeId: string, nodeType: string) => void
+}) {
   const { nodes, edges } = useMemo(() => layout(subgraph), [subgraph])
+
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_evt, node) => {
+      if (!onNodeClick) return
+      const original = subgraph.nodes.find((n) => n.id === node.id)
+      onNodeClick(node.id, original?.type ?? 'Unknown')
+    },
+    [onNodeClick, subgraph.nodes],
+  )
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -82,6 +88,7 @@ export default function Graph2DView({ subgraph }: { subgraph: SubGraph }) {
       fitView
       fitViewOptions={{ padding: 0.2 }}
       minZoom={0.1}
+      onNodeClick={onNodeClick ? handleNodeClick : undefined}
     >
       <Background gap={16} />
       <Controls />

@@ -3,18 +3,7 @@ import ForceGraph3D, {
   type ForceGraphMethods,
 } from 'react-force-graph-3d'
 import type { SubGraph } from '@/lib/types'
-
-const NODE_COLORS: Record<string, string> = {
-  Agent: '#7c3aed',
-  PR: '#059669',
-  Issue: '#dc2626',
-  Goal: '#d97706',
-  Skill: '#2563eb',
-  Run: '#6b7280',
-  AuditEvent: '#a855f7',
-  Mutation: '#db2777',
-  Unknown: '#a1a1aa',
-}
+import { NODE_HEX } from '@/lib/nodeColors'
 
 type FGNode = {
   id: string
@@ -70,7 +59,7 @@ export default function Graph3DView({
       height={height}
       backgroundColor="rgba(0,0,0,0)"
       nodeLabel="label"
-      nodeColor={(n) => NODE_COLORS[(n as FGNode).type] || NODE_COLORS.Unknown}
+      nodeColor={(n) => NODE_HEX[(n as FGNode).type] || NODE_HEX.Unknown}
       nodeOpacity={0.95}
       nodeResolution={12}
       linkLabel="type"
