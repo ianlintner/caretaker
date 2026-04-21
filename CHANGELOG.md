@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **PR Reviewer Agent** — dual-path automated code reviewer that activates when `pr_reviewer.enabled = true`:
+  - **Routing engine** (`pr_reviewer/routing.py`): scores each PR 0–100 from LOC, file count, sensitive-file patterns (workflows, auth, migrations, infra), cross-package breadth, and label signals. Score ≥ threshold (default 40) → complex path; score < threshold → fast path.
+  - **Inline LLM reviewer** (`pr_reviewer/inline_reviewer.py`): fetches the unified diff, calls the configured LLM, returns a structured `ReviewResult` (summary + verdict + per-line inline comments); posts directly as a GitHub pull-request review event (APPROVE / COMMENT / REQUEST_CHANGES).
+  - **Claude Code hand-off** (`pr_reviewer/claude_code_reviewer.py`): for complex PRs applies the `claude-code` trigger label and posts a structured `@claude` mention comment; the `anthropics/claude-code-action` workflow handles the full review asynchronously.
+  - New `PRReviewerConfig` in `config.py` (opt-in, `enabled = false` default): `routing_threshold`, `max_diff_lines`, `post_inline_comments`, `skip_draft`, `skip_labels`, `review_event`, `claude_code_label`/`claude_code_mention`.
+  - New GitHub API methods: `get_pull_diff()` (vnd.github.diff accept header), `create_review()` (POST pulls/{n}/reviews with inline comments), `request_reviewers()` (POST pulls/{n}/requested_reviewers).
+  - `PRReviewerAgent` registered in the agent registry under mode `pr-reviewer`; `pull_request` events in both `github_app/events.py` and `agents/_registry_data.py` now route to it.
+  - `.github/CODEOWNERS` — `* @the-care-taker` so the bot appears in the PR reviewer picker.
+
 - **M7 — Graph UI v2**: Five-tab admin graph page replacing the single explorer view.
   - **Explorer** tab: existing 2D/3D subgraph view with extended node-type filter list covering all M3–M6 node types (Repo, Comment, CheckRun, Executor, RunSummaryWeek, GlobalSkill, AgentCoreMemory).
   - **Timeline** tab: recharts run-history sparkline + scrollable run list on the left; click any run to load its N-hop Neo4j neighbourhood on the right. Depth selector (1–3).
