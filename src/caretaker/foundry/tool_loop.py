@@ -14,7 +14,6 @@ iteration.  Termination conditions:
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -99,30 +98,22 @@ async def run_tool_loop(
         if response.cost_usd is not None:
             total_cost = (total_cost or 0.0) + response.cost_usd
 
-        # Append the assistant turn.
-        if response.raw_message is not None:
-            messages.append(response.raw_message)
-        else:
-            # Defensive: build a minimal assistant message. Models that return
-            # only text are handled by the text-only branch below.
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.text or None,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ]
-                    or None,
-                }
+        # Append the assistant turn verbatim. Providers that implement
+        # ``complete_with_tools`` MUST populate ``raw_message`` with a
+        # provider-native message dict (OpenAI function-calling shape for
+        # LiteLLM/OpenAI-compatible backends, Anthropic tool_use content-block
+        # shape for native Anthropic backends, etc.). Rebuilding the assistant
+        # turn here was previously hard-coded to OpenAI shape and would produce
+        # a 400 on the next request when the provider expected Anthropic
+        # tool_use blocks, so we now refuse to paper over a provider bug and
+        # surface the contract violation as a ToolLoopError instead.
+        if response.raw_message is None:
+            raise ToolLoopError(
+                f"provider {provider.name} returned a tool-use response with "
+                "raw_message=None; cannot safely round-trip the assistant turn "
+                "(provider must populate raw_message with its native message shape)"
             )
+        messages.append(response.raw_message)
 
         if not response.tool_calls:
             return ToolLoopResult(
