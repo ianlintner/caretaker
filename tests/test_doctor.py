@@ -382,7 +382,7 @@ class TestDoctorCLI:
         cfg = _write_config(tmp_path / "config.yml")
         monkeypatch.setenv("GITHUB_TOKEN", "ghs_fake")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         result = runner.invoke(
             cli_main,
             ["doctor", "--config", str(cfg), "--skip-github", "--json"],
