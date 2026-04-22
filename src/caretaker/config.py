@@ -467,6 +467,15 @@ class MemoryStoreConfig(StrictBaseModel):
     snapshot_path: str = ".caretaker-memory-snapshot.json"
     # Hard cap on entries per namespace to prevent unbounded growth.
     max_entries_per_namespace: int = 1000
+    # Opt-in switch for the T-E2 cross-run memory retriever (see
+    # ``caretaker.memory.retriever``). When true, the Phase 2 LLM decision
+    # call sites (starting with PR readiness) inject up to three prior
+    # :class:`AgentCoreMemory` snapshots into their prompts and the
+    # :mod:`caretaker.memory.core` write path computes + stores a
+    # ``summary_embedding`` on every dispatch when an embedder is wired.
+    # Defaults to false so existing installs don't start embedding without
+    # explicit opt-in — see ``docs/plans/2026-Q2-agentic-migration.md`` T-E2.
+    retrieval_enabled: bool = False
 
 
 class AzureConfig(StrictBaseModel):

@@ -480,3 +480,156 @@ class TestShadowDecoratorIntegration:
         # Without a custom compare, ``Readiness(...) == None`` is False ->
         # disagreement. The record captures the mismatch for auditing.
         assert records[0].outcome == "disagree"
+
+
+# ── Part E: T-E2 cross-run memory retrieval injection ────────────────────
+
+
+class TestReadinessMemoryInjection:
+    """Verifies the T-E2 memory retriever is gated correctly.
+
+    When the retriever is ``None`` (retrieval_enabled=false or readiness
+    mode=off in the wiring layer), the prompt is byte-identical to the
+    pre-T-E2 prompt. When the retriever is supplied, its rendered
+    markdown block appears at the head of the variable payload.
+    """
+
+    def test_prompt_unchanged_when_retriever_none(self) -> None:
+        pr = make_pr(number=1)
+        ctx = PRReadinessContext(pr=pr, repo_slug="ian/demo")
+        baseline = build_readiness_prompt(ctx)
+        with_memory_none = build_readiness_prompt(ctx, memory_block=None)
+        assert baseline == with_memory_none
+
+    def test_prompt_unchanged_when_memory_block_empty(self) -> None:
+        pr = make_pr(number=1)
+        ctx = PRReadinessContext(pr=pr, repo_slug="ian/demo")
+        baseline = build_readiness_prompt(ctx)
+        # Empty string is treated the same as missing — no heading, no whitespace.
+        assert build_readiness_prompt(ctx, memory_block="") == baseline
+
+    def test_memory_block_prepended_to_payload(self) -> None:
+        pr = make_pr(number=7)
+        ctx = PRReadinessContext(pr=pr, repo_slug="ian/demo")
+        memory = (
+            "## Relevant past runs\n"
+            "Prior agent dispatches that resemble this one.\n"
+            "- **merged** · sim=0.95 (PR #6): Last readiness migration shipped.\n"
+        )
+        prompt = build_readiness_prompt(ctx, memory_block=memory)
+        # Memory block comes first, then the variable payload.
+        assert prompt.startswith("## Relevant past runs")
+        # PR facts still appear after the memory block.
+        assert "PR title: " in prompt
+        assert "#7" in prompt
+        assert prompt.index("Relevant past runs") < prompt.index("PR title:")
+
+    async def test_retriever_hits_appear_in_candidate_prompt(self) -> None:
+        """Integration: readiness LLM call with retriever wired injects the block."""
+        from caretaker.memory.retriever import MemoryRetriever
+
+        pr = make_pr(
+            number=11,
+            labels=[Label(name="maintainer:upgrade")],
+        )
+        pr = pr.model_copy(update={"title": "Migrate readiness gate"})
+
+        captured: dict[str, Any] = {}
+
+        class _FakeClaude:
+            async def structured_complete(
+                self,
+                prompt: str,
+                *,
+                schema: type,
+                feature: str,
+                system: str | None = None,
+            ) -> Any:
+                captured["prompt"] = prompt
+                captured["system"] = system
+                return Readiness(
+                    verdict="ready",
+                    confidence=0.9,
+                    blockers=[],
+                    summary="All green.",
+                )
+
+        class _FakeGraph:
+            async def list_nodes_with_properties(
+                self,
+                label: str,
+                *,
+                where: str | None = None,
+                params: dict[str, Any] | None = None,
+            ) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "agent": "pr_agent",
+                        "repo": "ian/demo",
+                        "summary": "Migrated readiness classifier for solo-maintainer repo",
+                        "outcome": "merged",
+                        "run_at": "2026-04-15T00:00:00+00:00",
+                        "pr_number": 6,
+                    }
+                ]
+
+        retriever = MemoryRetriever(graph=_FakeGraph(), embedder=None)
+        ctx = PRReadinessContext(pr=pr, repo_slug="ian/demo", is_solo_maintainer=True)
+        result = await evaluate_pr_readiness_llm(
+            ctx,
+            claude=_FakeClaude(),  # type: ignore[arg-type]
+            retriever=retriever,
+        )
+        assert result is not None
+        assert result.verdict == "ready"
+        # The retrieved hit landed in the outgoing prompt.
+        assert "## Relevant past runs" in captured["prompt"]
+        assert "PR #6" in captured["prompt"]
+        assert "merged" in captured["prompt"]
+
+    async def test_retrieval_failure_falls_through_to_plain_prompt(self) -> None:
+        """A retriever whose graph read explodes degrades to the no-memory path."""
+        from caretaker.memory.retriever import MemoryRetriever
+
+        pr = make_pr(number=12)
+
+        captured: dict[str, Any] = {}
+
+        class _FakeClaude:
+            async def structured_complete(
+                self,
+                prompt: str,
+                *,
+                schema: type,
+                feature: str,
+                system: str | None = None,
+            ) -> Any:
+                captured["prompt"] = prompt
+                return Readiness(
+                    verdict="ready",
+                    confidence=0.9,
+                    blockers=[],
+                    summary="ok",
+                )
+
+        class _BrokenGraph:
+            async def list_nodes_with_properties(
+                self,
+                label: str,
+                *,
+                where: str | None = None,
+                params: dict[str, Any] | None = None,
+            ) -> list[dict[str, Any]]:
+                raise RuntimeError("neo4j unreachable")
+
+        retriever = MemoryRetriever(graph=_BrokenGraph(), embedder=None)
+        ctx = PRReadinessContext(pr=pr, repo_slug="ian/demo")
+        result = await evaluate_pr_readiness_llm(
+            ctx,
+            claude=_FakeClaude(),  # type: ignore[arg-type]
+            retriever=retriever,
+        )
+        assert result is not None
+        # Prompt rendered without the memory section.
+        assert "## Relevant past runs" not in captured["prompt"]
+        assert "PR title: " in captured["prompt"]

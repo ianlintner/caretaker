@@ -8,6 +8,22 @@ mirror and the shared query helpers layered on top of it.
 
 from __future__ import annotations
 
-from caretaker.memory.core import AgentCoreMemory, publish
+from caretaker.memory.core import (
+    AgentCoreMemory,
+    publish,
+    publish_with_embedding,
+    replace_embedding,
+)
+from caretaker.memory.embeddings import Embedder, LiteLLMEmbedder
+from caretaker.memory.retriever import CoreMemoryHit, MemoryRetriever
 
-__all__ = ["AgentCoreMemory", "publish"]
+__all__ = [
+    "AgentCoreMemory",
+    "CoreMemoryHit",
+    "Embedder",
+    "LiteLLMEmbedder",
+    "MemoryRetriever",
+    "publish",
+    "publish_with_embedding",
+    "replace_embedding",
+]
