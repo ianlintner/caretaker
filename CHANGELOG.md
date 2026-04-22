@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] — 2026-04-22
+
+### Added
+
+- **OAuth2 `client_credentials` client** for service-to-service auth (`src/caretaker/auth/oauth_client.py`). `OAuth2ClientCredentials` posts to a token endpoint using `client_secret_basic`, caches the returned JWT in-process keyed by a 30-second skew buffer against the server-reported `expires_in`, and coalesces concurrent callers through an `asyncio.Lock` so a burst of requests triggers a single refresh. `build_client_from_env()` is the opt-in entry point — it returns `None` when the `OAUTH2_CLIENT_ID` / `OAUTH2_CLIENT_SECRET` / `OAUTH2_TOKEN_URL` trio is unset so callers fall through to their unauthenticated path with byte-identical behaviour.
+- **`OAuth2ClientConfig`** on `FleetRegistryConfig.oauth2` (`config.py`). Off by default. When enabled alongside the fleet emitter, the heartbeat POST is decorated with `Authorization: Bearer <jwt>` from the cached client; HMAC (`CARETAKER_FLEET_SECRET`) and OAuth2 can be used together, and the backend can require either or both.
+- **Module-level OAuth2 client cache in the fleet emitter**: the client is built once per process and reused across heartbeats, keyed on `(client_id, client_secret, token_url, scope_env, scope, timeout)` so a credential rotation invalidates the cache correctly without a process restart. A failed token fetch is logged at `WARNING` and swallowed — the emitter's fail-open contract is preserved so an auth-server outage never fails the run loop.
+
 ## [0.10.4] — 2026-04-21
 
 ### Added

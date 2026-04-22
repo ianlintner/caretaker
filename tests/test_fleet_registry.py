@@ -21,7 +21,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from caretaker.config import FleetRegistryConfig, MaintainerConfig
+from caretaker.config import FleetRegistryConfig, MaintainerConfig, OAuth2ClientConfig
 from caretaker.fleet import (
     FleetHeartbeat,
     build_heartbeat,
@@ -31,6 +31,7 @@ from caretaker.fleet import (
     reset_store_for_tests,
     sign_payload,
 )
+from caretaker.fleet import emitter as emitter_mod
 from caretaker.state.models import RunSummary
 
 # ── Config defaults ───────────────────────────────────────────────────────
@@ -135,6 +136,77 @@ async def test_emitter_fails_open_on_transport_error(monkeypatch) -> None:
     # Must return False, never raise.
     result = await emit_heartbeat(cfg, _summary_fixture())
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_emitter_attaches_oauth_bearer_and_caches_token(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid")
+    monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec")
+    monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://auth.test/oauth/token")
+    # Reset the module-level OAuth client cache so this test is hermetic.
+    emitter_mod._oauth_client = None
+    emitter_mod._oauth_client_key = None
+
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(
+            enabled=True,
+            endpoint="https://fleet.example/heartbeat",
+            oauth2=OAuth2ClientConfig(enabled=True),
+        )
+    )
+
+    token_calls = 0
+    heartbeat_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        if str(request.url) == "https://auth.test/oauth/token":
+            token_calls += 1
+            return httpx.Response(
+                200,
+                json={"access_token": "bearer-abc", "expires_in": 3600},
+            )
+        heartbeat_calls.append(request.headers.get("authorization", ""))
+        return httpx.Response(202, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
+        # Second heartbeat in the same process reuses the cached token.
+        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
+
+    assert token_calls == 1  # JWT cache prevents a second token fetch
+    assert heartbeat_calls == ["Bearer bearer-abc", "Bearer bearer-abc"]
+
+
+@pytest.mark.asyncio
+async def test_emitter_oauth_token_failure_is_swallowed(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid")
+    monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec")
+    monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://auth.test/oauth/token")
+    emitter_mod._oauth_client = None
+    emitter_mod._oauth_client_key = None
+
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(
+            enabled=True,
+            endpoint="https://fleet.example/heartbeat",
+            oauth2=OAuth2ClientConfig(enabled=True),
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://auth.test/oauth/token":
+            return httpx.Response(500, text="auth server down")
+        # Heartbeat should still go through, just without a bearer header.
+        assert "authorization" not in {k.lower() for k in request.headers}
+        return httpx.Response(202, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
 
 
 @pytest.mark.asyncio

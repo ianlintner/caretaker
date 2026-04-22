@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import BaseModel, Field
 
+from caretaker.auth import OAuth2ClientCredentials, OAuth2TokenError, build_client_from_env
+
 if TYPE_CHECKING:
     from caretaker.config import FleetRegistryConfig, MaintainerConfig
     from caretaker.state.models import RunSummary
@@ -51,6 +53,66 @@ _COUNTERS = (
     "owned_prs",
     "authority_merges",
 )
+
+
+_oauth_client: OAuth2ClientCredentials | None = None
+_oauth_client_key: tuple[str, str, str, str, str, float] | None = None
+
+
+def _get_oauth_client(fleet: FleetRegistryConfig) -> OAuth2ClientCredentials | None:
+    """Return a cached OAuth2 client for the given config, rebuilding on change.
+
+    Caching the client instance across heartbeat calls is what lets the
+    in-memory JWT cache actually deliver value: without it, each run
+    would refetch a token. The cache key covers every config + env var
+    the client depends on, so a rotation invalidates correctly.
+    """
+    global _oauth_client, _oauth_client_key
+
+    oauth_cfg = fleet.oauth2
+    if not oauth_cfg.enabled:
+        return None
+
+    scope = os.environ.get(oauth_cfg.scope_env, "").strip() or oauth_cfg.default_scope
+    key = (
+        os.environ.get(oauth_cfg.client_id_env, ""),
+        os.environ.get(oauth_cfg.client_secret_env, ""),
+        os.environ.get(oauth_cfg.token_url_env, ""),
+        oauth_cfg.scope_env,
+        scope,
+        oauth_cfg.timeout_seconds,
+    )
+    if _oauth_client_key == key and _oauth_client is not None:
+        return _oauth_client
+
+    client = build_client_from_env(
+        client_id_env=oauth_cfg.client_id_env,
+        client_secret_env=oauth_cfg.client_secret_env,
+        token_url_env=oauth_cfg.token_url_env,
+        scope_env=oauth_cfg.scope_env,
+        timeout_seconds=oauth_cfg.timeout_seconds,
+    )
+    _oauth_client = client
+    _oauth_client_key = key if client is not None else None
+    return client
+
+
+async def _oauth_bearer_headers(
+    fleet: FleetRegistryConfig, *, client: httpx.AsyncClient
+) -> dict[str, str]:
+    """Return ``Authorization: Bearer …`` if OAuth2 is configured, else ``{}``.
+
+    Failures are logged at WARNING and swallowed: the fleet emitter is
+    fail-open, so a flaky auth server never breaks the run loop.
+    """
+    oauth = _get_oauth_client(fleet)
+    if oauth is None:
+        return {}
+    try:
+        return await oauth.authorization_header(client=client)
+    except OAuth2TokenError as exc:
+        logger.warning("fleet heartbeat: oauth2 token fetch failed: %s", exc)
+        return {}
 
 
 def _caretaker_version() -> str:
@@ -182,6 +244,9 @@ async def emit_heartbeat(
             client = httpx.AsyncClient(timeout=fleet.timeout_seconds)
         assert client is not None  # narrow for type-checkers
         try:
+            oauth_headers = await _oauth_bearer_headers(fleet, client=client)
+            if oauth_headers:
+                headers.update(oauth_headers)
             resp = await client.post(endpoint, content=body, headers=headers)
         finally:
             if owns_client:

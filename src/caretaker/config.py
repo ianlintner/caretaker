@@ -572,6 +572,31 @@ class TelemetryConfig(StrictBaseModel):
     application_insights_connection_string_env: str = "APPLICATIONINSIGHTS_CONNECTION_STRING"
 
 
+class OAuth2ClientConfig(StrictBaseModel):
+    """OAuth2 ``client_credentials`` settings for service-to-service auth.
+
+    Opt-in: when ``enabled`` is ``True`` AND all three env vars named by
+    ``client_id_env`` / ``client_secret_env`` / ``token_url_env`` are
+    populated, consumers like :class:`FleetRegistryConfig` will attach a
+    bearer token to outbound requests instead of (or alongside) HMAC.
+
+    The default names match the conventional ``OAUTH2_CLIENT_ID`` /
+    ``OAUTH2_CLIENT_SECRET`` / ``OAUTH2_TOKEN_URL`` triple that caretaker
+    writes into consumer repos when an operator provisions client
+    credentials against a shared authorization server.
+    """
+
+    enabled: bool = False
+    client_id_env: str = "OAUTH2_CLIENT_ID"
+    client_secret_env: str = "OAUTH2_CLIENT_SECRET"
+    token_url_env: str = "OAUTH2_TOKEN_URL"
+    scope_env: str = "OAUTH2_SCOPE"
+    # Requested scope if ``scope_env`` is not populated. Empty string means
+    # "use the server-side default scope set for this client".
+    default_scope: str = ""
+    timeout_seconds: float = 10.0
+
+
 class FleetRegistryConfig(StrictBaseModel):
     """Opt-in fleet registry.
 
@@ -590,6 +615,12 @@ class FleetRegistryConfig(StrictBaseModel):
     backend verifies before recording. When unset, heartbeats are
     delivered without authentication (suitable for private networks /
     trusted origins only).
+
+    ``oauth2`` is an alternative (or additional) auth mode: when its
+    ``enabled`` flag is True and its env vars are populated, the emitter
+    fetches a bearer token via the OAuth2 ``client_credentials`` grant
+    and sends it in the ``Authorization`` header. HMAC + OAuth2 may be
+    used together; the backend can require either or both.
     """
 
     enabled: bool = False
@@ -601,6 +632,7 @@ class FleetRegistryConfig(StrictBaseModel):
     # sent. Default False to minimise the risk of surfacing repo-private
     # details (error log snippets, etc.) through the central dashboard.
     include_full_summary: bool = False
+    oauth2: OAuth2ClientConfig = Field(default_factory=OAuth2ClientConfig)
 
 
 class FleetConfig(StrictBaseModel):
