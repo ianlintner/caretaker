@@ -108,11 +108,17 @@ class PRCopilotBridge:
         attempt: int = 1,
     ) -> CopilotInteractionResult:
         """Post review fix instructions via Copilot or the Foundry dispatcher."""
-        # Build combined instructions from all blocking reviews
+        # Build combined instructions from all blocking reviews. Include
+        # the structured severity (from T-A4's ``ReviewClassification``)
+        # so the Copilot bridge can rank its work — a ``blocker`` review
+        # should be addressed before a ``minor`` one, even when both are
+        # on the same PR.
         review_items = []
         for i, analysis in enumerate(analyses, 1):
+            severity_tag = f"severity={analysis.severity}"
             review_items.append(
-                f"{i}. **{analysis.reviewer}** ({analysis.comment_type.value}): {analysis.summary}"
+                f"{i}. **{analysis.reviewer}** "
+                f"({analysis.comment_type.value}, {severity_tag}): {analysis.summary}"
             )
 
         instructions = (
@@ -124,6 +130,12 @@ class PRCopilotBridge:
             "3. Reply with a RESULT block when all comments are addressed"
         )
 
+        # Blocker severity is the one case where we bump the Copilot
+        # priority so the scheduler picks the task up ahead of routine
+        # lint fixes. Everything else stays medium (unchanged from
+        # pre-T-A4 behaviour).
+        priority = "high" if any(a.severity == "blocker" for a in analyses) else "medium"
+
         task = CopilotTask(
             task_type=TaskType.REVIEW_COMMENT,
             job_name="review",
@@ -131,7 +143,7 @@ class PRCopilotBridge:
             instructions=instructions,
             attempt=attempt,
             max_attempts=self._max_retries,
-            priority="medium",
+            priority=priority,
         )
 
         return await self._dispatch(

@@ -166,6 +166,7 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     "ci_log_analysis": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 2000},
     "ci_triage": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
     "analyze_review_comment": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 1000},
+    "review_classification": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
     "analyze_stuck_pr": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
     # Longer reasoning tasks — keep on the default (Sonnet) tier.
     "generate_reflection": {"model": DEFAULT_MODEL, "max_tokens": 1500},
