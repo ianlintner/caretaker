@@ -1,8 +1,11 @@
 """Tests for self-heal failure classification."""
 
+from __future__ import annotations
+
 import gzip
 import io
 import zipfile
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -274,27 +277,35 @@ class TestSelfHealCooldown:
 
 @pytest.mark.asyncio
 class TestSelfHealStormCap:
-    """Sprint 2 C4: refuse to open new self-heal issues during a storm.
+    """T-M7: storm cap keyed on ``(repo_slug, error_sig, hour_window)``.
 
-    Catches the F1 retry-storm pattern (caretaker-self 2026-04-14: 108 PRs in
-    90 minutes). Counts existing open self-heal issues by createdAt timestamp
-    so the cap survives across workflow runs.
+    Prior behaviour counted all open self-heal issues in a repo regardless
+    of signature; the first repo to hit a recurring failure burned the
+    cap for every other signature. The new key bucket means a repeating
+    error can burn its own cap without blocking unrelated failures.
     """
 
     @staticmethod
-    def _stub_issue(number: int, created_at):
+    def _stub_issue(number: int, created_at, sig: str = "abc123def456"):
         from caretaker.github_client.models import Issue, User
 
         return Issue(
             number=number,
             title="🩺 Caretaker self-heal: x",
-            body="<!-- caretaker:self-heal --> sig:abc123def456 -->",
+            body=f"<!-- caretaker:self-heal --> sig:{sig} -->",
             state="open",
             user=User(login="bot", id=0, type="Bot"),
             created_at=created_at,
         )
 
-    async def test_blocks_when_hourly_cap_hit(self) -> None:
+    @staticmethod
+    def _classified_sig() -> str:
+        """Return the sig produced for the classification used in these tests."""
+        from caretaker.self_heal_agent.agent import _sig
+
+        return _sig("maintain", FailureKind.CONFIG_ERROR, "x")
+
+    async def test_blocks_when_hourly_cap_hit_for_same_sig(self) -> None:
         from datetime import UTC, datetime, timedelta
 
         github = AsyncMock()
@@ -306,9 +317,14 @@ class TestSelfHealStormCap:
             max_open_per_hour=3,
             max_open_per_day=20,
         )
+        incoming_sig = self._classified_sig()
+        # Three issues already exist in the current hour window for the
+        # *same* sig — the new incoming failure should be blocked. Use
+        # seconds rather than minutes so the stubs can't land in the
+        # previous hour bucket if wall-clock flips just after test start.
+        now = datetime.now(UTC)
         recent_open = [
-            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10))
-            for i in range(3)  # exactly the hourly cap
+            self._stub_issue(i, now - timedelta(seconds=1), sig=incoming_sig) for i in range(3)
         ]
 
         with (
@@ -320,12 +336,195 @@ class TestSelfHealStormCap:
             patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
             patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
             patch.object(agent._issues, "list", AsyncMock(return_value=recent_open)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
             patch.object(agent, "_create_local_fix_issue", AsyncMock()) as create_mock,
         ):
             report = await agent.run()
 
         create_mock.assert_not_awaited()
         assert any("storm-cap" in e and "hourly cap hit" in e for e in report.errors)
+
+    async def test_other_sigs_not_blocked_by_noisy_sig(self) -> None:
+        """T-M7: a different error signature must not be starved out by
+        a recurring-sig storm. Pre-cap implementations keyed on the raw
+        label and blocked everything."""
+        from datetime import UTC, datetime, timedelta
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            max_open_per_hour=3,
+            max_open_per_day=20,
+        )
+        now = datetime.now(UTC)
+        # 5 issues for SOME OTHER sig — well over the hourly cap — but
+        # the incoming failure's sig is distinct so it must get through.
+        noisy_open = [
+            self._stub_issue(i, now - timedelta(minutes=5), sig="deadbeefcafe") for i in range(5)
+        ]
+
+        mock_issue = AsyncMock()
+        mock_issue.number = 777
+        with (
+            patch.object(
+                agent,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(agent._issues, "list", AsyncMock(return_value=noisy_open)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
+            patch.object(agent, "_create_local_fix_issue", AsyncMock(return_value=mock_issue)),
+        ):
+            report = await agent.run()
+
+        assert report.local_issues_created == [777]
+
+    async def test_burst_of_10_caps_at_5(self) -> None:
+        """T-M7: simulate 10 identical failures in ~30 seconds; cap holds at 5.
+
+        We file them serially through the same repo-scoped agent; only
+        the first 5 should create issues — subsequent invocations see
+        the cap hit and short-circuit.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        github = AsyncMock()
+        agent = SelfHealAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            report_upstream=False,
+            max_open_per_hour=5,
+            max_open_per_day=20,
+            cooldown_hours=0,  # under test: storm cap only, coarse cooldown disabled
+        )
+
+        now = datetime.now(UTC)
+        incoming_sig = self._classified_sig()
+        existing: list[Any] = []
+        created_count = 0
+        stub_issue = self._stub_issue
+
+        async def _list_issues(**_kwargs: Any) -> list[Any]:
+            return list(existing)
+
+        async def _create(*_args: Any, **_kwargs: Any) -> Any:
+            nonlocal created_count
+            created_count += 1
+            mi = AsyncMock()
+            mi.number = 1000 + created_count
+            existing.append(
+                stub_issue(mi.number, now - timedelta(seconds=created_count * 3), sig=incoming_sig)
+            )
+            return mi
+
+        for _ in range(10):
+            with (
+                patch.object(
+                    agent,
+                    "_collect_failure_logs",
+                    AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+                ),
+                patch.object(agent, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+                patch.object(agent, "_run_id_already_tracked", AsyncMock(return_value=False)),
+                patch.object(agent._issues, "list", AsyncMock(side_effect=_list_issues)),
+                patch(
+                    "caretaker.self_heal_agent.agent._classify_failure",
+                    return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+                ),
+                patch.object(agent, "_create_local_fix_issue", AsyncMock(side_effect=_create)),
+            ):
+                await agent.run()
+
+        assert created_count == 5
+
+    async def test_per_repo_isolation(self) -> None:
+        """T-M7: a storm in one repo must not cap the OTHER repo's budget.
+
+        Two ``SelfHealAgent`` instances, each scoped to its own
+        ``(owner, repo)``. The first repo is saturated (5 open for the
+        shared sig); the second repo has none and should still open one.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        incoming_sig = self._classified_sig()
+
+        # Repo A — saturated.
+        github_a = AsyncMock()
+        agent_a = SelfHealAgent(
+            github=github_a,
+            owner="o",
+            repo="a",
+            report_upstream=False,
+            max_open_per_hour=5,
+            max_open_per_day=20,
+        )
+        saturated = [
+            self._stub_issue(i, now - timedelta(seconds=1), sig=incoming_sig) for i in range(5)
+        ]
+
+        with (
+            patch.object(
+                agent_a,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent_a, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent_a, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(agent_a._issues, "list", AsyncMock(return_value=saturated)),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
+            patch.object(agent_a, "_create_local_fix_issue", AsyncMock()) as create_a,
+        ):
+            await agent_a.run()
+
+        create_a.assert_not_awaited()
+
+        # Repo B — empty budget; should open one.
+        github_b = AsyncMock()
+        agent_b = SelfHealAgent(
+            github=github_b,
+            owner="o",
+            repo="b",
+            report_upstream=False,
+            max_open_per_hour=5,
+            max_open_per_day=20,
+        )
+        mock_issue_b = AsyncMock()
+        mock_issue_b.number = 42
+
+        with (
+            patch.object(
+                agent_b,
+                "_collect_failure_logs",
+                AsyncMock(return_value=[("maintain", "pydantic ValidationError")]),
+            ),
+            patch.object(agent_b, "_get_existing_self_heal_sigs", AsyncMock(return_value=set())),
+            patch.object(agent_b, "_run_id_already_tracked", AsyncMock(return_value=False)),
+            patch.object(agent_b._issues, "list", AsyncMock(return_value=[])),
+            patch(
+                "caretaker.self_heal_agent.agent._classify_failure",
+                return_value=(FailureKind.CONFIG_ERROR, "x", "details"),
+            ),
+            patch.object(agent_b, "_create_local_fix_issue", AsyncMock(return_value=mock_issue_b)),
+        ):
+            report_b = await agent_b.run()
+
+        assert report_b.local_issues_created == [42]
 
     async def test_allows_when_below_caps(self) -> None:
         from datetime import UTC, datetime, timedelta
@@ -339,8 +538,12 @@ class TestSelfHealStormCap:
             max_open_per_hour=5,
             max_open_per_day=20,
         )
-        # 2 in last hour (under cap of 5)
-        recent = [self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10)) for i in range(2)]
+        incoming_sig = self._classified_sig()
+        # 2 existing issues for the same sig, under cap of 5.
+        recent = [
+            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=10), sig=incoming_sig)
+            for i in range(2)
+        ]
 
         mock_issue = AsyncMock()
         mock_issue.number = 99
@@ -375,8 +578,12 @@ class TestSelfHealStormCap:
             max_open_per_hour=0,  # disabled
             max_open_per_day=0,  # disabled
         )
-        # 100 issues opened in the last hour — cap disabled, should still allow
-        recent = [self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=1)) for i in range(100)]
+        incoming_sig = self._classified_sig()
+        # 100 issues opened in the last hour for the SAME sig — cap disabled, should still allow
+        recent = [
+            self._stub_issue(i, datetime.now(UTC) - timedelta(minutes=1), sig=incoming_sig)
+            for i in range(100)
+        ]
 
         mock_issue = AsyncMock()
         mock_issue.number = 1

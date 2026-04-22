@@ -694,6 +694,135 @@ async def test_upsert_cooldown_does_not_block_initial_post() -> None:
     assert result.id == 1
 
 
+# ── upsert_issue_comment dedupe (T-M8) ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_dedupes_older_duplicates_beyond_retention() -> None:
+    """T-M8: when >1 comments carry the marker, delete the oldest beyond
+    ``max_duplicates_to_retain`` and edit the newest. Default retention
+    of 2 keeps at most 3 matching comments (newest + 2 historical)."""
+    from caretaker.github_client.models import Comment, User
+
+    client = _client_with_token()
+    marker = "<!-- caretaker:orchestrator-state -->"
+    user = User(login="bot", id=0, type="Bot")
+    # Five duplicates: ids 10, 20, 30, 40, 50.
+    comments = [
+        Comment(id=i, body=f"{marker}\nv{i}", user=user, created_at=_TS)
+        for i in (10, 20, 30, 40, 50)
+    ]
+    new_body = f"{marker}\nnew"
+
+    with (
+        patch.object(client, "get_pr_comments", AsyncMock(return_value=comments)),
+        patch.object(client, "edit_issue_comment", AsyncMock(return_value=comments[-1])) as edit,
+        patch.object(client, "delete_issue_comment", AsyncMock()) as delete,
+        patch.object(client, "add_issue_comment", AsyncMock()) as add,
+    ):
+        await client.upsert_issue_comment("o", "r", 1, marker, new_body)
+
+    add.assert_not_awaited()
+    # Edit targets the newest (id=50)
+    edit.assert_awaited_once()
+    assert edit.await_args.args[2] == 50
+    # Two oldest (id=10 and id=20) are deleted; ids 30, 40 are kept as
+    # historical duplicates (default max_duplicates_to_retain=2).
+    deleted_ids = sorted(call.args[2] for call in delete.await_args_list)
+    assert deleted_ids == [10, 20]
+
+
+@pytest.mark.asyncio
+async def test_upsert_converges_from_two_existing_duplicates_to_one() -> None:
+    """T-M8: starting with two duplicates, twenty consecutive upserts must
+    converge on a single surviving comment per marker."""
+    from caretaker.github_client.models import Comment, User
+
+    client = _client_with_token()
+    marker = "<!-- caretaker:orchestrator-state -->"
+    user = User(login="bot", id=0, type="Bot")
+
+    # Shared in-memory store of comments simulates the remote issue.
+    store: dict[int, Comment] = {
+        1: Comment(id=1, body=f"{marker}\nold1", user=user, created_at=_TS),
+        2: Comment(id=2, body=f"{marker}\nold2", user=user, created_at=_TS),
+    }
+    next_id = {"v": 3}
+
+    async def _get_comments(*_args, **_kwargs):
+        return list(store.values())
+
+    async def _edit(owner, repo, cid, body):  # type: ignore[no-untyped-def]
+        store[cid] = Comment(id=cid, body=body, user=user, created_at=_TS)
+        return store[cid]
+
+    async def _delete(owner, repo, cid):  # type: ignore[no-untyped-def]
+        store.pop(cid, None)
+
+    async def _add(owner, repo, number, body):  # type: ignore[no-untyped-def]
+        cid = next_id["v"]
+        next_id["v"] += 1
+        store[cid] = Comment(id=cid, body=body, user=user, created_at=_TS)
+        return store[cid]
+
+    with (
+        patch.object(client, "get_pr_comments", AsyncMock(side_effect=_get_comments)),
+        patch.object(client, "edit_issue_comment", AsyncMock(side_effect=_edit)),
+        patch.object(client, "delete_issue_comment", AsyncMock(side_effect=_delete)),
+        patch.object(client, "add_issue_comment", AsyncMock(side_effect=_add)),
+    ):
+        # max_duplicates_to_retain=0 → aggressive GC; 20 upserts must
+        # converge to exactly one surviving comment.
+        for i in range(20):
+            await client.upsert_issue_comment(
+                "o", "r", 1, marker, f"{marker}\nrun {i}", max_duplicates_to_retain=0
+            )
+
+    matching = [c for c in store.values() if marker in (c.body or "")]
+    assert len(matching) == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_twenty_consecutive_calls_stay_at_one_comment() -> None:
+    """T-M8: 20 upserts on a pristine issue produce exactly 1 comment."""
+    from caretaker.github_client.models import Comment, User
+
+    client = _client_with_token()
+    marker = "<!-- caretaker:run-history -->"
+    user = User(login="bot", id=0, type="Bot")
+
+    store: dict[int, Comment] = {}
+    next_id = {"v": 1}
+
+    async def _get_comments(*_args, **_kwargs):
+        return list(store.values())
+
+    async def _edit(owner, repo, cid, body):  # type: ignore[no-untyped-def]
+        store[cid] = Comment(id=cid, body=body, user=user, created_at=_TS)
+        return store[cid]
+
+    async def _delete(owner, repo, cid):  # type: ignore[no-untyped-def]
+        store.pop(cid, None)
+
+    async def _add(owner, repo, number, body):  # type: ignore[no-untyped-def]
+        cid = next_id["v"]
+        next_id["v"] += 1
+        store[cid] = Comment(id=cid, body=body, user=user, created_at=_TS)
+        return store[cid]
+
+    with (
+        patch.object(client, "get_pr_comments", AsyncMock(side_effect=_get_comments)),
+        patch.object(client, "edit_issue_comment", AsyncMock(side_effect=_edit)),
+        patch.object(client, "delete_issue_comment", AsyncMock(side_effect=_delete)),
+        patch.object(client, "add_issue_comment", AsyncMock(side_effect=_add)),
+    ):
+        for i in range(20):
+            await client.upsert_issue_comment("o", "r", 1, marker, f"{marker}\nrun {i}")
+
+    matching = [c for c in store.values() if marker in (c.body or "")]
+    assert len(matching) == 1
+
+
 # ── add_issue_comment caretaker-marker cap ───────────────────────────────────
 
 

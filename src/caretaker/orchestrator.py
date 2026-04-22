@@ -30,6 +30,7 @@ from caretaker.llm.copilot import CopilotProtocol
 from caretaker.llm.provider import LiteLLMProvider
 from caretaker.llm.router import LLMRouter
 from caretaker.mcp import MCPClient, TelemetryClient
+from caretaker.observability import record_orchestrator_soft_fail
 from caretaker.state.audit_log import AuditLogWriter
 from caretaker.state.backends.factory import build_memory_backend
 from caretaker.state.models import (
@@ -61,6 +62,110 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
+
+
+# ── Transient-error classification ────────────────────────────────────
+#
+# The post-run exit gate buckets every entry in ``RunSummary.errors`` as
+# either transient or non-transient. If the whole run yielded only
+# transient errors and some real work landed, we emit a Prometheus
+# soft-fail counter and exit 0 — those categories represent "the run
+# did its job; one integration was briefly unhappy" and should not flip
+# the workflow to failure (which in turn triggers self-heal and the
+# "Unknown caretaker failure: Process completed with exit code 1." issue
+# storm observed on Example-React / flashcards).
+_TRANSIENT_SUBSTRINGS: tuple[str, ...] = (
+    # GitHub sub-systems that return 403 on workflow-token scopes we can't
+    # widen from a consumer repo (dependabot alerts, code-scanning,
+    # secret-scanning, assignee permission checks).
+    "dependabot alerts unavailable",
+    "code scanning alerts unavailable",
+    "code-scanning",
+    "secret scanning",
+    "secret-scanning",
+    "resource not accessible by integration",
+    "assignees could not be set",
+    # Network / upstream flapping.
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection refused",
+    "temporary failure",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    # Empty memory snapshot produced by upload-artifact when the file is
+    # not yet written (first-run path on a fresh runner).
+    "memory snapshot",
+    "empty artifact",
+    "no files were found",
+    # Rate-limit backoffs — already handled by the cooldown gate but the
+    # string may surface in a bucketed agent error before the gate kicks.
+    "rate limit",
+    "secondary rate limit",
+    "429",
+)
+
+_TRANSIENT_STATUS_CODES: tuple[str, ...] = ("500", "502", "503", "504")
+
+
+def is_transient(error: BaseException | str) -> bool:
+    """Return True if ``error`` looks like a transient / recoverable failure.
+
+    The gate is intentionally conservative — we only bucket as transient
+    when the text matches one of a small, fixed list of known-flappy
+    conditions. Anything else (AttributeError, TypeError, unexpected
+    GitHubAPIError, classification misses) stays non-transient so the
+    run still fails loudly.
+    """
+    if isinstance(error, BaseException):
+        # Timeouts and connection errors from stdlib / httpx are
+        # transient regardless of message content.
+        import asyncio
+        import socket
+
+        try:
+            import httpx  # noqa: PLC0415
+
+            transient_exc_types: tuple[type[BaseException], ...] = (
+                asyncio.TimeoutError,
+                TimeoutError,
+                ConnectionError,
+                socket.timeout,
+                socket.gaierror,
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.RemoteProtocolError,
+            )
+        except Exception:  # pragma: no cover - httpx optional at analysis time
+            transient_exc_types = (
+                asyncio.TimeoutError,
+                TimeoutError,
+                ConnectionError,
+                socket.timeout,
+                socket.gaierror,
+            )
+
+        if isinstance(error, transient_exc_types):
+            return True
+        text = f"{type(error).__name__}: {error}"
+    else:
+        text = error
+
+    lower = text.lower()
+    if any(sub in lower for sub in _TRANSIENT_SUBSTRINGS):
+        return True
+    # Upstream 5xx surfaces as ``GitHub API error 503: …``.
+    return any(f"error {code}" in lower or f" {code} " in lower for code in _TRANSIENT_STATUS_CODES)
+
+
+def _bucket_errors(errors: list[str]) -> tuple[list[str], list[str]]:
+    """Split ``errors`` into ``(transient, non_transient)`` buckets."""
+    transient: list[str] = []
+    non_transient: list[str] = []
+    for err in errors:
+        (transient if is_transient(err) else non_transient).append(err)
+    return transient, non_transient
 
 
 def _extract_pr_number(event_type: str, payload: dict[str, Any]) -> int | None:
@@ -623,9 +728,50 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Failed to post summary: %s", e)
 
+        # ── Transient-error exit gate ─────────────────────────────
+        #
+        # Classify each entry in ``summary.errors`` into transient vs
+        # non-transient. If every error is transient AND the run made
+        # some measurable progress (PRs monitored, issues triaged, or a
+        # bucketed agent error that proves work was attempted), we emit
+        # a Prometheus soft-fail counter and exit 0. This keeps the
+        # signal visible without the workflow itself flipping red and
+        # triggering the self-heal-on-failure ladder that produced the
+        # "Unknown caretaker failure: Process completed with exit code 1."
+        # issue storm on Example-React and flashcards.
+        soft_failed = False
         if summary.errors:
-            has_errors = True
-            logger.warning("Run completed with %d errors", len(summary.errors))
+            transient_errors, non_transient_errors = _bucket_errors(summary.errors)
+            work_landed = (
+                summary.prs_monitored > 0
+                or summary.issues_triaged > 0
+                or summary.prs_merged > 0
+                or summary.issues_assigned > 0
+                or summary.issues_closed > 0
+                or summary.build_failures_detected > 0
+                or summary.self_heal_failures_analyzed > 0
+            )
+            # ``len(summary.errors) - len(transient_errors)`` is just the
+            # non-transient count but using the list makes the branch
+            # direct to read.
+            if non_transient_errors or not work_landed:
+                has_errors = True
+                logger.warning(
+                    "Run completed with %d error(s): transient=%d, non_transient=%d",
+                    len(summary.errors),
+                    len(transient_errors),
+                    len(non_transient_errors),
+                )
+            else:
+                soft_failed = True
+                record_orchestrator_soft_fail(category="transient")
+                logger.warning(
+                    "Run completed with %d transient error(s) only — soft-fail, exit 0. "
+                    "transient=%d, non_transient=0. Samples: %s",
+                    len(summary.errors),
+                    len(transient_errors),
+                    transient_errors[:3],
+                )
         else:
             logger.info("Run completed successfully")
 
@@ -633,10 +779,11 @@ class Orchestrator:
         try:
             import uuid as _uuid
 
+            audit_outcome = "soft_fail" if soft_failed else ("error" if has_errors else "success")
             await self._audit_log.record(
                 run_id=str(_uuid.uuid4()),
                 agent_id="orchestrator",
-                outcome="error" if has_errors else "success",
+                outcome=audit_outcome,
                 tool=None,
                 extra={
                     "mode": mode,
@@ -644,6 +791,7 @@ class Orchestrator:
                     "prs_merged": summary.prs_merged,
                     "issues_triaged": summary.issues_triaged,
                     "errors": len(summary.errors),
+                    "soft_fail": soft_failed,
                 },
             )
         except Exception as _audit_err:

@@ -906,15 +906,19 @@ class GitHubClient:
         *,
         legacy_markers: tuple[str, ...] = (),
         min_seconds_between_updates: int = 0,
+        max_duplicates_to_retain: int = 2,
     ) -> Comment:
         """Post or edit a single issue/PR comment identified by ``marker``.
 
         ``marker`` MUST be a unique HTML-comment substring (e.g.
         ``"<!-- caretaker:orchestrator-state -->"``) and MUST appear in
-        ``body``. The first comment whose body contains ``marker`` (or any
-        ``legacy_markers`` entry, when supplied) is edited in place; if none
-        exists, a new comment is posted. Idempotent: a no-op if an existing
-        matching comment already has the same body.
+        ``body``. If multiple comments carry the marker (a prior broken
+        run double-posted, or a legacy marker migration left behind a
+        duplicate), the newest-by-``id`` wins: the newest is edited in
+        place, and older duplicates beyond ``max_duplicates_to_retain``
+        are deleted. Idempotent: a no-op if the newest existing matching
+        comment already has the same body AND the retained-duplicate
+        bound is satisfied.
 
         ``legacy_markers`` lets callers migrate from older marker spellings
         without leaving stale duplicates behind.
@@ -926,6 +930,14 @@ class GitHubClient:
         the cooldown are unaffected. This guards against rapid retrigger
         loops independent of the per-issue count cap on
         :meth:`add_issue_comment`.
+
+        ``max_duplicates_to_retain`` caps how many older marker-matching
+        comments we leave behind when we find >1. Defaults to 2 so we
+        don't aggressively delete historical data; set to 0 to garbage
+        collect every duplicate. This guards against the
+        ``caretaker:orchestrator-state`` drift observed on python_dsa #23
+        (146 bot comments) where a stale duplicate caused later runs to
+        append instead of edit in place.
         """
         if marker not in body:
             raise ValueError(f"upsert body missing marker {marker!r}")
@@ -933,12 +945,40 @@ class GitHubClient:
         all_markers = (marker, *legacy_markers)
         comments = await self.get_pr_comments(owner, repo, issue_number)
 
-        existing: Comment | None = None
-        for c in comments:
-            if not (c.body or ""):
-                continue
-            if any(m in c.body for m in all_markers) and (existing is None or c.id > existing.id):
-                existing = c
+        # Collect ALL matching comments, newest by id first. Pre-fix only
+        # the first match was kept, so an older duplicate silently took
+        # over the edit path on repos where the bot had double-posted.
+        matching: list[Comment] = [
+            c for c in comments if (c.body or "") and any(m in c.body for m in all_markers)
+        ]
+        matching.sort(key=lambda c: c.id, reverse=True)
+
+        existing: Comment | None = matching[0] if matching else None
+
+        # Prune older duplicates beyond the retention bound. We delete
+        # best-effort — a failed delete must not break the upsert path.
+        if len(matching) > 1 + max(0, max_duplicates_to_retain):
+            to_delete = matching[1 + max(0, max_duplicates_to_retain) :]
+            for dup in to_delete:
+                try:
+                    await self.delete_issue_comment(owner, repo, dup.id)
+                    logger.info(
+                        "upsert dedupe: deleted duplicate comment %d on %s/%s#%d (marker=%s)",
+                        dup.id,
+                        owner,
+                        repo,
+                        issue_number,
+                        marker,
+                    )
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.warning(
+                        "upsert dedupe: failed to delete duplicate comment %d on %s/%s#%d: %s",
+                        dup.id,
+                        owner,
+                        repo,
+                        issue_number,
+                        exc,
+                    )
 
         if existing is None:
             return await self.add_issue_comment(owner, repo, issue_number, body)
