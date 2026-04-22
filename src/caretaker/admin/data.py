@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel
@@ -272,6 +272,85 @@ class AdminDataAccess:
                 }
                 for p in hot_sorted
             ],
+        }
+
+    # ── Attribution telemetry ─────────────────────────────────────────────
+
+    def get_attribution_weekly(
+        self,
+        *,
+        since: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Weekly attribution rollup for the configured repo.
+
+        Returns the count of PRs caretaker touched / merged / rescued /
+        abandoned since ``since``, plus the average
+        ``avg_time_to_merge_hours`` for PRs caretaker closed as merged.
+        ``since`` is inclusive and defaults to seven days ago. PRs
+        without a ``merged_at`` never contribute to the time-to-merge
+        average (it's ``None`` when no caretaker merges landed).
+
+        The implementation is intentionally stateless: it walks the
+        in-memory ``OrchestratorState.tracked_prs`` rather than talking
+        to Neo4j so the dashboard renders under typical single-repo
+        pressure. Multi-repo aggregation happens at the fleet tier via
+        the heartbeat payload.
+        """
+        cutoff = since if since is not None else datetime.now(UTC) - timedelta(days=7)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        prs = list(self._state.tracked_prs.values())
+
+        # ``merged_at`` is the closest proxy we have for "activity window."
+        # For PRs caretaker never merged, fall back to ``last_checked`` so
+        # abandoned / rescued PRs still show up in the rollup for the
+        # window they were last observed in.
+        def _window_stamp(pr: Any) -> datetime | None:
+            stamp = pr.merged_at or pr.last_checked or pr.first_seen_at
+            if stamp is None:
+                return None
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            return stamp  # type: ignore[no-any-return]
+
+        in_window = [pr for pr in prs if (s := _window_stamp(pr)) is not None and s >= cutoff]
+
+        touched = sum(1 for pr in in_window if pr.caretaker_touched)
+        merged = sum(1 for pr in in_window if pr.caretaker_merged)
+        rescued = sum(1 for pr in in_window if pr.operator_intervened)
+        # "Abandoned" mirrors the metrics classifier — escalated without
+        # a rescue. We compute it here rather than importing the
+        # classifier to keep the admin surface insulated from the
+        # in-process metrics module's side-effects.
+        abandoned = sum(
+            1 for pr in in_window if pr.state.value == "escalated" and not pr.operator_intervened
+        )
+
+        merged_prs = [
+            pr for pr in in_window if pr.caretaker_merged and pr.merged_at and pr.first_seen_at
+        ]
+        ttm_hours: float | None = None
+        if merged_prs:
+            total = 0.0
+            for pr in merged_prs:
+                first = pr.first_seen_at
+                merged_at = pr.merged_at
+                if first is None or merged_at is None:
+                    continue
+                if first.tzinfo is None:
+                    first = first.replace(tzinfo=UTC)
+                if merged_at.tzinfo is None:
+                    merged_at = merged_at.replace(tzinfo=UTC)
+                total += (merged_at - first).total_seconds() / 3600.0
+            ttm_hours = round(total / len(merged_prs), 2) if merged_prs else None
+
+        return {
+            "since": cutoff.isoformat(),
+            "touched": touched,
+            "merged": merged,
+            "operator_rescued": rescued,
+            "abandoned": abandoned,
+            "avg_time_to_merge_hours": ttm_hours,
         }
 
     # ── Memory Store ──────────────────────────────────────────────────────

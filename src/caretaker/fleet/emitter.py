@@ -174,6 +174,33 @@ def _enabled_agents(config: MaintainerConfig) -> list[str]:
     return names
 
 
+class AttributionSummary(BaseModel):
+    """Per-heartbeat attribution rollup (R&D workstream A2).
+
+    Optional block on :class:`FleetHeartbeat` so the central registry can
+    aggregate cross-repo counts without having to scrape each repo's
+    orchestrator state directly. Mirrors the shape of the admin
+    ``GET /api/admin/attribution/weekly`` response so the backend can
+    use a single DTO end-to-end.
+
+    All counts are scoped to the heartbeat's *reporting window* — for
+    the full-repo scheduled run that's whatever the orchestrator
+    observed in this cycle, for a single-PR event run that's typically
+    just the touched PR. The registry is expected to sum these over the
+    last N heartbeats per repo to get a weekly rollup, not to trust a
+    single heartbeat as canonical. Every field defaults to 0 / None so
+    older caretakers that don't emit this block still validate.
+    """
+
+    touched: int = 0
+    merged: int = 0
+    operator_rescued: int = 0
+    abandoned: int = 0
+    # ``None`` when no caretaker merges landed in the window so the
+    # dashboard can render "unknown" instead of a misleading zero.
+    avg_time_to_merge_hours: float | None = None
+
+
 class FleetHeartbeat(BaseModel):
     """Canonical heartbeat payload.
 
@@ -192,6 +219,61 @@ class FleetHeartbeat(BaseModel):
     error_count: int = 0
     counters: dict[str, int] = Field(default_factory=dict)
     summary: dict[str, Any] | None = None
+    # Optional attribution rollup. ``None`` keeps the payload byte-
+    # identical to pre-A2 for older emitters; the current emitter
+    # always populates this block even when everything is zero, so the
+    # backend can distinguish "no data" from "zero activity."
+    attribution: AttributionSummary | None = None
+
+
+def _build_attribution_summary(state: Any | None) -> AttributionSummary | None:
+    """Roll tracked-PR attribution into an :class:`AttributionSummary`.
+
+    Returns ``None`` when no state is supplied — the heartbeat field is
+    optional and older callers that never passed a state should keep
+    their payload byte-identical. When state is supplied we always
+    return a summary, even if every counter is zero, so the backend can
+    tell "zero activity this window" from "older caretaker that doesn't
+    report attribution yet."
+    """
+    if state is None:
+        return None
+    prs = list(getattr(state, "tracked_prs", {}).values())
+    touched = sum(1 for pr in prs if getattr(pr, "caretaker_touched", False))
+    merged = sum(1 for pr in prs if getattr(pr, "caretaker_merged", False))
+    rescued = sum(1 for pr in prs if getattr(pr, "operator_intervened", False))
+    abandoned = sum(
+        1
+        for pr in prs
+        if getattr(getattr(pr, "state", None), "value", None) == "escalated"
+        and not getattr(pr, "operator_intervened", False)
+    )
+    merged_prs = [
+        pr
+        for pr in prs
+        if getattr(pr, "caretaker_merged", False)
+        and getattr(pr, "merged_at", None) is not None
+        and getattr(pr, "first_seen_at", None) is not None
+    ]
+    ttm: float | None = None
+    if merged_prs:
+        total = 0.0
+        for pr in merged_prs:
+            first = pr.first_seen_at
+            merged_at = pr.merged_at
+            if first.tzinfo is None:
+                first = first.replace(tzinfo=UTC)
+            if merged_at.tzinfo is None:
+                merged_at = merged_at.replace(tzinfo=UTC)
+            total += (merged_at - first).total_seconds() / 3600.0
+        ttm = round(total / len(merged_prs), 2)
+    return AttributionSummary(
+        touched=touched,
+        merged=merged,
+        operator_rescued=rescued,
+        abandoned=abandoned,
+        avg_time_to_merge_hours=ttm,
+    )
 
 
 def build_heartbeat(
@@ -200,8 +282,17 @@ def build_heartbeat(
     *,
     repo: str | None = None,
     include_full_summary: bool | None = None,
+    state: Any | None = None,
 ) -> FleetHeartbeat:
-    """Assemble the heartbeat payload from a finished run."""
+    """Assemble the heartbeat payload from a finished run.
+
+    ``state`` is the orchestrator's ``OrchestratorState`` snapshot; when
+    supplied the heartbeat carries an :class:`AttributionSummary` block
+    so the fleet registry can aggregate cross-repo attribution counts
+    without scraping each consumer. Kept optional for backward
+    compatibility and for legacy test fixtures that never constructed
+    state.
+    """
     slug = repo or os.environ.get("GITHUB_REPOSITORY") or "unknown/unknown"
     counters = {k: int(getattr(summary, k, 0) or 0) for k in _COUNTERS}
     want_full = (
@@ -220,6 +311,7 @@ def build_heartbeat(
         error_count=len(summary.errors or []),
         counters=counters,
         summary=full,
+        attribution=_build_attribution_summary(state),
     )
 
 
@@ -234,6 +326,7 @@ async def emit_heartbeat(
     *,
     client: httpx.AsyncClient | None = None,
     oauth_cache: FleetOAuthClientCache | None = None,
+    state: Any | None = None,
 ) -> bool:
     """POST a heartbeat to the configured fleet endpoint.
 
@@ -255,7 +348,7 @@ async def emit_heartbeat(
         return False
 
     try:
-        heartbeat = build_heartbeat(config, summary)
+        heartbeat = build_heartbeat(config, summary, state=state)
     except Exception as exc:  # defensive: never break the run loop
         logger.warning("fleet heartbeat: failed to build payload: %s", exc)
         return False

@@ -121,6 +121,44 @@ async def latest_run(
     return result
 
 
+@router.get("/attribution/weekly")
+async def attribution_weekly(
+    repo: str | None = Query(
+        default=None,
+        description=(
+            "Repo slug (owner/name). Currently ignored — "
+            "the admin data is scoped to one repo per deployment."
+        ),
+    ),
+    since: str | None = Query(
+        default=None,
+        description="ISO-8601 cutoff. Defaults to 7 days ago.",
+    ),
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Weekly attribution rollup.
+
+    Returns the count of PRs caretaker touched / merged / rescued /
+    abandoned since ``since``, plus the average
+    ``avg_time_to_merge_hours`` for PRs caretaker closed as merged. The
+    ``repo`` query parameter is accepted for forward-compatibility with
+    the fleet-aggregated admin tier — the single-repo admin dashboard
+    ignores it and serves data for the repo the orchestrator is scoped
+    to.
+    """
+    from datetime import datetime  # local import to keep module footprint small
+
+    since_dt: datetime | None = None
+    if since is not None:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid ISO-8601 datetime: {since!r}"
+            ) from exc
+    return _get_data().get_attribution_weekly(since=since_dt)
+
+
 @router.get("/metrics/fanout")
 async def fanout_metrics(
     high_cycle_threshold: int = Query(default=2, ge=1, le=100),
