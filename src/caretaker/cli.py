@@ -152,5 +152,77 @@ def validate_config(config: str) -> None:
     )
 
 
+DEFAULT_DOCTOR_CONFIG = ".github/maintainer/config.yml"
+
+
+@main.command("doctor")
+@click.option(
+    "--config",
+    default=DEFAULT_DOCTOR_CONFIG,
+    show_default=True,
+    type=click.Path(),
+    help="Path to config.yml. Defaults to .github/maintainer/config.yml.",
+)
+@click.option(
+    "--json",
+    "emit_json",
+    is_flag=True,
+    default=False,
+    help="Emit a machine-readable JSON summary on stdout (human table still goes to stderr).",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Treat unreachable external services as FAIL instead of WARN.",
+)
+@click.option(
+    "--skip-github",
+    is_flag=True,
+    default=False,
+    help="Skip GitHub token probes (used in tests / offline environments).",
+)
+def doctor(config: str, emit_json: bool, strict: bool, skip_github: bool) -> None:
+    """Preflight every required secret, scope, and external service.
+
+    Exit code matrix:
+
+    * 0 — no FAILs
+    * 1 — at least one FAIL
+    * 2 — internal error (preflight itself crashed)
+    """
+    # Imports are deferred so ``caretaker --help`` stays fast and test
+    # fixtures that stub the CLI entrypoint don't pay for httpx + pydantic.
+    import traceback
+
+    from caretaker.doctor import Severity, render_table, run_doctor_sync
+
+    try:
+        loaded = MaintainerConfig.from_yaml(config)
+    except FileNotFoundError as exc:
+        click.echo(f"doctor: config file not found: {exc}", err=True)
+        raise SystemExit(2) from exc
+    except Exception as exc:
+        click.echo(f"doctor: failed to load config: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    try:
+        report = run_doctor_sync(loaded, strict=strict, skip_github=skip_github)
+    except Exception as exc:  # pragma: no cover - surfaced to CLI user
+        click.echo(f"doctor: internal error during preflight: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        raise SystemExit(2) from exc
+
+    # Human-readable table → stderr so the optional JSON payload on
+    # stdout stays cleanly parseable for CI consumers.
+    click.echo(render_table(report), err=True)
+
+    if emit_json:
+        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+
+    if any(r.severity is Severity.FAIL for r in report.results):
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()
