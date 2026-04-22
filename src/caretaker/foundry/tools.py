@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path  # noqa: TC003 — used at runtime in ToolContext dataclass
 from typing import TYPE_CHECKING, Any
 
+from caretaker.util.text import ensure_trailing_newline
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -222,12 +224,17 @@ async def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     except PathViolation as exc:
         return _fence("error", str(exc))
     resolved.parent.mkdir(parents=True, exist_ok=True)
+    # Guarantee a trailing newline so downstream pre-commit end-of-file-fixer
+    # hooks don't fail on files the LLM forgot to terminate. Idempotent:
+    # content that already ends with ``\n`` (including multi-newline endings
+    # like JSON blobs with trailing blank lines) is returned unchanged.
+    normalised = ensure_trailing_newline(content)
     try:
-        resolved.write_text(content, encoding="utf-8")
+        resolved.write_text(normalised, encoding="utf-8")
     except OSError as exc:
         return _fence("error", f"write failed: {exc}")
-    ctx.record_mutation(f"write_file {path} ({len(content)} bytes)")
-    return _fence(f"write_file:{path}", f"OK ({len(content)} bytes written)")
+    ctx.record_mutation(f"write_file {path} ({len(normalised)} bytes)")
+    return _fence(f"write_file:{path}", f"OK ({len(normalised)} bytes written)")
 
 
 async def _tool_apply_patch(ctx: ToolContext, unified_diff: str) -> str:

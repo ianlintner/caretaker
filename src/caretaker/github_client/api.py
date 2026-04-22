@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from caretaker.tools.github import CopilotAgentAssignment
+from caretaker.util.text import ensure_trailing_newline
 
 if TYPE_CHECKING:
     from caretaker.tools.github import GitHubRepositoryTools
@@ -1113,12 +1114,21 @@ class GitHubClient:
         branch: str,
         sha: str | None = None,
     ) -> dict[str, Any]:
-        """Create or update a file via the contents API. *content* is raw UTF-8 text."""
+        """Create or update a file via the contents API. *content* is raw UTF-8 text.
+
+        The content is passed through :func:`ensure_trailing_newline` before
+        being base64-encoded so the resulting blob ends with a single ``\\n``.
+        This keeps consumer-side pre-commit ``end-of-file-fixer`` hooks happy
+        on files caretaker writes (CHANGELOG.md, workflow YAMLs, etc.) — see
+        PR python_dsa#42 / kubernetes-apply-vscode#17 for the failure mode
+        this prevents.
+        """
         import base64
 
+        normalised = ensure_trailing_newline(content)
         payload: dict[str, Any] = {
             "message": message,
-            "content": base64.b64encode(content.encode()).decode(),
+            "content": base64.b64encode(normalised.encode()).decode(),
             "branch": branch,
         }
         if sha:

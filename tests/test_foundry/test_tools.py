@@ -76,8 +76,29 @@ class TestMutationTools:
         reg = build_tool_registry()
         result = await reg["write_file"].handler(tool_ctx, "new.txt", "hi there")
         assert "OK" in result
-        assert (tool_ctx.workspace_root / "new.txt").read_text() == "hi there"
+        # Trailing newline is guaranteed — see T-M4 / python_dsa#42 cascade.
+        assert (tool_ctx.workspace_root / "new.txt").read_text() == "hi there\n"
         assert any("write_file new.txt" in m for m in tool_ctx.mutations)
+
+    @pytest.mark.asyncio
+    async def test_write_file_preserves_existing_trailing_newline(
+        self, tool_ctx: ToolContext
+    ) -> None:
+        """If the LLM already appended ``\\n``, don't double it. Regression
+        guard for the T-M4 release-sync EOF-newline fix.
+        """
+        reg = build_tool_registry()
+        await reg["write_file"].handler(tool_ctx, "pinned.txt", "0.12.1\n")
+        assert (tool_ctx.workspace_root / "pinned.txt").read_text() == "0.12.1\n"
+
+    @pytest.mark.asyncio
+    async def test_write_file_preserves_multi_newline_endings(self, tool_ctx: ToolContext) -> None:
+        """Don't over-normalise: a file that intentionally ends with a blank
+        line is left alone. The contract is 'at least one', not 'exactly one'.
+        """
+        reg = build_tool_registry()
+        await reg["write_file"].handler(tool_ctx, "doc.md", "# Title\n\n")
+        assert (tool_ctx.workspace_root / "doc.md").read_text() == "# Title\n\n"
 
     @pytest.mark.asyncio
     async def test_write_file_denylist_rejects(self, tool_ctx: ToolContext) -> None:

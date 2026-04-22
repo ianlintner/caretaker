@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC
 from datetime import datetime as _dt
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -843,3 +844,70 @@ async def test_update_issue_copilot_assignment_404_is_non_fatal() -> None:
         issue = await client.update_issue("o", "r", 55, assignees=["copilot"])
 
     assert issue.number == 55
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_file_appends_trailing_newline() -> None:
+    """Content missing a final ``\\n`` gets one appended before base64
+    encoding — keeps the consumer's ``end-of-file-fixer`` pre-commit hook
+    from failing on files caretaker writes via the contents API.
+
+    Regression guard for python_dsa#42 / kubernetes-apply-vscode#17.
+    """
+    client = GitHubClient(
+        credentials_provider=StaticCredentialsProvider(default_token="x"),
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_put(path: str, **kwargs: object) -> dict[str, object]:
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        return {"content": {"sha": "deadbeef"}}
+
+    with patch.object(client, "_put", side_effect=fake_put):
+        await client.create_or_update_file(
+            owner="o",
+            repo="r",
+            path=".github/workflows/maintainer.yml",
+            message="chore: sync maintainer workflow",
+            content="name: Maintainer\non: schedule",  # no trailing newline
+            branch="caretaker/sync",
+        )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    decoded = base64.b64decode(payload["content"]).decode()
+    assert decoded == "name: Maintainer\non: schedule\n"
+    assert decoded.endswith("\n")
+    assert not decoded.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_file_preserves_existing_newline() -> None:
+    """Content that already ends with ``\\n`` is passed through unchanged —
+    don't double-terminate.
+    """
+    client = GitHubClient(
+        credentials_provider=StaticCredentialsProvider(default_token="x"),
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_put(path: str, **kwargs: object) -> dict[str, object]:
+        captured["json"] = kwargs.get("json")
+        return {"content": {"sha": "abc"}}
+
+    original = "# CHANGELOG\n\n## [2026-W17] — 2026-04-21\n- hello (#1)\n"
+    with patch.object(client, "_put", side_effect=fake_put):
+        await client.create_or_update_file(
+            owner="o",
+            repo="r",
+            path="CHANGELOG.md",
+            message="docs: update changelog",
+            content=original,
+            branch="docs/changelog-2026-W17",
+        )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    decoded = base64.b64decode(payload["content"]).decode()
+    assert decoded == original
