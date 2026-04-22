@@ -100,6 +100,14 @@ llm-multi = [
 k8s-worker = [
     "kubernetes>=30,<34",
 ]
+# Workstream A4 — offline evaluation of the shadow-decision stream via
+# Braintrust. The harness falls open to a local-only JSON report when
+# ``BRAINTRUST_API_KEY`` is unset or this extra is not installed, so
+# none of caretaker's hot paths depend on the SDK. See
+# docs/plans/2026-Q2-agentic-migration.md workstream A4.
+eval = [
+    "braintrust>=0.0.170,<1",
+]
 # M8 of the memory-graph plan — OpenTelemetry GenAI agent spans. When
 # installed AND ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, caretaker emits
 # one ``invoke_agent`` span per agent run, mirroring the span id into
@@ -162,4 +170,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["braintrust", "braintrust.*"]
 ignore_missing_imports = true

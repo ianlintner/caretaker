@@ -9,11 +9,15 @@ import os
 import sys
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from caretaker.config import MaintainerConfig
 from caretaker.orchestrator import Orchestrator
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 def _load_dotenv_if_present() -> None:
@@ -222,6 +226,103 @@ def doctor(config: str, emit_json: bool, strict: bool, skip_github: bool) -> Non
 
     if any(r.severity is Severity.FAIL for r in report.results):
         raise SystemExit(1)
+
+
+@main.group("eval")
+def eval_group() -> None:
+    """Shadow-decision evaluation harness (workstream A4).
+
+    Runs the per-site scorer registry over ``:ShadowDecision`` records
+    and (when ``BRAINTRUST_API_KEY`` is set and the ``eval`` extra is
+    installed) uploads one experiment per site. Use ``--dry-run`` to
+    emit a JSON report locally without calling Braintrust.
+    """
+
+
+def _parse_since(value: str) -> datetime:
+    """Parse ``--since`` as either ``<N>[smhd]`` or an ISO-8601 timestamp.
+
+    Kept module-local (not a Click type) because the duration grammar is
+    tiny and reusing click's DateTime type would lose the ``7d`` case.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    stripped = value.strip()
+    if stripped and stripped[-1] in {"s", "m", "h", "d"} and stripped[:-1].isdigit():
+        amount = int(stripped[:-1])
+        unit = stripped[-1]
+        delta = {
+            "s": timedelta(seconds=amount),
+            "m": timedelta(minutes=amount),
+            "h": timedelta(hours=amount),
+            "d": timedelta(days=amount),
+        }[unit]
+        return datetime.now(UTC) - delta
+    try:
+        parsed = datetime.fromisoformat(stripped)
+    except ValueError as exc:
+        raise click.BadParameter(
+            f"--since must be a duration like '24h' or an ISO-8601 timestamp; got {value!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+@eval_group.command("run")
+@click.option(
+    "--since",
+    default="24h",
+    show_default=True,
+    help="Duration (e.g. ``24h``, ``7d``) or ISO-8601 timestamp for the lower window bound.",
+)
+@click.option(
+    "--sites",
+    default=None,
+    help="Comma-separated list of decision sites (default: every registered site).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Emit a local JSON report without calling Braintrust.",
+)
+@click.option(
+    "--output",
+    default=None,
+    type=click.Path(),
+    help="Write the JSON report to this path instead of stdout.",
+)
+def eval_run(
+    since: str,
+    sites: str | None,
+    dry_run: bool,
+    output: str | None,
+) -> None:
+    """Run the nightly shadow-decision eval harness."""
+    from datetime import UTC, datetime
+
+    from caretaker.eval import get_default_client, run_nightly_eval
+
+    since_dt = _parse_since(since)
+    until_dt = datetime.now(UTC)
+    site_list = [s.strip() for s in sites.split(",") if s.strip()] if sites else None
+
+    braintrust_client = None if dry_run else get_default_client()
+
+    report = run_nightly_eval(
+        since=since_dt,
+        until=until_dt,
+        sites=site_list,
+        braintrust_client=braintrust_client,
+        dry_run=dry_run,
+    )
+
+    payload = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+    if output:
+        Path(output).write_text(payload + "\n")
+    else:
+        click.echo(payload)
 
 
 if __name__ == "__main__":
