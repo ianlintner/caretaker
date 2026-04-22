@@ -125,6 +125,25 @@ class IssueAgentConfig(StrictBaseModel):
     labels: IssueAgentLabels = Field(default_factory=IssueAgentLabels)
 
 
+class TriageConfig(StrictBaseModel):
+    """Unified triage for PRs + issues + cross-entity cascade cleanup.
+
+    See memory/project_pr_triage.md for the motivating behavior.
+    """
+
+    enabled: bool = True
+    pr_triage: bool = True
+    issue_triage: bool = True
+    cascade: bool = True
+    # Paths whose sole presence makes a PR diff "empty" (close candidate).
+    # Binary state files committed by bots end up here; see 2026-04-21 cleanup.
+    binary_only_paths: list[str] = Field(default_factory=lambda: [".caretaker-memory.db"])
+    # When true, triage produces a report but takes no destructive action.
+    dry_run: bool = False
+    # Stale cutoff for issues marked with no activity, in days.
+    stale_issue_days: int = 30
+
+
 class UpgradeAgentConfig(StrictBaseModel):
     enabled: bool = True
     strategy: Literal["auto-minor", "auto-patch", "latest", "pinned", "manual"] = "auto-minor"
@@ -778,6 +797,7 @@ class MaintainerConfig(StrictBaseModel):
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     pr_agent: PRAgentConfig = Field(default_factory=PRAgentConfig)
     issue_agent: IssueAgentConfig = Field(default_factory=IssueAgentConfig)
+    triage: TriageConfig = Field(default_factory=TriageConfig)
     upgrade_agent: UpgradeAgentConfig = Field(default_factory=UpgradeAgentConfig)
     devops_agent: DevOpsAgentConfig = Field(default_factory=DevOpsAgentConfig)
     self_heal_agent: SelfHealAgentConfig = Field(default_factory=SelfHealAgentConfig)

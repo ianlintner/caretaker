@@ -21,6 +21,7 @@ from caretaker.issue_agent.adapter import IssueAgentAdapter
 from caretaker.migration_agent.agent import MigrationAgent
 from caretaker.perf_agent.agent import PerformanceAgent
 from caretaker.pr_agent.adapter import PRAgentAdapter
+from caretaker.pr_agent.triage_adapter import TriageAgentAdapter
 from caretaker.pr_reviewer.agent import PRReviewerAgent
 from caretaker.principal_agent.agent import PrincipalAgent
 from caretaker.refactor_agent.agent import RefactorAgent
@@ -54,4 +55,5 @@ __all__ = [
     "PerformanceAgent",
     "MigrationAgent",
     "PRReviewerAgent",
+    "TriageAgentAdapter",
 ]
