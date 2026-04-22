@@ -125,14 +125,10 @@ class SelfHealAgent:
             logger.info("Self-heal: run_id %d already tracked by another agent, skipping", run_id)
             return report
 
-        # Storm cap — refuse to open any new self-heal issues if too many
-        # have been opened recently. Catches the F1 retry-storm pattern that
-        # produced 108 PRs in 90 minutes on caretaker-self on 2026-04-14.
-        blocked, reason = await self._storm_cap_blocked()
-        if blocked:
-            logger.warning("Self-heal: %s", reason)
-            report.errors.append(f"storm-cap: {reason}")
-            return report
+        # Storm cap (per-sig, per hour_window bucket) — pre-compute the
+        # histogram once per run so the inner loop is a dict lookup. See
+        # ``_storm_cap_histogram`` for the keying decision (T-M7).
+        sig_histogram = await self._storm_cap_histogram()
 
         for job_name, log_text in failure_logs:
             kind, title, details = _classify_failure(job_name, log_text)
@@ -140,6 +136,18 @@ class SelfHealAgent:
 
             if sig in existing_sigs:
                 logger.debug("Self-heal: skipping duplicate for %s", job_name)
+                continue
+
+            blocked, reason = self._sig_storm_cap_blocked(sig, sig_histogram)
+            if blocked:
+                logger.warning(
+                    "Self-heal: %s/%s sig=%s %s",
+                    self._owner,
+                    self._repo,
+                    sig,
+                    reason,
+                )
+                report.errors.append(f"storm-cap: {reason}")
                 continue
 
             # Cooldown: same job+kind recently actioned → skip even with a different sig
@@ -328,47 +336,78 @@ class SelfHealAgent:
             logger.debug("Self-heal: could not fetch job log %s: %s", job_id, e)
         return ""
 
-    async def _storm_cap_blocked(self) -> tuple[bool, str]:
-        """Return (blocked, reason). True when opening one more self-heal
-        issue would exceed the per-hour or per-day cap.
+    async def _storm_cap_histogram(self) -> dict[str, dict[str, int]]:
+        """Build a per-sig histogram of existing self-heal issues.
 
-        Counts existing open self-heal-labeled issues by ``created_at`` so
-        the cap survives across workflow runs without persistence plumbing.
+        The key is the per-run error signature (see :func:`_sig`). The
+        value is ``{"current_hour": int, "day": int, "hour_window": int}``
+        where ``current_hour`` counts issues created in the *current*
+        tumbling hour window (``floor(now / 3600)``) and ``day`` counts
+        issues created in the last 24h.
+
+        Sprint-2 intent: key storm caps on ``(repo_slug, error_sig,
+        hour_window)`` so one recurring failure can't burn the whole
+        per-repo budget. The repo dimension is implicit — a
+        :class:`SelfHealAgent` instance is bound to one ``(owner, repo)``
+        via ``self._issues``.
         """
+        empty: dict[str, dict[str, int]] = {}
         if self._max_open_per_hour <= 0 and self._max_open_per_day <= 0:
-            return False, ""
+            return empty
+
         try:
             issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
         except Exception as e:
             logger.warning("Storm cap: failed to list self-heal issues (%s) — allowing", e)
-            return False, ""
+            return empty
+
         from datetime import UTC, timedelta
         from datetime import datetime as _dt
 
         now = _dt.now(UTC)
-        hour_ago = now - timedelta(hours=1)
+        current_hour_window = int(now.timestamp() // 3600)
         day_ago = now - timedelta(days=1)
-        hour_count = 0
-        day_count = 0
-        for i in issues:
-            created = getattr(i, "created_at", None)
+
+        hist: dict[str, dict[str, int]] = {}
+        for issue in issues:
+            created = getattr(issue, "created_at", None)
             if created is None:
                 continue
             if created.tzinfo is None:
                 created = created.replace(tzinfo=UTC)
-            if created >= day_ago:
-                day_count += 1
-                if created >= hour_ago:
-                    hour_count += 1
+            if created < day_ago:
+                continue
+            sig = _extract_sig_from_body(getattr(issue, "body", "") or "")
+            if not sig:
+                continue
+            bucket = hist.setdefault(sig, {"current_hour": 0, "day": 0})
+            bucket["day"] += 1
+            issue_hour_window = int(created.timestamp() // 3600)
+            if issue_hour_window == current_hour_window:
+                bucket["current_hour"] += 1
+        return hist
+
+    def _sig_storm_cap_blocked(
+        self, sig: str, histogram: dict[str, dict[str, int]]
+    ) -> tuple[bool, str]:
+        """Return (blocked, reason) for a specific ``sig``.
+
+        Checks the hour-window count + 24h count against the configured
+        caps. Cap ``<= 0`` disables that axis.
+        """
+        bucket = histogram.get(sig, {"current_hour": 0, "day": 0})
+        hour_count = bucket.get("current_hour", 0)
+        day_count = bucket.get("day", 0)
+
         if self._max_open_per_hour > 0 and hour_count >= self._max_open_per_hour:
             return True, (
                 f"hourly cap hit ({hour_count}/{self._max_open_per_hour} self-heal "
-                "issues opened in the last hour) — pausing self-heal"
+                f"issues for sig={sig} in this hour window) — pausing"
             )
         if self._max_open_per_day > 0 and day_count >= self._max_open_per_day:
             return True, (
                 f"daily cap hit ({day_count}/{self._max_open_per_day} self-heal "
-                "issues opened in the last 24h) — pausing self-heal"
+                f"issues for sig={sig} in the last 24h) — pausing"
             )
         return False, ""
 
@@ -376,13 +415,9 @@ class SelfHealAgent:
         issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
         sigs: set[str] = set()
         for issue in issues:
-            for line in issue.body.splitlines():
-                if line.startswith(SELF_HEAL_MARKER):
-                    line.replace(SELF_HEAL_MARKER, "").replace("-->", "").strip()
-                    # Marker is on its own line — sig is in next pattern
-                m = re.search(r"sig:([a-f0-9]{12})", issue.body)
-                if m:
-                    sigs.add(m.group(1))
+            sig = _extract_sig_from_body(issue.body or "")
+            if sig:
+                sigs.add(sig)
         return sigs
 
     async def _run_id_already_tracked(self, run_id: int) -> bool:
@@ -627,6 +662,20 @@ def _sig(job_name: str, kind: FailureKind, title: str) -> str:
 
     raw = f"{job_name}:{kind.value}:{title[:60]}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+_SIG_PATTERN = re.compile(r"sig:([a-f0-9]{12})")
+
+
+def _extract_sig_from_body(body: str) -> str | None:
+    """Return the ``sig:xxxxxxxxxxxx`` signature embedded in an issue body.
+
+    Returns ``None`` when the body carries no marker — older issues from
+    before the marker was introduced are treated as anonymous and simply
+    don't participate in the per-sig storm-cap histogram.
+    """
+    match = _SIG_PATTERN.search(body)
+    return match.group(1) if match else None
 
 
 def _build_fix_issue_body(
