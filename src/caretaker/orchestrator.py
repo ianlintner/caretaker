@@ -308,7 +308,13 @@ class Orchestrator:
             store = build_evolution_store(config)
             assert store is not None, "Evolution store cannot be None when evolution is enabled"
             self._insight_store = store
-            self._skill_crystallizer = SkillCrystallizer(store)
+            # T-A10: SkillCrystallizer now accepts an LLMRouter so the
+            # ``crystallizer_category`` shadow candidate (see
+            # :func:`caretaker.evolution.crystallizer._infer_category_llm`)
+            # can reach Claude. ``agentic.crystallizer_category.mode`` is
+            # ``off`` by default so this adds no LLM traffic until the
+            # operator flips the flag.
+            self._skill_crystallizer = SkillCrystallizer(store, llm_router=self._llm)
             self._reflection_engine = ReflectionEngine()
             self._strategy_mutator = StrategyMutator(store)
             if config.evolution.plan_mode_enabled:
@@ -578,8 +584,10 @@ class Orchestrator:
 
             # ── Skill crystallization (Phase 1) ───────────────
             if self._skill_crystallizer is not None:
-                recorded = self._skill_crystallizer.crystallize_transitions(
-                    _pre_agent_prs, state.tracked_prs
+                recorded = await self._skill_crystallizer.crystallize_transitions(
+                    _pre_agent_prs,
+                    state.tracked_prs,
+                    repo_slug=f"{self._owner}/{self._repo}",
                 )
                 if recorded:
                     logger.info("Evolution: crystallized %d skill outcomes", recorded)

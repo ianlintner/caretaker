@@ -211,7 +211,8 @@ class TestSkillInjection:
 
 
 class TestSkillCrystallizer:
-    def test_crystallize_merged_pr(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_crystallize_merged_pr(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         previous = {
             1: TrackedPR(
@@ -222,35 +223,38 @@ class TestSkillCrystallizer:
             1: TrackedPR(number=1, state=PRTrackingState.MERGED, notes="jest timeout failure")
         }
 
-        recorded = crystallizer.crystallize_transitions(previous, current)
+        recorded = await crystallizer.crystallize_transitions(previous, current)
         assert recorded == 1
         skills = store.all_skills()
         assert len(skills) == 1
         assert skills[0].success_count == 1
 
-    def test_crystallize_escalated_pr(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_crystallize_escalated_pr(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         previous = {
             2: TrackedPR(number=2, state=PRTrackingState.FIX_REQUESTED, notes="build failure")
         }
         current = {2: TrackedPR(number=2, state=PRTrackingState.ESCALATED, notes="build failure")}
 
-        recorded = crystallizer.crystallize_transitions(previous, current)
+        recorded = await crystallizer.crystallize_transitions(previous, current)
         assert recorded == 1
         skills = store.all_skills()
         assert skills[0].fail_count == 1
 
-    def test_no_transition_not_crystallized(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_no_transition_not_crystallized(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         pr = TrackedPR(number=3, state=PRTrackingState.MERGED, notes="some notes")
-        recorded = crystallizer.crystallize_transitions({3: pr}, {3: pr})
+        recorded = await crystallizer.crystallize_transitions({3: pr}, {3: pr})
         assert recorded == 0
 
-    def test_empty_notes_skipped(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_notes_skipped(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         previous = {4: TrackedPR(number=4, state=PRTrackingState.CI_FAILING)}
         current = {4: TrackedPR(number=4, state=PRTrackingState.MERGED)}
-        recorded = crystallizer.crystallize_transitions(previous, current)
+        recorded = await crystallizer.crystallize_transitions(previous, current)
         assert recorded == 0
 
 

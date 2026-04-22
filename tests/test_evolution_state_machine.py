@@ -626,33 +626,37 @@ class TestCrystallizerTransitionFilters:
     crystallize — those signals are unreliable.
     """
 
-    def test_same_terminal_state_is_no_op(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_same_terminal_state_is_no_op(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         pr = TrackedPR(number=7, state=PRTrackingState.MERGED, notes="jest flake")
-        recorded = crystallizer.crystallize_transitions({7: pr}, {7: pr})
+        recorded = await crystallizer.crystallize_transitions({7: pr}, {7: pr})
         assert recorded == 0
 
-    def test_ci_backlog_notes_are_skipped(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_ci_backlog_notes_are_skipped(self, store: InsightStore) -> None:
         crystallizer = SkillCrystallizer(store)
         previous = {
             1: TrackedPR(number=1, state=PRTrackingState.CI_FAILING, notes="ci_backlog_guard")
         }
         current = {1: TrackedPR(number=1, state=PRTrackingState.MERGED, notes="ci_backlog_guard")}
-        assert crystallizer.crystallize_transitions(previous, current) == 0
+        assert await crystallizer.crystallize_transitions(previous, current) == 0
 
-    def test_closed_state_never_crystallizes(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_closed_state_never_crystallizes(self, store: InsightStore) -> None:
         """CLOSED represents abandon/backlog — no skill signal."""
         crystallizer = SkillCrystallizer(store)
         previous = {1: TrackedPR(number=1, state=PRTrackingState.CI_FAILING, notes="jest flake")}
         current = {1: TrackedPR(number=1, state=PRTrackingState.CLOSED, notes="jest flake")}
-        assert crystallizer.crystallize_transitions(previous, current) == 0
+        assert await crystallizer.crystallize_transitions(previous, current) == 0
 
-    def test_new_pr_transitioned_to_merged(self, store: InsightStore) -> None:
+    @pytest.mark.asyncio
+    async def test_new_pr_transitioned_to_merged(self, store: InsightStore) -> None:
         """PR discovered and merged in the same run — no previous snapshot exists."""
         crystallizer = SkillCrystallizer(store)
         current = {9: TrackedPR(number=9, state=PRTrackingState.MERGED, notes="pytest timeout")}
         # No previous entry — previous_state is None, current is MERGED → crystallize
-        recorded = crystallizer.crystallize_transitions({}, current)
+        recorded = await crystallizer.crystallize_transitions({}, current)
         assert recorded == 1
         skills = store.all_skills(CATEGORY_CI)
         assert len(skills) == 1
