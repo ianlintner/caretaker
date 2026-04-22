@@ -367,6 +367,14 @@ class Orchestrator:
             self._repo,
         )
 
+        # Reset the per-run scope-gap tracker. It's a process-wide
+        # singleton, so long-lived hosts (K8s agent-worker, local loops)
+        # would otherwise carry forward incidents from a previous
+        # orchestrator.run() call.
+        from caretaker.github_client.scope_gap import reset_tracker
+
+        reset_tracker()
+
         # Honour any in-process rate-limit cooldown from a previous run
         # (same runner, same python process is rare in GHA but possible
         # for local loops or the K8s agent-worker that reuses the pod).
@@ -562,6 +570,24 @@ class Orchestrator:
 
         # Persist state (save also appends summary to history)
         await self._state_tracker.save(summary)
+
+        # Surface any token-scope gaps accrued during the run as a single
+        # tracking issue in the consumer repo. Deliberately runs *before*
+        # the fleet heartbeat so a failure here can't cascade and the
+        # issue writer can itself observe the cooldown state.
+        try:
+            from caretaker.github_client.scope_gap_reporter import (
+                publish_scope_gap_issue,
+            )
+
+            await publish_scope_gap_issue(
+                self._github,
+                self._owner,
+                self._repo,
+                dry_run=mode == "dry-run" or self._config.orchestrator.dry_run,
+            )
+        except Exception as e:  # pragma: no cover - defensive tail
+            logger.warning("Scope-gap issue writer failed: %s", e)
 
         # Opt-in fleet-registry heartbeat. Fail-open: the emitter logs
         # and swallows any error so a missing / misconfigured endpoint
