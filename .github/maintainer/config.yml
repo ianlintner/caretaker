@@ -122,10 +122,3 @@ executor:
       - LINT_FAILURE
       - REVIEW_COMMENT
     route_same_repo_only: true
-
-# Triage subsystem (v0.11.0) — start in dry-run so the next scheduled run
-# emits the "[DRY RUN]" plan-summary log line without closing anything.
-# Flip dry_run to false (or remove the block to use defaults) once a run
-# confirms the planner's choices look correct.
-triage:
-  dry_run: true
