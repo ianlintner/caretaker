@@ -8,12 +8,19 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from caretaker.dependency_agent.bisector import (
+    BISECTOR_COMMENT_MARKER,
+    BisectResult,
+    bisect_grouped_dependabot_pr,
+    format_bisect_comment,
+)
 from caretaker.identity import classify_identity
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
+    from caretaker.dependency_agent.bisector import CIProbe
     from caretaker.github_client.api import GitHubClient
-    from caretaker.github_client.models import Issue
+    from caretaker.github_client.models import Issue, PullRequest
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,8 @@ class DependencyReport:
     major_issues_created: list[int] = field(default_factory=list)
     digest_issue_number: int | None = None
     errors: list[str] = field(default_factory=list)
+    # PR numbers where the bisector posted an advisory merge plan.
+    bisector_plans_posted: list[int] = field(default_factory=list)
 
 
 class DependencyAgent:
@@ -69,6 +78,9 @@ class DependencyAgent:
         auto_merge_minor: bool = True,
         merge_method: str = "squash",
         post_digest: bool = True,
+        bisector_enabled: bool = False,
+        bisector_max_runs: int = 6,
+        bisector_owned_label: str = "caretaker:owned",
     ) -> None:
         self._github = github
         self._owner = owner
@@ -77,6 +89,9 @@ class DependencyAgent:
         self._auto_merge_minor = auto_merge_minor
         self._merge_method = merge_method
         self._post_digest = post_digest
+        self._bisector_enabled = bisector_enabled
+        self._bisector_max_runs = bisector_max_runs
+        self._bisector_owned_label = bisector_owned_label
         self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self) -> DependencyReport:
@@ -153,6 +168,28 @@ class DependencyAgent:
                     )
                     report.errors.append(str(e))
 
+        # Bisector hook: for each Dependabot PR that is grouped
+        # (i.e. has no parseable single-bump title) AND carries the
+        # ``caretaker:owned`` label AND is mergeable-but-unstable,
+        # post an advisory plan comment. Gated behind an explicit
+        # config knob; default off.
+        if self._bisector_enabled:
+            unparsed_prs = [
+                pr for pr, bump in zip(dep_prs, bumps_raw, strict=False) if bump is None
+            ]
+            for pr in unparsed_prs:
+                try:
+                    posted = await self._maybe_run_bisector(pr)
+                    if posted:
+                        report.bisector_plans_posted.append(pr.number)
+                except Exception as e:
+                    logger.warning(
+                        "Dependency agent: bisector failed for PR#%d: %s",
+                        pr.number,
+                        e,
+                    )
+                    report.errors.append(str(e))
+
         # Post weekly digest
         if self._post_digest and bumps:
             try:
@@ -163,6 +200,88 @@ class DependencyAgent:
                 report.errors.append(str(e))
 
         return report
+
+    async def _maybe_run_bisector(
+        self,
+        pr: PullRequest,
+        *,
+        ci_probe: CIProbe | None = None,
+    ) -> bool:
+        """Run the grouped-dependabot bisector against ``pr`` if applicable.
+
+        Returns ``True`` when an advisory plan comment was posted.
+
+        Firing conditions:
+        * PR carries the configured ``owned_label`` (default
+          ``caretaker:owned``). Without this label Caretaker has not
+          claimed ownership and must not act.
+        * PR is ``MERGEABLE UNSTABLE`` (mergeable=True AND latest CI
+          verdict is not ``success``). Green PRs and conflicted PRs
+          are skipped; conflicted PRs are the Dependabot-rebase
+          agent's problem.
+        * The PR body contains a grouped-update preamble (parser
+          returns ≥ 2 updates). Non-grouped PRs fall through to the
+          per-package bump flow.
+        * No prior bisector comment exists on the PR (idempotent —
+          we don't spam on every poll).
+        """
+        if not pr.has_label(self._bisector_owned_label):
+            return False
+
+        mergeable = getattr(pr, "mergeable", None)
+        if mergeable is False:
+            return False
+
+        # CI must be non-green for there to be anything to bisect.
+        try:
+            ci_status = await self._github.get_combined_status(
+                self._owner, self._repo, str(pr.number)
+            )
+        except Exception as e:
+            logger.warning(
+                "Dependency agent: could not read CI status for PR#%d: %s",
+                pr.number,
+                e,
+            )
+            return False
+        if ci_status == "success":
+            return False
+
+        # Idempotency check: skip if we've already posted a plan.
+        try:
+            existing = await self._github.get_pr_comments(self._owner, self._repo, pr.number)
+        except Exception:
+            existing = []
+        if any(BISECTOR_COMMENT_MARKER in (c.body or "") for c in existing):
+            logger.info("Dependency agent: bisect comment already present on PR#%d", pr.number)
+            return False
+
+        result: BisectResult = await bisect_grouped_dependabot_pr(
+            pr,
+            github=self._github,
+            max_runs=self._bisector_max_runs,
+            ci_probe=ci_probe,
+        )
+        if result.outcome == "inconclusive" and result.reason == "not_grouped":
+            return False
+
+        body = format_bisect_comment(result)
+        try:
+            await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
+        except Exception as e:
+            logger.warning(
+                "Dependency agent: failed to post bisect comment on PR#%d: %s",
+                pr.number,
+                e,
+            )
+            return False
+        logger.info(
+            "Dependency agent: posted bisect plan on PR#%d (%s, runs=%d)",
+            pr.number,
+            result.outcome,
+            result.runs_consumed,
+        )
+        return True
 
     async def _get_existing_major_issue_prs(self) -> set[int]:
         """Return PR numbers that already have open major-upgrade tracking issues."""
