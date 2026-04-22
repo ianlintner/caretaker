@@ -10,6 +10,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from caretaker.identity import deterministic_family
 
 COPILOT_LOGINS = frozenset(
     {
@@ -23,8 +24,12 @@ COPILOT_LOGINS = frozenset(
 
 
 def is_copilot_login(login: str) -> bool:
-    """Return whether *login* refers to a GitHub Copilot coding agent identity."""
-    return login.casefold() in COPILOT_LOGINS
+    """Return whether *login* refers to a GitHub Copilot coding agent identity.
+
+    Delegates to :func:`caretaker.identity.deterministic_family` so the
+    Copilot allowlist stays consolidated in one place.
+    """
+    return deterministic_family(login.casefold()) == "copilot"
 
 
 class PRState(StrEnum):
@@ -149,7 +154,7 @@ class PullRequest(BaseModel):
 
     @property
     def is_dependabot_pr(self) -> bool:
-        return self.user.login in ("dependabot[bot]", "dependabot")
+        return deterministic_family(self.user.login) == "dependabot"
 
     @property
     def is_maintainer_pr(self) -> bool:

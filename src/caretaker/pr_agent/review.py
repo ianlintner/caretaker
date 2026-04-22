@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from caretaker.github_client.models import Review, ReviewState
-from caretaker.pr_agent._constants import is_automated_reviewer
+from caretaker.identity import is_automated
 
 if TYPE_CHECKING:
     from caretaker.llm.router import LLMRouter
@@ -100,7 +100,7 @@ async def analyze_reviews(
         r
         for r in reviews
         if r.state == ReviewState.CHANGES_REQUESTED
-        or (r.state == ReviewState.COMMENTED and r.body and is_automated_reviewer(r.user.login))
+        or (r.state == ReviewState.COMMENTED and r.body and is_automated(r.user.login))
     ]
 
     for review in actionable:

@@ -15,7 +15,7 @@ from caretaker.github_client.models import (
     Review,
     ReviewState,
 )
-from caretaker.pr_agent._constants import is_automated_reviewer
+from caretaker.identity import is_automated
 from caretaker.state.models import PRTrackingState
 
 if TYPE_CHECKING:
@@ -165,7 +165,7 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
         r
         for r in latest_by_user.values()
         if r.state == ReviewState.COMMENTED
-        and is_automated_reviewer(r.user.login)
+        and is_automated(r.user.login)
         and r.body  # only reviews that carry a summary body
     ]
 
