@@ -8,8 +8,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from caretaker.evolution.shadow import shadow_decision
+from caretaker.evolution.shadow_config import get_active_config
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
+from caretaker.issue_agent.triage_llm import (
+    IssueTriage,
+    classify_issue_llm,
+    compare_triage,
+    legacy_to_triage,
+    select_candidates_by_jaccard,
+)
 from caretaker.state.models import IssueTrackingState, TrackedIssue
 from caretaker.tools.debug_dump import render_debug_dump
 from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
@@ -31,6 +40,41 @@ class IssueAgentReport:
     closed: list[int] = field(default_factory=list)
     escalated: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+def _compare_triage_tuple(
+    legacy_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
+    candidate_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
+) -> bool:
+    """Compare shadow verdicts on ``(classification, duplicate_of)``.
+
+    Both sides are expected to return a ``(IssueClassification, IssueTriage)``
+    tuple so the shadow record captures the full triage payload for audit,
+    while the caller-facing return type is the classification enum. We
+    compare on ``(kind, duplicate_of)`` (per the migration plan: minor
+    label-list deltas should not trip the disagreement counter).
+    """
+    legacy_triage = legacy_v[1] if isinstance(legacy_v, tuple) else None
+    candidate_triage = candidate_v[1] if isinstance(candidate_v, tuple) else None
+    if legacy_triage is None or candidate_triage is None:
+        return legacy_v == candidate_v
+    return compare_triage(legacy_triage, candidate_triage)
+
+
+@shadow_decision("issue_triage", compare=_compare_triage_tuple)
+async def _triage_issue_shadow(
+    *,
+    legacy: Any,
+    candidate: Any,
+    context: Any = None,
+) -> tuple[IssueClassification, IssueTriage]:
+    """Shadow-mode wrapper — return legacy in ``off``/``shadow``, candidate in ``enforce``.
+
+    The decorator supplies the legacy/candidate dispatch and disagreement
+    bookkeeping; this body is never executed directly. See
+    :mod:`caretaker.evolution.shadow` for the full contract.
+    """
+    raise AssertionError("shadow_decision wrapper should short-circuit this function")
 
 
 class IssueAgent:
@@ -97,7 +141,7 @@ class IssueAgent:
                     tracked_issues[issue.number] = tracking
                     continue
 
-                classification = classify_issue(issue, self._config)
+                classification = await self._classify(issue, issues)
                 tracking.classification = classification.value
                 report.triaged += 1
 
@@ -110,6 +154,110 @@ class IssueAgent:
                 report.errors.append(f"Issue #{issue.number}: {e}")
 
         return report, tracked_issues
+
+    async def _classify(
+        self,
+        issue: Issue,
+        open_issues: list[Issue],
+    ) -> IssueClassification:
+        """Classify ``issue`` via the shadow decorator.
+
+        ``off`` and ``shadow`` modes return the legacy heuristic verdict
+        byte-identically to the pre-migration behaviour. In ``enforce``
+        mode the LLM candidate is authoritative; we map its
+        :class:`IssueTriage` verdict back onto the legacy
+        :class:`IssueClassification` vocabulary so the rest of the agent
+        state machine is untouched.
+
+        Returns a ``(classification, triage)`` tuple through the shadow
+        decorator so the persisted ``ShadowDecisionRecord`` captures the
+        full triage payload (labels, severity, summary) for audit, while
+        the caller only sees the classification.
+        """
+
+        async def _legacy_fn() -> tuple[IssueClassification, IssueTriage]:
+            cls = classify_issue(issue, self._config)
+            return cls, legacy_to_triage(cls, issue)
+
+        async def _candidate_fn() -> tuple[IssueClassification, IssueTriage] | None:
+            claude = self._claude_client()
+            if claude is None:
+                # No LLM wired — mimic a structured-complete failure so the
+                # shadow decorator records it and falls through to legacy.
+                return None
+            pool_size = self._dup_candidate_pool_size()
+            candidates = (
+                select_candidates_by_jaccard(issue, open_issues, limit=pool_size)
+                if pool_size > 0
+                else []
+            )
+            triage = await classify_issue_llm(
+                issue,
+                candidates=candidates,
+                claude=claude,
+            )
+            if triage is None:
+                return None
+            return self._triage_to_legacy(triage, issue), triage
+
+        verdict = await _triage_issue_shadow(
+            legacy=_legacy_fn,
+            candidate=_candidate_fn,
+            context={"repo_slug": f"{self._owner}/{self._repo}", "issue_number": issue.number},
+        )
+        return verdict[0]
+
+    def _claude_client(self) -> Any | None:
+        """Return the configured :class:`ClaudeClient`, or ``None``."""
+        if self._llm is None:
+            return None
+        claude = getattr(self._llm, "claude", None)
+        if claude is None or not getattr(claude, "available", False):
+            return None
+        return claude
+
+    @staticmethod
+    def _dup_candidate_pool_size() -> int:
+        """Read the pool-size knob from the active AgenticConfig.
+
+        Returns 5 (the plan default) when no config is installed, which
+        keeps the test harness — which never calls ``shadow_config.configure``
+        — from crashing on import order.
+        """
+        cfg = get_active_config()
+        if cfg is None:
+            return 5
+        domain = getattr(cfg, "issue_triage", None)
+        return int(getattr(domain, "dup_candidate_pool_size", 5))
+
+    @staticmethod
+    def _triage_to_legacy(triage: IssueTriage, issue: Issue) -> IssueClassification:
+        """Collapse an :class:`IssueTriage` back to an :class:`IssueClassification`.
+
+        Needed only when the shadow decorator is in ``enforce`` mode and
+        the LLM candidate is authoritative. In ``off``/``shadow`` the
+        legacy adapter round-trips exactly, so this mapping is still
+        stable for those paths.
+        """
+        if triage.duplicate_of is not None:
+            return IssueClassification.DUPLICATE
+        if issue.is_maintainer_issue:
+            return IssueClassification.MAINTAINER_INTERNAL
+        if triage.staleness in ("stale", "ancient"):
+            return IssueClassification.STALE
+        if triage.kind == "bug":
+            is_complex = triage.severity in ("blocker", "major")
+            return IssueClassification.BUG_COMPLEX if is_complex else IssueClassification.BUG_SIMPLE
+        if triage.kind == "feature":
+            # Large feature signal comes from the LLM's summary; without
+            # a dedicated size field, default to small and let the caller
+            # escalate on suggested labels later.
+            return IssueClassification.FEATURE_SMALL
+        if triage.kind == "question":
+            return IssueClassification.QUESTION
+        if triage.kind in ("chore", "security", "docs"):
+            return IssueClassification.INFRA_OR_CONFIG
+        return IssueClassification.FEATURE_SMALL
 
     async def _process_issue(
         self,
