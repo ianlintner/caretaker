@@ -20,8 +20,22 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from caretaker.evolution.executor_routing import (
+    ExecutorRoute,
+    ExecutorRouteContext,
+    ExecutorRouteFile,
+    executor_routes_agree,
+    route_executor_llm,
+    route_from_foundry_legacy,
+)
+from caretaker.evolution.shadow import shadow_decision
 from caretaker.foundry.prompts import build_prompt
-from caretaker.foundry.size_classifier import Decision, post_flight, pre_flight
+from caretaker.foundry.size_classifier import (
+    ClassifierResult,
+    Decision,
+    post_flight,
+    pre_flight,
+)
 from caretaker.foundry.tool_loop import ToolLoopError, run_tool_loop
 from caretaker.foundry.tools import ToolContext, build_tool_registry
 from caretaker.foundry.workspace import Workspace, WorkspaceError
@@ -34,16 +48,32 @@ from caretaker.llm.copilot import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from typing import Any
 
     from caretaker.config import FoundryExecutorConfig
     from caretaker.evolution.insight_store import Skill
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
+    from caretaker.llm.claude import ClaudeClient
     from caretaker.llm.provider import LLMProvider
 
 type TokenSupplier = Callable[[], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
+
+
+@shadow_decision("executor_routing", compare=executor_routes_agree)
+async def _decide_executor_route(
+    *, legacy: Any, candidate: Any, context: Any = None
+) -> ExecutorRoute:
+    """Shadow-mode decision point wrapping the legacy + LLM routing paths.
+
+    Placeholder body — the decorator short-circuits to ``legacy`` in
+    ``off`` / ``shadow`` modes and to ``candidate`` in ``enforce`` mode.
+    Shares the ``executor_routing`` name with the pr-reviewer call site
+    so shadow data aggregates across both executors.
+    """
+    raise AssertionError("shadow_decision wrapper short-circuits this placeholder")
 
 
 class ExecutorOutcome(StrEnum):
@@ -137,6 +167,7 @@ class FoundryExecutor:
         config: FoundryExecutorConfig,
         source_repo_path: Path | None = None,
         token_supplier: TokenSupplier | None = None,
+        claude: ClaudeClient | None = None,
     ) -> None:
         self._provider = provider
         self._github = github
@@ -149,6 +180,12 @@ class FoundryExecutor:
             else Path(os.environ.get("GITHUB_WORKSPACE", os.getcwd()))
         )
         self._token_supplier = token_supplier
+        # Optional ``ClaudeClient`` used by the executor_routing shadow
+        # candidate. ``None`` disables the LLM path (shadow mode will
+        # record candidate_error, enforce mode will fall through to
+        # legacy), matching the default-safe rollout pattern used by
+        # every other Phase 2 migration.
+        self._claude = claude
         # Per-branch asyncio lock so two concurrent tasks on the same PR
         # branch don't clobber each other's worktree.
         self._branch_locks: dict[str, asyncio.Lock] = {}
@@ -159,6 +196,59 @@ class FoundryExecutor:
             lock = asyncio.Lock()
             self._branch_locks[branch] = lock
         return lock
+
+    async def _route_via_shadow(
+        self,
+        *,
+        task: CodingTask,
+        pr: PullRequest,
+        classifier_result: ClassifierResult,
+    ) -> ExecutorRoute | None:
+        """Run the ``executor_routing`` shadow gate for the Foundry site.
+
+        Returns the legacy-adapted :class:`ExecutorRoute` in
+        ``off`` / ``shadow`` modes; returns the LLM verdict when
+        ``enforce`` mode succeeds. Defensive: swallows every exception —
+        the classifier verdict is still authoritative on the control
+        path inside :meth:`run`.
+        """
+
+        async def _legacy_path() -> ExecutorRoute:
+            return route_from_foundry_legacy(classifier_result)
+
+        async def _candidate_path() -> ExecutorRoute | None:
+            if self._claude is None or not self._claude.available:
+                return None
+            context = ExecutorRouteContext(
+                task_type=task.task_type.value,
+                files=[ExecutorRouteFile(path=pr.head_ref or f"pr-{pr.number}")],
+                labels=list(getattr(pr, "labels", []) or []),
+                repo_slug=f"{self._owner}/{self._repo}",
+                candidate_paths=["foundry", "copilot"],
+                title=task.job_name,
+                body=task.instructions,
+            )
+            return await route_executor_llm(context, claude=self._claude)
+
+        try:
+            return await _decide_executor_route(
+                legacy=_legacy_path,
+                candidate=_candidate_path,
+                context={
+                    "pr_number": pr.number,
+                    "repo_slug": f"{self._owner}/{self._repo}",
+                    "site": "foundry",
+                    "task_type": task.task_type.value,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: never fail the executor
+            logger.warning(
+                "foundry: executor_routing shadow-decision failed for PR #%d (%s: %s)",
+                pr.number,
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
     async def run(self, task: CodingTask, pr: PullRequest) -> ExecutorResult:
         """Execute ``task`` end-to-end. Never raises — always returns an
@@ -180,6 +270,14 @@ class FoundryExecutor:
             route_same_repo_only=self._config.route_same_repo_only,
             error_output=task.error_output,
         )
+
+        # Shadow-mode wrapper around the classifier verdict. Shares the
+        # ``executor_routing`` decoration name with the pr-reviewer call
+        # site so disagreement data aggregates across both executors.
+        # The control-flow remains driven by the legacy ``pre.decision``
+        # field — this is purely observability until enforce mode flips.
+        await self._route_via_shadow(task=task, pr=pr, classifier_result=pre)
+
         if pre.decision != Decision.ROUTE_FOUNDRY:
             return ExecutorResult(
                 outcome=ExecutorOutcome.ESCALATED,

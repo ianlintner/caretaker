@@ -21,12 +21,34 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from caretaker.agent_protocol import AgentResult, BaseAgent
+from caretaker.evolution.executor_routing import (
+    ExecutorRoute,
+    ExecutorRouteContext,
+    ExecutorRouteFile,
+    executor_routes_agree,
+    route_executor_llm,
+    route_from_pr_reviewer_legacy,
+)
+from caretaker.evolution.shadow import shadow_decision
 from caretaker.pr_reviewer import claude_code_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
 
 if TYPE_CHECKING:
     from caretaker.state.models import OrchestratorState, RunSummary
+
+
+@shadow_decision("executor_routing", compare=executor_routes_agree)
+async def _decide_executor_route(
+    *, legacy: Any, candidate: Any, context: Any = None
+) -> ExecutorRoute:
+    """Shadow-mode decision point wrapping the legacy + LLM routing paths.
+
+    The body never runs — the decorator short-circuits to ``legacy`` in
+    ``off`` / ``shadow`` modes and to ``candidate`` in ``enforce`` mode.
+    """
+    raise AssertionError("shadow_decision wrapper short-circuits this placeholder")
+
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +186,23 @@ class PRReviewerAgent(BaseAgent):
         )
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
 
+        # Shadow-mode wrapper: compares legacy point-system verdict with
+        # the LLM candidate under the ``executor_routing`` flag. The
+        # return value is the authoritative ``ExecutorRoute`` (legacy in
+        # off/shadow, candidate in enforce) but we continue to use the
+        # raw ``decision`` object below so inline-path behavior stays
+        # byte-identical until enforce mode flips.
+        await self._route_via_shadow(
+            pr_number=pr_number,
+            decision=decision,
+            files=files,
+            file_paths=file_paths,
+            additions=additions,
+            deletions=deletions,
+            pr_labels=pr_labels,
+            pr=pr,
+        )
+
         if decision.use_inline:
             if self._ctx.llm_router is None or not self._ctx.llm_router.available:
                 logger.warning(
@@ -241,6 +280,77 @@ class PRReviewerAgent(BaseAgent):
             report.dispatched.append(pr_number)
         else:
             report.errors.append(f"claude-code dispatch failed for #{pr_number}")
+
+    async def _route_via_shadow(
+        self,
+        *,
+        pr_number: int,
+        decision: Any,
+        files: list[dict[str, Any]],
+        file_paths: list[str],
+        additions: int,
+        deletions: int,
+        pr_labels: list[str],
+        pr: dict[str, Any],
+    ) -> ExecutorRoute | None:
+        """Run the ``executor_routing`` shadow gate for a PR-reviewer decision.
+
+        Always returns the legacy-adapted :class:`ExecutorRoute` in
+        ``off`` / ``shadow`` modes; returns the LLM verdict when
+        ``enforce`` mode succeeds. Defensive: any exception bubbling out
+        of the decorator is swallowed and ``None`` is returned so the
+        caller continues to use the point-system ``decision`` object.
+        """
+
+        async def _legacy_path() -> ExecutorRoute:
+            return route_from_pr_reviewer_legacy(
+                decision,
+                additions=additions,
+                deletions=deletions,
+                file_count=len(files),
+                file_paths=file_paths,
+            )
+
+        async def _candidate_path() -> ExecutorRoute | None:
+            if self._ctx.llm_router is None or not self._ctx.llm_router.available:
+                return None
+            route_files = [
+                ExecutorRouteFile(
+                    path=f.get("path", ""),
+                    additions=int(f.get("additions", 0)),
+                    deletions=int(f.get("deletions", 0)),
+                )
+                for f in files
+            ]
+            context = ExecutorRouteContext(
+                task_type="pr_review",
+                files=route_files,
+                labels=pr_labels,
+                repo_slug=f"{self._ctx.owner}/{self._ctx.repo}",
+                candidate_paths=["inline", "claude_code"],
+                title=str(pr.get("title", "")),
+                body=str(pr.get("body") or ""),
+            )
+            return await route_executor_llm(context, claude=self._ctx.llm_router.claude)
+
+        try:
+            return await _decide_executor_route(
+                legacy=_legacy_path,
+                candidate=_candidate_path,
+                context={
+                    "pr_number": pr_number,
+                    "repo_slug": f"{self._ctx.owner}/{self._ctx.repo}",
+                    "site": "pr_reviewer",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: never fail the agent
+            logger.warning(
+                "pr-reviewer: executor_routing shadow-decision failed for #%d (%s: %s)",
+                pr_number,
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
     def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         pass

@@ -44,6 +44,7 @@ from caretaker.state.tracker import StateTracker
 if TYPE_CHECKING:
     from caretaker.evolution.insight_store import InsightStore
     from caretaker.goals.models import GoalEvaluation
+    from caretaker.llm.claude import ClaudeClient
     from caretaker.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
@@ -333,7 +334,9 @@ class Orchestrator:
         # ── Executor dispatcher (Copilot / Foundry routing) ────────────
         self._executor_dispatcher: ExecutorDispatcher | None = None
         try:
-            self._executor_dispatcher = self._build_executor_dispatcher(config, github, owner, repo)
+            self._executor_dispatcher = self._build_executor_dispatcher(
+                config, github, owner, repo, claude=self._llm.claude
+            )
         except Exception as exc:  # never block agent boot on Foundry config issues
             logger.warning("Failed to build ExecutorDispatcher; falling back to Copilot: %s", exc)
             self._executor_dispatcher = None
@@ -366,6 +369,8 @@ class Orchestrator:
         github: GitHubClient,
         owner: str,
         repo: str,
+        *,
+        claude: ClaudeClient | None = None,
     ) -> ExecutorDispatcher | None:
         """Build the Foundry executor + dispatcher, or return None when disabled.
 
@@ -410,6 +415,7 @@ class Orchestrator:
                     repo=repo,
                     config=executor_cfg.foundry,
                     token_supplier=_push_token,
+                    claude=claude,
                 )
                 logger.info(
                     "FoundryExecutor ready: model=%s allowed_task_types=%s",
