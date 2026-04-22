@@ -7,6 +7,7 @@ toggle alone enables or disables triage without code changes.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from caretaker.agent_protocol import AgentResult, BaseAgent
@@ -21,6 +22,8 @@ from caretaker.pr_agent.pr_triage import run_pr_triage
 if TYPE_CHECKING:
     from caretaker.github_client.models import PullRequest
     from caretaker.state.models import OrchestratorState, RunSummary
+
+logger = logging.getLogger(__name__)
 
 
 class TriageAgentAdapter(BaseAgent):
@@ -69,6 +72,23 @@ class TriageAgentAdapter(BaseAgent):
             cascade_actions,
             state.tracked_issues,
             dry_run=cfg.dry_run,
+        )
+
+        logger.info(
+            "Triage agent%s: pr(empty=%d duplicate=%d conflicted=%d) "
+            "issue(empty=%d duplicate=%d stale=%d resolved=%d) "
+            "cascade(planned=%d applied=%d skipped=%d)",
+            " [DRY RUN]" if cfg.dry_run else "",
+            len(pr_report.closed_empty),
+            len(pr_report.closed_duplicate),
+            len(pr_report.closed_conflicted),
+            len(issue_report.closed_empty),
+            len(issue_report.closed_duplicate),
+            len(issue_report.closed_stale),
+            len(issue_report.closed_resolved),
+            len(cascade_actions),
+            len(cascade_report.applied),
+            len(cascade_report.skipped),
         )
 
         errors = [*pr_report.errors, *issue_report.errors, *cascade_report.errors]
