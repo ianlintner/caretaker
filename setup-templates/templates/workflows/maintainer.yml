@@ -119,6 +119,21 @@ jobs:
           # custom coding agent (see docs/custom-coding-agent-plan.md).
           pip install "litellm>=1.50,<2"
 
+      # Cheap, offline sanity check — runs before every doctor/run call
+      # so a broken pin, unparseable config, or missing secret for an
+      # enabled agent fails loudly with an actionable row instead of
+      # getting swallowed by a later 403 / import error. See the
+      # 2026-04-22 audio_engineer outage post-mortem.
+      - name: Caretaker bootstrap-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          caretaker doctor \
+            --config .github/maintainer/config.yml \
+            --bootstrap-check
+
       - name: Run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

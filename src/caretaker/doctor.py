@@ -43,6 +43,7 @@ import os
 import socket
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -870,6 +871,291 @@ def run_doctor_sync(
     return asyncio.run(run_doctor(config, env=env, strict=strict, skip_github=skip_github))
 
 
+# ── Bootstrap-only preflight ───────────────────────────────────────────
+#
+# The full ``doctor`` preflight opens a GitHubClient, probes every scope
+# the enabled agents need, and TCP-pokes each external dependency. That
+# is the right thing to do once we know the *process itself* can start,
+# but the audio_engineer outage (2026-04-22) was a reminder that failures
+# which happen *before* caretaker imports — a bad workflow YAML, a
+# missing pin file, a config that no longer parses on the pinned tag,
+# or an enabled agent whose env var was never provisioned — are silent:
+# the full doctor never gets a chance to run and the workflow dies with
+# a bare "workflow file issue". ``--bootstrap-check`` is the tight
+# subset that validates exactly those four things with zero outbound
+# network calls so it is cheap to wire in as the *first* step in every
+# consumer's caretaker workflow.
+
+
+def check_import_ok() -> CheckResult:
+    """Confirm the caretaker package actually imports in this interpreter.
+
+    A FAIL here means ``pip install`` from the pinned tag produced a
+    broken install (missing transitive dep, Python version mismatch,
+    etc.). Since we're already inside a caretaker module this check is
+    effectively the tautology "did the import that loaded us succeed",
+    but we still report it so operators see the green row and know
+    bootstrap-check itself ran — and if the import ever grows a runtime
+    side effect (eg. eager loading of an optional SDK) this check
+    becomes the natural place to trap it.
+    """
+    try:
+        import caretaker  # noqa: F401 — reimport is the check
+    except Exception as exc:  # noqa: BLE001 — we want every failure class
+        return CheckResult(
+            category="bootstrap",
+            name="import caretaker",
+            severity=Severity.FAIL,
+            detail=f"caretaker failed to import: {exc}",
+        )
+    return CheckResult(
+        category="bootstrap",
+        name="import caretaker",
+        severity=Severity.OK,
+        detail="caretaker package imports cleanly",
+    )
+
+
+def check_config_parse(config_path: str | Path) -> tuple[CheckResult, MaintainerConfig | None]:
+    """Parse the config YAML and return a row plus the loaded object (or None).
+
+    Parsing failures are ``FAIL`` — an unparseable config is the exact
+    case ``bootstrap-check`` exists to catch. We return the loaded
+    ``MaintainerConfig`` (or ``None``) so subsequent checks can reuse it
+    without re-reading the file.
+    """
+    # Deferred import keeps this module cheap to import in minimal
+    # environments (the CLI already loads MaintainerConfig at top of
+    # module, but tests that monkey-patch ``doctor`` shouldn't have to
+    # pay for the pydantic model graph).
+    from caretaker.config import MaintainerConfig as _MaintainerConfig
+
+    path = Path(config_path)
+    if not path.is_file():
+        return (
+            CheckResult(
+                category="bootstrap",
+                name="config file",
+                severity=Severity.FAIL,
+                detail=f"config file not found: {path}",
+                hint=str(path),
+            ),
+            None,
+        )
+    try:
+        loaded = _MaintainerConfig.from_yaml(path)
+    except Exception as exc:  # noqa: BLE001 — any parse failure is FAIL
+        return (
+            CheckResult(
+                category="bootstrap",
+                name="config file",
+                severity=Severity.FAIL,
+                detail=f"config parse failed: {exc}",
+                hint=str(path),
+            ),
+            None,
+        )
+    return (
+        CheckResult(
+            category="bootstrap",
+            name="config file",
+            severity=Severity.OK,
+            detail=f"parsed {path} (version={loaded.version})",
+            hint=str(path),
+        ),
+        loaded,
+    )
+
+
+def check_version_pin(pin_path: str | Path) -> CheckResult:
+    """Confirm the ``.github/maintainer/.version`` pin file is present and non-empty.
+
+    Consumer workflows run ``pip install git+…@v$(cat .version)`` to
+    install the pinned caretaker tag. A missing or empty pin file means
+    the install step will either fail outright or silently install a
+    stale ``HEAD``, both of which have bitten us in the past.
+
+    Content validation is intentionally tiny — we only check it parses
+    as ``MAJOR.MINOR.PATCH`` with optional ``vX`` prefix — because the
+    authoritative "does this tag exist" check requires network access
+    and ``bootstrap-check`` is deliberately offline.
+    """
+    path = Path(pin_path)
+    if not path.is_file():
+        return CheckResult(
+            category="bootstrap",
+            name="version pin",
+            severity=Severity.FAIL,
+            detail=f"pin file missing: {path}",
+            hint=str(path),
+        )
+    raw = path.read_text().strip()
+    if not raw:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin",
+            severity=Severity.FAIL,
+            detail=f"pin file is empty: {path}",
+            hint=str(path),
+        )
+    # Very tolerant: strip an optional leading 'v' and require the rest
+    # looks like MAJOR.MINOR.PATCH with optional pre-release suffix.
+    candidate = raw.removeprefix("v")
+    parts = candidate.split(".")
+    looks_numeric = len(parts) >= 3 and all(p and p[0].isdigit() for p in parts[:3])
+    if not looks_numeric:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin",
+            severity=Severity.FAIL,
+            detail=f"pin does not look like a version: {raw!r}",
+            hint=str(path),
+        )
+    return CheckResult(
+        category="bootstrap",
+        name="version pin",
+        severity=Severity.OK,
+        detail=f"pinned to v{candidate}",
+        hint=str(path),
+    )
+
+
+def check_bootstrap_env_secrets(config: MaintainerConfig, env: dict[str, str]) -> list[CheckResult]:
+    """Return a ``FAIL`` row for every env var an *enabled* block needs that isn't set.
+
+    This is a deliberately stricter, quieter subset of
+    :func:`check_env_secrets`:
+
+    * Only enabled blocks produce rows — disabled forward-compat
+      warnings are not actionable at bootstrap and just add noise.
+    * We still always emit the GITHUB_TOKEN / COPILOT_PAT row because
+      the orchestrator refuses to start without one of them.
+    * We still always emit the LLM provider key row when provider is
+      Anthropic, for the same reason.
+    """
+    results: list[CheckResult] = []
+
+    if not env.get("GITHUB_TOKEN") and not env.get("COPILOT_PAT"):
+        results.append(
+            CheckResult(
+                category="bootstrap",
+                name="GITHUB_TOKEN",
+                severity=Severity.FAIL,
+                detail=(
+                    "neither GITHUB_TOKEN nor COPILOT_PAT is set; the GitHub "
+                    "client will refuse to start"
+                ),
+                hint="GITHUB_TOKEN or COPILOT_PAT",
+            )
+        )
+    else:
+        results.append(
+            CheckResult(
+                category="bootstrap",
+                name="GITHUB_TOKEN",
+                severity=Severity.OK,
+                detail="GitHub token present",
+            )
+        )
+
+    # LLM API key — mirrors the full-doctor behaviour but only emits
+    # when the provider is anthropic (we can't pin a name for litellm).
+    llm_ref = _llm_env_requirement(config)
+    if llm_ref is not None:
+        if env.get(llm_ref.env_name):
+            results.append(
+                CheckResult(
+                    category="bootstrap",
+                    name=llm_ref.env_name,
+                    severity=Severity.OK,
+                    detail=f"{llm_ref.purpose} present",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    category="bootstrap",
+                    name=llm_ref.env_name,
+                    severity=Severity.FAIL,
+                    detail=f"{llm_ref.purpose} missing",
+                    hint=llm_ref.config_path,
+                )
+            )
+
+    for ref in collect_env_references(config):
+        # Bootstrap mode skips disabled-block env vars entirely — the
+        # full doctor covers that ground as a WARN, bootstrap-check
+        # stays focused on what actually blocks startup.
+        if not ref.owner_enabled:
+            continue
+        if env.get(ref.env_name):
+            results.append(
+                CheckResult(
+                    category="bootstrap",
+                    name=ref.env_name,
+                    severity=Severity.OK,
+                    detail=f"{ref.purpose} present",
+                    hint=ref.config_path,
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    category="bootstrap",
+                    name=ref.env_name,
+                    severity=Severity.FAIL,
+                    detail=f"{ref.purpose} missing ({ref.config_path} is enabled)",
+                    hint=ref.config_path,
+                )
+            )
+
+    return results
+
+
+DEFAULT_VERSION_PIN_PATH = ".github/maintainer/.version"
+
+
+def run_bootstrap_check(
+    config_path: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+    pin_path: str | Path | None = None,
+) -> DoctorReport:
+    """Offline, pre-orchestrator sanity check.
+
+    Runs four checks and stops on the first fatal parse failure:
+
+    1. ``caretaker`` imports,
+    2. the config YAML parses on *this* caretaker version,
+    3. the version-pin file is present and looks like a semver,
+    4. every env var declared by an enabled config block is set.
+
+    No GitHub calls, no external-service probes. Designed to be wired
+    in as a workflow step that runs *before* the full ``caretaker
+    doctor`` call so operators see a clear actionable row instead of a
+    bare "workflow file issue" or a swallowed ImportError.
+    """
+    env = env if env is not None else dict(os.environ)
+    report = DoctorReport()
+
+    report.add(check_import_ok())
+
+    config_row, loaded = check_config_parse(config_path)
+    report.add(config_row)
+
+    report.add(check_version_pin(pin_path if pin_path is not None else DEFAULT_VERSION_PIN_PATH))
+
+    # Skip env-var checks if the config didn't load — the references
+    # collector walks the model, so without a model the rows would be
+    # meaningless. The config-file FAIL row already tells the operator
+    # what to fix first.
+    if loaded is not None:
+        for result in check_bootstrap_env_secrets(loaded, env):
+            report.add(result)
+
+    return report
+
+
 # ── Rendering ──────────────────────────────────────────────────────────
 
 
@@ -903,15 +1189,21 @@ def render_table(report: DoctorReport) -> str:
 
 
 __all__ = [
+    "DEFAULT_VERSION_PIN_PATH",
     "CheckResult",
     "DoctorReport",
     "EnvReference",
     "Severity",
+    "check_bootstrap_env_secrets",
+    "check_config_parse",
     "check_env_secrets",
     "check_external_services",
     "check_github_scopes",
+    "check_import_ok",
+    "check_version_pin",
     "collect_env_references",
     "render_table",
+    "run_bootstrap_check",
     "run_doctor",
     "run_doctor_sync",
 ]
