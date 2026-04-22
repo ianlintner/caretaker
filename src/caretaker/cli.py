@@ -182,7 +182,35 @@ DEFAULT_DOCTOR_CONFIG = ".github/maintainer/config.yml"
     default=False,
     help="Skip GitHub token probes (used in tests / offline environments).",
 )
-def doctor(config: str, emit_json: bool, strict: bool, skip_github: bool) -> None:
+@click.option(
+    "--bootstrap-check",
+    is_flag=True,
+    default=False,
+    help=(
+        "Run only the offline bootstrap preflight: import caretaker, parse "
+        "config.yml, read the pinned version file, and check env vars for "
+        "every enabled agent. No GitHub or network calls. Intended to run "
+        "as the first step of a consumer workflow, before the full doctor."
+    ),
+)
+@click.option(
+    "--pin-path",
+    default=None,
+    type=click.Path(),
+    help=(
+        "Path to the caretaker version pin file. "
+        "Defaults to .github/maintainer/.version. "
+        "Only read in --bootstrap-check mode."
+    ),
+)
+def doctor(
+    config: str,
+    emit_json: bool,
+    strict: bool,
+    skip_github: bool,
+    bootstrap_check: bool,
+    pin_path: str | None,
+) -> None:
     """Preflight every required secret, scope, and external service.
 
     Exit code matrix:
@@ -195,7 +223,37 @@ def doctor(config: str, emit_json: bool, strict: bool, skip_github: bool) -> Non
     # fixtures that stub the CLI entrypoint don't pay for httpx + pydantic.
     import traceback
 
-    from caretaker.doctor import Severity, render_table, run_doctor_sync
+    from caretaker.doctor import (
+        DEFAULT_VERSION_PIN_PATH,
+        Severity,
+        render_table,
+        run_bootstrap_check,
+        run_doctor_sync,
+    )
+
+    # --bootstrap-check is the tight, offline preflight: it parses the
+    # config itself rather than relying on the CLI's own load step so a
+    # parse failure shows up as a FAIL *row* with a specific hint rather
+    # than an exit-2 "internal error" that makes operators think the
+    # preflight itself is broken. Consumer workflows wire this in as the
+    # first step before the real doctor call.
+    if bootstrap_check:
+        try:
+            report = run_bootstrap_check(
+                config_path=config,
+                pin_path=pin_path if pin_path is not None else DEFAULT_VERSION_PIN_PATH,
+            )
+        except Exception as exc:  # pragma: no cover - surfaced to CLI user
+            click.echo(f"doctor: internal error during bootstrap-check: {exc}", err=True)
+            click.echo(traceback.format_exc(), err=True)
+            raise SystemExit(2) from exc
+
+        click.echo(render_table(report), err=True)
+        if emit_json:
+            click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        if any(r.severity is Severity.FAIL for r in report.results):
+            raise SystemExit(1)
+        return
 
     try:
         loaded = MaintainerConfig.from_yaml(config)

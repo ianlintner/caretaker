@@ -14,11 +14,16 @@ from caretaker.doctor import (
     CheckResult,
     DoctorReport,
     Severity,
+    check_bootstrap_env_secrets,
+    check_config_parse,
     check_env_secrets,
     check_external_services,
     check_github_scopes,
+    check_import_ok,
+    check_version_pin,
     collect_env_references,
     render_table,
+    run_bootstrap_check,
     run_doctor,
 )
 
@@ -435,3 +440,297 @@ class TestDoctorCLI:
             ["doctor", "--config", str(cfg), "--skip-github", "--strict"],
         )
         assert result_strict.exit_code == 1
+
+
+# ── Bootstrap-check ───────────────────────────────────────────────────
+#
+# The bootstrap preflight is the tight, offline subset that guards the
+# pre-orchestrator failure modes we've actually seen in prod (bad
+# workflow pin, unparseable config on the pinned tag, enabled agent
+# whose secret was never provisioned). See the 2026-04-22 audio_engineer
+# outage post-mortem for why the failure modes here matter.
+
+
+class TestCheckImportOk:
+    def test_import_check_passes_in_test_env(self) -> None:
+        # If caretaker didn't import we wouldn't be running this test —
+        # but the row still needs to exist so operators see confirmation
+        # bootstrap-check itself ran.
+        row = check_import_ok()
+        assert row.severity is Severity.OK
+        assert row.category == "bootstrap"
+
+
+class TestCheckConfigParse:
+    def test_missing_file_is_fail(self, tmp_path: pathlib.Path) -> None:
+        row, loaded = check_config_parse(tmp_path / "does-not-exist.yml")
+        assert row.severity is Severity.FAIL
+        assert loaded is None
+
+    def test_unparseable_yaml_is_fail(self, tmp_path: pathlib.Path) -> None:
+        bad = tmp_path / "config.yml"
+        bad.write_text(":\n  - this: is: not: valid: yaml\n    : :\n")
+        row, loaded = check_config_parse(bad)
+        assert row.severity is Severity.FAIL
+        assert loaded is None
+
+    def test_unknown_key_rejected_by_strict_model_is_fail(self, tmp_path: pathlib.Path) -> None:
+        # StrictBaseModel uses ``extra="forbid"`` — an unknown top-level
+        # key is exactly the kind of config drift bootstrap-check catches
+        # when a repo's pin rolls past a schema change.
+        bad = tmp_path / "config.yml"
+        bad.write_text("version: v1\ntypo_key: whoops\n")
+        row, loaded = check_config_parse(bad)
+        assert row.severity is Severity.FAIL
+        assert loaded is None
+
+    def test_valid_config_returns_model(self, tmp_path: pathlib.Path) -> None:
+        cfg = _write_config(tmp_path / "config.yml")
+        row, loaded = check_config_parse(cfg)
+        assert row.severity is Severity.OK
+        assert isinstance(loaded, MaintainerConfig)
+
+
+class TestCheckVersionPin:
+    def test_missing_file_is_fail(self, tmp_path: pathlib.Path) -> None:
+        row = check_version_pin(tmp_path / "missing.version")
+        assert row.severity is Severity.FAIL
+
+    def test_empty_file_is_fail(self, tmp_path: pathlib.Path) -> None:
+        pin = tmp_path / ".version"
+        pin.write_text("")
+        row = check_version_pin(pin)
+        assert row.severity is Severity.FAIL
+
+    def test_non_semver_is_fail(self, tmp_path: pathlib.Path) -> None:
+        pin = tmp_path / ".version"
+        pin.write_text("not-a-version\n")
+        row = check_version_pin(pin)
+        assert row.severity is Severity.FAIL
+
+    def test_plain_semver_is_ok(self, tmp_path: pathlib.Path) -> None:
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        row = check_version_pin(pin)
+        assert row.severity is Severity.OK
+        assert "0.12.0" in row.detail
+
+    def test_leading_v_accepted(self, tmp_path: pathlib.Path) -> None:
+        pin = tmp_path / ".version"
+        pin.write_text("v0.12.2\n")
+        row = check_version_pin(pin)
+        assert row.severity is Severity.OK
+
+
+class TestCheckBootstrapEnvSecrets:
+    def test_enabled_block_missing_env_is_fail(self) -> None:
+        config = _load_config({"mongo": {"enabled": True}})
+        rows = check_bootstrap_env_secrets(config, {"GITHUB_TOKEN": "x"})
+        mongo_row = next(r for r in rows if r.name == "MONGODB_URL")
+        assert mongo_row.severity is Severity.FAIL
+
+    def test_disabled_block_emits_no_row(self) -> None:
+        config = _load_config()  # mongo default = disabled
+        rows = check_bootstrap_env_secrets(config, {"GITHUB_TOKEN": "x"})
+        # Bootstrap mode skips disabled-block rows entirely — that's
+        # the key difference from the full doctor's env check.
+        assert not any(r.name == "MONGODB_URL" for r in rows)
+
+    def test_missing_github_token_fails(self) -> None:
+        config = _load_config()
+        rows = check_bootstrap_env_secrets(config, {})
+        token_row = next(r for r in rows if r.name == "GITHUB_TOKEN")
+        assert token_row.severity is Severity.FAIL
+
+    def test_present_anthropic_key_is_ok(self) -> None:
+        config = _load_config()
+        rows = check_bootstrap_env_secrets(
+            config, {"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-x"}
+        )
+        ant = next(r for r in rows if r.name == "ANTHROPIC_API_KEY")
+        assert ant.severity is Severity.OK
+
+
+class TestRunBootstrapCheck:
+    def test_happy_path(self, tmp_path: pathlib.Path) -> None:
+        cfg = _write_config(tmp_path / "config.yml")
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        report = run_bootstrap_check(
+            cfg,
+            env={"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-x"},
+            pin_path=pin,
+        )
+        assert not report.has_failures
+        assert any(r.name == "import caretaker" for r in report.results)
+        assert any(r.name == "config file" for r in report.results)
+        assert any(r.name == "version pin" for r in report.results)
+
+    def test_missing_pin_reports_fail(self, tmp_path: pathlib.Path) -> None:
+        cfg = _write_config(tmp_path / "config.yml")
+        report = run_bootstrap_check(
+            cfg,
+            env={"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-x"},
+            pin_path=tmp_path / "nope.version",
+        )
+        pin_row = next(r for r in report.results if r.name == "version pin")
+        assert pin_row.severity is Severity.FAIL
+        assert report.has_failures
+
+    def test_bad_config_skips_env_checks(self, tmp_path: pathlib.Path) -> None:
+        bad = tmp_path / "config.yml"
+        bad.write_text("version: v1\nunknown: true\n")  # StrictBaseModel → fail
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        report = run_bootstrap_check(
+            bad,
+            env={"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-x"},
+            pin_path=pin,
+        )
+        # Config FAIL short-circuits the env-var walk — there's no
+        # MaintainerConfig to enumerate refs from. The single FAIL row
+        # for the config is enough signal for the operator.
+        assert report.has_failures
+        assert not any(
+            r.category == "bootstrap" and r.name == "MONGODB_URL" for r in report.results
+        )
+
+    def test_no_github_calls(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Bootstrap-check must NEVER reach the network. We stub httpx's
+        # client factory to raise so any attempted GitHub probe would
+        # blow up the test.
+        cfg = _write_config(tmp_path / "config.yml")
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+
+        def _boom(*_a: Any, **_kw: Any) -> None:
+            raise AssertionError("bootstrap-check must not make network calls")
+
+        monkeypatch.setattr("httpx.AsyncClient", _boom)
+        report = run_bootstrap_check(
+            cfg,
+            env={"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-x"},
+            pin_path=pin,
+        )
+        assert not report.has_failures
+
+
+class TestBootstrapCheckCLI:
+    def test_bootstrap_check_happy_path_exits_0(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _write_config(tmp_path / "config.yml")
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "doctor",
+                "--config",
+                str(cfg),
+                "--bootstrap-check",
+                "--pin-path",
+                str(pin),
+            ],
+        )
+        assert result.exit_code == 0
+
+    def test_bootstrap_check_reports_missing_config(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Bootstrap-check surfaces a missing config file as a FAIL row
+        # (exit 1), NOT an internal error (exit 2). That's the whole
+        # point — operators need a clear actionable row.
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "doctor",
+                "--config",
+                str(tmp_path / "missing.yml"),
+                "--bootstrap-check",
+                "--pin-path",
+                str(pin),
+            ],
+        )
+        assert result.exit_code == 1
+        assert (
+            "config file" in result.output or "config file" in (result.stderr_bytes or b"").decode()
+        )
+
+    def test_bootstrap_check_json_on_stdout(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _write_config(tmp_path / "config.yml")
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+        try:
+            runner = CliRunner(mix_stderr=False)  # type: ignore[call-arg]
+        except TypeError:
+            runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "doctor",
+                "--config",
+                str(cfg),
+                "--bootstrap-check",
+                "--pin-path",
+                str(pin),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        combined = result.output
+        first_brace = combined.find("\n{")
+        if first_brace == -1 and combined.startswith("{"):
+            first_brace = 0
+        else:
+            first_brace += 1
+        data = json.loads(combined[first_brace:])
+        assert data["status"] in {"ok", "warn"}
+        assert any(c["category"] == "bootstrap" for c in data["checks"])
+
+    def test_bootstrap_check_enabled_block_missing_secret_exits_1(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Simulates the audio_engineer-style failure: an enabled block
+        # whose secret wasn't provisioned. Bootstrap-check must catch
+        # it locally rather than deferring to a swallowed 403 at runtime.
+        cfg = _write_config(
+            tmp_path / "config.yml",
+            {
+                "fleet_registry": {
+                    "enabled": True,
+                    "oauth2": {"enabled": True},
+                }
+            },
+        )
+        pin = tmp_path / ".version"
+        pin.write_text("0.12.0\n")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+        # Deliberately do NOT set CARETAKER_FLEET_SECRET / OAUTH2_* — the
+        # enabled block demands them, bootstrap-check should FAIL.
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "doctor",
+                "--config",
+                str(cfg),
+                "--bootstrap-check",
+                "--pin-path",
+                str(pin),
+            ],
+        )
+        assert result.exit_code == 1
