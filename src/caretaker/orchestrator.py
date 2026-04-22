@@ -49,7 +49,15 @@ logger = logging.getLogger(__name__)
 
 
 def _as_utc(dt: datetime) -> datetime:
-    """Return a UTC-aware datetime, attaching UTC if the datetime is naive."""
+    """Return a UTC-aware datetime, attaching UTC if the datetime is naive.
+
+    All new producers in ``src/caretaker/`` now emit tz-aware UTC datetimes
+    (see the datetime.utcnow() sweep PR). This helper is retained purely to
+    normalize datetimes round-tripped from older serialized state that may
+    still contain naive ISO strings without a ``+00:00`` offset.  Once the
+    persisted state corpus has rolled over, the remaining call sites can be
+    dropped.
+    """
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
@@ -375,7 +383,7 @@ class Orchestrator:
 
         # Load persisted state
         state = OrchestratorState()
-        summary = RunSummary(mode=mode, run_at=datetime.utcnow())
+        summary = RunSummary(mode=mode, run_at=datetime.now(UTC))
         has_errors = False
 
         try:
