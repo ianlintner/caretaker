@@ -61,6 +61,8 @@ class GraphStore:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (g:GlobalSkill) REQUIRE g.id IS UNIQUE",
             # M5: per-agent working memory node.
             "CREATE CONSTRAINT IF NOT EXISTS FOR (acm:AgentCoreMemory) REQUIRE acm.id IS UNIQUE",
+            # Wave A3: self-heal incident node.
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (inc:Incident) REQUIRE inc.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:

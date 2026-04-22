@@ -243,6 +243,52 @@ LLM_CACHE_CREATION_TOKENS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# ── Self-heal fix ladder (Wave A3) ───────────────────────────────────
+#
+# The deterministic-first fix ladder emits one of these counters per
+# rung execution so operators can watch "did we fix it with ruff or
+# did it escalate?" without tailing workflow logs. Cardinality stays
+# bounded: ``rung`` is a closed enum matching
+# :data:`caretaker.self_heal_agent.fix_ladder.DEFAULT_RUNGS` plus any
+# operator-supplied rung names (we trust the config validator to keep
+# those small), and ``outcome`` is a 3-value enum below.
+
+FIX_LADDER_OUTCOME_TOTAL = Counter(
+    "caretaker_fix_ladder_outcome_total",
+    "Self-heal fix-ladder rung outcomes (Wave A3).",
+    ["repo", "rung", "outcome"],
+    registry=REGISTRY,
+)
+
+# Incremented when the ladder gives up and falls through to the LLM
+# escalation path. The ``error_sig_hash`` label is the raw 12-char
+# signature — same value the storm cap keys on — so operators can
+# correlate a recurring escalation with the underlying failure. The
+# signature is already low-cardinality (hash space shared across
+# thousands of repos with a handful of signatures each) so this
+# doesn't blow up the series count.
+
+FIX_LADDER_ESCALATION_TOTAL = Counter(
+    "caretaker_fix_ladder_escalation_total",
+    "Self-heal fix-ladder runs that escalated to the LLM path.",
+    ["repo", "error_sig_hash"],
+    registry=REGISTRY,
+)
+
+
+def record_fix_ladder_outcome(repo: str, rung: str, outcome: str) -> None:
+    """Module-level sink matching the runner's ``metrics_sink`` callable."""
+    FIX_LADDER_OUTCOME_TOTAL.labels(repo=repo or "unknown", rung=rung, outcome=outcome).inc()
+
+
+def record_fix_ladder_escalation(repo: str, error_sig_hash: str) -> None:
+    """Module-level sink matching the runner's ``escalation_metrics_sink``."""
+    FIX_LADDER_ESCALATION_TOTAL.labels(
+        repo=repo or "unknown",
+        error_sig_hash=error_sig_hash or "unknown",
+    ).inc()
+
+
 # ── Build / version metadata ─────────────────────────────────────────
 
 APP_INFO = Gauge(

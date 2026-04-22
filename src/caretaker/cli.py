@@ -383,5 +383,70 @@ def eval_run(
         click.echo(payload)
 
 
+# ── memory ────────────────────────────────────────────────────────────
+
+
+@main.group("memory")
+def memory_group() -> None:
+    """Memory-store utilities — backfill embeddings, inspect store."""
+
+
+@memory_group.command("backfill-embeddings")
+@click.option(
+    "--since",
+    default="30d",
+    show_default=True,
+    help=(
+        "Time window: '7d', '30d', '72h'. Only nodes whose observed_at is "
+        "within this window are backfilled."
+    ),
+)
+@click.option(
+    "--config",
+    required=False,
+    type=click.Path(exists=True),
+    help="Path to config.yml (used to read memory_store + embedding settings).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="List candidate nodes without writing embeddings.",
+)
+@click.option(
+    "--labels",
+    default="Incident,AgentCoreMemory",
+    show_default=True,
+    help="Comma-separated list of node labels to backfill.",
+)
+def backfill_embeddings(
+    since: str,
+    config: str | None,
+    dry_run: bool,
+    labels: str,
+) -> None:
+    """Populate ``summary_embedding`` on existing memory nodes.
+
+    Wave A3 companion to the fix-ladder: walks ``:Incident`` and
+    ``:AgentCoreMemory`` nodes that have a summary but no
+    ``summary_embedding`` and writes the vector so Wave B3's
+    Neo4j-native vector-index retriever has a corpus to work on.
+
+    Exits ``0`` on success (including zero-candidate runs); ``2`` on
+    configuration / setup errors.
+    """
+    from caretaker.memory.backfill import run_backfill_sync
+
+    result = run_backfill_sync(
+        since=since,
+        config_path=config,
+        dry_run=dry_run,
+        labels=[label.strip() for label in labels.split(",") if label.strip()],
+    )
+    click.echo(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("errors"):
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

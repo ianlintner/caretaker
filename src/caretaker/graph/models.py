@@ -63,6 +63,15 @@ class NodeType(StrEnum):
     # are mirrored into the graph via ``merge_node`` so cypher can answer
     # "which repos are currently alerting?" across the fleet.
     FLEET_ALERT = "FleetAlert"
+    # ── Wave A3: self-heal incidents ─────────────────────────────────────
+    # One ``:Incident`` node per self-heal dispatch — captures the
+    # ``(repo, error_signature, kind)`` tuple plus the escalation path
+    # (fix-ladder outcome, rungs tried). Wave B3 consumes these via the
+    # memory retriever so escalation prompts can cite past incidents
+    # with similar signatures. When an embedder is wired, a
+    # ``summary_embedding`` is stamped so cosine ranking works without
+    # a separate backfill.
+    INCIDENT = "Incident"
 
 
 class RelType(StrEnum):

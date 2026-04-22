@@ -187,9 +187,129 @@ def replace_embedding(core: AgentCoreMemory, vector: list[float]) -> AgentCoreMe
     )
 
 
+@dataclass
+class IncidentMemory:
+    """Wave A3 — one ``:Incident`` row per self-heal dispatch.
+
+    Mirrors :class:`AgentCoreMemory` but scoped to the self-heal
+    agent's fix-ladder + escalation path: the ``error_signature`` is
+    the 12-char hash produced by
+    :func:`caretaker.self_heal_agent.agent._sig`, ``kind`` is the
+    coarse :class:`FailureKind`, and ``fix_outcome`` records what
+    happened (``fixed`` / ``partial`` / ``escalated`` / ``no_op`` /
+    ``error``). ``summary_embedding`` is populated via
+    :func:`publish_incident_with_embedding` when an embedder is
+    configured.
+
+    Seeds the corpus Wave B3's Neo4j-native vector-index retriever
+    will consume. Fail-closed: rows without an embedding still
+    persist — the retriever falls back to Jaccard on ``summary``.
+    """
+
+    repo: str
+    error_signature: str
+    kind: str
+    job_name: str
+    summary: str
+    fix_outcome: str
+    run_id: str | None = None
+    rungs_tried: list[str] = field(default_factory=list)
+    summary_embedding: list[float] | None = None
+
+
+def publish_incident(incident: IncidentMemory) -> None:
+    """Enqueue a ``:Incident`` node merge via the shared graph writer.
+
+    Non-blocking — when the writer is disabled (no Neo4j cluster
+    configured, or running in unit tests) every ``record_*`` call is
+    a cheap no-op. Edges to the owning ``:Repo`` are emitted via
+    :data:`~caretaker.graph.models.RelType.REFERENCES` so fleet-level
+    queries can answer "which repos are alerting on sig=X?" in one
+    hop.
+    """
+    writer = get_writer()
+    # ``incident:<repo>:<signature>`` keeps one row per
+    # (repo, signature) — repeated failures of the same signature
+    # upsert in place, matching the storm-cap semantics the agent
+    # already uses for issue creation.
+    safe_sig = incident.error_signature or "unknown"
+    node_id = f"incident:{incident.repo}:{safe_sig}"
+
+    props: dict[str, Any] = {
+        "repo": incident.repo,
+        "error_signature": safe_sig,
+        "kind": incident.kind,
+        "job_name": incident.job_name,
+        "summary": incident.summary,
+        "fix_outcome": incident.fix_outcome,
+        "run_id": incident.run_id,
+        # Comma-joined for the same "every property is a scalar"
+        # reason the core-memory writer flattens ``recent_action_ids``.
+        "rungs_tried": ",".join(incident.rungs_tried),
+    }
+    if incident.summary_embedding:
+        props["summary_embedding"] = ",".join(f"{float(v):.6f}" for v in incident.summary_embedding)
+
+    writer.record_node(NodeType.INCIDENT.value, node_id, props)
+    # One edge per (incident, repo). ``:Repo`` nodes are already
+    # emitted by the attribution writer — we don't need to re-merge
+    # the target here.
+    writer.record_edge(
+        source_label=NodeType.INCIDENT.value,
+        source_id=node_id,
+        target_label=NodeType.REPO.value,
+        target_id=f"repo:{incident.repo}",
+        rel_type=RelType.REFERENCES.value,
+        properties={"repo": incident.repo},
+    )
+
+
+async def publish_incident_with_embedding(
+    incident: IncidentMemory,
+    *,
+    embedder: Any | None = None,
+    write_embeddings: bool = False,
+) -> None:
+    """Compute ``summary_embedding`` when ``write_embeddings`` is enabled.
+
+    Wave A3's seed-the-corpus path. The function only reaches for
+    the embedder when ``write_embeddings`` is true AND an embedder
+    was supplied — otherwise the row persists without a vector and
+    the retriever's Jaccard fallback still works. Every error path
+    degrades to :func:`publish_incident` so the write never fails
+    the self-heal dispatch.
+    """
+    if (
+        write_embeddings
+        and incident.summary
+        and embedder is not None
+        and getattr(embedder, "available", False)
+    ):
+        try:
+            vector = await embedder.embed(incident.summary)
+        except Exception:  # noqa: BLE001 - write path must never fail the dispatch
+            vector = []
+        if vector:
+            incident = IncidentMemory(
+                repo=incident.repo,
+                error_signature=incident.error_signature,
+                kind=incident.kind,
+                job_name=incident.job_name,
+                summary=incident.summary,
+                fix_outcome=incident.fix_outcome,
+                run_id=incident.run_id,
+                rungs_tried=list(incident.rungs_tried),
+                summary_embedding=list(vector),
+            )
+    publish_incident(incident)
+
+
 __all__ = [
     "AgentCoreMemory",
+    "IncidentMemory",
     "publish",
+    "publish_incident",
+    "publish_incident_with_embedding",
     "publish_with_embedding",
     "replace_embedding",
 ]
