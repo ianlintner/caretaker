@@ -77,6 +77,13 @@ jobs:
     steps:
       - name: Decide whether this event should run caretaker
         id: guard
+        # NOTE: This JS block is a cheap prefilter. The richer Python
+        # self-echo detector lives in
+        # ``src/caretaker/github_app/dispatch_guard.py`` and runs behind
+        # the ``agentic.dispatch_guard`` shadow-mode switch. Keep this
+        # regex + actor allowlist in sync with
+        # ``legacy_dispatch_verdict`` there — both encode the same
+        # deterministic rules.
         uses: actions/github-script@v7
         with:
           script: |
