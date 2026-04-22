@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from caretaker.guardrails import filter_output
 from caretaker.tools.github import CopilotAgentAssignment
 from caretaker.util.text import ensure_trailing_newline
 
@@ -670,6 +671,12 @@ class GitHubClient:
         assign_copilot = any(is_copilot_login(assignee) for assignee in (assignees or []))
         real_assignees = [a for a in (assignees or []) if not is_copilot_login(a)]
 
+        # Guardrail (Agentic Design Patterns Ch. 18 Output Filtering):
+        # scrub the issue body for ANSI escapes, hidden-link attacks,
+        # and injection-sigil echoes before POSTing. Title is short
+        # and non-renderable; body carries the attack surface.
+        body = filter_output("github_issue_body", body).content
+
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
@@ -857,6 +864,17 @@ class GitHubClient:
                 )
                 logger.warning(msg)
                 raise GitHubAPIError(0, msg)
+
+        # Guardrail (Agentic Design Patterns Ch. 18 Output Filtering):
+        # scrub LLM-authored content for ANSI escapes, hidden-link
+        # attacks, and injection-sigil echoes before it hits GitHub.
+        # The filter leaves legitimate ``<!-- caretaker:… -->`` markers
+        # produced by caretaker itself untouched because the filter's
+        # marker-detection runs on the ``body`` string caretaker already
+        # authored with care; this is the defensive perimeter for
+        # content that flowed through an LLM boundary.
+        filtered = filter_output("github_comment", body)
+        body = filtered.content
 
         post = self._post
         if use_copilot_token is True or (

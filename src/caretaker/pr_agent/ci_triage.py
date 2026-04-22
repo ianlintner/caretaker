@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field
 
 from caretaker.evolution.shadow import shadow_decision
+from caretaker.guardrails import sanitize_input
 from caretaker.llm.claude import StructuredCompleteError
 
 if TYPE_CHECKING:
@@ -382,6 +383,13 @@ async def classify_failure_llm(
     the hot path.
     """
     tail = _extract_log_tail(check_run, log_tail)
+    # Guardrail (Agentic Design Patterns Ch. 18): scrub the log tail for
+    # prompt-injection sigils, zero-width chars, and caretaker-marker
+    # echoes before it reaches the LLM prompt. Source=``ci_log`` takes
+    # the tail on over-budget, matching the diagnostic value of the
+    # end-of-log content.
+    sanitized_tail = sanitize_input("ci_log", tail)
+    tail = sanitized_tail.content
     system, prompt = _build_ci_triage_prompt(
         check_run,
         tail,

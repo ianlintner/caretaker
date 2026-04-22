@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from caretaker.guardrails.policy import GuardrailsConfig, MergeRollbackConfig
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -108,6 +110,13 @@ class PRAgentConfig(StrictBaseModel):
     # open 7 days) that the within-cycle stuck-detection doesn't see.
     # 0 disables the gate.
     stuck_age_hours: int = 24
+    # Post-merge rollback window (Agentic Design Patterns Ch. 18 Checkpoint
+    # & Rollback). Disabled by default on first ship — operators promote
+    # per-repo once they are comfortable with the 5-minute CI-watch
+    # after each merge. When enabled, :func:`caretaker.pr_agent.merge.perform_merge`
+    # wraps the merge API call in :func:`caretaker.guardrails.checkpoint_and_rollback`
+    # and reverts the merge if base-branch CI flips red inside the window.
+    merge_rollback: MergeRollbackConfig = Field(default_factory=MergeRollbackConfig)
 
 
 class IssueAgentLabels(StrictBaseModel):
@@ -1106,6 +1115,11 @@ class MaintainerConfig(StrictBaseModel):
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
     agentic: AgenticConfig = Field(default_factory=AgenticConfig)
     attribution: AttributionConfig = Field(default_factory=AttributionConfig)
+    # Unified guardrails (Agentic Design Patterns Ch. 18): sanitize_input
+    # on every external-input boundary, filter_output on every outbound
+    # GitHub write, checkpoint_and_rollback on post-merge state mutations.
+    # Enabled by default — this is safety, not a feature.
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

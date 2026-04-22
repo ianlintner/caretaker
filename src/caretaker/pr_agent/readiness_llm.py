@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from caretaker.guardrails import sanitize_input
 from caretaker.llm.claude import StructuredCompleteError
 
 if TYPE_CHECKING:
@@ -285,7 +286,11 @@ def build_readiness_prompt(
     """
     pr = context.pr
     labels = ", ".join(label.name for label in pr.labels) or "(none)"
-    body_snippet = _truncate((pr.body or "").strip(), 2000)
+    # Guardrail (Agentic Design Patterns Ch. 18 Input Validation): scrub
+    # the PR body for prompt-injection sigils and caretaker-marker
+    # echoes before it is interpolated into the LLM prompt.
+    sanitized_body = sanitize_input("pr_body", (pr.body or "").strip()).content
+    body_snippet = _truncate(sanitized_body, 2000)
     reviews_block = (
         "\n".join(_render_review_summary(r) for r in context.reviews) or "(no reviews yet)"
     )

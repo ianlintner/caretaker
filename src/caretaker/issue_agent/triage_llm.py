@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from caretaker.guardrails import sanitize_input
 from caretaker.issue_agent.classifier import IssueClassification
 from caretaker.llm.claude import StructuredCompleteError
 
@@ -257,9 +258,13 @@ def build_prompt(issue: Issue, candidates: list[IssueCandidate]) -> str:
     """Render the user-turn prompt for :func:`classify_issue_llm`.
 
     Exposed for testing and for reviewers who want to eyeball what we
-    actually send to the model.
+    actually send to the model. The issue body is run through
+    :func:`caretaker.guardrails.sanitize_input` before interpolation so
+    prompt-injection sigils pasted into a GitHub issue can never cross
+    the LLM boundary (Agentic Design Patterns Ch. 18 Input Validation).
     """
-    body = (issue.body or "").strip()
+    body_raw = (issue.body or "").strip()
+    body = sanitize_input("github_issue_body", body_raw).content
     if len(body) > _BODY_TRUNCATE:
         body = body[:_BODY_TRUNCATE] + "\n[... body truncated]"
     body_indented = "    " + body.replace("\n", "\n    ") if body else "    (empty)"

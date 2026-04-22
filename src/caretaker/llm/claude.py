@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from caretaker.guardrails import sanitize_input
+
 from .provider import AnthropicProvider, LLMRequest, build_provider
 
 if TYPE_CHECKING:
@@ -325,14 +327,22 @@ class ClaudeClient:
     # ── Public feature API ──────────────────────────────────────────────────
 
     async def analyze_ci_logs(self, logs: str, context: str = "") -> str:
-        """Analyze CI failure logs and return structured diagnosis."""
+        """Analyze CI failure logs and return structured diagnosis.
+
+        The raw log text is run through
+        :func:`caretaker.guardrails.sanitize_input` before interpolation
+        so prompt-injection sigils, zero-width chars, and oversized
+        payloads cannot cross the LLM boundary (Agentic Design Patterns
+        Ch. 18 Input Validation).
+        """
+        sanitized = sanitize_input("ci_log", logs).content
         prompt = (
             "Analyze this CI failure log and provide:\n"
             "1. Root cause (one line)\n"
             "2. Affected files and lines\n"
             "3. Suggested fix (specific code changes)\n\n"
             f"Context: {context}\n\n"
-            f"CI Log:\n```\n{logs[:8000]}\n```"
+            f"CI Log:\n```\n{sanitized[:8000]}\n```"
         )
         return await self._complete("ci_log_analysis", prompt, 2000)
 

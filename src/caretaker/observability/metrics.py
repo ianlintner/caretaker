@@ -328,6 +328,36 @@ FIX_LADDER_ESCALATION_TOTAL = Counter(
 )
 
 
+# ── Guardrails (Ch. 18) ──────────────────────────────────────────────
+#
+# Emitted by :mod:`caretaker.guardrails` on every sanitize, filter, and
+# rollback event. Cardinality is bounded: ``source`` / ``target`` are
+# closed enums defined in the guardrails package; ``modification_type``
+# and ``reason`` are short bounded strings so the full series count
+# stays in the low hundreds even at maximum fan-out.
+
+GUARDRAIL_SANITIZE_TOTAL = Counter(
+    "caretaker_guardrail_sanitize_total",
+    "External inputs passed through sanitize_input, by source and modification.",
+    ["service", "source", "modification_type"],
+    registry=REGISTRY,
+)
+
+GUARDRAIL_FILTER_BLOCKED_TOTAL = Counter(
+    "caretaker_guardrail_filter_blocked_total",
+    "Outbound writes blocked or modified by filter_output, by target and reason.",
+    ["service", "target", "reason"],
+    registry=REGISTRY,
+)
+
+GUARDRAIL_ROLLBACK_FIRED_TOTAL = Counter(
+    "caretaker_guardrail_rollback_fired_total",
+    "checkpoint_and_rollback invocations whose rollback path actually fired.",
+    ["service", "repo", "reason"],
+    registry=REGISTRY,
+)
+
+
 def record_fix_ladder_outcome(repo: str, rung: str, outcome: str) -> None:
     """Module-level sink matching the runner's ``metrics_sink`` callable."""
     FIX_LADDER_OUTCOME_TOTAL.labels(repo=repo or "unknown", rung=rung, outcome=outcome).inc()
@@ -717,6 +747,33 @@ def record_operator_intervention(repo: str, reason: str) -> None:
     ).inc()
 
 
+def record_guardrail_sanitize(source: str, modification_type: str) -> None:
+    """Record one sanitize-time modification (per source × type)."""
+    GUARDRAIL_SANITIZE_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        source=source,
+        modification_type=modification_type,
+    ).inc()
+
+
+def record_guardrail_filter_blocked(target: str, reason: str) -> None:
+    """Record one filter_output rejection (per target × reason)."""
+    GUARDRAIL_FILTER_BLOCKED_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        target=target,
+        reason=reason,
+    ).inc()
+
+
+def record_guardrail_rollback_fired(repo: str, reason: str) -> None:
+    """Record one checkpoint_and_rollback rollback firing."""
+    GUARDRAIL_ROLLBACK_FIRED_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        repo=repo,
+        reason=reason,
+    ).inc()
+
+
 def record_llm_cache_usage(
     *,
     provider: str,
@@ -752,6 +809,9 @@ __all__ = [
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
     "GITHUB_SCOPE_GAP_TOTAL",
+    "GUARDRAIL_FILTER_BLOCKED_TOTAL",
+    "GUARDRAIL_ROLLBACK_FIRED_TOTAL",
+    "GUARDRAIL_SANITIZE_TOTAL",
     "HTTP_CLIENT_REQUESTS_TOTAL",
     "HTTP_CLIENT_REQUEST_DURATION_SECONDS",
     "HTTP_SERVER_REQUESTS_TOTAL",
@@ -774,6 +834,9 @@ __all__ = [
     "metrics_asgi_app",
     "record_error",
     "record_github_scope_gap",
+    "record_guardrail_filter_blocked",
+    "record_guardrail_rollback_fired",
+    "record_guardrail_sanitize",
     "record_http_client",
     "record_issue_outcome",
     "record_llm_cache_usage",
