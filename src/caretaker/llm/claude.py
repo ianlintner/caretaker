@@ -152,7 +152,14 @@ class ClaudeClient:
                 max_tokens = override.max_tokens
         return model, max_tokens
 
-    async def _complete(self, feature: str, prompt: str, default_max_tokens: int) -> str:
+    async def _complete(
+        self,
+        feature: str,
+        prompt: str,
+        default_max_tokens: int,
+        *,
+        system: str | None = None,
+    ) -> str:
         if not self.available:
             return ""
         model, max_tokens = self._resolve_feature(feature, default_max_tokens)
@@ -160,7 +167,13 @@ class ClaudeClient:
         _log_prompt(feature, prompt)
         try:
             response = await self._provider.complete(
-                LLMRequest(feature=feature, prompt=prompt, model=model, max_tokens=max_tokens)
+                LLMRequest(
+                    feature=feature,
+                    prompt=prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system,
+                )
             )
         except Exception as exc:  # provider-level failures are non-fatal
             logger.warning("LLM call failed [%s]: %s", feature, exc)
@@ -179,13 +192,13 @@ class ClaudeClient:
     ) -> str:
         """General-purpose completion method.
 
-        Prepends an optional ``system`` instruction to the user prompt before
-        calling the underlying LLM.  Intended for callers (e.g. pr_reviewer)
+        Passes an optional ``system`` instruction through as a dedicated system
+        prompt on the underlying LLM request (enabling Anthropic prompt caching
+        on the stable system text). Intended for callers (e.g. pr_reviewer)
         that need a free-form system prompt rather than a domain-specific
         method from the public feature API below.
         """
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        return await self._complete(feature, full_prompt, max_tokens)
+        return await self._complete(feature, prompt, max_tokens, system=system)
 
     async def structured_complete(
         self,

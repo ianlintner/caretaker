@@ -216,6 +216,33 @@ GITHUB_SCOPE_GAP_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# ── LLM prompt-cache telemetry ───────────────────────────────────────
+#
+# Emitted by :mod:`caretaker.llm.provider` on every completion.  Together
+# they let Grafana compute an Anthropic prompt-cache hit ratio:
+#
+#     sum(rate(caretaker_llm_cache_read_tokens_total[5m]))
+#       / sum(rate(caretaker_llm_cache_read_tokens_total[5m])
+#             + rate(caretaker_llm_cache_creation_tokens_total[5m]))
+#
+# Labelled by ``provider`` (``anthropic`` / ``litellm``) and ``model`` so
+# we can attribute hits per-provider and per-model.  Cardinality stays low:
+# a handful of providers × tens of model ids.
+
+LLM_CACHE_READ_TOKENS_TOTAL = Counter(
+    "caretaker_llm_cache_read_tokens_total",
+    "Input tokens served from Anthropic prompt cache (cache hits).",
+    ["provider", "model"],
+    registry=REGISTRY,
+)
+
+LLM_CACHE_CREATION_TOKENS_TOTAL = Counter(
+    "caretaker_llm_cache_creation_tokens_total",
+    "Input tokens written into the Anthropic prompt cache (cache misses).",
+    ["provider", "model"],
+    registry=REGISTRY,
+)
+
 # ── Build / version metadata ─────────────────────────────────────────
 
 APP_INFO = Gauge(
@@ -559,6 +586,32 @@ def record_github_scope_gap(scope: str) -> None:
     GITHUB_SCOPE_GAP_TOTAL.labels(service=_SERVICE_LABEL, scope=scope).inc()
 
 
+def record_llm_cache_usage(
+    *,
+    provider: str,
+    model: str,
+    cache_read_input_tokens: int,
+    cache_creation_input_tokens: int,
+) -> None:
+    """Record Anthropic prompt-cache token counts from a response's ``usage``.
+
+    Both inputs are **cumulative token counts** for a single completion, as
+    surfaced in ``usage.cache_read_input_tokens`` and
+    ``usage.cache_creation_input_tokens`` (Anthropic) or the LiteLLM-proxied
+    equivalents.  Non-positive values are silently ignored so providers that
+    don't support caching (or requests that skipped the cache) don't pollute
+    the counters with zero-valued increments.
+    """
+    if cache_read_input_tokens > 0:
+        LLM_CACHE_READ_TOKENS_TOTAL.labels(provider=provider, model=model).inc(
+            float(cache_read_input_tokens)
+        )
+    if cache_creation_input_tokens > 0:
+        LLM_CACHE_CREATION_TOKENS_TOTAL.labels(provider=provider, model=model).inc(
+            float(cache_creation_input_tokens)
+        )
+
+
 __all__ = [
     "APP_INFO",
     "CARETAKER_ERRORS_TOTAL",
@@ -571,6 +624,8 @@ __all__ = [
     "HTTP_SERVER_REQUESTS_TOTAL",
     "HTTP_SERVER_REQUEST_DURATION_SECONDS",
     "LATENCY_BUCKETS",
+    "LLM_CACHE_CREATION_TOKENS_TOTAL",
+    "LLM_CACHE_READ_TOKENS_TOTAL",
     "RATE_LIMIT_COOLDOWN_SECONDS",
     "RATE_LIMIT_REMAINING",
     "REGISTRY",
@@ -583,6 +638,7 @@ __all__ = [
     "record_error",
     "record_github_scope_gap",
     "record_http_client",
+    "record_llm_cache_usage",
     "record_orchestrator_soft_fail",
     "record_worker_job",
     "set_rate_limit_cooldown",
