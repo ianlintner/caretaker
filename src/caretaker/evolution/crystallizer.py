@@ -31,7 +31,17 @@ _CATEGORY_PATTERNS: list[tuple[str, str]] = [
 
 
 def _infer_category(notes: str) -> str:
-    """Infer failure category from free-text notes. Defaults to CATEGORY_CI."""
+    """Infer failure category from free-text notes. Defaults to CATEGORY_CI.
+
+    TODO(T-A10, crystallizer_category): replace this regex ladder with the
+    structured LLM verdict produced by
+    :class:`caretaker.pr_agent.ci_triage.FailureTriage` (see T-A3). The
+    ``agentic.crystallizer_category`` flag is already wired in
+    :class:`~caretaker.config.AgenticConfig` — once T-A3's shadow data
+    shows the LLM classifier is reliable, this function becomes the
+    legacy branch and ``FailureTriage.category`` feeds directly into
+    :data:`~caretaker.evolution.insight_store.CATEGORY_*` lookups.
+    """
     lower = notes.lower()
     for category, pattern in _CATEGORY_PATTERNS:
         if re.search(pattern, lower):
