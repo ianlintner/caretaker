@@ -186,6 +186,13 @@ class Orchestrator:
         if config.mcp.enabled:
             self._mcp_client = MCPClient(config.mcp)
 
+        # Per-orchestrator cache for the fleet heartbeat's OAuth2 client.
+        # Owned here so multi-tenant hosts (admin backend, tests) don't
+        # share a single cross-config client via a module global.
+        from caretaker.fleet import FleetOAuthClientCache
+
+        self._fleet_oauth_cache = FleetOAuthClientCache()
+
         # Evolution layer (InsightStore, ReflectionEngine, StrategyMutator, PlanMode)
         self._insight_store: InsightStore | None = None
         self._skill_crystallizer: SkillCrystallizer | None = None
@@ -563,7 +570,11 @@ class Orchestrator:
             try:
                 from caretaker.fleet import emit_heartbeat
 
-                await emit_heartbeat(self._config, summary)
+                await emit_heartbeat(
+                    self._config,
+                    summary,
+                    oauth_cache=self._fleet_oauth_cache,
+                )
             except Exception as e:
                 logger.warning("Fleet heartbeat failed: %s", e)
 

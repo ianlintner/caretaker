@@ -55,57 +55,79 @@ _COUNTERS = (
 )
 
 
-_oauth_client: OAuth2ClientCredentials | None = None
-_oauth_client_key: tuple[str, str, str, str, str, float] | None = None
+class FleetOAuthClientCache:
+    """Per-owner cache for the fleet heartbeat's OAuth2 client.
 
+    Caching the client across heartbeats is what lets the in-process JWT
+    cache inside :class:`OAuth2ClientCredentials` actually deliver value;
+    without it, every run would refetch a token. The cache key covers
+    every config + env var the client depends on, so a credential
+    rotation invalidates automatically.
 
-def _get_oauth_client(fleet: FleetRegistryConfig) -> OAuth2ClientCredentials | None:
-    """Return a cached OAuth2 client for the given config, rebuilding on change.
-
-    Caching the client instance across heartbeat calls is what lets the
-    in-memory JWT cache actually deliver value: without it, each run
-    would refetch a token. The cache key covers every config + env var
-    the client depends on, so a rotation invalidates correctly.
+    One instance is expected per logical owner — :class:`Orchestrator` in
+    production, or a test. A :data:`_default_cache` module singleton is
+    kept for the legacy free-function call path (``emit_heartbeat`` with
+    no ``oauth_cache=`` kwarg), but the singleton is no longer the only
+    place the state lives: multiple orchestrators or a multi-tenant admin
+    process each get their own instance and never cross-contaminate.
     """
-    global _oauth_client, _oauth_client_key
 
-    oauth_cfg = fleet.oauth2
-    if not oauth_cfg.enabled:
-        return None
+    __slots__ = ("_client", "_key")
 
-    scope = os.environ.get(oauth_cfg.scope_env, "").strip() or oauth_cfg.default_scope
-    key = (
-        os.environ.get(oauth_cfg.client_id_env, ""),
-        os.environ.get(oauth_cfg.client_secret_env, ""),
-        os.environ.get(oauth_cfg.token_url_env, ""),
-        oauth_cfg.scope_env,
-        scope,
-        oauth_cfg.timeout_seconds,
-    )
-    if _oauth_client_key == key and _oauth_client is not None:
-        return _oauth_client
+    _KeyT = tuple[str, str, str, str, str, float]
 
-    client = build_client_from_env(
-        client_id_env=oauth_cfg.client_id_env,
-        client_secret_env=oauth_cfg.client_secret_env,
-        token_url_env=oauth_cfg.token_url_env,
-        scope_env=oauth_cfg.scope_env,
-        timeout_seconds=oauth_cfg.timeout_seconds,
-    )
-    _oauth_client = client
-    _oauth_client_key = key if client is not None else None
-    return client
+    def __init__(self) -> None:
+        self._client: OAuth2ClientCredentials | None = None
+        self._key: FleetOAuthClientCache._KeyT | None = None
+
+    def get(self, fleet: FleetRegistryConfig) -> OAuth2ClientCredentials | None:
+        oauth_cfg = fleet.oauth2
+        if not oauth_cfg.enabled:
+            return None
+
+        scope = os.environ.get(oauth_cfg.scope_env, "").strip() or oauth_cfg.default_scope
+        key: FleetOAuthClientCache._KeyT = (
+            os.environ.get(oauth_cfg.client_id_env, ""),
+            os.environ.get(oauth_cfg.client_secret_env, ""),
+            os.environ.get(oauth_cfg.token_url_env, ""),
+            oauth_cfg.scope_env,
+            scope,
+            oauth_cfg.timeout_seconds,
+        )
+        if self._key == key and self._client is not None:
+            return self._client
+
+        client = build_client_from_env(
+            client_id_env=oauth_cfg.client_id_env,
+            client_secret_env=oauth_cfg.client_secret_env,
+            token_url_env=oauth_cfg.token_url_env,
+            scope_env=oauth_cfg.scope_env,
+            timeout_seconds=oauth_cfg.timeout_seconds,
+        )
+        self._client = client
+        self._key = key if client is not None else None
+        return client
+
+    def invalidate(self) -> None:
+        self._client = None
+        self._key = None
+
+
+_default_cache = FleetOAuthClientCache()
 
 
 async def _oauth_bearer_headers(
-    fleet: FleetRegistryConfig, *, client: httpx.AsyncClient
+    fleet: FleetRegistryConfig,
+    *,
+    client: httpx.AsyncClient,
+    cache: FleetOAuthClientCache,
 ) -> dict[str, str]:
     """Return ``Authorization: Bearer …`` if OAuth2 is configured, else ``{}``.
 
     Failures are logged at WARNING and swallowed: the fleet emitter is
     fail-open, so a flaky auth server never breaks the run loop.
     """
-    oauth = _get_oauth_client(fleet)
+    oauth = cache.get(fleet)
     if oauth is None:
         return {}
     try:
@@ -211,12 +233,18 @@ async def emit_heartbeat(
     summary: RunSummary,
     *,
     client: httpx.AsyncClient | None = None,
+    oauth_cache: FleetOAuthClientCache | None = None,
 ) -> bool:
     """POST a heartbeat to the configured fleet endpoint.
 
     Returns ``True`` on a 2xx response, ``False`` otherwise. Never raises:
     network or configuration problems are logged at ``WARNING`` and
     swallowed so a failure to register never fails the orchestrator run.
+
+    ``oauth_cache`` lets the caller own the OAuth2 client cache (needed
+    when multiple configs share a process, e.g. the admin backend or
+    tests). When omitted, the module-level :data:`_default_cache` is used
+    for the single-owner default case.
     """
     fleet: FleetRegistryConfig = config.fleet_registry
     if not fleet.enabled:
@@ -238,13 +266,14 @@ async def emit_heartbeat(
     if secret:
         headers["X-Caretaker-Signature"] = "sha256=" + sign_payload(body, secret)
 
+    cache = oauth_cache if oauth_cache is not None else _default_cache
     owns_client = client is None
     try:
         if owns_client:
             client = httpx.AsyncClient(timeout=fleet.timeout_seconds)
         assert client is not None  # narrow for type-checkers
         try:
-            oauth_headers = await _oauth_bearer_headers(fleet, client=client)
+            oauth_headers = await _oauth_bearer_headers(fleet, client=client, cache=cache)
             if oauth_headers:
                 headers.update(oauth_headers)
             resp = await client.post(endpoint, content=body, headers=headers)

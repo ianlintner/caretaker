@@ -4,6 +4,7 @@ from caretaker.fleet.abstraction import abstract_sop
 from caretaker.fleet.api import admin_router, public_router
 from caretaker.fleet.emitter import (
     FleetHeartbeat,
+    FleetOAuthClientCache,
     build_heartbeat,
     emit_heartbeat,
     sign_payload,
@@ -19,6 +20,7 @@ from caretaker.fleet.store import (
 __all__ = [
     "FleetClient",
     "FleetHeartbeat",
+    "FleetOAuthClientCache",
     "FleetRegistryStore",
     "abstract_sop",
     "admin_router",
