@@ -11,9 +11,3 @@ mongo:
   database_name: caretaker
   memory_collection: agent_memory
   audit_collection: audit_log
-
-# Triage subsystem (v0.11.0) — start in dry-run so the first live invocations
-# surface their plan in the run report without actually closing anything.
-# Flip dry_run to false once a scheduled run confirms the plan looks right.
-triage:
-  dry_run: true
