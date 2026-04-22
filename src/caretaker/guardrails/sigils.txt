@@ -1,0 +1,49 @@
+# Prompt-injection sigils — one pattern per line.
+#
+# Operators can override this file by setting
+# ``guardrails.sigil_list_path`` in the maintainer config. Lines starting
+# with ``#`` are comments; blank lines are skipped. Matching is
+# case-insensitive substring (the simplest thing that could possibly
+# work — we normalise to NFKC + lowercase before testing).
+#
+# Keep this list grep-worthy: one short imperative per line, no regex
+# meta-characters unless the line is prefixed with ``regex:``.
+
+# ── Direct override attempts ──────────────────────────────────────────
+ignore previous instructions
+ignore all previous instructions
+ignore the above
+disregard previous instructions
+disregard the above
+forget previous instructions
+forget everything above
+you are now
+you're now
+act as
+pretend to be
+new instructions:
+updated instructions:
+
+# ── Role-hijack preamble ──────────────────────────────────────────────
+SYSTEM:
+SYSTEM PROMPT:
+ASSISTANT:
+[SYSTEM]
+[ASSISTANT]
+<|im_start|>
+<|im_end|>
+<|system|>
+<|assistant|>
+
+# ── Caretaker-reserved markers (reserved for internal state tracking;
+#    any appearance in inbound or outbound content is a red flag).
+<!-- caretaker:
+caretaker:task
+caretaker:owned
+caretaker:hold
+
+# ── Markdown fence escape attempts ────────────────────────────────────
+# The classic payload closes the incoming fenced block so downstream
+# rendering treats the rest of the LLM prompt as a new top-level scope.
+```</s>
+```<|endoftext|>
