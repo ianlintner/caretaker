@@ -147,11 +147,15 @@ class PRAgent:
                 PRTrackingState.CLOSED,
                 PRTrackingState.ESCALATED,
             }
-            for pr_number, tracked in list(tracked_prs.items()):
-                if pr_number not in open_pr_numbers and tracked.state not in _terminal:
+            # Use a distinct loop variable so we don't shadow the outer
+            # ``pr_number`` parameter. Even though the post-loop code below
+            # doesn't currently re-read it, shadowing a parameter is a latent
+            # bug magnet — keep the names separate.
+            for tracked_pr_number, tracked in list(tracked_prs.items()):
+                if tracked_pr_number not in open_pr_numbers and tracked.state not in _terminal:
                     try:
                         closed_pr = await self._github.get_pull_request(
-                            self._owner, self._repo, pr_number
+                            self._owner, self._repo, tracked_pr_number
                         )
                         if closed_pr is not None:
                             if closed_pr.merged:
@@ -161,15 +165,17 @@ class PRAgent:
                                 if tracked.merged_at is None:
                                     tracked.merged_at = closed_pr.merged_at
                                 logger.info(
-                                    "PR #%d: externally merged — updated tracked state", pr_number
+                                    "PR #%d: externally merged — updated tracked state",
+                                    tracked_pr_number,
                                 )
                             elif closed_pr.state == PRState.CLOSED:
                                 tracked.state = PRTrackingState.CLOSED
                                 logger.info(
-                                    "PR #%d: externally closed — updated tracked state", pr_number
+                                    "PR #%d: externally closed — updated tracked state",
+                                    tracked_pr_number,
                                 )
                     except Exception as exc:
-                        logger.debug("Could not sync state for PR #%d: %s", pr_number, exc)
+                        logger.debug("Could not sync state for PR #%d: %s", tracked_pr_number, exc)
 
         for pr in open_prs:
             try:
@@ -261,6 +267,7 @@ class PRAgent:
                 ignore_jobs=self._config.ci.ignore_jobs,
                 auto_approve_workflows=self._config.ci.auto_approve_workflows,
                 required_reviews=self._config.readiness.required_reviews,
+                auto_merge=self._config.auto_merge,
             )
             tracking = await self._handle_ownership(pr, tracking, evaluation, report)
             return tracking
@@ -274,6 +281,7 @@ class PRAgent:
             ignore_jobs=self._config.ci.ignore_jobs,
             auto_approve_workflows=self._config.ci.auto_approve_workflows,
             required_reviews=self._config.readiness.required_reviews,
+            auto_merge=self._config.auto_merge,
         )
 
         logger.info(
@@ -447,8 +455,15 @@ class PRAgent:
         already outstanding and we should not spam another one.
         """
         comments = await self._github.get_pr_comments(self._owner, self._repo, pr_number)
+
+        # ``get_pr_comments`` does not guarantee any ordering. Sort explicitly
+        # by (created_at, id) so the "last task before any result" logic is
+        # stable regardless of how the API returned the page. ``created_at`` is
+        # required on Comment; ``id`` tie-breaks same-timestamp entries.
+        ordered = sorted(comments, key=lambda c: (c.created_at, c.id))
+
         last_task_idx: int | None = None
-        for i, comment in enumerate(comments):
+        for i, comment in enumerate(ordered):
             if comment.is_maintainer_task:
                 last_task_idx = i
 
@@ -456,7 +471,7 @@ class PRAgent:
             return False
 
         # Check if any result comment exists after the last task
-        return all(not comment.is_maintainer_result for comment in comments[last_task_idx + 1 :])
+        return all(not comment.is_maintainer_result for comment in ordered[last_task_idx + 1 :])
 
     async def _handle_ci_fix(
         self,

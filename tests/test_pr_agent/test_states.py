@@ -478,3 +478,75 @@ class TestReadinessRequiredReviews:
         assert result.readiness is not None
         assert "required_review_missing" in result.readiness.blockers
         assert result.readiness.score < 1.0
+
+
+class TestEvaluatePRAutoMergeGate:
+    """Regression for T-S3: MERGE_READY must respect auto_merge policy.
+
+    ``merge.evaluate_merge`` already refuses to merge PR families with
+    ``auto_merge.<profile>=false``, but the state machine upstream still
+    returned ``MERGE_READY`` — which made the status comment say "ready for
+    merge" while caretaker silently refused to act. Thread the policy into
+    ``evaluate_pr`` and cap the recommendation at ``CI_PASSING / await_review``.
+    """
+
+    def test_human_pr_auto_merge_disabled_does_not_return_merge_ready(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        human = User(login="human-dev", id=7, type="User")
+        pr = make_pr(user=human)
+        checks = [make_check_run(name="test")]  # passing
+        auto_merge = AutoMergeConfig(human_prs=False)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no reviewers assigned → reviews.pending=True
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state != PRTrackingState.MERGE_READY
+        assert result.recommended_state == PRTrackingState.CI_PASSING
+        assert result.recommended_action == "await_review"
+
+    def test_human_pr_auto_merge_enabled_returns_merge_ready(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        human = User(login="human-dev", id=7, type="User")
+        pr = make_pr(user=human)
+        checks = [make_check_run(name="test")]
+        auto_merge = AutoMergeConfig(human_prs=True)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+        assert result.recommended_action == "merge"
+
+    def test_copilot_pr_auto_merge_disabled_caps_at_ci_passing(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        copilot = User(login="copilot[bot]", id=8, type="Bot")
+        pr = make_pr(user=copilot)
+        checks = [make_check_run(name="test")]
+        auto_merge = AutoMergeConfig(copilot_prs=False)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state != PRTrackingState.MERGE_READY
+
+    def test_no_auto_merge_config_preserves_legacy_behavior(self) -> None:
+        """When auto_merge is None, the gate is disabled — MERGE_READY returns."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.MERGE_READY

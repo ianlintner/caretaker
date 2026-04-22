@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from caretaker.github_client.models import (
     CheckConclusion,
@@ -16,6 +17,9 @@ from caretaker.github_client.models import (
 )
 from caretaker.pr_agent._constants import is_automated_reviewer
 from caretaker.state.models import PRTrackingState
+
+if TYPE_CHECKING:
+    from caretaker.config import AutoMergeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +263,25 @@ def evaluate_readiness(
     )
 
 
+def _auto_merge_allows(pr: PullRequest, auto_merge: AutoMergeConfig | None) -> bool:
+    """Return True when the configured auto-merge policy allows this PR family.
+
+    Used to gate the ``MERGE_READY`` recommendation: if caretaker wouldn't
+    actually merge this PR under ``config.auto_merge``, then the state
+    machine should not surface it as "ready for merge" in status comments —
+    that's user-confusing ("ready" but nothing happens). When ``auto_merge``
+    is ``None`` (caller didn't thread the config in), the gate is disabled
+    for backwards compatibility.
+    """
+    if auto_merge is None:
+        return True
+    if pr.is_copilot_pr:
+        return auto_merge.copilot_prs
+    if pr.is_dependabot_pr:
+        return auto_merge.dependabot_prs
+    return auto_merge.human_prs
+
+
 def evaluate_pr(
     pr: PullRequest,
     check_runs: list[CheckRun],
@@ -267,8 +290,16 @@ def evaluate_pr(
     ignore_jobs: list[str] | None = None,
     auto_approve_workflows: bool = False,
     required_reviews: int = 1,
+    auto_merge: AutoMergeConfig | None = None,
 ) -> PRStateEvaluation:
-    """Full PR evaluation — determines next state and action."""
+    """Full PR evaluation — determines next state and action.
+
+    ``auto_merge`` (optional): when supplied, the ``MERGE_READY`` recommendation
+    is suppressed for PR families that the configured auto-merge policy would
+    reject (e.g. ``human_prs=false``). The PR falls back to ``CI_PASSING`` with
+    ``await_review``, which correctly renders as "awaiting review" in the
+    status comment instead of the misleading "ready for merge".
+    """
     ci = evaluate_ci(check_runs, ignore_jobs)
     review_eval = evaluate_reviews(reviews)
     readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews)
@@ -364,7 +395,16 @@ def evaluate_pr(
                 recommended_action="request_review_fix",
             )
 
-    if ci.status == CIStatus.PASSING and (review_eval.approved or review_eval.pending):
+    # Cap MERGE_READY when auto-merge is disabled for this PR family —
+    # otherwise the status comment says "ready for merge" even though
+    # caretaker will refuse to merge (see merge.evaluate_merge). Fall through
+    # to CI_PASSING / await_review so the status comment correctly renders
+    # the awaiting-review state.
+    if (
+        ci.status == CIStatus.PASSING
+        and (review_eval.approved or review_eval.pending)
+        and _auto_merge_allows(pr, auto_merge)
+    ):
         return PRStateEvaluation(
             pr=pr,
             ci=ci,

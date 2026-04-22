@@ -420,6 +420,52 @@ class TestTrackedPRExternalSync:
         github.get_pull_request.assert_not_awaited()
         assert tracked_prs[202].state == PRTrackingState.CI_PENDING
 
+    async def test_sync_loop_does_not_shadow_pr_number_parameter(self) -> None:
+        """Regression for T-S2: the closed-PR sync loop previously reused
+        ``pr_number`` as its loop variable, shadowing the outer parameter.
+
+        With multiple closed PRs in tracked_prs, each one must be fetched by
+        its own number (not the last-iterated loop variable) and updated
+        independently. This exercises the renamed loop variable.
+        """
+        from caretaker.pr_agent.agent import PRAgent
+        from tests.conftest import make_pr as make_test_pr
+
+        github = AsyncMock()
+        github.list_pull_requests.return_value = []  # empty scan
+
+        merged_at_a = datetime(2024, 2, 1, tzinfo=UTC)
+        merged_at_b = datetime(2024, 2, 2, tzinfo=UTC)
+        pr_a = make_test_pr(number=11, state=PRState.CLOSED, merged=True)
+        pr_a.merged_at = merged_at_a
+        pr_b = make_test_pr(number=22, state=PRState.CLOSED, merged=True)
+        pr_b.merged_at = merged_at_b
+
+        # get_pull_request must be answered per PR number — if the sync
+        # loop confused the outer parameter with its loop variable it could
+        # request the same number twice.
+        async def _get_pr(owner: str, repo: str, number: int):
+            return {11: pr_a, 22: pr_b}[number]
+
+        github.get_pull_request.side_effect = _get_pr
+
+        tracked_prs = {
+            11: TrackedPR(number=11, state=PRTrackingState.CI_PENDING),
+            22: TrackedPR(number=22, state=PRTrackingState.CI_PENDING),
+        }
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=make_config())
+        _, updated_tracked = await agent.run(tracked_prs)
+
+        assert updated_tracked[11].state == PRTrackingState.MERGED
+        assert updated_tracked[11].merged_at == merged_at_a
+        assert updated_tracked[22].state == PRTrackingState.MERGED
+        assert updated_tracked[22].merged_at == merged_at_b
+        # Both numbers were requested — proves the loop iterated each entry
+        # by its own key.
+        called_numbers = sorted(call.args[2] for call in github.get_pull_request.await_args_list)
+        assert called_numbers == [11, 22]
+
 
 # ── is_copilot_pr recognition ────────────────────────────────────────
 
@@ -1018,6 +1064,77 @@ class TestCommentDeduplication:
         agent._copilot_bridge.request_ci_fix.assert_awaited_once()
         assert updated.copilot_attempts == 1
         assert 102 in report.fix_requested
+
+    async def test_reversed_order_still_returns_correct_pending_verdict(self) -> None:
+        """Regression for T-S7: get_pr_comments does not guarantee ordering.
+
+        When the API returns comments in reverse chronological order, the
+        previous implementation's "last task before any result" logic could
+        invert. The function must sort explicitly by (created_at, id) so the
+        verdict is stable regardless of input order.
+        """
+        from caretaker.github_client.models import Comment, User
+        from caretaker.pr_agent.agent import PRAgent
+
+        user = User(login="caretaker[bot]", id=99, type="Bot")
+        # Task first (older), then result (newer): the correct verdict is
+        # NOT pending — the task has been answered.
+        task = Comment(
+            id=1,
+            user=user,
+            body="<!-- caretaker:task -->Fix CI failure",
+            created_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        result = Comment(
+            id=2,
+            user=user,
+            body="<!-- caretaker:result -->FIXED",
+            created_at=datetime(2024, 1, 1, 13, 0, tzinfo=UTC),
+        )
+
+        github = AsyncMock()
+        # API returns them in reverse chronological order.
+        github.get_pr_comments.return_value = [result, task]
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is False
+
+    async def test_reversed_order_detects_unanswered_task(self) -> None:
+        """When the API returns an unanswered task among older comments in
+        reverse order, the verdict must be *pending* (True)."""
+        from caretaker.github_client.models import Comment, User
+        from caretaker.pr_agent.agent import PRAgent
+
+        user = User(login="caretaker[bot]", id=99, type="Bot")
+        # First task, then result, then second task (most recent). Correct
+        # verdict: pending (second task has no subsequent result).
+        first_task = Comment(
+            id=1,
+            user=user,
+            body="<!-- caretaker:task -->First task",
+            created_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        result = Comment(
+            id=2,
+            user=user,
+            body="<!-- caretaker:result -->FIXED",
+            created_at=datetime(2024, 1, 1, 13, 0, tzinfo=UTC),
+        )
+        second_task = Comment(
+            id=3,
+            user=user,
+            body="<!-- caretaker:task -->Second task",
+            created_at=datetime(2024, 1, 1, 14, 0, tzinfo=UTC),
+        )
+
+        github = AsyncMock()
+        # Reverse chronological order.
+        github.get_pr_comments.return_value = [second_task, result, first_task]
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        assert await agent._has_pending_task_comment(1) is True
 
 
 # ── PR-number single-PR fast path ─────────────────────────────────────────────

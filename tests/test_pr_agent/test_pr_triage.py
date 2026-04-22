@@ -69,26 +69,51 @@ async def test_close_empty_prs_dry_run_does_not_close() -> None:
 
 @pytest.mark.asyncio
 async def test_close_duplicate_fix_prs_by_cve() -> None:
+    # Survivor policy: oldest wins (canonical review history lives on the
+    # first PR). Mirrors close_duplicate_issues in issue_agent/issue_triage.py.
     older = make_pr(number=10, created_at=datetime(2026, 1, 1, tzinfo=UTC))
     older.title = "Bump aiohttp for CVE-2026-34516"
     newer = make_pr(number=11, created_at=datetime(2026, 2, 1, tzinfo=UTC))
     newer.title = "Fix CVE-2026-34516 in aiohttp (proper pin)"
     gh = _FakeGH()
     closed = await close_duplicate_fix_prs(gh, "o", "r", [older, newer])
-    assert closed == [10]
-    # Close comment references the survivor.
-    assert any("#11" in body for (_, body) in gh.comments)
+    assert closed == [11]
+    # Close comment references the survivor (the older PR).
+    assert any("#10" in body for (_, body) in gh.comments)
 
 
 @pytest.mark.asyncio
 async def test_close_duplicate_fix_prs_package_bump() -> None:
+    # Survivor policy: oldest wins.
     a = make_pr(number=20, created_at=datetime(2026, 1, 1, tzinfo=UTC))
     a.title = "Bump pytest from 8 to 9.0.2"
     b = make_pr(number=21, created_at=datetime(2026, 1, 2, tzinfo=UTC))
     b.title = "Bump pytest from 8 to 9.0.3"
     gh = _FakeGH()
     closed = await close_duplicate_fix_prs(gh, "o", "r", [a, b])
-    assert closed == [20]
+    assert closed == [21]
+
+
+@pytest.mark.asyncio
+async def test_close_duplicate_fix_prs_survivor_matches_issue_triage_policy() -> None:
+    """Regression for T-S4: pr_triage survivor must match issue_triage (oldest wins).
+
+    Reversing the list order must not change the survivor — this catches any
+    regression to "newest wins" that would be hidden by input ordering.
+    """
+    first = make_pr(number=50, created_at=datetime(2026, 3, 1, tzinfo=UTC))
+    first.title = "Bump requests for CVE-2026-99999"
+    second = make_pr(number=51, created_at=datetime(2026, 3, 10, tzinfo=UTC))
+    second.title = "CVE-2026-99999 requests pin"
+    third = make_pr(number=52, created_at=datetime(2026, 3, 15, tzinfo=UTC))
+    third.title = "Fix CVE-2026-99999 in requests"
+
+    gh = _FakeGH()
+    closed = await close_duplicate_fix_prs(gh, "o", "r", [third, first, second])
+    # Oldest (#50) wins regardless of input order; #51 and #52 close.
+    assert sorted(closed) == [51, 52]
+    # All close comments reference #50 as the superseding PR.
+    assert all("#50" in body for (_, body) in gh.comments)
 
 
 @pytest.mark.asyncio

@@ -125,10 +125,12 @@ async def close_duplicate_fix_prs(
 ) -> list[int]:
     """Group security/fix PRs by CVE or bumped package; close the stragglers.
 
-    Survivor selection: newest PR wins by ``created_at``. This is a simple
-    proxy for "likely to carry the highest pin"; the ci_triage layer already
-    filters for passing checks before merge, so a false pick here just means
-    the survivor won't auto-merge until it's green.
+    Survivor selection: oldest PR wins by ``created_at`` (lowest PR number as
+    tie-break). The canonical review history — inline comments, CI diagnoses,
+    reviewer discussion — lives on the first PR opened against a given fix;
+    closing the older twin would discard that context. Aligned with the
+    sibling policy in
+    :func:`caretaker.issue_agent.issue_triage.close_duplicate_issues`.
     """
     closed: list[int] = []
 
@@ -143,12 +145,17 @@ async def close_duplicate_fix_prs(
         if len(prs) < 2:
             continue
 
-        # Survivor: newest by created_at, falling back to highest PR number.
+        # Survivor: oldest by created_at, falling back to lowest PR number.
+        # PRs with an unknown created_at sort last (never chosen as survivor
+        # over a PR with a real timestamp).
         def _sort_key(p: PullRequest) -> tuple[float, int]:
-            created = p.created_at.timestamp() if p.created_at else 0.0
+            created = p.created_at.timestamp() if p.created_at else float("inf")
             return (created, p.number)
 
-        survivor = max(prs, key=_sort_key)
+        # why oldest wins: mirrors close_duplicate_issues in
+        # issue_agent/issue_triage.py — canonical history lives on the first
+        # PR opened for a given fix.
+        survivor = min(prs, key=_sort_key)
         for pr in prs:
             if pr.number == survivor.number:
                 continue
