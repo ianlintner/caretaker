@@ -864,6 +864,30 @@ class AgenticDomainConfig(StrictBaseModel):
     mode: Literal["off", "shadow", "enforce"] = "off"
 
 
+class IssueTriageAgenticConfig(AgenticDomainConfig):
+    """Per-decision knobs for the issue-triage shadow migration (T-A5).
+
+    Extends :class:`AgenticDomainConfig` with the candidate-pool sizing knob
+    the migration plan calls out. When the LLM candidate runs, the caller
+    pre-selects at most ``dup_candidate_pool_size`` nearby open issues via
+    embedding similarity (not yet wired) or keyword Jaccard overlap, and
+    passes them into the structured-complete prompt so the model can cite
+    a concrete duplicate_of number instead of inventing one.
+    """
+
+    dup_candidate_pool_size: int = Field(
+        default=5,
+        ge=0,
+        le=50,
+        description=(
+            "Maximum number of nearby open issues to pre-select as duplicate "
+            "candidates. 0 disables candidate pre-selection (LLM must judge "
+            "duplicate_of from title alone, which typically means it returns "
+            "null). Capped at 50 to bound prompt size."
+        ),
+    )
+
+
 class AgenticConfig(StrictBaseModel):
     """Flags for the Phase 2 LLM decision migrations.
 
@@ -875,7 +899,7 @@ class AgenticConfig(StrictBaseModel):
     readiness: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     ci_triage: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     review_classification: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
-    issue_triage: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    issue_triage: IssueTriageAgenticConfig = Field(default_factory=IssueTriageAgenticConfig)
     cascade: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     stuck_pr: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     bot_identity: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
