@@ -17,7 +17,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from caretaker.evolution.backends.base import EvolutionBackend
@@ -62,6 +62,9 @@ CREATE INDEX IF NOT EXISTS idx_mutations_outcome ON mutations(outcome);
 """
 
 
+SkillScope = Literal["local", "global"]
+
+
 @dataclass
 class Skill:
     id: str
@@ -72,6 +75,12 @@ class Skill:
     fail_count: int
     last_used_at: datetime | None
     created_at: datetime
+    # T-E3: scope marker used by the prompt renderer to distinguish a
+    # skill learned in *this* repo (``"local"``) from one promoted from
+    # another repo in the fleet (``"global"``). Defaults to ``"local"``
+    # so every existing backend/factory path keeps its current meaning
+    # without having to set the field explicitly.
+    scope: SkillScope = "local"
 
     @property
     def confidence(self) -> float:
@@ -83,6 +92,33 @@ class Skill:
     @property
     def total_attempts(self) -> int:
         return self.success_count + self.fail_count
+
+
+@runtime_checkable
+class GlobalSkillReader(Protocol):
+    """Sync adapter that surfaces :GlobalSkill rows from the fleet graph.
+
+    ``InsightStore.get_relevant`` uses this to close the read-loop on
+    :func:`caretaker.fleet.graph.promote_global_skills` — promotion was
+    write-only before T-E3. Implementations are expected to hit the
+    live graph (e.g. via a sync Neo4j wrapper) or return pre-baked rows
+    in tests.
+
+    The reader is sync because every caller of ``get_relevant`` today
+    is sync (the PR agent CI path, the foundry prompt renderer). An
+    async variant can be layered in later without breaking callers.
+    """
+
+    def list_global_skills(self, category: str) -> list[Skill]:
+        """Return :GlobalSkill rows for a category as :class:`Skill` records.
+
+        Implementations must set ``scope="global"`` on every returned
+        row so :class:`InsightStore` can tag them without a second pass.
+        Implementations should return an empty list on failure rather
+        than raising — a flaky graph must never block the local hot
+        path.
+        """
+        ...
 
 
 @dataclass
@@ -307,15 +343,31 @@ class InsightStore:
         db_path: SQLite file path (ignored when *backend* is provided).
         backend: Optional pre-built backend.  When provided, *db_path* is
                  unused and no SQLite connection is opened.
+        global_skill_reader: Optional sync reader that returns
+            ``:GlobalSkill`` rows from the fleet graph. When provided
+            (and ``include_global`` is true), :meth:`get_relevant`
+            returns the union of local + global hits, tagged via
+            ``Skill.scope``. Leave ``None`` to keep the legacy
+            local-only behaviour.
+        include_global: Master switch for the global union — used by
+            the config knob ``fleet.include_global_in_prompts``. Defaults
+            to ``True`` because T-E3's whole point is to close the
+            write-only promotion loop; operators can flip it off per-repo
+            if a shared skill misfires.
     """
 
     def __init__(
         self,
         db_path: str = ":memory:",
         backend: EvolutionBackend | None = None,
+        *,
+        global_skill_reader: GlobalSkillReader | None = None,
+        include_global: bool = True,
     ) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._global_skill_reader = global_skill_reader
+        self._include_global = include_global
 
         if backend is not None:
             self._backend: EvolutionBackend = backend
@@ -384,9 +436,64 @@ class InsightStore:
         signature: str,
         min_confidence: float = 0.5,
     ) -> list[Skill]:
-        """Return skills for this category with confidence >= min_confidence."""
-        skills = self._backend.query_skills(category, min_attempts=3, limit=10)
-        return [s for s in skills if s.confidence >= min_confidence]
+        """Return skills for this category with confidence >= min_confidence.
+
+        Returns the union of local ``:Skill`` hits from the configured
+        backend and fleet-promoted ``:GlobalSkill`` hits from the
+        optional :class:`GlobalSkillReader`. Rules:
+
+        * Local hits are tagged ``scope="local"``; they always come
+          back with whatever ``Skill.scope`` the backend populated
+          (default ``"local"``).
+        * Global hits are tagged ``scope="global"`` by the reader.
+        * Deduplication: when the same signature exists in both tiers
+          the local copy wins — the repo's own verified counters are
+          preferred over the fleet's abstracted aggregate.
+        * Global hits are only appended when
+          ``fleet.include_global_in_prompts`` is ``True`` AND a reader
+          has been wired; flipping either off falls back to the legacy
+          local-only behaviour.
+        * Reader failures never propagate — a broken graph must not
+          blow up the PR-agent hot path. The daily reconciliation pass
+          heals any drift.
+        """
+        local_skills = self._backend.query_skills(category, min_attempts=3, limit=10)
+        local_filtered = [s for s in local_skills if s.confidence >= min_confidence]
+
+        if not self._include_global or self._global_skill_reader is None:
+            return local_filtered
+
+        try:
+            global_skills = self._global_skill_reader.list_global_skills(category)
+        except Exception:  # pragma: no cover — defensive; readers should swallow
+            logger.debug("global_skill_reader.list_global_skills failed", exc_info=True)
+            return local_filtered
+
+        seen: set[str] = {s.signature for s in local_filtered if s.signature}
+        merged: list[Skill] = list(local_filtered)
+        for gs in global_skills:
+            if gs.signature and gs.signature in seen:
+                # Local hit takes precedence — the repo's own counters
+                # are more trustworthy than the fleet's aggregate.
+                continue
+            # Defensive: some readers may forget to tag scope; normalise
+            # so the prompt renderer can rely on it.
+            if gs.scope != "global":
+                gs = Skill(
+                    id=gs.id,
+                    category=gs.category,
+                    signature=gs.signature,
+                    sop_text=gs.sop_text,
+                    success_count=gs.success_count,
+                    fail_count=gs.fail_count,
+                    last_used_at=gs.last_used_at,
+                    created_at=gs.created_at,
+                    scope="global",
+                )
+            merged.append(gs)
+            if gs.signature:
+                seen.add(gs.signature)
+        return merged
 
     def get_by_signature(self, category: str, signature: str) -> Skill | None:
         """Return the skill for an exact signature, or None."""

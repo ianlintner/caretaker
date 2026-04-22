@@ -37,10 +37,13 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
+from caretaker.evolution.insight_store import Skill
 from caretaker.fleet.abstraction import abstract_sop
 from caretaker.graph.models import NodeType, RelType
 
@@ -67,6 +70,12 @@ class _GraphStoreProtocol(Protocol):
     ) -> None: ...
 
     async def list_skill_rows(self) -> list[dict[str, Any]]: ...
+
+
+class _GlobalSkillStoreProtocol(Protocol):
+    """Async source of ``:GlobalSkill`` rows (a subset of :class:`GraphStore`)."""
+
+    async def list_global_skill_rows(self, category: str | None = None) -> list[dict[str, Any]]: ...
 
 
 def _repo_node_id(slug: str) -> str:
@@ -319,4 +328,104 @@ async def promote_global_skills(
     return promoted
 
 
-__all__ = ["promote_global_skills", "sync_repos_to_graph"]
+def _row_to_global_skill(row: dict[str, Any]) -> Skill:
+    """Adapt a ``:GlobalSkill`` row into a :class:`Skill` tagged as global.
+
+    ``:GlobalSkill`` nodes don't carry per-repo success/fail counters
+    — those only make sense at the per-repo tier. We synthesise a
+    confidence story from ``repo_count`` instead:
+
+    * ``success_count`` = ``repo_count`` (each contributing repo is one
+      cross-repo success signal).
+    * ``fail_count`` = 0.
+    * ``Skill.confidence`` already requires ``total_attempts >= 3`` to
+      return a non-zero value, which lines up with the default
+      ``fleet.min_repos_for_promotion = 3`` threshold: a signature
+      that just barely cleared promotion starts at confidence 1.0,
+      same as a repo-local skill that has only ever succeeded.
+    """
+    signature = row.get("signature", "")
+    repo_count = int(row.get("repo_count", 0) or 0)
+    now = datetime.now(UTC)
+    return Skill(
+        id=row.get("id") or f"global_skill:{signature}",
+        category=row.get("category", "") or "",
+        signature=signature,
+        sop_text=row.get("sop_text", "") or row.get("name", "") or signature,
+        success_count=repo_count,
+        fail_count=0,
+        last_used_at=None,
+        created_at=now,
+        scope="global",
+    )
+
+
+class GraphBackedGlobalSkillReader:
+    """Sync :class:`GlobalSkillReader` impl on top of the async :class:`GraphStore`.
+
+    Bridges the async ``list_global_skill_rows`` call through a
+    dedicated background event loop so the sync ``get_relevant`` code
+    path (PR agent CI triage, foundry prompt renderer) can surface
+    fleet-promoted skills without touching the caller's loop.
+
+    The reader is resilient: any exception propagating out of the
+    underlying driver is logged and swallowed. Promotion write-loops
+    and prompt builds must not take each other down.
+    """
+
+    def __init__(self, store: _GlobalSkillStoreProtocol) -> None:
+        self._store = store
+
+    def list_global_skills(self, category: str) -> list[Skill]:
+        try:
+            rows = self._run(self._store.list_global_skill_rows(category))
+        except Exception:  # pragma: no cover — swallowed to protect hot path
+            logger.debug("GraphBackedGlobalSkillReader.list_global_skills failed", exc_info=True)
+            return []
+        return [_row_to_global_skill(row) for row in rows]
+
+    @staticmethod
+    def _run(coro: Any) -> Any:
+        """Drive *coro* to completion regardless of the caller's loop state.
+
+        Three cases:
+
+        1. No event loop running on this thread → ``asyncio.run``.
+        2. A loop is running on this thread (unusual for the sync
+           callers but defensive) → spin up a fresh loop in a dedicated
+           worker thread so the current loop isn't re-entered.
+        3. Same as (2) for safety if ``get_event_loop`` raises.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop on this thread — the common case.
+            return asyncio.run(coro)
+
+        # A loop is active: run the coro in a worker thread with its own loop.
+        result: dict[str, Any] = {}
+        error: dict[str, BaseException] = {}
+
+        def _worker() -> None:
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    result["value"] = loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+            except BaseException as exc:  # noqa: BLE001 — re-raised on join
+                error["exc"] = exc
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join()
+        if "exc" in error:
+            raise error["exc"]
+        return result.get("value")
+
+
+__all__ = [
+    "GraphBackedGlobalSkillReader",
+    "promote_global_skills",
+    "sync_repos_to_graph",
+]

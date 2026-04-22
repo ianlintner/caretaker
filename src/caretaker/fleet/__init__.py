@@ -9,7 +9,11 @@ from caretaker.fleet.emitter import (
     emit_heartbeat,
     sign_payload,
 )
-from caretaker.fleet.graph import promote_global_skills, sync_repos_to_graph
+from caretaker.fleet.graph import (
+    GraphBackedGlobalSkillReader,
+    promote_global_skills,
+    sync_repos_to_graph,
+)
 from caretaker.fleet.store import (
     FleetClient,
     FleetRegistryStore,
@@ -22,6 +26,7 @@ __all__ = [
     "FleetHeartbeat",
     "FleetOAuthClientCache",
     "FleetRegistryStore",
+    "GraphBackedGlobalSkillReader",
     "abstract_sop",
     "admin_router",
     "build_heartbeat",
