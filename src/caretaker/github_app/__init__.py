@@ -13,6 +13,14 @@ and the FastAPI webhook receiver without circular imports.
 
 from __future__ import annotations
 
+from .dispatch_guard import (
+    DispatchEvent,
+    DispatchVerdict,
+    evaluate_dispatch,
+    judge_dispatch,
+    judge_dispatch_llm,
+    legacy_dispatch_verdict,
+)
 from .events import (
     EVENT_AGENT_MAP,
     agents_for_event,
@@ -34,12 +42,18 @@ from .webhooks import (
 __all__ = [
     "EVENT_AGENT_MAP",
     "AppJWTSigner",
+    "DispatchEvent",
+    "DispatchVerdict",
     "GitHubAppCredentialsProvider",
     "InstallationToken",
     "InstallationTokenCache",
     "InstallationTokenMinter",
     "WebhookSignatureError",
     "agents_for_event",
+    "evaluate_dispatch",
+    "judge_dispatch",
+    "judge_dispatch_llm",
+    "legacy_dispatch_verdict",
     "normalize_event_name",
     "parse_webhook",
     "verify_signature",
