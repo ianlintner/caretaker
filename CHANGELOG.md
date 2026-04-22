@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] — 2026-04-22
+
+Kicks off Phase 1 of the 2026-Q2 agentic-migration plan (see `docs/plans/`). Three foundational additions — prompt caching, a `structured_complete[T]` helper, and the first scope-gap + orchestrator bleeding fixes — plus Flux GitOps onboarding for the `bigboy` cluster.
+
+### Added
+
+- **Anthropic prompt caching** (#479) on both `AnthropicProvider` and `LiteLLMProvider`. Adds `cache_control: {"type": "ephemeral"}` to the system block on every completion; non-Claude models fail open to the un-cached path via a `_supports_prompt_cache(model)` substring gate. New Prometheus counters `caretaker_llm_cache_read_tokens_total` and `caretaker_llm_cache_creation_tokens_total`, labelled `{provider, model}`, let Grafana compute hit-ratio directly. Follow-up R2 spike queued to evaluate a second breakpoint on stable tool-loop context.
+- **`ClaudeClient.structured_complete[T: BaseModel]`** (#477) — the helper every Phase 2 agentic migration depends on. Prepends `schema.model_json_schema()` to the system prompt, parses the response, and on `JSONDecodeError` or `ValidationError` re-asks once with the failure cue appended before raising `StructuredCompleteError(raw_text, validation_error)`. `LLMConfig.structured_output_retries` (default 1) tunes the retry budget. `pr_reviewer/inline_reviewer.py` migrated as the canary; its silent `verdict=COMMENT` downgrade on parse failure is gone.
+- **403 scope-gap surfacing** (#480) — `ScopeGapTracker` (thread-safe, per-run) captures every "Resource not accessible by integration" / "Must have admin rights" 403 keyed on `(endpoint_template, http_method)`, maps endpoints to required scopes, and `publish_scope_gap_issue()` upserts a single `[caretaker] Workflow token is missing required scopes` issue per run (labels: `caretaker:scope-gap`, `maintainer:action-required`) with a concrete `permissions:` YAML snippet. New counter `caretaker_github_scope_gap_total{service, scope}`.
+- **Orchestrator transient-error exit gate** (#481, T-M1) — run exits 0 when every collected `RunSummary.errors` entry falls into a known-transient bucket (403s, timeouts, upstream 5xx, empty-artifact) and measurable work was completed; emits `caretaker_orchestrator_soft_fail_total{category="transient"}`. `.github/workflows/maintainer.yml` `upload-artifact` steps now `continue-on-error: true` with `if-no-files-found: ignore`. Closes the "Unknown caretaker failure" self-heal storm observed fleet-wide.
+- **Per-signature self-heal storm cap** (#481, T-M7) — cap key is now `(repo, error_signature, hour_window=floor(created_at/3600))` with a default `5/hour, 20/day` budget per key. Prevents one noisy signature from burning the global cap for every other sig or repo. Regression test simulates a 10-failure burst capped at 5.
+- **Flux GitOps for `bigboy` AKS** (#478) — `k8s/flux/clusters/bigboy/caretaker.yaml` declares two Flux Kustomization CRs (`caretaker` + `caretaker-ingress`) that reconcile `k8s/apps/caretaker/` and `k8s/apps/caretaker-ingress/` respectively. Mirrors the pattern already in production for `Example-React-AI-Chat-App`. Resources stay in `infra/k8s/` as a single source of truth between hand-apply and GitOps.
+
+### Fixed
+
+- **Consumer-repo file writes always end in `\n`** (#476) — new `caretaker.util.text.ensure_trailing_newline` wired into both `foundry/tools._tool_write_file` (LLM-callable workspace writer) and `github_client/api.GitHubClient.create_or_update_file` (direct contents-API writer used by `docs_agent`). Closes the Copilot "add EOF newline" fan-out PR chain observed on `python_dsa`, `kubernetes-apply-vscode`, and `flashcards`.
+- **Orchestrator-state comment upsert dedupe** (#481, T-M8) — `GitHubClient.upsert_issue_comment` now collects every marker-matching comment, edits the newest in place, and best-effort deletes older duplicates beyond `max_duplicates_to_retain` (default 2). Closes the 146-comment ballooning observed on `python_dsa` #23. Delete failures are logged, never raised.
+
 ## [0.12.1] — 2026-04-22
 
 ### Fixed
