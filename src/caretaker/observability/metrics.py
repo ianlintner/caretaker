@@ -189,6 +189,22 @@ RATE_LIMIT_REMAINING = Gauge(
     registry=REGISTRY,
 )
 
+# ── Token scope gap visibility ───────────────────────────────────────
+#
+# Counts 403 "Resource not accessible by integration" responses by the
+# scope the token is missing. Bounded cardinality: the label values
+# come from the curated map in
+# :mod:`caretaker.github_client.scope_gap`, so the cardinality is
+# governed by the length of that map plus one ``metadata: read``
+# fallback.
+
+GITHUB_SCOPE_GAP_TOTAL = Counter(
+    "caretaker_github_scope_gap_total",
+    "Total 403 responses caused by a missing GitHub token scope, by scope hint.",
+    ["service", "scope"],
+    registry=REGISTRY,
+)
+
 # ── Build / version metadata ─────────────────────────────────────────
 
 APP_INFO = Gauge(
@@ -514,11 +530,21 @@ def set_rate_limit_remaining(peer_service: str, remaining: int) -> None:
     )
 
 
+def record_github_scope_gap(scope: str) -> None:
+    """Record a single 403 caused by a missing GitHub token scope.
+
+    ``scope`` must be one of the bounded scope-hint values produced by
+    :func:`caretaker.github_client.scope_gap.infer_scope_hint`.
+    """
+    GITHUB_SCOPE_GAP_TOTAL.labels(service=_SERVICE_LABEL, scope=scope).inc()
+
+
 __all__ = [
     "APP_INFO",
     "CARETAKER_ERRORS_TOTAL",
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
+    "GITHUB_SCOPE_GAP_TOTAL",
     "HTTP_CLIENT_REQUESTS_TOTAL",
     "HTTP_CLIENT_REQUEST_DURATION_SECONDS",
     "HTTP_SERVER_REQUESTS_TOTAL",
@@ -534,6 +560,7 @@ __all__ = [
     "init_metrics",
     "metrics_asgi_app",
     "record_error",
+    "record_github_scope_gap",
     "record_http_client",
     "record_worker_job",
     "set_rate_limit_cooldown",

@@ -32,6 +32,13 @@ from .rate_limit import (
     record_rate_limit_response,
     record_response_headers,
 )
+from .scope_gap import (
+    get_tracker as _scope_tracker,
+)
+from .scope_gap import (
+    is_scope_gap_message,
+    record_scope_gap_metric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +228,19 @@ class GitHubClient:
                     403,
                     f"Rate limited. Retry after {retry_after:.0f}s.",
                     retry_after_seconds=retry_after,
+                )
+            # Token-scope gap: GitHub's "Resource not accessible by integration"
+            # response means the workflow token is missing a required scope.
+            # Aggregate to a single per-run issue instead of five silent warnings.
+            if is_scope_gap_message(message):
+                incident = _scope_tracker().record(method, path)
+                record_scope_gap_metric(incident.scope_hint)
+                logger.warning(
+                    "GitHub 403 scope-gap: %s %s needs %s (count=%d in this run)",
+                    method,
+                    path,
+                    incident.scope_hint,
+                    incident.count,
                 )
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code >= 400:
