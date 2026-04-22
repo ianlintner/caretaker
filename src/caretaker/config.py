@@ -825,6 +825,47 @@ class ExecutorConfig(StrictBaseModel):
     k8s_worker: K8sAgentWorkerConfig = Field(default_factory=K8sAgentWorkerConfig)
 
 
+class AgenticDomainConfig(StrictBaseModel):
+    """Per-decision-site knobs for the Phase 2 agentic migration.
+
+    The ``mode`` field is the three-way switch consumed by
+    :func:`caretaker.evolution.shadow.shadow_decision`:
+
+    * ``off`` — classic heuristic is authoritative; LLM path never runs.
+    * ``shadow`` — both paths run, legacy verdict returned, disagreements
+      logged.
+    * ``enforce`` — LLM candidate is authoritative, legacy is the
+      fall-through safety net.
+
+    Additional per-domain knobs (thresholds, sampling, per-feature model
+    overrides) can be added here later without breaking callers; every
+    decision site gets its own :class:`AgenticDomainConfig` instance on
+    :class:`AgenticConfig` so the knobs fan out cleanly.
+    """
+
+    mode: Literal["off", "shadow", "enforce"] = "off"
+
+
+class AgenticConfig(StrictBaseModel):
+    """Flags for the Phase 2 LLM decision migrations.
+
+    Every field defaults to ``mode="off"`` so classic heuristics stay
+    authoritative until operators explicitly opt in. The full list
+    matches §3 of the 2026-Q2 agentic migration plan.
+    """
+
+    readiness: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    ci_triage: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    review_classification: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    issue_triage: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    cascade: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    stuck_pr: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    bot_identity: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    dispatch_guard: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    executor_routing: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    crystallizer_category: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -866,6 +907,7 @@ class MaintainerConfig(StrictBaseModel):
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
+    agentic: AgenticConfig = Field(default_factory=AgenticConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:
