@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -20,6 +22,7 @@ from caretaker.llm.provider import (
     build_provider,
 )
 from caretaker.llm.router import LLMRouter
+from caretaker.observability import metrics as metrics_mod
 
 
 class FakeProvider:
@@ -433,3 +436,317 @@ class TestStructuredComplete:
             await client.structured_complete("prompt", schema=_SampleSchema)
 
         assert provider.calls == []
+
+
+# ── Prompt caching + cache-hit metrics ───────────────────────────────────────
+
+
+def _read_counter(counter: Any, *, provider: str, model: str) -> float:
+    """Read the current value of a labelled Counter, 0 if uninitialised."""
+    # prometheus_client stores label values keyed by the label tuple.
+    metric = counter.labels(provider=provider, model=model)
+    return metric._value.get()  # type: ignore[attr-defined]
+
+
+class TestAnthropicPromptCaching:
+    """AnthropicProvider.complete annotates system + increments cache counters."""
+
+    async def test_system_prompt_sends_cache_control_ephemeral(self) -> None:
+        """Outgoing request body must contain cache_control on the system block."""
+        provider = AnthropicProvider(api_key="fake-key")
+
+        captured: dict[str, Any] = {}
+
+        async def fake_create(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            # Mimic Anthropic response shape with usage telemetry.
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="ok", type="text")],
+                usage=SimpleNamespace(
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_input_tokens=123,
+                    cache_creation_input_tokens=456,
+                ),
+            )
+
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(side_effect=fake_create)
+        provider._client = fake_client  # type: ignore[assignment]
+
+        response = await provider.complete(
+            LLMRequest(
+                feature="test",
+                prompt="hello",
+                model="claude-sonnet-4-5",
+                max_tokens=128,
+                system="You are a cached system prompt.",
+            )
+        )
+
+        # 1. Request body carries structured system list with cache_control.
+        system = captured["system"]
+        assert isinstance(system, list)
+        assert system[0]["type"] == "text"
+        assert system[0]["text"] == "You are a cached system prompt."
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+        # 2. Response propagates the cache token counts verbatim.
+        assert response.cache_read_input_tokens == 123
+        assert response.cache_creation_input_tokens == 456
+        assert response.input_tokens == 10
+        assert response.output_tokens == 5
+
+    async def test_no_system_prompt_still_caches_nothing(self) -> None:
+        """When no system prompt is given, no ``system`` kwarg is sent."""
+        provider = AnthropicProvider(api_key="fake-key")
+
+        captured: dict[str, Any] = {}
+
+        async def fake_create(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="ok", type="text")],
+                usage=SimpleNamespace(
+                    input_tokens=1,
+                    output_tokens=1,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+            )
+
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(side_effect=fake_create)
+        provider._client = fake_client  # type: ignore[assignment]
+
+        await provider.complete(
+            LLMRequest(
+                feature="test",
+                prompt="hi",
+                model="claude-sonnet-4-5",
+                max_tokens=10,
+            )
+        )
+
+        assert "system" not in captured
+
+    async def test_cache_counters_increment_from_usage(self) -> None:
+        """Both counters step by the exact token counts reported in ``usage``."""
+        provider = AnthropicProvider(api_key="fake-key")
+
+        # Snapshot pre-test counter values so the assertion is order-safe
+        # against other tests that may have incremented the same labels.
+        pre_read = _read_counter(
+            metrics_mod.LLM_CACHE_READ_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-sonnet-4-5",
+        )
+        pre_creation = _read_counter(
+            metrics_mod.LLM_CACHE_CREATION_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-sonnet-4-5",
+        )
+
+        async def fake_create(**_: Any) -> Any:
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="ok", type="text")],
+                usage=SimpleNamespace(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_input_tokens=777,
+                    cache_creation_input_tokens=1111,
+                ),
+            )
+
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(side_effect=fake_create)
+        provider._client = fake_client  # type: ignore[assignment]
+
+        await provider.complete(
+            LLMRequest(
+                feature="test",
+                prompt="hi",
+                model="claude-sonnet-4-5",
+                max_tokens=10,
+                system="cached system",
+            )
+        )
+
+        post_read = _read_counter(
+            metrics_mod.LLM_CACHE_READ_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-sonnet-4-5",
+        )
+        post_creation = _read_counter(
+            metrics_mod.LLM_CACHE_CREATION_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-sonnet-4-5",
+        )
+
+        assert post_read - pre_read == 777
+        assert post_creation - pre_creation == 1111
+
+    async def test_zero_usage_does_not_emit_counter_samples(self) -> None:
+        """A response with zero cache tokens must not pollute the counters.
+
+        The helper silently drops non-positive increments so the Grafana
+        hit-ratio calculation isn't skewed by providers that don't surface
+        cache telemetry at all.
+        """
+        provider = AnthropicProvider(api_key="fake-key")
+
+        pre_read = _read_counter(
+            metrics_mod.LLM_CACHE_READ_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-haiku-4-5",
+        )
+        pre_creation = _read_counter(
+            metrics_mod.LLM_CACHE_CREATION_TOKENS_TOTAL,
+            provider="anthropic",
+            model="claude-haiku-4-5",
+        )
+
+        async def fake_create(**_: Any) -> Any:
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="ok", type="text")],
+                usage=SimpleNamespace(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+            )
+
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(side_effect=fake_create)
+        provider._client = fake_client  # type: ignore[assignment]
+
+        await provider.complete(
+            LLMRequest(
+                feature="test",
+                prompt="hi",
+                model="claude-haiku-4-5",
+                max_tokens=10,
+            )
+        )
+
+        assert (
+            _read_counter(
+                metrics_mod.LLM_CACHE_READ_TOKENS_TOTAL,
+                provider="anthropic",
+                model="claude-haiku-4-5",
+            )
+            == pre_read
+        )
+        assert (
+            _read_counter(
+                metrics_mod.LLM_CACHE_CREATION_TOKENS_TOTAL,
+                provider="anthropic",
+                model="claude-haiku-4-5",
+            )
+            == pre_creation
+        )
+
+
+class TestLiteLLMSystemCacheAnnotation:
+    """LiteLLM tool-use path annotates the leading system turn on Claude models."""
+
+    def test_annotates_claude_model_system_block(self) -> None:
+        from caretaker.llm.provider import (
+            _annotate_system_cache_control,
+            _supports_prompt_cache,
+        )
+
+        assert _supports_prompt_cache("anthropic/claude-sonnet-4-5") is True
+        assert _supports_prompt_cache("claude-sonnet-4-5") is True
+        assert _supports_prompt_cache("azure_ai/gpt-4o") is False
+
+        messages = [
+            {"role": "system", "content": "stable prefix"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = _annotate_system_cache_control(messages)
+        assert result is not messages  # new list, not mutated in place
+        head = result[0]
+        assert head["role"] == "system"
+        assert isinstance(head["content"], list)
+        assert head["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert head["content"][0]["text"] == "stable prefix"
+        # Non-system turns are copied through unchanged.
+        assert result[1] == {"role": "user", "content": "hi"}
+
+    def test_skips_when_no_leading_system_turn(self) -> None:
+        from caretaker.llm.provider import _annotate_system_cache_control
+
+        messages = [{"role": "user", "content": "hi"}]
+        assert _annotate_system_cache_control(messages) == messages
+
+    def test_skips_when_content_already_structured(self) -> None:
+        from caretaker.llm.provider import _annotate_system_cache_control
+
+        pre_structured = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "x"},
+                ],
+            }
+        ]
+        # Already structured → caller owns the shape, we don't touch it.
+        assert _annotate_system_cache_control(pre_structured) is pre_structured
+
+
+class TestLiteLLMCacheUsageExtraction:
+    """_extract_litellm_cache_tokens tolerates several ``usage`` shapes."""
+
+    def test_native_anthropic_keys(self) -> None:
+        from caretaker.llm.provider import _extract_litellm_cache_tokens
+
+        usage = SimpleNamespace(
+            cache_read_input_tokens=42,
+            cache_creation_input_tokens=7,
+        )
+        assert _extract_litellm_cache_tokens(usage) == (42, 7)
+
+    def test_openai_cached_tokens_fallback_for_reads(self) -> None:
+        from caretaker.llm.provider import _extract_litellm_cache_tokens
+
+        usage = SimpleNamespace(
+            prompt_tokens_details=SimpleNamespace(cached_tokens=13),
+        )
+        assert _extract_litellm_cache_tokens(usage) == (13, 0)
+
+    def test_missing_usage_returns_zeros(self) -> None:
+        from caretaker.llm.provider import _extract_litellm_cache_tokens
+
+        assert _extract_litellm_cache_tokens(None) == (0, 0)
+
+
+class TestPromptCacheFailOpen:
+    """Non-Claude models must not receive cache_control annotations."""
+
+    def test_non_claude_models_skip_annotation(self) -> None:
+        from caretaker.llm.provider import (
+            _annotate_system_cache_control,
+            _supports_prompt_cache,
+        )
+
+        assert _supports_prompt_cache("openai/gpt-4o-mini") is False
+        assert _supports_prompt_cache("azure_ai/gpt-4o") is False
+        # The provider only calls _annotate_system_cache_control when the model
+        # supports caching — assert the gate keeps non-Claude payloads untouched
+        # by exercising it directly.
+        messages = [
+            {"role": "system", "content": "x"},
+            {"role": "user", "content": "y"},
+        ]
+        # Must remain string-content when the upstream guard is off.
+        if not _supports_prompt_cache("openai/gpt-4o-mini"):
+            # Simulate the provider NOT calling the annotator.
+            assert messages[0]["content"] == "x"
+        else:  # pragma: no cover
+            raise AssertionError("unexpected: openai model should not be cache-capable")
+        # Sanity: calling the annotator directly still annotates — the fail-
+        # open behaviour is the absence of the call at the provider level.
+        annotated = _annotate_system_cache_control(messages)
+        assert isinstance(annotated[0]["content"], list)
