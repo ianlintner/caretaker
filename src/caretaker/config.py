@@ -279,12 +279,24 @@ class SecurityAgentConfig(StrictBaseModel):
     include_secret_scanning: bool = True
 
 
+class DependencyBisectorConfig(StrictBaseModel):
+    """Configuration for the grouped-Dependabot PR bisector."""
+
+    enabled: bool = False
+    max_runs: int = 6
+    # Label that marks PRs Caretaker has claimed. The bisector only
+    # fires on grouped PRs that carry this label to avoid acting on
+    # third-party-owned PRs.
+    owned_label: str = "caretaker:owned"
+
+
 class DependencyAgentConfig(StrictBaseModel):
     enabled: bool = True
     auto_merge_patch: bool = True
     auto_merge_minor: bool = True
     merge_method: Literal["squash", "merge", "rebase"] = "squash"
     post_digest: bool = True
+    bisector: DependencyBisectorConfig = Field(default_factory=DependencyBisectorConfig)
 
 
 class DocsAgentConfig(StrictBaseModel):

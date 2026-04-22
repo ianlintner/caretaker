@@ -35,6 +35,9 @@ class DependencyAgentAdapter(BaseAgent):
             auto_merge_minor=cfg.auto_merge_minor,
             merge_method=cfg.merge_method,
             post_digest=cfg.post_digest,
+            bisector_enabled=cfg.bisector.enabled,
+            bisector_max_runs=cfg.bisector.max_runs,
+            bisector_owned_label=cfg.bisector.owned_label,
         )
         report = await agent.run()
         return AgentResult(
@@ -43,6 +46,7 @@ class DependencyAgentAdapter(BaseAgent):
             extra={
                 "prs_auto_merged": report.prs_auto_merged,
                 "major_issues_created": report.major_issues_created,
+                "bisector_plans_posted": report.bisector_plans_posted,
             },
         )
 
