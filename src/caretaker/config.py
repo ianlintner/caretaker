@@ -680,6 +680,24 @@ class FleetRegistryConfig(StrictBaseModel):
     oauth2: OAuth2ClientConfig = Field(default_factory=OAuth2ClientConfig)
 
 
+class FleetAlertConfig(StrictBaseModel):
+    """T-E4 — server-side :FleetAlert evaluator.
+
+    Attached to :class:`FleetConfig` (inbound / backend-owned fleet state)
+    and gated behind ``enabled = False`` by default so existing installs
+    see byte-identical behaviour. The evaluator is pure Python; the only
+    observable side effects when enabled are the in-memory alert store
+    populated by the admin endpoint and the ``:FleetAlert`` graph nodes
+    upserted via :func:`caretaker.fleet.alerts.upsert_fleet_alerts`.
+    """
+
+    enabled: bool = False
+    goal_health_threshold: float = 0.7
+    goal_health_n_consecutive: int = 3
+    error_spike_multiplier: float = 3.0
+    ghosted_window_days: int = 7
+
+
 class FleetConfig(StrictBaseModel):
     """M6 — fleet-tier graph + :GlobalSkill promotion.
 
@@ -703,11 +721,14 @@ class FleetConfig(StrictBaseModel):
       cross-repo skills with a ``[fleet]`` prefix. Operators can flip
       this off per-repo if a shared skill misfires — promotion itself
       is unaffected.
+    * ``alerts`` is the :FleetAlert evaluator surface (T-E4). See
+      :class:`FleetAlertConfig`.
     """
 
     share_skills: bool = False
     min_repos_for_promotion: int = 3
     include_global_in_prompts: bool = True
+    alerts: FleetAlertConfig = Field(default_factory=FleetAlertConfig)
 
 
 class GitHubAppConfig(StrictBaseModel):

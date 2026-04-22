@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -53,11 +54,19 @@ class FleetClient:
         }
 
 
+#: Ring-buffer cap for per-repo heartbeat history. Alerts only ever look at the
+#: most recent handful of heartbeats (N consecutive goal-health dips, error
+#: spike vs. prior mean), so a short bounded deque is plenty and keeps the
+#: store memory O(#repos).
+_HEARTBEAT_HISTORY_MAXLEN = 32
+
+
 class FleetRegistryStore:
     """Async-safe in-memory fleet registry."""
 
     def __init__(self) -> None:
         self._clients: dict[str, FleetClient] = {}
+        self._history: dict[str, deque[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
     async def record_heartbeat(self, payload: dict[str, Any]) -> FleetClient:
@@ -99,7 +108,41 @@ class FleetRegistryStore:
                 heartbeats_seen=(existing.heartbeats_seen if existing else 0) + 1,
             )
             self._clients[repo] = record
+            history = self._history.setdefault(repo, deque(maxlen=_HEARTBEAT_HISTORY_MAXLEN))
+            # Keep a copy so later mutation of ``payload`` by the caller
+            # can't corrupt the history record.
+            snapshot: dict[str, Any] = {
+                "repo": repo,
+                "caretaker_version": record.caretaker_version,
+                "run_at": run_at,
+                "mode": record.last_mode,
+                "enabled_agents": list(record.enabled_agents),
+                "goal_health": record.last_goal_health,
+                "error_count": record.last_error_count,
+                "counters": dict(record.last_counters),
+                "summary": record.last_summary,
+            }
+            history.append(snapshot)
             return record
+
+    async def recent_heartbeats(
+        self, repo: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return the bounded heartbeat ring buffer for ``repo``, oldest-first.
+
+        Each entry is a dict with the same shape the emitter sends, normalised
+        (``run_at`` is a ``datetime`` with tzinfo). Used by the alert evaluator
+        so alerts can reason about N consecutive heartbeats without touching
+        every caller that already has just the last one.
+        """
+        async with self._lock:
+            buf = self._history.get(repo)
+            if not buf:
+                return []
+            items = list(buf)
+        if limit is not None and limit >= 0:
+            items = items[-limit:]
+        return items
 
     async def list_clients(self) -> list[FleetClient]:
         async with self._lock:

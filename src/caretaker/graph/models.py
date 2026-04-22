@@ -56,6 +56,13 @@ class NodeType(StrEnum):
     # :class:`~caretaker.graph.writer.GraphWriter` so agents publish the
     # fact they started a run without waiting on Neo4j.
     AGENT_CORE_MEMORY = "AgentCoreMemory"
+    # ── T-E4: fleet alerts ───────────────────────────────────────────────
+    # One ``:FleetAlert`` node per ``(repo, kind)`` tuple. The evaluator in
+    # :mod:`caretaker.fleet.alerts` opens alerts when heartbeat metrics
+    # regress and resolves them when the metric clears; both transitions
+    # are mirrored into the graph via ``merge_node`` so cypher can answer
+    # "which repos are currently alerting?" across the fleet.
+    FLEET_ALERT = "FleetAlert"
 
 
 class RelType(StrEnum):
