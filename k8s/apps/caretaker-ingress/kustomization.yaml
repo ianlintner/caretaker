@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Istio ingress for caretaker. Lives in the `default` namespace
+# because the `aks-istio-ingress/cat-herding-gateway` Gateway is
+# shared across tenants. Split from the `caretaker` app bundle so
+# Flux reconciles it separately and a blast-radius issue in the
+# main bundle doesn't take the routing manifest with it.
+
+namespace: default
+
+resources:
+  - ../../../infra/k8s/caretaker-virtualservice.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: caretaker
+      app.kubernetes.io/managed-by: flux

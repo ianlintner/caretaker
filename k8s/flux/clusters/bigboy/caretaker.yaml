@@ -1,0 +1,36 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: caretaker
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./k8s/apps/caretaker
+  prune: true
+  wait: true
+  timeout: 5m0s
+  sourceRef:
+    kind: GitRepository
+    # Azure-managed FluxConfig provisions the GitRepository with the
+    # same name as the FluxConfig resource, so the source we reconcile
+    # against is `caretaker`.
+    name: caretaker
+  targetNamespace: caretaker
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: caretaker-ingress
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  path: ./k8s/apps/caretaker-ingress
+  prune: true
+  wait: true
+  timeout: 2m0s
+  sourceRef:
+    kind: GitRepository
+    name: caretaker
+  targetNamespace: default
+  dependsOn:
+    - name: caretaker
