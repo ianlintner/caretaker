@@ -20,6 +20,7 @@ from caretaker.state.models import PRTrackingState
 
 if TYPE_CHECKING:
     from caretaker.config import AutoMergeConfig
+    from caretaker.pr_agent.readiness_llm import Readiness
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,12 @@ class PRStateEvaluation:
     ci: CIEvaluation
     reviews: ReviewEvaluation
     readiness: ReadinessEvaluation | None = None
+    # Structured readiness verdict produced by
+    # :func:`caretaker.pr_agent.readiness_llm.readiness_from_legacy` (off
+    # mode) or :func:`evaluate_pr_readiness_llm` (shadow / enforce modes).
+    # Attached ephemerally on each evaluation; not persisted to
+    # :class:`~caretaker.state.models.TrackedPR`.
+    readiness_verdict: Readiness | None = None
     recommended_state: PRTrackingState = PRTrackingState.DISCOVERED
     recommended_action: str = "wait"
 

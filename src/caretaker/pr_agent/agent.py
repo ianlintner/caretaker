@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.causal import make_causal_marker
+from caretaker.evolution.shadow import shadow_decision
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
 from caretaker.identity import is_automated
@@ -26,9 +27,16 @@ from caretaker.pr_agent.ownership import (
     should_release_ownership,
     upsert_status_comment,
 )
+from caretaker.pr_agent.readiness_llm import (
+    PRReadinessContext,
+    Readiness,
+    evaluate_pr_readiness_llm,
+    readiness_from_legacy,
+)
 from caretaker.pr_agent.review import analyze_reviews
 from caretaker.pr_agent.states import (
     PRStateEvaluation,
+    ReadinessEvaluation,
     evaluate_pr,
 )
 from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
@@ -43,6 +51,30 @@ if TYPE_CHECKING:
     from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _readiness_verdicts_agree(a: Readiness, b: Readiness) -> bool:
+    """Compare two :class:`Readiness` verdicts at the decision level.
+
+    Only the top-level ``verdict`` matters for the shadow-mode
+    disagreement rate — the legacy adapter can never match the LLM's
+    free-text ``summary`` or ``human_reason`` fields, and blocker order
+    differs by design (LLM may add ``waiting_for_upstream`` categories
+    legacy cannot produce). The goal of shadow mode is to prove the LLM
+    agrees on *ready vs not ready* before flipping authority; finer-
+    grained matching belongs in a later milestone.
+    """
+    return a.verdict == b.verdict
+
+
+@shadow_decision("readiness", compare=_readiness_verdicts_agree)
+async def _decide_readiness(*, legacy: Any, candidate: Any, context: Any = None) -> Readiness:
+    """Shadow-mode decision point wrapping the legacy + LLM readiness paths.
+
+    The body never runs — the decorator short-circuits to ``legacy`` in
+    ``off`` / ``shadow`` modes and to ``candidate`` in ``enforce`` mode.
+    """
+    raise AssertionError("shadow_decision wrapper short-circuits this placeholder")
 
 
 @dataclass
@@ -270,6 +302,7 @@ class PRAgent:
                 required_reviews=self._config.readiness.required_reviews,
                 auto_merge=self._config.auto_merge,
             )
+            await self._attach_readiness_verdict(pr, evaluation, check_runs, reviews)
             tracking = await self._handle_ownership(pr, tracking, evaluation, report)
             return tracking
 
@@ -284,6 +317,12 @@ class PRAgent:
             required_reviews=self._config.readiness.required_reviews,
             auto_merge=self._config.auto_merge,
         )
+
+        # Phase 2 (2026-Q2 §3.1): shadow-mode migration of readiness. Off
+        # mode keeps the legacy adapter authoritative; shadow runs the LLM
+        # side-by-side and records disagreements; enforce promotes the LLM
+        # verdict. Controlled by ``AgenticConfig.readiness.mode``.
+        await self._attach_readiness_verdict(pr, evaluation, check_runs, reviews)
 
         logger.info(
             "PR #%d: %s → %s (action: %s)",
@@ -817,6 +856,62 @@ class PRAgent:
         )
         logger.info("PR #%d escalated: %s", pr.number, reason)
 
+    async def _attach_readiness_verdict(
+        self,
+        pr: PullRequest,
+        evaluation: PRStateEvaluation,
+        check_runs: list[Any],
+        reviews: list[Any],
+    ) -> None:
+        """Attach a structured :class:`Readiness` verdict to ``evaluation``.
+
+        Runs under the ``@shadow_decision("readiness")`` gate so the
+        behaviour across ``off`` / ``shadow`` / ``enforce`` stays uniform
+        with every other Phase 2 decision site. When no legacy
+        :class:`ReadinessEvaluation` is present (defensive — should never
+        happen in the normal flow) the verdict is left ``None``.
+        """
+        legacy_eval: ReadinessEvaluation | None = evaluation.readiness
+        if legacy_eval is None:
+            evaluation.readiness_verdict = None
+            return
+
+        async def _legacy_path() -> Readiness:
+            return readiness_from_legacy(legacy_eval)
+
+        async def _candidate_path() -> Readiness | None:
+            if self._llm is None or not self._llm.available:
+                return None
+            context = PRReadinessContext(
+                pr=pr,
+                check_runs=list(check_runs),
+                reviews=list(reviews),
+                repo_slug=f"{self._owner}/{self._repo}",
+                is_solo_maintainer=self._config.readiness.required_reviews == 0,
+            )
+            return await evaluate_pr_readiness_llm(context, claude=self._llm.claude)
+
+        try:
+            verdict: Readiness = await _decide_readiness(
+                legacy=_legacy_path,
+                candidate=_candidate_path,
+                context={
+                    "pr_number": pr.number,
+                    "repo_slug": f"{self._owner}/{self._repo}",
+                    "labels": [label.name for label in pr.labels],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: never fail the agent
+            logger.warning(
+                "PR #%d: readiness shadow-decision failed (%s: %s); falling back to legacy adapter",
+                pr.number,
+                type(exc).__name__,
+                exc,
+            )
+            verdict = readiness_from_legacy(legacy_eval)
+
+        evaluation.readiness_verdict = verdict
+
     async def _publish_readiness_check(
         self,
         pr: PullRequest,
@@ -866,8 +961,8 @@ class PRAgent:
         else:  # in_progress
             check_status = "in_progress"
 
-        check_title = get_readiness_check_title(tracking)
-        check_summary = get_readiness_check_summary(tracking)
+        check_title = get_readiness_check_title(tracking, evaluation.readiness_verdict)
+        check_summary = get_readiness_check_summary(tracking, evaluation.readiness_verdict)
 
         try:
             if existing_check:
@@ -1003,7 +1098,9 @@ class PRAgent:
                     self._owner,
                     self._repo,
                     pr.number,
-                    build_status_comment(pr, tracking),
+                    build_status_comment(
+                        pr, tracking, readiness_verdict=evaluation.readiness_verdict
+                    ),
                 )
             except GitHubAPIError as e:
                 logger.warning(
