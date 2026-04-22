@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
@@ -77,7 +77,7 @@ class IssueAgent:
                         tracking.state = IssueTrackingState.COMPLETED
                     else:
                         tracking.state = IssueTrackingState.CLOSED
-                    tracking.last_checked = datetime.utcnow()
+                    tracking.last_checked = datetime.now(UTC)
                     tracked_issues[issue.number] = tracking
                     continue
 
@@ -93,7 +93,7 @@ class IssueAgent:
                     IssueTrackingState.COMPLETED,
                     IssueTrackingState.CLOSED,
                 ):
-                    tracking.last_checked = datetime.utcnow()
+                    tracking.last_checked = datetime.now(UTC)
                     tracked_issues[issue.number] = tracking
                     continue
 
@@ -102,7 +102,7 @@ class IssueAgent:
                 report.triaged += 1
 
                 tracking = await self._process_issue(issue, classification, tracking, report)
-                tracking.last_checked = datetime.utcnow()
+                tracking.last_checked = datetime.now(UTC)
                 tracked_issues[issue.number] = tracking
 
             except Exception as e:

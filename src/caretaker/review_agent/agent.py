@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -108,7 +108,7 @@ class ReviewAgent(BaseAgent):
         history_len = len(state.run_history) if hasattr(state, "run_history") else 0
 
         return ReviewScorecard(
-            reviewed_at=datetime.utcnow(),
+            reviewed_at=datetime.now(UTC),
             target=target,
             window=WindowInfo(lookback_runs=cfg.lookback_runs, lookback_days=cfg.lookback_days),
             overall=OverallScore(score=score, grade=grade, confidence=0.8, status="mixed"),

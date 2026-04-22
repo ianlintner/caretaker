@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from caretaker.review_agent.models import (
     DimensionScore,
@@ -28,7 +28,7 @@ def test_target_info():
 
 def test_review_scorecard():
     scorecard = ReviewScorecard(
-        reviewed_at=datetime.utcnow(),
+        reviewed_at=datetime.now(UTC),
         target=TargetInfo(kind="run"),
         window=WindowInfo(lookback_runs=5, lookback_days=7),
         overall=OverallScore(score=95, grade="A", confidence=0.9, status="excellent"),

@@ -291,7 +291,9 @@ class TestPlanModeCooldown:
         """Stored ISO strings may be naive — parser must normalize to UTC."""
         goal_id = "ci_health"
         state = OrchestratorState()
-        naive_recent = datetime.utcnow() - timedelta(hours=12)
+        # Intentionally construct a naive datetime (no tzinfo) to simulate
+        # legacy serialized cooldowns — the parser must still normalize it.
+        naive_recent = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=12)
         state.plan_cooldowns[goal_id] = naive_recent.isoformat()
 
         plan_mode = PlanMode(github_mock, "owner", "repo", claude_stub)

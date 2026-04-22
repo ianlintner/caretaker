@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -96,7 +96,7 @@ class TrackedIssue(BaseModel):
 
 
 class RunSummary(BaseModel):
-    run_at: datetime = Field(default_factory=datetime.utcnow)
+    run_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     mode: str = "full"
     prs_monitored: int = 0
     prs_merged: int = 0

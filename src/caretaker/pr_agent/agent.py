@@ -175,7 +175,7 @@ class PRAgent:
             try:
                 tracking = tracked_prs.get(pr.number, TrackedPR(number=pr.number))
                 tracking = await self._process_pr(pr, tracking, report)
-                tracking.last_checked = datetime.utcnow()
+                tracking.last_checked = datetime.now(UTC)
                 tracked_prs[pr.number] = tracking
             except Exception as e:
                 logger.error("Error processing PR #%d: %s", pr.number, e)
@@ -220,7 +220,7 @@ class PRAgent:
     ) -> TrackedPR:
         """Process a single PR through the state machine."""
         if tracking.first_seen_at is None:
-            tracking.first_seen_at = datetime.utcnow()
+            tracking.first_seen_at = datetime.now(UTC)
 
         # Fetch CI status and reviews
         check_runs = await self._github.get_check_runs(self._owner, self._repo, pr.head_ref)
@@ -405,7 +405,7 @@ class PRAgent:
             if success:
                 logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
                 tracking.state = PRTrackingState.MERGED
-                tracking.merged_at = datetime.utcnow()
+                tracking.merged_at = datetime.now(UTC)
                 report.merged.append(pr.number)
             else:
                 logger.warning("PR #%d merge failed", pr.number)
@@ -581,7 +581,7 @@ class PRAgent:
             tracking.copilot_attempts = attempt
             tracking.last_task_comment_id = result.comment_id
             tracking.state = PRTrackingState.FIX_REQUESTED
-            tracking.last_state_change_at = datetime.utcnow()
+            tracking.last_state_change_at = datetime.now(UTC)
             tracking.last_copilot_attempt_at = datetime.now(UTC)
             report.fix_requested.append(pr.number)
             logger.info(
