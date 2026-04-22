@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
     from caretaker.llm.router import LLMRouter
+    from caretaker.memory.retriever import MemoryRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class PRAgent:
         llm_router: LLMRouter | None = None,
         insight_store: InsightStore | None = None,
         dispatcher: ExecutorDispatcher | None = None,
+        memory_retriever: MemoryRetriever | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -135,6 +137,12 @@ class PRAgent:
         self._config = config
         self._llm = llm_router
         self._insight_store = insight_store
+        # T-E2: optional cross-run memory retriever. When supplied, the
+        # readiness LLM candidate injects up to three prior memory
+        # snapshots into its prompt. Left as ``None`` when the
+        # ``config.memory_store.retrieval_enabled`` knob is off so the
+        # prompt is identical to the no-memory path byte-for-byte.
+        self._memory_retriever = memory_retriever
         self._copilot_protocol = CopilotProtocol(github, owner, repo)
         self._copilot_bridge = PRCopilotBridge(
             self._copilot_protocol,
@@ -1056,7 +1064,11 @@ class PRAgent:
                 repo_slug=f"{self._owner}/{self._repo}",
                 is_solo_maintainer=self._config.readiness.required_reviews == 0,
             )
-            return await evaluate_pr_readiness_llm(context, claude=self._llm.claude)
+            return await evaluate_pr_readiness_llm(
+                context,
+                claude=self._llm.claude,
+                retriever=self._memory_retriever,
+            )
 
         try:
             verdict: Readiness = await _decide_readiness(

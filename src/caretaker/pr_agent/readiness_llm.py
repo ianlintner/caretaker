@@ -40,6 +40,7 @@ from caretaker.llm.claude import StructuredCompleteError
 if TYPE_CHECKING:
     from caretaker.github_client.models import CheckRun, PullRequest, Review
     from caretaker.llm.claude import ClaudeClient
+    from caretaker.memory.retriever import MemoryRetriever
     from caretaker.pr_agent.states import ReadinessEvaluation
 
 logger = logging.getLogger(__name__)
@@ -263,13 +264,24 @@ def _render_check_summary(run: CheckRun) -> str:
     return f"- {run.name} [{status}{suffix}]" + (f" — {title}" if title else "")
 
 
-def build_readiness_prompt(context: PRReadinessContext) -> str:
+def build_readiness_prompt(
+    context: PRReadinessContext,
+    *,
+    memory_block: str | None = None,
+) -> str:
     """Assemble the variable-payload prompt body.
 
     The stable prefix (the system prompt) is passed through to
     ``structured_complete`` as ``system=``, which is where Anthropic
     prompt caching looks for a cache-able prefix. Only the per-PR payload
     changes across calls; that's what this function renders.
+
+    When ``memory_block`` is supplied (T-E2 cross-run retrieval), it is
+    inserted at the head of the payload, before the variable PR facts.
+    The block is rendered by
+    :meth:`caretaker.memory.retriever.MemoryRetriever.format_for_prompt`
+    under a hard token budget so the injection stays well-behaved even
+    on repos with hundreds of prior dispatches.
     """
     pr = context.pr
     labels = ", ".join(label.name for label in pr.labels) or "(none)"
@@ -282,7 +294,12 @@ def build_readiness_prompt(context: PRReadinessContext) -> str:
     )
     linked_block = "\n".join(f"- {ref}" for ref in context.linked_issues) or "(none)"
 
+    prefix = ""
+    if memory_block:
+        prefix = memory_block.rstrip() + "\n\n"
+
     return (
+        f"{prefix}"
         "PR title: "
         f"{pr.title}\n"
         f"PR number: #{pr.number}\n"
@@ -298,10 +315,41 @@ def build_readiness_prompt(context: PRReadinessContext) -> str:
     )
 
 
+async def _build_memory_block_for_readiness(
+    context: PRReadinessContext,
+    retriever: MemoryRetriever,
+) -> str:
+    """Run the retriever for the readiness call and format its hits.
+
+    Builds the ``query_text`` from the PR title, labels, and repo slug —
+    the minimum signal the Jaccard fallback can meaningfully rank. When
+    the retriever returns no hits the function yields an empty string so
+    the caller skips the injection cleanly.
+    """
+    pr = context.pr
+    label_names = " ".join(label.name for label in pr.labels)
+    query = " ".join(part for part in (pr.title, label_names, context.repo_slug) if part)
+    try:
+        hits = await retriever.find_relevant(
+            agent="pr_agent",
+            query_text=query,
+            repo_slug=context.repo_slug or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - retrieval must never fail the readiness call
+        logger.info(
+            "_build_memory_block_for_readiness: retrieval failed for PR #%s: %s",
+            pr.number,
+            exc,
+        )
+        return ""
+    return retriever.format_for_prompt(hits)
+
+
 async def evaluate_pr_readiness_llm(
     context: PRReadinessContext,
     *,
     claude: ClaudeClient,
+    retriever: MemoryRetriever | None = None,
 ) -> Readiness | None:
     """Call the LLM and return its :class:`Readiness` verdict, or ``None``.
 
@@ -309,8 +357,18 @@ async def evaluate_pr_readiness_llm(
     ``@shadow_decision`` wrapper can fall through to the legacy adapter.
     All other exceptions propagate — shadow mode swallows them and
     records a ``candidate_error`` event, enforce mode falls through.
+
+    When ``retriever`` is supplied (T-E2 cross-run retrieval enabled),
+    the retriever is queried for up to three prior memory snapshots
+    matching the PR and the formatted block is inlined at the head of
+    the prompt payload. Retrieval is best-effort: a failing retriever
+    degrades to the no-memory prompt rather than failing the call.
     """
-    prompt = build_readiness_prompt(context)
+    memory_block: str | None = None
+    if retriever is not None:
+        memory_block = await _build_memory_block_for_readiness(context, retriever)
+
+    prompt = build_readiness_prompt(context, memory_block=memory_block)
     try:
         return await claude.structured_complete(
             prompt,
