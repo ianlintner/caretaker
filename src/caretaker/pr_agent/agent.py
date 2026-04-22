@@ -39,6 +39,12 @@ from caretaker.pr_agent.states import (
     ReadinessEvaluation,
     evaluate_pr,
 )
+from caretaker.pr_agent.stuck_pr_llm import (
+    PRStuckContext,
+    StuckVerdict,
+    evaluate_stuck_pr_llm,
+    stuck_from_legacy,
+)
 from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
 from caretaker.tools.debug_dump import render_debug_dump
 
@@ -70,6 +76,29 @@ def _readiness_verdicts_agree(a: Readiness, b: Readiness) -> bool:
 @shadow_decision("readiness", compare=_readiness_verdicts_agree)
 async def _decide_readiness(*, legacy: Any, candidate: Any, context: Any = None) -> Readiness:
     """Shadow-mode decision point wrapping the legacy + LLM readiness paths.
+
+    The body never runs — the decorator short-circuits to ``legacy`` in
+    ``off`` / ``shadow`` modes and to ``candidate`` in ``enforce`` mode.
+    """
+    raise AssertionError("shadow_decision wrapper short-circuits this placeholder")
+
+
+def _stuck_verdicts_agree(a: StuckVerdict, b: StuckVerdict) -> bool:
+    """Compare two :class:`StuckVerdict` verdicts at the decision level.
+
+    Only ``is_stuck`` and ``recommended_action`` affect downstream
+    behaviour (escalate vs. wait vs. nudge vs. self-approve). The
+    ``stuck_reason`` and free-text ``explanation`` are informational —
+    the legacy adapter can emit only ``abandoned`` / ``not_stuck`` and
+    can never match the LLM's richer reason taxonomy, so comparing on
+    those fields would spam the disagreement counter without signal.
+    """
+    return a.is_stuck == b.is_stuck and a.recommended_action == b.recommended_action
+
+
+@shadow_decision("stuck_pr", compare=_stuck_verdicts_agree)
+async def _decide_stuck_pr(*, legacy: Any, candidate: Any, context: Any = None) -> StuckVerdict:
+    """Shadow-mode decision point for the stuck-PR gate.
 
     The body never runs — the decorator short-circuits to ``legacy`` in
     ``off`` / ``shadow`` modes and to ``candidate`` in ``enforce`` mode.
@@ -239,6 +268,13 @@ class PRAgent:
         approval review on file. CI state is intentionally NOT considered —
         a PR that's been failing for 24h with no human attention is exactly
         what this gate catches.
+
+        Retained as the ``legacy`` branch of the
+        ``@shadow_decision("stuck_pr")`` gate in
+        :meth:`_evaluate_stuck_verdict`. The ``stuck_age_hours`` threshold
+        also acts as a minimum-age pre-filter: callers skip the whole
+        shadow decision when the PR is younger than the threshold, so the
+        LLM candidate is never called on freshly-opened PRs.
         """
         from caretaker.github_client.models import ReviewState
 
@@ -254,6 +290,135 @@ class PRAgent:
                     return False
         return True
 
+    async def _evaluate_stuck_verdict(
+        self,
+        pr: PullRequest,
+        check_runs: list[Any],
+        reviews: list[Any],
+        readiness_verdict: Readiness | None,
+    ) -> StuckVerdict | None:
+        """Evaluate the stuck-PR gate under the ``stuck_pr`` shadow switch.
+
+        Returns ``None`` when the PR is younger than ``stuck_age_hours``
+        (the minimum-age pre-filter) — in that case neither the legacy
+        heuristic nor the LLM candidate runs. Otherwise dispatches through
+        ``@shadow_decision("stuck_pr")`` so behaviour tracks the Phase 2
+        rollout: ``off`` returns the legacy binary verdict, ``shadow``
+        returns the legacy verdict and records disagreements, ``enforce``
+        returns the LLM candidate (falling through to legacy on error).
+        """
+        if self._config.stuck_age_hours <= 0:
+            return None
+        age_hours = self._pr_age_hours(pr)
+        if age_hours < self._config.stuck_age_hours:
+            return None
+
+        is_stuck_legacy = self._is_pr_stuck_by_age(pr, reviews)
+
+        last_activity: datetime | None = pr.updated_at or pr.created_at
+        last_activity_hours: float | None = None
+        if last_activity is not None:
+            stamp = last_activity
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            last_activity_hours = (datetime.now(UTC) - stamp).total_seconds() / 3600.0
+
+        # On a solo-maintainer repo ``required_reviews == 0`` so
+        # :class:`ReadinessConfig` is the right signal — it mirrors the
+        # solo check used by the readiness gate.
+        collaborator_count: int | None = 1 if self._config.readiness.required_reviews == 0 else None
+
+        async def _legacy_path() -> StuckVerdict:
+            return stuck_from_legacy(is_stuck_legacy)
+
+        async def _candidate_path() -> StuckVerdict | None:
+            if self._llm is None or not self._llm.available:
+                return None
+            context = PRStuckContext(
+                pr=pr,
+                age_hours=age_hours,
+                last_activity_hours=last_activity_hours,
+                check_runs=list(check_runs),
+                reviews=list(reviews),
+                readiness_verdict=readiness_verdict,
+                repo_slug=f"{self._owner}/{self._repo}",
+                collaborator_count=collaborator_count,
+            )
+            return await evaluate_stuck_pr_llm(context, claude=self._llm.claude)
+
+        try:
+            verdict: StuckVerdict = await _decide_stuck_pr(
+                legacy=_legacy_path,
+                candidate=_candidate_path,
+                context={
+                    "pr_number": pr.number,
+                    "repo_slug": f"{self._owner}/{self._repo}",
+                    "age_hours": round(age_hours, 1),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: never fail the agent
+            logger.warning(
+                "PR #%d: stuck-PR shadow-decision failed (%s: %s); falling back to legacy adapter",
+                pr.number,
+                type(exc).__name__,
+                exc,
+            )
+            verdict = stuck_from_legacy(is_stuck_legacy)
+
+        return verdict
+
+    @staticmethod
+    def _stuck_verdict_requires_escalation(verdict: StuckVerdict) -> bool:
+        """Return True when a stuck verdict warrants the escalation path.
+
+        Every action except ``wait`` and ``request_fix`` lands on the
+        escalation path for now. ``request_fix`` is already handled by
+        the CI-fix lifecycle downstream and a duplicate escalation
+        comment would spam the PR. ``wait`` is, obviously, a no-op.
+        The remaining actions — ``escalate``, ``nudge_reviewer``,
+        ``close_stale``, ``self_approve_on_solo`` — all surface as an
+        escalation with an action-specific reason so humans see *why*
+        caretaker stopped touching the PR.
+        """
+        if not verdict.is_stuck:
+            return False
+        return verdict.recommended_action in {
+            "escalate",
+            "nudge_reviewer",
+            "close_stale",
+            "self_approve_on_solo",
+        }
+
+    def _stuck_escalation_reason(self, verdict: StuckVerdict) -> str:
+        """Render an escalation-comment reason for a stuck verdict.
+
+        Action-shaped so the operator sees the recommended next step,
+        not just the diagnosis. Preserves the legacy reason verbatim
+        when the action is ``escalate`` (the ``off`` / ``shadow`` path),
+        so the comment body doesn't drift when the flag is flipped from
+        ``off`` to ``shadow``.
+        """
+        action = verdict.recommended_action
+        if action == "escalate":
+            return f"Open >{self._config.stuck_age_hours}h with no human approval — needs review"
+        if action == "nudge_reviewer":
+            return (
+                f"Stuck waiting on a review — reviewer nudge recommended ({verdict.stuck_reason})."
+            )
+        if action == "close_stale":
+            return f"Stuck and stale — recommended action is ``close_stale``. {verdict.explanation}"
+        if action == "self_approve_on_solo":
+            return (
+                "Solo-maintainer repo: the PR is ready but cannot clear the "
+                "required-review gate without a second approver."
+            )
+        # Defensive: any other action falls back to the legacy wording so
+        # a surprise candidate can't produce an empty or confusing reason.
+        return (
+            f"Stuck PR ({verdict.stuck_reason}) — recommended action "
+            f"``{action}``. {verdict.explanation}"
+        )
+
     async def _process_pr(
         self, pr: PullRequest, tracking: TrackedPR, report: PRAgentReport
     ) -> TrackedPR:
@@ -265,48 +430,8 @@ class PRAgent:
         check_runs = await self._github.get_check_runs(self._owner, self._repo, pr.head_ref)
         reviews = await self._github.get_pr_reviews(self._owner, self._repo, pr.number)
 
-        # Stuck-PR age gate (E1): if the PR has been open for longer than
-        # ``stuck_age_hours`` AND no human approval AND no recent merge
-        # transition, escalate to a human. Catches long-tail abandonment
-        # (portfolio #4 was open 10 days; #28 was open 7 days). Skipped if
-        # already escalated (terminal) or PR is closed/merged.
-        if (
-            self._config.stuck_age_hours > 0
-            and not tracking.escalated
-            and tracking.state
-            not in (PRTrackingState.ESCALATED, PRTrackingState.MERGED, PRTrackingState.CLOSED)
-            and self._is_pr_stuck_by_age(pr, reviews)
-        ):
-            await self._escalate(
-                pr,
-                f"Open >{self._config.stuck_age_hours}h with no human approval — needs review",
-                debug_data={
-                    "pr_age_hours": self._pr_age_hours(pr),
-                    "stuck_age_hours": self._config.stuck_age_hours,
-                    "fix_cycles": tracking.fix_cycles,
-                    "copilot_attempts": tracking.copilot_attempts,
-                },
-            )
-            tracking.state = PRTrackingState.ESCALATED
-            tracking.escalated = True
-            report.escalated.append(pr.number)
-            # Still flow through ownership handling so the status comment
-            # transitions to "released — escalated" cleanly.
-            evaluation = evaluate_pr(
-                pr=pr,
-                check_runs=check_runs,
-                reviews=reviews,
-                current_state=tracking.state,
-                ignore_jobs=self._config.ci.ignore_jobs,
-                auto_approve_workflows=self._config.ci.auto_approve_workflows,
-                required_reviews=self._config.readiness.required_reviews,
-                auto_merge=self._config.auto_merge,
-            )
-            await self._attach_readiness_verdict(pr, evaluation, check_runs, reviews)
-            tracking = await self._handle_ownership(pr, tracking, evaluation, report)
-            return tracking
-
-        # Evaluate PR state
+        # Evaluate PR state (shared by both the stuck-PR gate and the
+        # main action ladder below).
         evaluation = evaluate_pr(
             pr=pr,
             check_runs=check_runs,
@@ -323,6 +448,46 @@ class PRAgent:
         # side-by-side and records disagreements; enforce promotes the LLM
         # verdict. Controlled by ``AgenticConfig.readiness.mode``.
         await self._attach_readiness_verdict(pr, evaluation, check_runs, reviews)
+
+        # Stuck-PR gate (E1, Phase 2 §3.8): if the PR has been open long
+        # enough to be a stuck candidate, run the ``stuck_pr`` shadow
+        # decision. In ``off`` mode this is the legacy binary
+        # age-heuristic (portfolio #4 was open 10 days; #28 was open
+        # 7 days). In ``shadow`` / ``enforce`` modes an LLM candidate
+        # distinguishes abandoned / ci_deadlock / awaiting_human_decision
+        # / merge_queue / solo_repo_no_reviewer and picks a matching
+        # action. Skipped if already escalated (terminal) or the PR is
+        # closed/merged.
+        if not tracking.escalated and tracking.state not in (
+            PRTrackingState.ESCALATED,
+            PRTrackingState.MERGED,
+            PRTrackingState.CLOSED,
+        ):
+            stuck_verdict = await self._evaluate_stuck_verdict(
+                pr, check_runs, reviews, evaluation.readiness_verdict
+            )
+            if stuck_verdict is not None and self._stuck_verdict_requires_escalation(stuck_verdict):
+                reason = self._stuck_escalation_reason(stuck_verdict)
+                await self._escalate(
+                    pr,
+                    reason,
+                    debug_data={
+                        "pr_age_hours": self._pr_age_hours(pr),
+                        "stuck_age_hours": self._config.stuck_age_hours,
+                        "fix_cycles": tracking.fix_cycles,
+                        "copilot_attempts": tracking.copilot_attempts,
+                        "stuck_reason": stuck_verdict.stuck_reason,
+                        "recommended_action": stuck_verdict.recommended_action,
+                        "stuck_confidence": stuck_verdict.confidence,
+                    },
+                )
+                tracking.state = PRTrackingState.ESCALATED
+                tracking.escalated = True
+                report.escalated.append(pr.number)
+                # Still flow through ownership handling so the status
+                # comment transitions to "released — escalated" cleanly.
+                tracking = await self._handle_ownership(pr, tracking, evaluation, report)
+                return tracking
 
         logger.info(
             "PR #%d: %s → %s (action: %s)",
