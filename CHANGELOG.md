@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] — 2026-04-22
+
+Completes Phase 2 of the 2026-Q2 agentic migration plan (`docs/plans/`). Twelve PRs landed. Every Phase 2 migration ships behind a per-domain `agentic.<name>.mode` flag that defaults to `off`, so this release is opt-in by design — no runtime behaviour changes until operators flip flags.
+
+### Added
+
+- **`caretaker doctor` preflight subcommand** (#483) — fails loudly on missing secrets or GitHub token scope gaps before any agent boots. Wired into `.github/workflows/maintainer.yml` as a gating `doctor` job ahead of `maintain`; the self-heal path no longer fires when `doctor` itself fails, preventing config gaps from cascading into self-heal issue storms.
+- **`caretaker.identity` module** (#484) — consolidated `is_automated(login)` + `classify_identity(login, llm=...)` with a memoised 24h LLM fallback. Five ad-hoc bot-login checks migrated; the YAML dispatch-guard regex stays as a cheap prefilter, slated for A2's LLM path.
+- **`@shadow_decision(name)` infrastructure** (#485) — per-site `off | shadow | enforce` decorator emits `:ShadowDecision` graph nodes on disagreement, plus `GET /api/admin/shadow/decisions` for the admin UI. `AgenticConfig` on `MaintainerConfig.agentic` carries one toggle per Phase 2 decision site.
+- **Phase 2 LLM decision migrations** behind shadow:
+  - PR readiness (#489) — `Readiness(verdict, confidence, blockers, summary)` via `structured_complete`; solves the solo-repo "reviews_approved ≥ 1" dead-end.
+  - CI failure triage (#486) — `FailureTriage(category, confidence, is_transient, root_cause_hypothesis, minimal_reproduction, suggested_fix, files_to_touch)`; replaces the keyword ladder that returned mostly `UNKNOWN`.
+  - Issue triage + dup detection (#488) — `IssueTriage(kind, severity, duplicate_of, staleness, ...)`; CVE regex kept as deterministic prefilter; Jaccard keyword overlap pre-selects dup candidates when embeddings aren't configured.
+  - Webhook dispatch-guard self-echo (#487) — `DispatchVerdict(is_self_echo, is_human_intent, suggested_agent)`; regex prefilter short-circuits unambiguous cases to hold costs down.
+  - Review-comment classification (#492) — `ReviewClassification(kind, severity, ...)`; severity propagates into the Copilot request-fix prompt.
+  - Cascade redirection (#490) — `CascadeDecision(action, justification, confidence)` on `on_issue_closed_as_duplicate` + "PR body < 200 chars → close" heuristic; `parse_linked_issues` regex preserved.
+  - Executor routing (#493) — `ExecutorRoute(path, reason, risk_tags)` shared across `pr_reviewer/routing.py` and `foundry/size_classifier.py` point systems.
+  - Stuck-PR detection (#494) — `StuckVerdict(is_stuck, stuck_reason, recommended_action, explanation)`; `stuck_age_hours` kept as min-age prefilter; new `solo_repo_no_reviewer` + `self_approve_on_solo` signals for the solo-maintainer case.
+  - Crystallizer category (#491) — `evolution/crystallizer.py::_infer_category` reuses `FailureTriage` behind `agentic.crystallizer_category`; `_CATEGORY_PATTERNS` retained until shadow data proves parity.
+
+### Rollout pattern
+
+Every A-migration lands **wrapped but not active**. Operators promote one site at a time: `off → shadow` (gather a week of disagreement data in `/api/admin/shadow/decisions`), then `off → enforce` once the disagreement rate is acceptable. Legacy heuristics stay live as the fallback on candidate errors.
+
+### Test surface
+
+Cumulative suite grew to **1456 passing tests / 1 skipped** across the release, with 31 (readiness), 23 (CI triage), 34 (issue triage), 37 (dispatch), 23 (review class), 26 (cascade), 31 (routing), 25 (stuck-PR), and decorator / adapter tests for shadow + bot-identity + doctor.
+
 ## [0.13.0] — 2026-04-22
 
 Kicks off Phase 1 of the 2026-Q2 agentic-migration plan (see `docs/plans/`). Three foundational additions — prompt caching, a `structured_complete[T]` helper, and the first scope-gap + orchestrator bleeding fixes — plus Flux GitOps onboarding for the `bigboy` cluster.
