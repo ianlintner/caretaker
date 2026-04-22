@@ -24,6 +24,10 @@ from caretaker.tools.github import GitHubIssueTools
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
+    from caretaker.memory.embeddings import Embedder
+    from caretaker.memory.retriever import MemoryRetriever
+    from caretaker.self_heal_agent.fix_ladder import FixLadderResult
+    from caretaker.self_heal_agent.sandbox import FixLadderSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,13 @@ class SelfHealReport:
     actioned_sigs: list[str] = field(default_factory=list)
     # Updated cooldown map to persist back to state
     updated_cooldowns: dict[str, str] = field(default_factory=dict)
+    # Fix-ladder outcomes keyed by ``error_signature`` — surfaced to the
+    # orchestrator so dashboards can show "ladder fixed X, escalated Y".
+    fix_ladder_outcomes: dict[str, str] = field(default_factory=dict)
+    # PR numbers opened by the fix ladder for ``fixed`` / ``partial``
+    # outcomes. Kept distinct from ``local_issues_created`` so the
+    # metrics layer doesn't conflate the two.
+    fix_ladder_prs: list[int] = field(default_factory=list)
 
 
 class SelfHealAgent:
@@ -80,6 +91,19 @@ class SelfHealAgent:
         issue_cooldowns: dict[str, str] | None = None,
         max_open_per_hour: int = 5,
         max_open_per_day: int = 20,
+        # ── Wave A3: fix-ladder wiring ───────────────────────────────
+        # All optional so existing call-sites keep the legacy
+        # escalation-only flow until explicitly opted-in via
+        # ``SelfHealAgentConfig.fix_ladder.enabled``.
+        fix_ladder_enabled: bool = False,
+        fix_ladder_sandbox: FixLadderSandbox | None = None,
+        fix_ladder_max_rungs: int = 6,
+        fix_ladder_base_branch: str = "main",
+        fix_ladder_branch_prefix: str = "caretaker/fix-ladder",
+        fix_ladder_pr_label: str = "caretaker:fix-ladder",
+        memory_retriever: MemoryRetriever | None = None,
+        memory_embedder: Embedder | None = None,
+        write_embeddings: bool = False,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -97,6 +121,17 @@ class SelfHealAgent:
         # extra state plumbing. 0 disables the respective check.
         self._max_open_per_hour = max(0, max_open_per_hour)
         self._max_open_per_day = max(0, max_open_per_day)
+        # Fix-ladder state — the ladder runs before the legacy escalation
+        # path when ``fix_ladder_enabled`` is true AND a sandbox is wired.
+        self._fix_ladder_enabled = fix_ladder_enabled
+        self._fix_ladder_sandbox = fix_ladder_sandbox
+        self._fix_ladder_max_rungs = max(1, fix_ladder_max_rungs)
+        self._fix_ladder_base_branch = fix_ladder_base_branch
+        self._fix_ladder_branch_prefix = fix_ladder_branch_prefix
+        self._fix_ladder_pr_label = fix_ladder_pr_label
+        self._memory_retriever = memory_retriever
+        self._memory_embedder = memory_embedder
+        self._write_embeddings = write_embeddings
 
     async def run(self, event_payload: dict[str, Any] | None = None) -> SelfHealReport:
         """Analyse caretaker workflow failures."""
@@ -162,11 +197,51 @@ class SelfHealAgent:
                 logger.info("Self-heal: transient failure in %s — no action", job_name)
                 continue
 
+            # ── Wave A3: deterministic-first fix ladder ───────────
+            # Runs before the legacy escalation path. When the ladder
+            # fully resolves the incident we skip the issue entirely;
+            # on ``partial`` / ``escalated`` we still record the
+            # escalation prompt so the downstream issue body carries
+            # the context. ``no_op`` / ``error`` fall through to the
+            # pre-existing behaviour.
+            ladder_outcome: str | None = None
+            ladder_escalation: str | None = None
+            if self._fix_ladder_enabled and self._fix_ladder_sandbox is not None:
+                ladder_result = await self._maybe_run_fix_ladder(
+                    job_name=job_name,
+                    kind=kind,
+                    title=title,
+                    log_text=log_text,
+                    sig=sig,
+                    run_id=run_id,
+                )
+                if ladder_result is not None:
+                    ladder_outcome = ladder_result.outcome
+                    report.fix_ladder_outcomes[sig] = ladder_outcome
+                    if ladder_outcome == "fixed":
+                        # Ladder closed the loop — skip issue creation.
+                        report.actioned_sigs.append(sig)
+                        self._record_cooldown(coarse_key)
+                        continue
+                    if ladder_outcome == "partial":
+                        # PR opened (if possible) but the prompt still
+                        # needs to ride along on the follow-up issue.
+                        ladder_escalation = ladder_result.escalation_prompt
+                    elif ladder_outcome == "escalated":
+                        ladder_escalation = ladder_result.escalation_prompt
+
             if kind in (FailureKind.CONFIG_ERROR, FailureKind.INTEGRATION_ERROR):
                 # Create a local fix issue assigned to @copilot
                 try:
                     issue = await self._create_local_fix_issue(
-                        job_name, kind, title, details, log_text, sig, run_id=run_id
+                        job_name,
+                        kind,
+                        title,
+                        details,
+                        log_text,
+                        sig,
+                        run_id=run_id,
+                        ladder_escalation=ladder_escalation,
                     )
                     report.local_issues_created.append(issue.number)
                     report.actioned_sigs.append(sig)
@@ -226,6 +301,7 @@ class SelfHealAgent:
                         log_text,
                         sig,
                         run_id=run_id,
+                        ladder_escalation=ladder_escalation,
                     )
                     report.local_issues_created.append(issue.number)
                     report.actioned_sigs.append(sig)
@@ -434,9 +510,19 @@ class SelfHealAgent:
         sig: str,
         *,
         run_id: int | None = None,
+        ladder_escalation: str | None = None,
     ) -> Issue:
         full_title = f"🩺 Caretaker self-heal: {title}"
-        body = _build_fix_issue_body(job_name, kind, title, details, log_text, sig, run_id=run_id)
+        body = _build_fix_issue_body(
+            job_name,
+            kind,
+            title,
+            details,
+            log_text,
+            sig,
+            run_id=run_id,
+            ladder_escalation=ladder_escalation,
+        )
         await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
         return await self._issues.create(
             title=full_title,
@@ -445,6 +531,125 @@ class SelfHealAgent:
             assignees=["copilot"],
             copilot_assignment=self._issues.default_copilot_assignment(),
         )
+
+    async def _maybe_run_fix_ladder(
+        self,
+        *,
+        job_name: str,
+        kind: FailureKind,
+        title: str,
+        log_text: str,
+        sig: str,
+        run_id: int | None,
+    ) -> FixLadderResult | None:
+        """Run the deterministic fix ladder and record outcomes.
+
+        Returns ``None`` when the ladder is not configured or when
+        the sandbox fails to initialise — callers then fall back to
+        the legacy escalation path. Otherwise returns the full
+        :class:`FixLadderResult`; the caller branches on
+        ``result.outcome`` to decide whether to skip or to forward
+        the escalation prompt.
+        """
+        # Local imports so the self-heal module stays importable in
+        # environments that don't have the sandbox (e.g. the MCP
+        # server boot path) without pulling ``subprocess`` and the
+        # pydantic models every time.
+        from caretaker.memory.core import IncidentMemory, publish_incident_with_embedding
+        from caretaker.observability.metrics import (
+            record_fix_ladder_escalation,
+            record_fix_ladder_outcome,
+        )
+        from caretaker.self_heal_agent.fix_ladder import Incident, run_fix_ladder
+        from caretaker.self_heal_agent.fix_ladder_pr import open_fix_ladder_pr
+
+        if self._fix_ladder_sandbox is None:
+            return None
+
+        incident = Incident(
+            error_signature=sig,
+            kind=kind.value,
+            log_tail=log_text[-8000:],
+            repo_slug=f"{self._owner}/{self._repo}",
+            job_name=job_name,
+            run_id=run_id,
+        )
+
+        repo_slug = incident.repo_slug
+
+        def _metrics_sink(rung: str, outcome: str) -> None:
+            record_fix_ladder_outcome(repo_slug, rung, outcome)
+
+        def _escalation_sink(repo: str, sig_hash: str) -> None:
+            record_fix_ladder_escalation(repo, sig_hash)
+
+        try:
+            result = await run_fix_ladder(
+                incident,
+                sandbox=self._fix_ladder_sandbox,
+                memory_retriever=self._memory_retriever,
+                agent_name="self_heal_agent",
+                max_rungs=self._fix_ladder_max_rungs,
+                metrics_sink=_metrics_sink,
+                escalation_metrics_sink=_escalation_sink,
+            )
+        except Exception as exc:  # noqa: BLE001 - ladder errors fall back to legacy
+            logger.warning("Self-heal: fix ladder raised (%s) — falling back", exc)
+            return None
+
+        # Emit a summary metric for the top-level outcome so dashboards
+        # can split "fixed via ladder" vs "escalated to LLM".
+        _metrics_sink("__ladder__", result.outcome)
+
+        # Publish the ``:Incident`` row regardless of outcome. Wave B3's
+        # retriever needs the full corpus, not just the escalations.
+        summary = (
+            f"Self-heal {kind.value} in {job_name} — ladder {result.outcome} "
+            f"({len(result.rungs_run)} rung(s))."
+        )
+        try:
+            await publish_incident_with_embedding(
+                IncidentMemory(
+                    repo=repo_slug,
+                    error_signature=sig,
+                    kind=kind.value,
+                    job_name=job_name,
+                    summary=summary,
+                    fix_outcome=result.outcome,
+                    run_id=str(run_id) if run_id is not None else None,
+                    rungs_tried=[r.name for r in result.rungs_run],
+                ),
+                embedder=self._memory_embedder,
+                write_embeddings=self._write_embeddings,
+            )
+        except Exception as exc:  # noqa: BLE001 - graph writes never fail the dispatch
+            logger.info("Self-heal: incident publish failed (%s)", exc)
+
+        # PR open for ``fixed`` / ``partial`` outcomes.
+        if result.outcome in {"fixed", "partial"}:
+            try:
+                opened = await open_fix_ladder_pr(
+                    github=self._github,
+                    owner=self._owner,
+                    repo=self._repo,
+                    base_branch=self._fix_ladder_base_branch,
+                    sandbox_root=self._fix_ladder_sandbox.working_tree,
+                    result=result,
+                    error_signature=sig,
+                    branch_prefix=self._fix_ladder_branch_prefix,
+                    pr_label=self._fix_ladder_pr_label,
+                )
+            except Exception as exc:  # noqa: BLE001 - PR open is best-effort
+                logger.warning("Self-heal: fix-ladder PR open failed (%s)", exc)
+                opened = None
+            if opened is not None:
+                logger.info(
+                    "Self-heal: fix-ladder PR #%d opened (outcome=%s)",
+                    opened.number,
+                    result.outcome,
+                )
+
+        return result
 
     async def _create_local_tracking_issue(
         self,
@@ -687,6 +892,7 @@ def _build_fix_issue_body(
     sig: str,
     *,
     run_id: int | None = None,
+    ladder_escalation: str | None = None,
 ) -> str:
     kind_label = {
         FailureKind.CONFIG_ERROR: "⚙️ Config error",
@@ -696,6 +902,13 @@ def _build_fix_issue_body(
 
     run_id_fragment = f" run_id:{run_id}" if run_id else ""
     causal = make_causal_marker("self-heal", run_id=run_id)
+    # Wave A3: when the fix ladder escalated (or produced a partial
+    # fix that still needs follow-up), surface its verdict in the
+    # issue body so the Copilot assignee sees what the deterministic
+    # pass already tried.
+    ladder_block = ""
+    if ladder_escalation:
+        ladder_block = f"\n---\n\n## Fix-ladder verdict\n\n{ladder_escalation.rstrip()}\n\n"
     return (
         f"{SELF_HEAL_MARKER} sig:{sig}{run_id_fragment} -->\n"
         f"{causal}\n\n"
@@ -704,6 +917,7 @@ def _build_fix_issue_body(
         f"**Job:** `{job_name}`\n\n"
         f"<details><summary>Log snippet</summary>\n\n"
         f"```\n{log_text[-3000:]}\n```\n\n</details>\n\n"
+        f"{ladder_block}"
         f"---\n\n"
         f"<!-- caretaker:self-heal-assignment -->\n"
         f"TYPE: BUG_SIMPLE\n"

@@ -259,6 +259,42 @@ class DevOpsAgentConfig(StrictBaseModel):
     cooldown_hours: int = 6
 
 
+class FixLadderConfig(StrictBaseModel):
+    """Deterministic-first fix ladder (Wave A3).
+
+    Runs a small, ordered set of signature-gated rungs (ruff-format,
+    ruff-check-fix, mypy-install-types, pip-compile-upgrade,
+    pytest-lastfail) against a working-tree sandbox before the
+    self-heal agent escalates to the LLM path. Each rung is a
+    short-lived subprocess with bounded stdout/stderr capture — see
+    :mod:`caretaker.self_heal_agent.sandbox` for the runner.
+
+    The pattern follows the BitsAI-Fix / Factory.ai / KubeIntellect
+    research: the deterministic ladder catches the 80% of failures
+    that are formatter-style churn without burning tokens on a full
+    LLM fix cycle. The escalation path is only invoked when the
+    ladder produces partial or no progress, and the escalation prompt
+    now carries the list of rungs already tried so the LLM doesn't
+    re-suggest them.
+
+    Defaults to ``enabled=False`` because the ladder opens PRs
+    autonomously — operators should promote it per-repo once they've
+    reviewed the default rung set.
+    """
+
+    # Master switch. Default off so existing installs keep the
+    # legacy LLM-escalation-only flow until explicitly opted in.
+    enabled: bool = False
+    # Upper bound on how many rungs one dispatch may execute. Shields
+    # operators from a misconfigured ladder burning CI minutes.
+    max_rungs_per_incident: int = 6
+    # Branch name prefix for auto-opened fix PRs. The full branch is
+    # ``<prefix>/<error-sig>``.
+    branch_prefix: str = "caretaker/fix-ladder"
+    # Label applied to fix-ladder PRs so operators can filter them.
+    pr_label: str = "caretaker:fix-ladder"
+
+
 class SelfHealAgentConfig(StrictBaseModel):
     enabled: bool = True
     # Whether to report bugs / feature requests to the upstream caretaker repo
@@ -267,6 +303,12 @@ class SelfHealAgentConfig(StrictBaseModel):
     is_upstream_repo: bool = False
     # Cooldown (hours) before creating another issue for the same job+kind
     cooldown_hours: int = 6
+    # Deterministic-first fix ladder (Wave A3). When ``enabled`` the
+    # self-heal agent runs the ladder before the LLM escalation path
+    # fires; ladder outcomes of ``fixed`` / ``partial`` short-circuit
+    # the escalation, ``escalated`` feeds the ladder context forward
+    # into the LLM prompt, and ``no_op`` falls through unchanged.
+    fix_ladder: FixLadderConfig = Field(default_factory=FixLadderConfig)
 
 
 class SecurityAgentConfig(StrictBaseModel):
@@ -488,6 +530,14 @@ class MemoryStoreConfig(StrictBaseModel):
     # Defaults to false so existing installs don't start embedding without
     # explicit opt-in — see ``docs/plans/2026-Q2-agentic-migration.md`` T-E2.
     retrieval_enabled: bool = False
+    # Wave A3 write-path toggle. When true (or ``retrieval_enabled`` is
+    # true) the :mod:`caretaker.memory.core` publisher and the self-heal
+    # ``:Incident`` writer compute + store a ``summary_embedding`` when
+    # an embedder is configured. Split from ``retrieval_enabled`` so
+    # operators can seed the corpus (Wave B3 needs it) before flipping
+    # the reader on — the writer is cheap, the reader touches every
+    # LLM prompt. Fail-closed: no embedder → no embedding stored.
+    write_embeddings: bool = False
 
 
 class AzureConfig(StrictBaseModel):
