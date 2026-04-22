@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+from pydantic import BaseModel
+
 from caretaker.config import FeatureModelConfig, LLMConfig
-from caretaker.llm.claude import ClaudeClient
+from caretaker.llm.claude import ClaudeClient, StructuredCompleteError
 from caretaker.llm.provider import (
     AnthropicProvider,
     LiteLLMProvider,
@@ -18,9 +20,6 @@ from caretaker.llm.provider import (
     build_provider,
 )
 from caretaker.llm.router import LLMRouter
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class FakeProvider:
@@ -277,3 +276,160 @@ class TestLLMRouter:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}, clear=True):
             router = LLMRouter(LLMConfig(claude_enabled="auto", provider="anthropic"))
             assert router.available is True
+
+
+# ── structured_complete ──────────────────────────────────────────────────────
+
+
+class _SampleSchema(BaseModel):
+    verdict: str
+    score: int
+
+
+class ScriptedProvider:
+    """Provider that returns a scripted sequence of responses, one per call."""
+
+    name = "scripted"
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls: list[LLMRequest] = []
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.calls.append(request)
+        text = self._responses.pop(0) if self._responses else ""
+        return LLMResponse(text=text, model=request.model, provider=self.name)
+
+
+class TestStructuredComplete:
+    async def test_happy_path_returns_parsed_model(self) -> None:
+        provider = ScriptedProvider(['{"verdict": "APPROVE", "score": 42}'])
+        client = ClaudeClient(provider=provider)
+
+        result = await client.structured_complete("do a review", schema=_SampleSchema)
+
+        assert isinstance(result, _SampleSchema)
+        assert result.verdict == "APPROVE"
+        assert result.score == 42
+        assert len(provider.calls) == 1
+
+    async def test_retry_recovers_from_malformed_first_attempt(self) -> None:
+        provider = ScriptedProvider(
+            [
+                "not valid json at all",
+                '{"verdict": "COMMENT", "score": 7}',
+            ]
+        )
+        client = ClaudeClient(provider=provider)
+
+        result = await client.structured_complete(
+            "review this", schema=_SampleSchema, max_retries=1
+        )
+
+        assert result.verdict == "COMMENT"
+        assert result.score == 7
+        assert len(provider.calls) == 2
+        # Second attempt prompt should include the previous-failure cue.
+        assert "previous response failed to parse" in provider.calls[1].prompt
+
+    async def test_exhausted_retries_raise_structured_complete_error(self) -> None:
+        provider = ScriptedProvider(
+            ["still not json", 'also {"incomplete": '],
+        )
+        client = ClaudeClient(provider=provider)
+
+        with pytest.raises(StructuredCompleteError) as excinfo:
+            await client.structured_complete("review", schema=_SampleSchema, max_retries=1)
+
+        assert "failed validation" in str(excinfo.value)
+        # Raw text from the last attempt must be preserved on the exception.
+        assert excinfo.value.raw_text.startswith("also ")
+        assert len(provider.calls) == 2
+
+    async def test_schema_prefix_included_in_outgoing_prompt(self) -> None:
+        provider = ScriptedProvider(['{"verdict": "APPROVE", "score": 1}'])
+        client = ClaudeClient(provider=provider)
+
+        await client.structured_complete(
+            "user prompt here",
+            schema=_SampleSchema,
+            system="You are a reviewer.",
+        )
+
+        sent = provider.calls[0].prompt
+        assert "Respond with only a single JSON object matching this schema" in sent
+        # Schema must actually be embedded (contains the field names).
+        assert "verdict" in sent and "score" in sent
+        # The system prompt survives.
+        assert "You are a reviewer." in sent
+        # The user prompt is also in the payload.
+        assert "user prompt here" in sent
+
+    async def test_max_retries_zero_fails_immediately(self) -> None:
+        provider = ScriptedProvider(["garbage"])
+        client = ClaudeClient(provider=provider)
+
+        with pytest.raises(StructuredCompleteError):
+            await client.structured_complete("prompt", schema=_SampleSchema, max_retries=0)
+
+        assert len(provider.calls) == 1
+
+    async def test_retry_recovers_from_validation_error(self) -> None:
+        # First response is valid JSON but missing ``score`` — pydantic validation fails.
+        provider = ScriptedProvider(
+            [
+                '{"verdict": "APPROVE"}',
+                '{"verdict": "APPROVE", "score": 99}',
+            ]
+        )
+        client = ClaudeClient(provider=provider)
+
+        result = await client.structured_complete("x", schema=_SampleSchema, max_retries=1)
+
+        assert result.score == 99
+        assert len(provider.calls) == 2
+
+    async def test_strips_code_fences(self) -> None:
+        """Models sometimes wrap JSON in ```json fences despite instructions."""
+        provider = ScriptedProvider(
+            ['```json\n{"verdict": "APPROVE", "score": 3}\n```'],
+        )
+        client = ClaudeClient(provider=provider)
+
+        result = await client.structured_complete("x", schema=_SampleSchema)
+
+        assert result.verdict == "APPROVE"
+        assert result.score == 3
+
+    async def test_retries_respects_llmconfig_default(self) -> None:
+        """``max_retries`` defaults to LLMConfig.structured_output_retries."""
+        provider = ScriptedProvider(["nope"])
+        client = ClaudeClient(
+            config=LLMConfig(structured_output_retries=0),
+            provider=provider,
+        )
+
+        with pytest.raises(StructuredCompleteError):
+            await client.structured_complete("prompt", schema=_SampleSchema)
+
+        assert len(provider.calls) == 1
+
+    async def test_unavailable_provider_raises_rather_than_returns_empty(self) -> None:
+        """Unlike ``complete``, the structured helper must never hand back an
+        unparseable empty value masquerading as valid output."""
+        provider = ScriptedProvider([])
+
+        class UnavailableProvider(ScriptedProvider):
+            @property
+            def available(self) -> bool:
+                return False
+
+        client = ClaudeClient(provider=UnavailableProvider([]))
+        with pytest.raises(StructuredCompleteError):
+            await client.structured_complete("prompt", schema=_SampleSchema)
+
+        assert provider.calls == []

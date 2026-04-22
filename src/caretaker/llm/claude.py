@@ -12,8 +12,11 @@ The public method signatures are unchanged, so existing callers in
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from .provider import AnthropicProvider, LLMRequest, build_provider
 
@@ -23,6 +26,44 @@ if TYPE_CHECKING:
     from .provider import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class StructuredCompleteError(Exception):
+    """Raised when ``ClaudeClient.structured_complete`` exhausts its retries.
+
+    Attributes:
+        raw_text: Last raw LLM response received, for diagnostic logging.
+        validation_error: The underlying :class:`pydantic.ValidationError` or
+            :class:`json.JSONDecodeError` that caused the final failure.
+    """
+
+    def __init__(
+        self,
+        raw_text: str,
+        validation_error: Exception,
+    ) -> None:
+        super().__init__(
+            f"LLM structured completion failed validation after retries: "
+            f"{type(validation_error).__name__}: {validation_error}"
+        )
+        self.raw_text = raw_text
+        self.validation_error = validation_error
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip optional ```json ... ``` fences some models emit despite instructions."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # drop opening fence (possibly with language tag) and trailing fence
+        lines = stripped.splitlines()
+        if lines:
+            lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+    return stripped
 
 
 # Default per-feature model/max-tokens fallback when LLMConfig is not supplied
@@ -145,6 +186,128 @@ class ClaudeClient:
         """
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         return await self._complete(feature, full_prompt, max_tokens)
+
+    async def structured_complete(
+        self,
+        prompt: str,
+        *,
+        schema: type[T],
+        feature: str = "structured_complete",
+        system: str | None = None,
+        max_retries: int | None = None,
+        max_tokens: int = 2000,
+        model: str | None = None,
+    ) -> T:
+        """Call the LLM and parse its response into ``schema``.
+
+        The request's system prompt (or user prompt if no system is supplied)
+        is prefixed with a terse instruction telling the model to emit a single
+        JSON object matching ``schema.model_json_schema()``. The response is
+        JSON-decoded and passed through ``schema.model_validate``. On
+        :class:`json.JSONDecodeError` or :class:`pydantic.ValidationError`,
+        the helper re-invokes the model once (by default) with the previous
+        raw output and the validation error appended, asking it to self-correct.
+
+        Args:
+            prompt: The user-turn prompt.
+            schema: The :class:`pydantic.BaseModel` subclass to validate against.
+            feature: Feature key used for model resolution and logging.
+                Defaults to ``"structured_complete"``.
+            system: Optional system instruction; the schema prefix is prepended
+                to it (or to ``prompt`` if ``system`` is ``None``).
+            max_retries: Number of retries on parse/validation failure.
+                Defaults to ``LLMConfig.structured_output_retries`` (1).
+            max_tokens: Hard cap on output length.
+            model: Optional explicit model string. When set, overrides
+                the resolved per-feature model.
+
+        Returns:
+            An instance of ``schema``.
+
+        Raises:
+            StructuredCompleteError: When all attempts fail validation.
+        """
+        if max_retries is None:
+            max_retries = self._config.structured_output_retries if self._config is not None else 1
+
+        schema_json = json.dumps(schema.model_json_schema(), separators=(",", ":"))
+        prefix = f"Respond with only a single JSON object matching this schema: {schema_json}"
+        effective_system = f"{prefix}\n\n{system}" if system else prefix
+
+        # Resolve model and max_tokens like ``complete`` does; allow override.
+        resolved_model, resolved_max_tokens = self._resolve_feature(feature, max_tokens)
+        if model is not None:
+            resolved_model = model
+
+        attempt_prompt = prompt
+        last_text = ""
+        last_error: Exception | None = None
+
+        attempts = max_retries + 1
+        for attempt in range(attempts):
+            if not self.available:
+                # No provider — surface as a validation failure so callers
+                # don't get silently downgraded to an empty T.
+                raise StructuredCompleteError(
+                    raw_text="",
+                    validation_error=RuntimeError("LLM provider unavailable"),
+                )
+
+            full_prompt = f"{effective_system}\n\n{attempt_prompt}"
+            _log_prompt(feature, full_prompt)
+            try:
+                response = await self._provider.complete(
+                    LLMRequest(
+                        feature=feature,
+                        prompt=full_prompt,
+                        model=resolved_model,
+                        max_tokens=resolved_max_tokens,
+                    )
+                )
+            except Exception as exc:
+                # Provider-level failure: surface to caller rather than swallowing.
+                raise StructuredCompleteError(raw_text="", validation_error=exc) from exc
+
+            _log_response(feature, response.text, response)
+            last_text = response.text or ""
+            cleaned = _strip_code_fences(last_text)
+
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                logger.warning(
+                    "structured_complete[%s] attempt %d: JSON decode failed: %s",
+                    feature,
+                    attempt + 1,
+                    exc,
+                )
+                attempt_prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response failed to parse: {exc}. "
+                    "Return only valid JSON matching the schema above."
+                )
+                continue
+
+            try:
+                return schema.model_validate(parsed)
+            except ValidationError as exc:
+                last_error = exc
+                logger.warning(
+                    "structured_complete[%s] attempt %d: schema validation failed: %s",
+                    feature,
+                    attempt + 1,
+                    exc,
+                )
+                attempt_prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response failed to parse: {exc}. "
+                    "Return only valid JSON matching the schema above."
+                )
+                continue
+
+        assert last_error is not None  # loop always sets it on failure
+        raise StructuredCompleteError(raw_text=last_text, validation_error=last_error)
 
     # ── Public feature API ──────────────────────────────────────────────────
 

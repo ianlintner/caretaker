@@ -6,10 +6,13 @@ Returns a ``ReviewResult`` that ``github_review.post_review()`` can post directl
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, Field
+
+from caretaker.llm.claude import StructuredCompleteError
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -20,22 +23,6 @@ logger = logging.getLogger(__name__)
 _REVIEW_SYSTEM = """\
 You are an expert code reviewer. Review the pull request diff below and produce
 a concise, actionable review. Focus on correctness, security, and maintainability.
-Respond ONLY with a JSON object matching the schema described in the user message.
-Do NOT wrap with markdown code fences. Output raw JSON only.
-"""
-
-_REVIEW_SCHEMA = """\
-{
-  "summary": "<1-3 sentence overall assessment>",
-  "verdict": "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
-  "comments": [
-    {
-      "path": "<file path>",
-      "line": <line number, integer>,
-      "body": "<review comment text>"
-    }
-  ]
-}
 
 Rules:
 - verdict = APPROVE   when the diff looks correct and ready to merge
@@ -45,6 +32,27 @@ Rules:
 - limit comments to at most 8 items; omit trivial nits
 - keep each comment body under 300 characters
 """
+
+
+class InlineReviewCommentModel(BaseModel):
+    """Pydantic model for a single inline review comment."""
+
+    path: str = Field(..., description="Path of the file being commented on.")
+    line: int = Field(..., description="Line number in the new file (right side of diff).")
+    body: str = Field(..., description="Review comment body, under 300 characters.")
+
+
+class InlineReviewResult(BaseModel):
+    """Structured LLM review payload — validated schema for ``structured_complete``."""
+
+    summary: str = Field(..., description="1-3 sentence overall assessment.")
+    verdict: Literal["APPROVE", "COMMENT", "REQUEST_CHANGES"] = Field(
+        ..., description="Review verdict."
+    )
+    comments: list[InlineReviewCommentModel] = Field(
+        default_factory=list,
+        description="At most 8 line-scoped comments.",
+    )
 
 
 @dataclass
@@ -89,18 +97,29 @@ async def review(
         f"PR #{pr_number}: {pr_title}\n\n"
         f"{pr_body.strip()[:500] if pr_body else '(no description)'}\n\n"
         "---\n"
-        f"```diff\n{diff}\n```\n\n"
-        "Respond with a JSON object matching this schema:\n"
-        f"{_REVIEW_SCHEMA}"
+        f"```diff\n{diff}\n```"
     )
 
     try:
-        raw = await llm.claude.complete(
+        payload = await llm.claude.structured_complete(
+            prompt,
+            schema=InlineReviewResult,
             feature="pr_inline_review",
             system=_REVIEW_SYSTEM,
-            prompt=prompt,
             max_tokens=2000,
         )
+    except StructuredCompleteError:
+        # Surface parse/validation failures to the caller so they can be logged
+        # loudly. The pr-reviewer agent is expected to catch and fall back to
+        # a skip / claude-code dispatch — it must not silently issue an empty
+        # COMMENT review as the old ``json.loads`` fallback did.
+        logger.exception(
+            "inline review for %s/%s#%d failed validation after retries",
+            owner,
+            repo,
+            pr_number,
+        )
+        raise
     except Exception as exc:
         logger.warning("Inline LLM review failed for %s/%s#%d: %s", owner, repo, pr_number, exc)
         return ReviewResult(
@@ -108,26 +127,15 @@ async def review(
             verdict="COMMENT",
         )
 
-    raw_text = raw.strip()
-    try:
-        data = json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning("LLM response not valid JSON for %s/%s#%d", owner, repo, pr_number)
-        return ReviewResult(summary=raw_text[:500], verdict="COMMENT", raw_response=raw_text)
-
     comments = [
-        InlineReviewComment(
-            path=c.get("path", ""),
-            line=int(c.get("line", 1)),
-            body=c.get("body", ""),
-        )
-        for c in data.get("comments", [])
-        if c.get("path") and c.get("body")
+        InlineReviewComment(path=c.path, line=int(c.line), body=c.body)
+        for c in payload.comments
+        if c.path and c.body
     ]
 
     return ReviewResult(
-        summary=data.get("summary", ""),
-        verdict=data.get("verdict", "COMMENT").upper(),
+        summary=payload.summary,
+        verdict=payload.verdict,
         comments=comments,
-        raw_response=raw_text,
+        raw_response=payload.model_dump_json(),
     )

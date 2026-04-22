@@ -172,47 +172,61 @@ class PRReviewerAgent(BaseAgent):
                 )
                 decision = decision  # fall through to claude-code below
             else:
-                result = await inline_reviewer.review(
-                    github=self._ctx.github,
-                    owner=owner,
-                    repo=repo,
-                    pr_number=pr_number,
-                    pr_title=str(pr.get("title", "")),
-                    pr_body=str(pr.get("body") or ""),
-                    llm=self._ctx.llm_router,
-                    max_diff_lines=cfg.max_diff_lines,
-                )
-                commit_sha = (pr.get("head") or {}).get("sha", "")
-                if not commit_sha:
-                    logger.warning("pr-reviewer: no head SHA for #%d", pr_number)
-                    report.skipped.append(pr_number)
-                    return
+                from caretaker.llm.claude import StructuredCompleteError
 
-                await post_review(
-                    github=self._ctx.github,
-                    owner=owner,
-                    repo=repo,
-                    pr_number=pr_number,
-                    commit_sha=commit_sha,
-                    result=result,
-                    post_inline_comments=cfg.post_inline_comments,
-                    force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
-                )
-                # Mark as reviewed
                 try:
-                    reviewed_label = "caretaker:reviewed"
-                    await self._ctx.github.ensure_label(
-                        owner,
-                        repo,
-                        reviewed_label,
-                        color="0075ca",
-                        description="Reviewed by caretaker",
+                    result = await inline_reviewer.review(
+                        github=self._ctx.github,
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        pr_title=str(pr.get("title", "")),
+                        pr_body=str(pr.get("body") or ""),
+                        llm=self._ctx.llm_router,
+                        max_diff_lines=cfg.max_diff_lines,
                     )
-                    await self._ctx.github.add_labels(owner, repo, pr_number, [reviewed_label])
-                except Exception:
-                    pass
-                report.reviewed.append(pr_number)
-                return
+                except StructuredCompleteError as exc:
+                    # LLM returned malformed output after retries — fall through
+                    # to the claude-code hand-off path rather than silently
+                    # posting an empty COMMENT review (the old behavior).
+                    logger.warning(
+                        "pr-reviewer: inline review validation failed for #%d: %s — "
+                        "falling back to claude-code dispatch",
+                        pr_number,
+                        exc.validation_error,
+                    )
+                else:
+                    commit_sha = (pr.get("head") or {}).get("sha", "")
+                    if not commit_sha:
+                        logger.warning("pr-reviewer: no head SHA for #%d", pr_number)
+                        report.skipped.append(pr_number)
+                        return
+
+                    await post_review(
+                        github=self._ctx.github,
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        commit_sha=commit_sha,
+                        result=result,
+                        post_inline_comments=cfg.post_inline_comments,
+                        force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
+                    )
+                    # Mark as reviewed
+                    try:
+                        reviewed_label = "caretaker:reviewed"
+                        await self._ctx.github.ensure_label(
+                            owner,
+                            repo,
+                            reviewed_label,
+                            color="0075ca",
+                            description="Reviewed by caretaker",
+                        )
+                        await self._ctx.github.add_labels(owner, repo, pr_number, [reviewed_label])
+                    except Exception:
+                        pass
+                    report.reviewed.append(pr_number)
+                    return
 
         # Claude-code hand-off path
         success = await claude_code_reviewer.dispatch(

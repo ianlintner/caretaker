@@ -215,6 +215,10 @@ class LLMConfig(StrictBaseModel):
     # Fallback model chain — only used when provider="litellm".  Each entry is
     # a LiteLLM-format model string tried in order if the primary call fails.
     fallback_models: list[str] = Field(default_factory=list)
+    # Number of retries for ``ClaudeClient.structured_complete`` when the model
+    # returns malformed JSON or a payload that fails pydantic validation.
+    # Set to 0 to disable the self-correcting retry loop.
+    structured_output_retries: int = 1
 
 
 class OrchestratorConfig(StrictBaseModel):
