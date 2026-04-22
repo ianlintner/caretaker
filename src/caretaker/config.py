@@ -137,9 +137,7 @@ class TriageConfig(StrictBaseModel):
     cascade: bool = True
     # Paths whose sole presence makes a PR diff "empty" (close candidate).
     # Binary state files committed by bots end up here; see 2026-04-21 cleanup.
-    binary_only_paths: list[str] = Field(
-        default_factory=lambda: [".caretaker-memory.db"]
-    )
+    binary_only_paths: list[str] = Field(default_factory=lambda: [".caretaker-memory.db"])
     # When true, triage produces a report but takes no destructive action.
     dry_run: bool = False
     # Stale cutoff for issues marked with no activity, in days.
