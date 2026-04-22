@@ -266,6 +266,158 @@ class TestOrchestratorStateLoadFailure:
         assert result == 1
 
 
+class TestTransientErrorGate:
+    """T-M1: orchestrator exit-0 when every ``summary.errors`` entry is transient.
+
+    Tested at the error-aggregation boundary so we can verify the gate
+    without spinning up the full orchestrator run.
+    """
+
+    def test_is_transient_matches_known_substrings(self) -> None:
+        from caretaker.orchestrator import is_transient
+
+        assert is_transient(
+            "dependabot alerts unavailable: GitHub API error 403: Resource not accessible"
+        )
+        assert is_transient("code-scanning alerts unavailable")
+        assert is_transient("secret-scanning: 403 Forbidden")
+        assert is_transient("pr: assignees could not be set for copilot")
+        assert is_transient("httpx.ReadTimeout: timed out")
+        assert is_transient("GitHub API error 502: Bad gateway")
+        assert is_transient("GitHub API error 503: Service unavailable")
+        assert is_transient("memory snapshot was empty on this run")
+        assert is_transient("connection reset by peer")
+
+    def test_is_transient_rejects_generic_exceptions(self) -> None:
+        from caretaker.orchestrator import is_transient
+
+        assert not is_transient("AttributeError: 'NoneType' has no attribute 'items'")
+        assert not is_transient("TypeError: unexpected keyword argument 'foo'")
+        assert not is_transient("GitHub API error 422: Validation failed")
+        # A bare "403" without a recognised sub-system is NOT transient —
+        # we only soft-fail on known flappy paths.
+        assert not is_transient("GitHub API error 403: something new")
+
+    def test_is_transient_accepts_exception_instance(self) -> None:
+        from caretaker.orchestrator import is_transient
+
+        assert is_transient(TimeoutError())
+        assert is_transient(TimeoutError("took too long"))
+        assert is_transient(ConnectionError("refused"))
+        assert not is_transient(ValueError("bad input"))
+
+    def test_bucket_errors_splits_mixed_list(self) -> None:
+        from caretaker.orchestrator import _bucket_errors
+
+        errors = [
+            "pr: dependabot alerts unavailable: 403",
+            "issue: AttributeError: 'NoneType'",
+            "security: secret-scanning 403",
+        ]
+        transient, non_transient = _bucket_errors(errors)
+        assert len(transient) == 2
+        assert len(non_transient) == 1
+        assert "AttributeError" in non_transient[0]
+
+    async def test_run_exits_0_when_all_errors_transient_and_work_landed(self) -> None:
+        """All-transient agent errors with real work → exit 0 + soft-fail counter."""
+        orchestrator = make_orchestrator()
+
+        async def _fake_run_all(state, summary, *, mode, event_payload):  # type: ignore[no-untyped-def]
+            summary.errors.append("pr: dependabot alerts unavailable: 403 Forbidden")
+            summary.errors.append("security: secret-scanning 403")
+            summary.prs_monitored = 2  # work landed
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+            patch("caretaker.orchestrator.record_orchestrator_soft_fail") as mock_soft_fail,
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 0
+        mock_soft_fail.assert_called_once_with(category="transient")
+
+    async def test_run_exits_1_when_any_error_non_transient(self) -> None:
+        """Mixed transient + non-transient → exit 1, no soft-fail counter."""
+        orchestrator = make_orchestrator()
+
+        async def _fake_run_all(state, summary, *, mode, event_payload):  # type: ignore[no-untyped-def]
+            summary.errors.append("pr: dependabot alerts unavailable: 403 Forbidden")
+            summary.errors.append("issue: AttributeError: 'NoneType' has no attribute 'x'")
+            summary.prs_monitored = 2
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+            patch("caretaker.orchestrator.record_orchestrator_soft_fail") as mock_soft_fail,
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 1
+        mock_soft_fail.assert_not_called()
+
+    async def test_run_exits_1_when_all_non_transient(self) -> None:
+        """All non-transient → exit 1."""
+        orchestrator = make_orchestrator()
+
+        async def _fake_run_all(state, summary, *, mode, event_payload):  # type: ignore[no-untyped-def]
+            summary.errors.append("issue: AttributeError: boom")
+            summary.prs_monitored = 1
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 1
+
+    async def test_run_exits_1_when_all_transient_but_no_work_landed(self) -> None:
+        """Even if every error is transient, a run that did nothing still fails.
+
+        Prevents the gate from hiding total outages — if no work finished
+        the workflow still needs to be flagged so operators notice.
+        """
+        orchestrator = make_orchestrator()
+
+        async def _fake_run_all(state, summary, *, mode, event_payload):  # type: ignore[no-untyped-def]
+            summary.errors.append("pr: dependabot alerts unavailable: 403")
+            # no prs_monitored, no issues_triaged, etc.
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 1
+
+    async def test_run_exits_0_when_no_errors(self) -> None:
+        orchestrator = make_orchestrator()
+
+        async def _fake_run_all(state, summary, *, mode, event_payload):  # type: ignore[no-untyped-def]
+            summary.prs_monitored = 5
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", return_value=OrchestratorState()),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 0
+
+
 class TestExtractPRNumber:
     """Tests for _extract_pr_number helper."""
 

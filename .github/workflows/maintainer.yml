@@ -288,6 +288,7 @@ jobs:
 
       - name: Upload run log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: caretaker-run-log-${{ github.run_id }}
@@ -297,10 +298,21 @@ jobs:
 
       - name: Upload run report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: caretaker-run-report-${{ github.run_id }}
           path: caretaker-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload memory snapshot
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: caretaker-memory-snapshot-${{ github.run_id }}
+          path: .caretaker-memory-snapshot.json
           if-no-files-found: ignore
           retention-days: 30
 
@@ -364,6 +376,7 @@ jobs:
 
       - name: Upload self-heal log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: caretaker-self-heal-log-${{ github.run_id }}
@@ -373,6 +386,7 @@ jobs:
 
       - name: Upload self-heal report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: caretaker-self-heal-report-${{ github.run_id }}

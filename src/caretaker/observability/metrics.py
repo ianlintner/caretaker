@@ -173,6 +173,17 @@ CARETAKER_ERRORS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# Incremented when an orchestrator run completes with only transient agent
+# errors and has been allowed to exit 0 (soft-fail). The ``category`` label
+# is a bounded enum (``transient`` today; future categories reserved so the
+# series cardinality is capped at one digit).
+ORCHESTRATOR_SOFT_FAIL_TOTAL = Counter(
+    "caretaker_orchestrator_soft_fail_total",
+    "Orchestrator runs that soft-failed (all agent errors transient, exit 0).",
+    ["service", "category"],
+    registry=REGISTRY,
+)
+
 # ── Rate limit visibility ────────────────────────────────────────────
 
 RATE_LIMIT_COOLDOWN_SECONDS = Gauge(
@@ -500,6 +511,15 @@ def record_error(kind: str) -> None:
     CARETAKER_ERRORS_TOTAL.labels(service=_SERVICE_LABEL, kind=kind).inc()
 
 
+def record_orchestrator_soft_fail(category: str = "transient") -> None:
+    """Record an orchestrator run that soft-failed (exit 0 despite errors).
+
+    ``category`` is a bounded enum; keep it short and stable so the label
+    cardinality never escapes a handful of values.
+    """
+    ORCHESTRATOR_SOFT_FAIL_TOTAL.labels(service=_SERVICE_LABEL, category=category).inc()
+
+
 def set_rate_limit_cooldown(peer_service: str, seconds_remaining: float) -> None:
     """Publish the current rate-limit cooldown window size (seconds)."""
     RATE_LIMIT_COOLDOWN_SECONDS.labels(service=_SERVICE_LABEL, peer_service=peer_service).set(
@@ -517,6 +537,7 @@ def set_rate_limit_remaining(peer_service: str, remaining: int) -> None:
 __all__ = [
     "APP_INFO",
     "CARETAKER_ERRORS_TOTAL",
+    "ORCHESTRATOR_SOFT_FAIL_TOTAL",
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
     "HTTP_CLIENT_REQUESTS_TOTAL",
@@ -535,6 +556,7 @@ __all__ = [
     "metrics_asgi_app",
     "record_error",
     "record_http_client",
+    "record_orchestrator_soft_fail",
     "record_worker_job",
     "set_rate_limit_cooldown",
     "set_rate_limit_remaining",
