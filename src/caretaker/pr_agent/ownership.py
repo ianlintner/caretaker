@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from caretaker.config import OwnershipConfig
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Comment, PullRequest
+    from caretaker.pr_agent.readiness_llm import Readiness
 
 logger = logging.getLogger(__name__)
 
@@ -298,8 +299,19 @@ async def release_ownership(
     )
 
 
-def _status_line(pr: PullRequest, tracking: TrackedPR, release_reason: str | None) -> str:
-    """Render the one-line status heading for the status comment."""
+def _status_line(
+    pr: PullRequest,
+    tracking: TrackedPR,
+    release_reason: str | None,
+    readiness_verdict: Readiness | None = None,
+) -> str:
+    """Render the one-line status heading for the status comment.
+
+    When a :class:`~caretaker.pr_agent.readiness_llm.Readiness` verdict is
+    supplied and its ``verdict`` is ``ready``, its ``summary`` is used
+    verbatim — this is the T-A1 contract that lets the LLM drive status
+    rendering once ``agentic.readiness`` flips to ``enforce``.
+    """
     if release_reason:
         if bool(getattr(pr, "merged", False)):
             return "**Status:** 🎉 Merged — caretaker has released ownership"
@@ -310,15 +322,50 @@ def _status_line(pr: PullRequest, tracking: TrackedPR, release_reason: str | Non
             return "**Status:** ⚠️ Escalated to maintainers — caretaker has released ownership"
         return f"**Status:** 🔓 Released — {release_reason}"
 
+    if readiness_verdict is not None:
+        if readiness_verdict.verdict == "ready":
+            return f"**Status:** ✅ {readiness_verdict.summary}"
+        if readiness_verdict.verdict == "needs_human":
+            return f"**Status:** 🙋 Needs human — {readiness_verdict.summary}"
+        if readiness_verdict.verdict == "blocked":
+            return f"**Status:** 🚧 Blocked — {readiness_verdict.summary}"
+        # pending
+        return f"**Status:** ⏳ Pending — {readiness_verdict.summary}"
+
     if tracking.readiness_score >= 1.0:
         return "**Status:** ✅ Ready for merge — all requirements satisfied"
     return "**Status:** ⏳ Monitoring — awaiting requirements"
+
+
+def _render_blockers_section(tracking: TrackedPR, readiness_verdict: Readiness | None) -> str:
+    """Render the blockers section body.
+
+    When a structured :class:`Readiness` verdict is supplied, each blocker
+    is rendered as ``- **category**: human_reason (action: suggested_action)``
+    so operators see actionable guidance rather than opaque tokens. Falls
+    back to the legacy token list when no verdict is attached.
+    """
+    if readiness_verdict is not None:
+        if not readiness_verdict.blockers:
+            return "None — PR is ready!"
+        lines = []
+        for blocker in readiness_verdict.blockers:
+            lines.append(
+                f"- **{blocker.category}**: {blocker.human_reason} "
+                f"(action: {blocker.suggested_action})"
+            )
+        return "\n".join(lines)
+
+    if not tracking.readiness_blockers:
+        return "None — PR is ready!"
+    return "\n".join(f"- `{b}`" for b in tracking.readiness_blockers)
 
 
 def build_status_comment(
     pr: PullRequest,
     tracking: TrackedPR,
     release_reason: str | None = None,
+    readiness_verdict: Readiness | None = None,
 ) -> str:
     """Render the unified caretaker status comment body.
 
@@ -335,11 +382,7 @@ def build_status_comment(
     ci_points = 0 if {"ci_pending", "ci_failing"} & blockers else 40
     total_pct = int(tracking.readiness_score * 100)
 
-    blockers_section = (
-        "None — PR is ready!"
-        if not tracking.readiness_blockers
-        else "\n".join(f"- `{b}`" for b in tracking.readiness_blockers)
-    )
+    blockers_section = _render_blockers_section(tracking, readiness_verdict)
 
     ownership_lines = [f"- **Owner:** {tracking.owned_by}"]
     if tracking.ownership_acquired_at:
@@ -359,7 +402,7 @@ def build_status_comment(
 
 ## 🏠 Caretaker Status
 
-{_status_line(pr, tracking, release_reason)}
+{_status_line(pr, tracking, release_reason, readiness_verdict)}
 
 **Readiness Score:** {total_pct}%
 
@@ -400,8 +443,27 @@ def format_duration(tracking: TrackedPR) -> str:
     return f"{duration.seconds}s"
 
 
-def get_readiness_check_title(tracking: TrackedPR) -> str:
-    """Get a short title for the readiness check based on current state."""
+def get_readiness_check_title(
+    tracking: TrackedPR, readiness_verdict: Readiness | None = None
+) -> str:
+    """Get a short title for the readiness check based on current state.
+
+    When a structured verdict is supplied, its ``summary`` is used as the
+    title (truncated to 120 chars) so the LLM's one-liner surfaces in the
+    GitHub check UI — which is the whole point of the migration.
+    """
+    if readiness_verdict is not None:
+        summary = readiness_verdict.summary.strip()
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+        if readiness_verdict.verdict == "ready":
+            return f"Ready for merge — {summary}"
+        if readiness_verdict.verdict == "needs_human":
+            return f"Needs human — {summary}"
+        if readiness_verdict.verdict == "blocked":
+            return f"Blocked — {summary}"
+        return f"Pending — {summary}"
+
     if tracking.readiness_score >= 1.0:
         return "PR is ready for merge"
     if "ci_pending" in tracking.readiness_blockers or "ci_failing" in tracking.readiness_blockers:
@@ -418,17 +480,37 @@ def get_readiness_check_title(tracking: TrackedPR) -> str:
     return f"Readiness: {int(tracking.readiness_score * 100)}%"
 
 
-def get_readiness_check_summary(tracking: TrackedPR) -> str:
-    """Get a summary for the readiness check output."""
+def get_readiness_check_summary(
+    tracking: TrackedPR, readiness_verdict: Readiness | None = None
+) -> str:
+    """Get a summary for the readiness check output.
+
+    When a structured verdict is supplied, each blocker is rendered as
+    a bullet of the form ``- **category**: human_reason — suggested_action``
+    so operators see the LLM's actionable guidance.
+    """
     lines = [
         f"**Readiness Score:** {int(tracking.readiness_score * 100)}%",
         "",
     ]
 
+    if readiness_verdict is not None:
+        if readiness_verdict.blockers:
+            lines.append("**Blockers:**")
+            for blocker in readiness_verdict.blockers:
+                lines.append(
+                    f"- **{blocker.category}**: {blocker.human_reason} — {blocker.suggested_action}"
+                )
+        else:
+            lines.append("**Status:** ✅ All requirements met — PR is ready for merge!")
+        lines.append("")
+        lines.append(f"**Summary:** {readiness_verdict.summary}")
+        return "\n".join(lines)
+
     if tracking.readiness_blockers:
         lines.append("**Blockers:**")
-        for blocker in tracking.readiness_blockers:
-            lines.append(f"- `{blocker}`")
+        for token in tracking.readiness_blockers:
+            lines.append(f"- `{token}`")
     else:
         lines.append("**Status:** ✅ All requirements met — PR is ready for merge!")
 
