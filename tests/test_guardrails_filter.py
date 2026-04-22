@@ -37,9 +37,10 @@ def test_neutralise_hidden_link_mismatched_host() -> None:
     content = "Please click [https://legit.example.com](https://attacker.test/steal)"
     result = filter_output("github_comment", content)
     assert "hidden_link" in result.blocked_reasons
-    # Rewritten to visible -> target form so the reader can see both sides.
-    assert "legit.example.com" in result.content
-    assert "attacker.test/steal" in result.content
+    # Rewritten to "visible -> target" form so the reader sees both sides.
+    # Assert the explicit arrow-separated shape, not bare host substrings —
+    # that keeps the test asserting a structural rewrite, not a URL allowlist.
+    assert "https://legit.example.com -> https://attacker.test/steal" in result.content
 
 
 def test_legitimate_link_untouched() -> None:
