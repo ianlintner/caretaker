@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] — 2026-04-22
+
+Completes Phase 3 of the 2026-Q2 agentic migration plan (`docs/plans/`). Four PRs turn caretaker's write-only memory and fleet graphs into read-and-decide surfaces, plus a first-cut Dependabot group bisector.
+
+### Added
+
+- **Cross-run memory retrieval** (#499) — new `caretaker.memory.retriever.MemoryRetriever` pulls the top-k most-similar past `AgentCoreMemory` snapshots (cosine when embeddings are stored, Jaccard fallback otherwise), budget-capped at ≤500 tokens. Readiness (T-A1) is the canary consumer; retrieval gated behind `memory_store.retrieval_enabled: false` + `agentic.readiness.mode ∈ {shadow, enforce}`, so existing installs are byte-identical until operators opt in. `AgentCoreMemory` graph node grew `summary`, `outcome`, `pr_number`, `issue_number`, and `summary_embedding` fields; `publish_with_embedding` computes the embedding at write time when a provider is wired. `Embedder` protocol + `LiteLLMEmbedder` stub included.
+- **Skill promotion round-trip** (#496) — `InsightStore.get_relevant` now returns the union of local `:Skill` hits and fleet-promoted `:GlobalSkill` hits, deduped on signature. Hits carry a `scope: Literal["local", "global"]` field; the Foundry prompt renderer prefixes global hits with `[fleet]`. `fleet.include_global_in_prompts: true` by default — the point of this release is to close the loop. Bridges Neo4j-backed `list_global_skill_rows` through `GraphBackedGlobalSkillReader`.
+- **`:FleetAlert` evaluator + admin endpoint** (#497) — `caretaker.fleet.alerts` emits `FleetAlert` nodes on four signals: `goal_health_regression` (N consecutive heartbeats below threshold), `error_spike` (≥ multiplier × prior-mean errors), `ghosted` (no heartbeat for N days), and `scope_gap` (piggyback on the #480 tracker). `FleetRegistryStore` grew a bounded per-repo heartbeat ring buffer (cap 32) so the pure evaluator has history to reason over. New `GET /api/admin/fleet/alerts?open=true` admin endpoint; resolution flow populates `resolved_at` and drops closed alerts from the `open=true` view. Off by default (`fleet.alerts.enabled: false`).
+- **Grouped-dependabot bisector** (#498) — new `caretaker.dependency_agent.bisector`. Part 1 ships today: body parser for dependabot's grouped PR format (multi-package / multi-directory), classic-bisect logic with a pluggable `CIProbe` protocol, a budget-capped `bisect_grouped_dependabot_pr`, `synthesize_merge_plan`, and a `DependencyAgent` hook that fires on `caretaker:owned` + `MERGEABLE UNSTABLE` grouped PRs. Default off (`dependency_agent.bisector.enabled: false`). The CI-driven probe driver (create branch → apply subset → push → wait on CI) is deferred; the protocol wire-up is already in place for a follow-up.
+
 ## [0.14.0] — 2026-04-22
 
 Completes Phase 2 of the 2026-Q2 agentic migration plan (`docs/plans/`). Twelve PRs landed. Every Phase 2 migration ships behind a per-domain `agentic.<name>.mode` flag that defaults to `off`, so this release is opt-in by design — no runtime behaviour changes until operators flip flags.
