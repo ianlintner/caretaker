@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.1] — 2026-04-22
+
+### Fixed
+
+- **`FleetOAuthClientCache`** (#472): the OAuth2 client cache shipped in 0.12.0 lived in a pair of module-level globals. Any multi-tenant path — admin backend, tests constructing two `MaintainerConfig`s — would silently let the second config reuse the first's cached client. Extracted onto a per-owner class; `Orchestrator` owns its own instance and threads it through `emit_heartbeat`. Module singleton kept only for the legacy single-owner call path.
+- **`datetime.utcnow()` sweep** (#471): replaced all call sites in `src/caretaker/` with `datetime.now(UTC)`. Python 3.12 deprecates `utcnow()`, and the resulting naive timestamps mixed unsafely with the tz-aware datetimes already used elsewhere. Added an AST-based regression test to prevent reintroductions.
+- **PR-agent correctness batch** (#474): four small independent fixes — shadowed `pr_number` loop variable, `MERGE_READY` reported for human PRs even when auto-merge was disabled, duplicate-PR survivor policy disagreeing with the duplicate-issue sibling, and `_has_pending_task_comment` relying on implicit comment ordering.
+- **Foundry tool-loop fallback** (#470): the `raw_message=None` defensive path built an OpenAI-shaped assistant message that would 400 on the next turn for Anthropic models. The path was papering over a provider-contract gap; dropped the fallback and require providers to populate `raw_message` on any tool-use turn.
+
+### Docs
+
+- **Plan of record** (#473): added `docs/plans/2026-Q2-agentic-migration.md` (master plan, 3 phases, 28 sub-agent tasks, parallelization map), `docs/plans/2026-04-22-fleet-audit.md` (operational audit of the five caretaker-topic consumer repos), and `docs/plans/2026-04-22-source-audit.md` (code-level bug list + agentic-migration candidates).
+
 ## [0.12.0] — 2026-04-22
 
 ### Added
