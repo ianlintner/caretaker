@@ -231,9 +231,68 @@ jobs:
           echo "should_run=${{ steps.guard.outputs.should_run }}"
           echo "reason=${{ steps.guard.outputs.reason }}"
 
-  maintain:
+  # Pre-flight: fail loudly on missing secrets / missing required GitHub
+  # token scopes / unreachable external services *before* any agent boots.
+  # See src/caretaker/doctor.py for the check list. Non-strict by default
+  # so unreachable external services downgrade to WARN rather than FAIL
+  # and block the whole run.
+  doctor:
     needs: dispatch-guard
     if: ${{ needs.dispatch-guard.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      status: ${{ steps.doctor.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install caretaker (dogfood)
+        run: pip install .
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CARETAKER_APP_ID }}
+          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
+      - name: Preflight
+        id: doctor
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          caretaker doctor --config .github/maintainer/config.yml --json \
+            >doctor.json 2>doctor.stderr
+          code=$?
+          # Human-readable report always gets echoed to the run log…
+          cat doctor.stderr
+          # …and the JSON payload is uploaded as a step summary.
+          {
+            echo "## caretaker doctor preflight"
+            echo
+            echo '```'
+            cat doctor.stderr
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          # Emit a job-level status so downstream jobs can skip when
+          # preflight itself crashed (exit 2) while still running when
+          # preflight passed (exit 0). A doctor FAIL (exit 1) also blocks.
+          if [ "$code" = "0" ]; then
+            echo "status=pass" >>"$GITHUB_OUTPUT"
+          elif [ "$code" = "1" ]; then
+            echo "status=fail" >>"$GITHUB_OUTPUT"
+          else
+            echo "status=error" >>"$GITHUB_OUTPUT"
+          fi
+          exit $code
+
+  maintain:
+    needs: [dispatch-guard, doctor]
+    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' && needs.doctor.outputs.status == 'pass' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -316,11 +375,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # When the caretaker run itself fails, trigger the self-heal agent
+  # When the caretaker run itself fails, trigger the self-heal agent.
+  # We intentionally require ``maintain.result == 'failure'`` (not a bare
+  # ``failure()`` call) so a ``doctor`` FAIL — which is a config problem,
+  # not a runtime bug — doesn't fan out into a second caretaker run that
+  # would hit the same missing secret or scope.
   self-heal-on-failure:
     runs-on: ubuntu-latest
-    needs: [dispatch-guard, maintain]
-    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' && failure() }}
+    needs: [dispatch-guard, doctor, maintain]
+    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' && needs.maintain.result == 'failure' }}
     steps:
       - uses: actions/checkout@v4
         with:
