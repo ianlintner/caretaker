@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Caretaker application bundle.
+# Reconciled by the Flux Kustomization CR at
+# `k8s/flux/clusters/bigboy/caretaker.yaml`.
+# The underlying resource definitions remain in `infra/k8s/` so
+# that hand-apply and GitOps read from the same source of truth.
+
+namespace: caretaker
+
+resources:
+  - namespace.yaml
+  - ../../../infra/k8s/redis-statefulset.yaml
+  - ../../../infra/k8s/neo4j-statefulset.yaml
+  - ../../../infra/k8s/caretaker-agent-worker.yaml
+  - ../../../infra/k8s/caretaker-mcp-serviceaccount.yaml
+  - ../../../infra/k8s/caretaker-mcp-deployment.yaml
+  - ../../../infra/k8s/caretaker-mcp-service.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: caretaker
+      app.kubernetes.io/managed-by: flux
