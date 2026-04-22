@@ -22,6 +22,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from caretaker.fleet.alerts import (
+    FleetAlertStore,
+    evaluate_fleet_alerts,
+    get_alert_store,
+    upsert_fleet_alerts,
+)
 from caretaker.fleet.emitter import sign_payload
 from caretaker.fleet.store import FleetRegistryStore, get_store
 
@@ -30,6 +36,15 @@ logger = logging.getLogger(__name__)
 
 SECRET_ENV = "CARETAKER_FLEET_SECRET"
 SIGNATURE_HEADER = "X-Caretaker-Signature"
+
+
+# Module-level shims for the admin fleet-alerts endpoint's optional
+# dependencies. Populated by :func:`set_fleet_alert_dependencies` at admin
+# startup; left as ``None`` when the fleet routers are mounted alone. Kept
+# as globals (not FastAPI Depends) because the router is already a simple
+# mountable surface that the other fleet endpoints don't parameterize.
+_FLEET_ALERT_CONFIG: Any = None
+_FLEET_ALERT_GRAPH: Any = None
 
 
 public_router = APIRouter(prefix="/api/fleet", tags=["fleet"])
@@ -137,6 +152,83 @@ async def fleet_summary(
         "stale_threshold_days": 7,
         "version_distribution": version_counts,
     }
+
+
+@admin_router.get("/alerts")
+async def list_fleet_alerts(
+    open_only: bool = Query(
+        default=False,
+        alias="open",
+        description="Filter to open alerts only",
+    ),
+    _user: Any = _REQUIRE_SESSION,
+) -> dict[str, Any]:
+    """List fleet alerts.
+
+    Runs the alert evaluator over every registered repo's recent heartbeat
+    history, applies it to the admin-side alert store (which handles dedup
+    + resolution), and returns the resulting rows.
+
+    Set ``open=true`` to filter to alerts whose ``resolved_at`` is
+    still ``None``.
+
+    The evaluator is gated by :class:`~caretaker.config.FleetAlertConfig`
+    via dependency injection of ``app.state.maintainer_config`` when the
+    backend is configured with one; otherwise the evaluator runs with its
+    pydantic defaults so the endpoint is useful even in a bootstrap /
+    bare-registry deployment.
+    """
+    registry: FleetRegistryStore = get_store()
+    alert_store: FleetAlertStore = get_alert_store()
+
+    # Gather every repo's ring-buffer into a single list the evaluator can
+    # group by repo itself.
+    clients = await registry.list_clients()
+    batch: list[Any] = []
+    for client in clients:
+        batch.extend(await registry.recent_heartbeats(client.repo))
+
+    cfg_kwargs: dict[str, Any] = {}
+    main_cfg = _FLEET_ALERT_CONFIG
+    if main_cfg is not None:
+        alerts_cfg = main_cfg.fleet.alerts
+        if alerts_cfg.enabled:
+            cfg_kwargs = {
+                "goal_health_threshold": alerts_cfg.goal_health_threshold,
+                "goal_health_n_consecutive": alerts_cfg.goal_health_n_consecutive,
+                "error_spike_multiplier": alerts_cfg.error_spike_multiplier,
+                "ghosted_window_days": alerts_cfg.ghosted_window_days,
+            }
+        else:
+            # Feature disabled — return stored state without re-evaluating.
+            stored = await alert_store.list(open_only=open_only)
+            return {"items": [a.model_dump(mode="json") for a in stored]}
+
+    evaluated = evaluate_fleet_alerts(batch, **cfg_kwargs)
+    merged = await alert_store.apply(evaluated)
+
+    # Best-effort graph mirror — ``upsert_fleet_alerts`` is fire-and-forget.
+    upsert_fleet_alerts(merged, graph=_FLEET_ALERT_GRAPH)
+
+    rows = await alert_store.list(open_only=open_only)
+    return {"items": [a.model_dump(mode="json") for a in rows]}
+
+
+def set_fleet_alert_dependencies(
+    *,
+    maintainer_config: Any | None = None,
+    graph_store: Any | None = None,
+) -> None:
+    """Inject the admin-side config + graph store for the alert endpoint.
+
+    Called once at admin app startup. Kept as module-level globals (rather
+    than FastAPI ``Depends``) so the existing fleet routers retain their
+    simple mountable shape — the admin dashboard already drives all other
+    fleet endpoints the same way.
+    """
+    global _FLEET_ALERT_CONFIG, _FLEET_ALERT_GRAPH  # noqa: PLW0603
+    _FLEET_ALERT_CONFIG = maintainer_config
+    _FLEET_ALERT_GRAPH = graph_store
 
 
 @admin_router.get("/{owner}/{repo}")

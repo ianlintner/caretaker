@@ -1,7 +1,15 @@
 """Opt-in fleet-registry heartbeat emitter, store, and HTTP surface."""
 
 from caretaker.fleet.abstraction import abstract_sop
-from caretaker.fleet.api import admin_router, public_router
+from caretaker.fleet.alerts import (
+    FleetAlert,
+    FleetAlertStore,
+    evaluate_fleet_alerts,
+    get_alert_store,
+    reset_alert_store_for_tests,
+    upsert_fleet_alerts,
+)
+from caretaker.fleet.api import admin_router, public_router, set_fleet_alert_dependencies
 from caretaker.fleet.emitter import (
     FleetHeartbeat,
     FleetOAuthClientCache,
@@ -22,6 +30,8 @@ from caretaker.fleet.store import (
 )
 
 __all__ = [
+    "FleetAlert",
+    "FleetAlertStore",
     "FleetClient",
     "FleetHeartbeat",
     "FleetOAuthClientCache",
@@ -31,10 +41,15 @@ __all__ = [
     "admin_router",
     "build_heartbeat",
     "emit_heartbeat",
+    "evaluate_fleet_alerts",
+    "get_alert_store",
     "get_store",
     "promote_global_skills",
     "public_router",
+    "reset_alert_store_for_tests",
     "reset_store_for_tests",
+    "set_fleet_alert_dependencies",
     "sign_payload",
     "sync_repos_to_graph",
+    "upsert_fleet_alerts",
 ]
