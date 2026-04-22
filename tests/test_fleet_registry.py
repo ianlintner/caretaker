@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from caretaker.config import FleetRegistryConfig, MaintainerConfig, OAuth2ClientConfig
 from caretaker.fleet import (
     FleetHeartbeat,
+    FleetOAuthClientCache,
     build_heartbeat,
     emit_heartbeat,
     get_store,
@@ -31,7 +32,6 @@ from caretaker.fleet import (
     reset_store_for_tests,
     sign_payload,
 )
-from caretaker.fleet import emitter as emitter_mod
 from caretaker.state.models import RunSummary
 
 # ── Config defaults ───────────────────────────────────────────────────────
@@ -144,9 +144,8 @@ async def test_emitter_attaches_oauth_bearer_and_caches_token(monkeypatch) -> No
     monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid")
     monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec")
     monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://auth.test/oauth/token")
-    # Reset the module-level OAuth client cache so this test is hermetic.
-    emitter_mod._oauth_client = None
-    emitter_mod._oauth_client_key = None
+    # Per-test OAuth cache — avoids any cross-test leak from a module global.
+    oauth_cache = FleetOAuthClientCache()
 
     cfg = MaintainerConfig(
         fleet_registry=FleetRegistryConfig(
@@ -172,9 +171,15 @@ async def test_emitter_attaches_oauth_bearer_and_caches_token(monkeypatch) -> No
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
+        assert (
+            await emit_heartbeat(cfg, _summary_fixture(), client=client, oauth_cache=oauth_cache)
+            is True
+        )
         # Second heartbeat in the same process reuses the cached token.
-        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
+        assert (
+            await emit_heartbeat(cfg, _summary_fixture(), client=client, oauth_cache=oauth_cache)
+            is True
+        )
 
     assert token_calls == 1  # JWT cache prevents a second token fetch
     assert heartbeat_calls == ["Bearer bearer-abc", "Bearer bearer-abc"]
@@ -186,8 +191,7 @@ async def test_emitter_oauth_token_failure_is_swallowed(monkeypatch) -> None:
     monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid")
     monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec")
     monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://auth.test/oauth/token")
-    emitter_mod._oauth_client = None
-    emitter_mod._oauth_client_key = None
+    oauth_cache = FleetOAuthClientCache()
 
     cfg = MaintainerConfig(
         fleet_registry=FleetRegistryConfig(
@@ -206,7 +210,60 @@ async def test_emitter_oauth_token_failure_is_swallowed(monkeypatch) -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        assert await emit_heartbeat(cfg, _summary_fixture(), client=client) is True
+        assert (
+            await emit_heartbeat(cfg, _summary_fixture(), client=client, oauth_cache=oauth_cache)
+            is True
+        )
+
+
+@pytest.mark.asyncio
+async def test_emitter_oauth_caches_are_per_instance(monkeypatch) -> None:
+    """Two caches in the same process must not share a client.
+
+    Regression test for the pre-0.12.1 module-global `_oauth_client` that
+    let a second MaintainerConfig's creds silently win over the first.
+    """
+    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
+    monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid-A")
+    monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec-A")
+    monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://auth.test/oauth/token")
+
+    cache_a = FleetOAuthClientCache()
+    cache_b = FleetOAuthClientCache()
+    cfg = MaintainerConfig(
+        fleet_registry=FleetRegistryConfig(
+            enabled=True,
+            endpoint="https://fleet.example/heartbeat",
+            oauth2=OAuth2ClientConfig(enabled=True),
+        )
+    )
+
+    seen_basic_auths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://auth.test/oauth/token":
+            seen_basic_auths.append(request.headers.get("authorization", ""))
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        return httpx.Response(202, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        assert (
+            await emit_heartbeat(cfg, _summary_fixture(), client=client, oauth_cache=cache_a)
+            is True
+        )
+        # Rotate the secret mid-process — a real deploy during credential
+        # rotation. cache_b must see the new creds; it does not share state
+        # with cache_a.
+        monkeypatch.setenv("OAUTH2_CLIENT_ID", "cid-B")
+        monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "csec-B")
+        assert (
+            await emit_heartbeat(cfg, _summary_fixture(), client=client, oauth_cache=cache_b)
+            is True
+        )
+
+    assert len(seen_basic_auths) == 2
+    assert seen_basic_auths[0] != seen_basic_auths[1]
 
 
 @pytest.mark.asyncio
