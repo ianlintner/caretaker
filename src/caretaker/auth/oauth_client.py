@@ -170,10 +170,7 @@ def build_client_from_env(
     scope = os.environ.get(scope_env, "").strip()
     if not (client_id and client_secret and token_url):
         logger.debug(
-            "oauth2 client: skipping — one or more of %s/%s/%s is unset",
-            client_id_env,
-            client_secret_env,
-            token_url_env,
+            "oauth2 client: skipping — required env vars for id/secret/token_url are unset"
         )
         return None
     return OAuth2ClientCredentials(
