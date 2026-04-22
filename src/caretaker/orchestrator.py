@@ -719,6 +719,7 @@ class Orchestrator:
                     self._config,
                     summary,
                     oauth_cache=self._fleet_oauth_cache,
+                    state=self._state_tracker.state,
                 )
             except Exception as e:
                 logger.warning("Fleet heartbeat failed: %s", e)

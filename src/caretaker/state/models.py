@@ -85,6 +85,41 @@ class TrackedPR(BaseModel):
     # caretaker:status comment.
     legacy_comments_compacted: bool = False
 
+    # ── Attribution telemetry (R&D workstream A2) ────────────────────────
+    # Answer "did caretaker actually save human toil on this PR?" — a
+    # per-PR audit trail that the weekly rollup aggregates into
+    # ``caretaker_pr_outcome_total``. All three fields default to ``False``
+    # / empty list; persisted Pydantic JSON round-trips them via default
+    # population on load (no backend migration required — see
+    # :class:`AttributionConfig` for the migration-strategy knob).
+    #
+    # ``caretaker_touched`` — True as soon as any caretaker agent took a
+    # non-read-only action on the PR (labelled, commented, approved,
+    # merged, closed). Never clears back to False once set.
+    caretaker_touched: bool = False
+    # ``caretaker_merged`` — True when caretaker's merge-authority path
+    # actually closed the PR as merged (as opposed to the human pressing
+    # "Merge"). Implies ``caretaker_touched = True``.
+    caretaker_merged: bool = False
+    # ``operator_intervened`` — True when a human (non-bot actor) made a
+    # pushing change AFTER caretaker's most recent action on the PR:
+    # a commit, a manual merge, a close, a label change, a force-push.
+    # The intervention detector rewrites this every cycle by comparing
+    # the persisted last-caretaker-action timestamp against the PR's
+    # event timeline.
+    operator_intervened: bool = False
+    # ``intervention_reasons`` — short codes describing what the human
+    # did. Bounded enum: ``manual_merge``, ``manual_close``,
+    # ``label_changed``, ``force_push``, ``commit_added``. Appended to
+    # each cycle the detector finds a new intervention; duplicates are
+    # suppressed so the list grows monotonically without unbounded churn.
+    intervention_reasons: list[str] = Field(default_factory=list)
+    # ``last_caretaker_action_at`` — timestamp of the most recent
+    # caretaker action. Used by the intervention detector as the cutoff:
+    # any human activity strictly after this timestamp counts as
+    # "pushed work after caretaker's last action."
+    last_caretaker_action_at: datetime | None = None
+
 
 class TrackedIssue(BaseModel):
     number: int
@@ -93,6 +128,17 @@ class TrackedIssue(BaseModel):
     assigned_pr: int | None = None
     last_checked: datetime | None = None
     escalated: bool = False
+
+    # ── Attribution telemetry (R&D workstream A2) ────────────────────────
+    # Mirrors :class:`TrackedPR` attribution fields with issue semantics.
+    # ``caretaker_closed`` replaces ``caretaker_merged`` because issues
+    # don't merge — they close via the caretaker triage / stale / charlie
+    # paths.
+    caretaker_touched: bool = False
+    caretaker_closed: bool = False
+    operator_intervened: bool = False
+    intervention_reasons: list[str] = Field(default_factory=list)
+    last_caretaker_action_at: datetime | None = None
 
 
 class RunSummary(BaseModel):

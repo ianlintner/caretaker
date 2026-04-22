@@ -117,6 +117,21 @@ class PRAgentReport:
     errors: list[str] = field(default_factory=list)
 
 
+def _mark_caretaker_touched(tracking: TrackedPR) -> None:
+    """Flip the attribution booleans on a PR when caretaker takes a write action.
+
+    Called immediately after any non-read-only GitHub operation (comment,
+    label, approve, merge, close). ``last_caretaker_action_at`` is the
+    anchor used by
+    :func:`caretaker.state.intervention_detector.detect_pr_intervention`
+    to decide whether a later human action qualifies as an operator
+    rescue. We stamp the *latest* write so consecutive caretaker actions
+    in the same cycle don't accidentally claim an earlier timestamp.
+    """
+    tracking.caretaker_touched = True
+    tracking.last_caretaker_action_at = datetime.now(UTC)
+
+
 class PRAgent:
     """Monitors and manages pull requests through their lifecycle."""
 
@@ -491,6 +506,7 @@ class PRAgent:
                 )
                 tracking.state = PRTrackingState.ESCALATED
                 tracking.escalated = True
+                _mark_caretaker_touched(tracking)
                 report.escalated.append(pr.number)
                 # Still flow through ownership handling so the status
                 # comment transitions to "released — escalated" cleanly.
@@ -568,6 +584,7 @@ class PRAgent:
                             run.name,
                         )
                         approved_any = True
+                        _mark_caretaker_touched(tracking)
                     else:
                         message = f"PR #{pr.number}: Failed to approve workflow run {run_id}"
                         logger.warning(message)
@@ -627,6 +644,12 @@ class PRAgent:
                 logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
                 tracking.state = PRTrackingState.MERGED
                 tracking.merged_at = datetime.now(UTC)
+                # Attribution: caretaker's merge authority closed this PR.
+                # `caretaker_merged` implies `caretaker_touched`; we set
+                # both through the shared helper so the
+                # ``last_caretaker_action_at`` cutoff moves forward.
+                _mark_caretaker_touched(tracking)
+                tracking.caretaker_merged = True
                 report.merged.append(pr.number)
             else:
                 logger.warning("PR #%d merge failed", pr.number)
@@ -753,6 +776,7 @@ class PRAgent:
             )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
+            _mark_caretaker_touched(tracking)
             report.escalated.append(pr.number)
             return tracking
 
@@ -811,6 +835,7 @@ class PRAgent:
             tracking.state = PRTrackingState.FIX_REQUESTED
             tracking.last_state_change_at = datetime.now(UTC)
             tracking.last_copilot_attempt_at = datetime.now(UTC)
+            _mark_caretaker_touched(tracking)
             report.fix_requested.append(pr.number)
             logger.info(
                 "PR #%d: CI fix requested (attempt %d/%d)",
@@ -873,6 +898,7 @@ class PRAgent:
             await self._github.update_issue(self._owner, self._repo, pr.number, state="closed")
             tracking.state = PRTrackingState.CLOSED
             tracking.notes = "closed:ci_backlog_guard"
+            _mark_caretaker_touched(tracking)
             logger.info("PR #%d: closed due to CI backlog guard", pr.number)
             return tracking
 
@@ -909,6 +935,7 @@ class PRAgent:
             )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
+            _mark_caretaker_touched(tracking)
             report.escalated.append(pr.number)
         else:
             report.waiting.append(pr.number)
@@ -948,6 +975,7 @@ class PRAgent:
             )
             tracking.state = PRTrackingState.ESCALATED
             tracking.escalated = True
+            _mark_caretaker_touched(tracking)
             report.escalated.append(pr.number)
             return tracking
 
@@ -968,6 +996,7 @@ class PRAgent:
         tracking.last_task_comment_id = result.comment_id
         tracking.last_copilot_attempt_at = datetime.now(UTC)
         tracking.state = PRTrackingState.FIX_REQUESTED
+        _mark_caretaker_touched(tracking)
         report.fix_requested.append(pr.number)
 
         return tracking
@@ -1219,7 +1248,8 @@ class PRAgent:
         tracking.readiness_blockers = evaluation.readiness.blockers
         tracking.readiness_summary = evaluation.readiness.summary
 
-        # Handle ownership state transitions
+        # Handle ownership state transitions. Each branch that calls out
+        # to GitHub counts as a write action for attribution telemetry.
         if should_release_ownership(pr, tracking, "merged"):
             await release_ownership(
                 self._github,
@@ -1230,6 +1260,7 @@ class PRAgent:
                 self._config.ownership,
                 reason="PR merged",
             )
+            _mark_caretaker_touched(tracking)
         elif should_release_ownership(pr, tracking, "closed"):
             await release_ownership(
                 self._github,
@@ -1240,6 +1271,7 @@ class PRAgent:
                 self._config.ownership,
                 reason="PR closed",
             )
+            _mark_caretaker_touched(tracking)
         elif should_release_ownership(pr, tracking, "escalated"):
             await release_ownership(
                 self._github,
@@ -1250,9 +1282,10 @@ class PRAgent:
                 self._config.ownership,
                 reason="PR escalated",
             )
+            _mark_caretaker_touched(tracking)
         elif tracking.ownership_state == OwnershipState.UNOWNED:
             # Try to claim ownership
-            await claim_ownership(
+            claim = await claim_ownership(
                 self._github,
                 self._owner,
                 self._repo,
@@ -1260,6 +1293,8 @@ class PRAgent:
                 tracking,
                 self._config.ownership,
             )
+            if claim.claimed:
+                _mark_caretaker_touched(tracking)
 
         # Publish readiness check
         await self._publish_readiness_check(pr, tracking, evaluation)
@@ -1281,6 +1316,7 @@ class PRAgent:
                         pr, tracking, readiness_verdict=evaluation.readiness_verdict
                     ),
                 )
+                _mark_caretaker_touched(tracking)
             except GitHubAPIError as e:
                 logger.warning(
                     "PR #%d: Failed to upsert caretaker status comment: %s",

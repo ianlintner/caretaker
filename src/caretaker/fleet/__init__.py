@@ -11,6 +11,7 @@ from caretaker.fleet.alerts import (
 )
 from caretaker.fleet.api import admin_router, public_router, set_fleet_alert_dependencies
 from caretaker.fleet.emitter import (
+    AttributionSummary,
     FleetHeartbeat,
     FleetOAuthClientCache,
     build_heartbeat,
@@ -30,6 +31,7 @@ from caretaker.fleet.store import (
 )
 
 __all__ = [
+    "AttributionSummary",
     "FleetAlert",
     "FleetAlertStore",
     "FleetClient",

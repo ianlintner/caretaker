@@ -10,9 +10,17 @@ from caretaker.causal import make_causal_marker
 from caretaker.github_client.api import RateLimitError
 from caretaker.graph.models import NodeType, RelType
 from caretaker.graph.writer import get_writer
+from caretaker.observability import metrics as _metrics
 from caretaker.tools.github import GitHubIssueTools
 
-from .models import OrchestratorState, RunSummary
+from .models import (
+    IssueTrackingState,
+    OrchestratorState,
+    PRTrackingState,
+    RunSummary,
+    TrackedIssue,
+    TrackedPR,
+)
 
 if TYPE_CHECKING:
     from caretaker.evolution.reflection import ReflectionResult
@@ -61,6 +69,16 @@ class StateTracker:
         self._issues = GitHubIssueTools(github, owner, repo)
         self._tracking_issue_number: int | None = None
         self._state: OrchestratorState = OrchestratorState()
+        # Attribution: remember which (pr_number, outcome) and
+        # (issue_number, outcome) tuples we've already incremented this
+        # process lifetime so repeated saves of the same state don't
+        # double-count. Lifetime is per-process; once the orchestrator
+        # restarts we reset, which is the correct behaviour for
+        # monotonic-cumulative counters whose Prometheus series already
+        # reflect the history we wrote last run.
+        self._emitted_pr_outcomes: dict[int, set[str]] = {}
+        self._emitted_issue_outcomes: dict[int, set[str]] = {}
+        self._emitted_intervention_reasons: dict[tuple[str, int], set[str]] = {}
 
     @property
     def state(self) -> OrchestratorState:
@@ -151,8 +169,116 @@ class StateTracker:
             else:
                 raise
         logger.info("State saved to tracking issue #%d", self._tracking_issue_number)
+        # Attribution telemetry (R&D workstream A2). Emitted at save time
+        # rather than at action time so the counter increments reflect
+        # "what's persisted" (the source of truth) rather than "what an
+        # agent tried to do." This means a rate-limited save skips the
+        # emission; the next successful save picks up the backlog because
+        # the in-memory classifier compares the current snapshot to the
+        # emitted-outcome set on the tracker.
+        self._emit_attribution_metrics()
         if summary is not None:
             self._emit_run_graph(summary)
+
+    # ── Attribution telemetry helpers ───────────────────────────────────
+
+    def _repo_slug(self) -> str:
+        return f"{self._owner}/{self._repo}"
+
+    @staticmethod
+    def classify_pr_outcomes(tracking: TrackedPR) -> frozenset[str]:
+        """Classify a tracked PR into the attribution outcome set.
+
+        A single PR can fall into multiple outcomes simultaneously:
+        ``merged`` implies ``touched``; ``operator_rescued`` is
+        orthogonal to ``touched`` / ``merged`` (a human can push work
+        after caretaker merges too, though it's rare).
+
+        Returns a ``frozenset`` of label values drawn from
+        :data:`~caretaker.observability.metrics.PR_OUTCOMES`.
+        """
+        outcomes: set[str] = set()
+        if tracking.caretaker_touched:
+            outcomes.add("touched")
+        if tracking.caretaker_merged:
+            outcomes.add("merged")
+        # ``closed_unmerged`` is "caretaker closed the PR but didn't merge
+        # it" — e.g. the CI backlog guard. Distinguish from a human close
+        # via ``caretaker_touched``: if caretaker never touched, the
+        # closure can't be attributed to us.
+        if (
+            tracking.caretaker_touched
+            and tracking.state == PRTrackingState.CLOSED
+            and not tracking.caretaker_merged
+        ):
+            outcomes.add("closed_unmerged")
+        if tracking.operator_intervened:
+            outcomes.add("operator_rescued")
+        if tracking.state == PRTrackingState.ESCALATED and not tracking.operator_intervened:
+            # Escalated without a human rescue means caretaker gave up
+            # and no operator has acted yet — this is the "abandoned"
+            # bucket in the dashboard: a PR caretaker couldn't help on.
+            outcomes.add("abandoned")
+        return frozenset(outcomes)
+
+    @staticmethod
+    def classify_issue_outcomes(tracking: TrackedIssue) -> frozenset[str]:
+        """Classify a tracked issue into the attribution outcome set."""
+        outcomes: set[str] = set()
+        if tracking.caretaker_touched:
+            outcomes.add("triaged")
+        if tracking.caretaker_closed:
+            # Distinguish stale closes (time-based triage) from
+            # caretaker's active closes (duplicate / question). This
+            # matches the dashboard taxonomy: ``stale_closed`` is an
+            # auto-hygiene signal, ``closed_by_caretaker`` is real work.
+            if tracking.state == IssueTrackingState.STALE:
+                outcomes.add("stale_closed")
+            else:
+                outcomes.add("closed_by_caretaker")
+        elif tracking.state == IssueTrackingState.CLOSED and tracking.caretaker_touched:
+            # Caretaker touched the issue but a human closed it — counts
+            # as an operator close under the attribution lens.
+            outcomes.add("closed_by_operator")
+        return frozenset(outcomes)
+
+    def _emit_attribution_metrics(self) -> None:
+        """Increment attribution counters for new outcomes on tracked rows.
+
+        Called from :meth:`save`. Skips outcomes already emitted this
+        process for the same ``(kind, number)`` key so repeated saves of
+        the same state don't double-count.
+        """
+        repo = self._repo_slug()
+        for pr_number, pr in self._state.tracked_prs.items():
+            current = self.classify_pr_outcomes(pr)
+            already = self._emitted_pr_outcomes.setdefault(pr_number, set())
+            for outcome in current - already:
+                _metrics.record_pr_outcome(repo, outcome)
+                already.add(outcome)
+            # Intervention reasons are emitted from a parallel structure
+            # because a PR can collect multiple reasons over its
+            # lifetime; dedup per ``(repo, pr_number, reason)``.
+            if pr.intervention_reasons:
+                seen = self._emitted_intervention_reasons.setdefault(("pr", pr_number), set())
+                for reason in pr.intervention_reasons:
+                    if reason in seen:
+                        continue
+                    _metrics.record_operator_intervention(repo, reason)
+                    seen.add(reason)
+        for issue_number, issue in self._state.tracked_issues.items():
+            current = self.classify_issue_outcomes(issue)
+            already = self._emitted_issue_outcomes.setdefault(issue_number, set())
+            for outcome in current - already:
+                _metrics.record_issue_outcome(repo, outcome)
+                already.add(outcome)
+            if issue.intervention_reasons:
+                seen = self._emitted_intervention_reasons.setdefault(("issue", issue_number), set())
+                for reason in issue.intervention_reasons:
+                    if reason in seen:
+                        continue
+                    _metrics.record_operator_intervention(repo, reason)
+                    seen.add(reason)
 
     def _emit_run_graph(self, summary: RunSummary) -> None:
         """Publish the just-saved run to the event-driven graph writer.

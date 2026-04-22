@@ -298,29 +298,34 @@ def eval_group() -> None:
 
 
 def _parse_since(value: str) -> datetime:
-    """Parse ``--since`` as either ``<N>[smhd]`` or an ISO-8601 timestamp.
+    """Parse ``--since`` as ``<N>[smhdw]`` or an ISO-8601 timestamp.
 
     Kept module-local (not a Click type) because the duration grammar is
     tiny and reusing click's DateTime type would lose the ``7d`` case.
+    Shared by the eval harness (``caretaker eval run``) and the
+    attribution backfill (``caretaker backfill-attribution``).
     """
+    import re
     from datetime import UTC, datetime, timedelta
 
     stripped = value.strip()
-    if stripped and stripped[-1] in {"s", "m", "h", "d"} and stripped[:-1].isdigit():
-        amount = int(stripped[:-1])
-        unit = stripped[-1]
+    match = re.fullmatch(r"(\d+)([smhdw])", stripped)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
         delta = {
             "s": timedelta(seconds=amount),
             "m": timedelta(minutes=amount),
             "h": timedelta(hours=amount),
             "d": timedelta(days=amount),
+            "w": timedelta(weeks=amount),
         }[unit]
         return datetime.now(UTC) - delta
     try:
         parsed = datetime.fromisoformat(stripped)
     except ValueError as exc:
         raise click.BadParameter(
-            f"--since must be a duration like '24h' or an ISO-8601 timestamp; got {value!r}"
+            f"--since must be a duration like '24h' / '4w' or an ISO-8601 timestamp; got {value!r}"
         ) from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -446,6 +451,157 @@ def backfill_embeddings(
     click.echo(json.dumps(result, indent=2, sort_keys=True))
     if result.get("errors"):
         raise SystemExit(1)
+
+
+# ── attribution backfill ──────────────────────────────────────────────────
+
+# Local shims so ``backfill_attribution`` stays readable without pulling
+# every model symbol into the top of the file.
+_PR_MERGED = "merged"
+_PR_ESCALATED = "escalated"
+_PR_CLOSED = "closed"
+_ISSUE_STALE = "stale"
+_ISSUE_CLOSED = "closed"
+
+
+def _row_active_since(row: object, cutoff: datetime) -> bool:
+    """Return True if the tracked row has any activity on or after ``cutoff``.
+
+    Uses ``last_checked`` first (updated on every cycle), then
+    ``merged_at`` / ``first_seen_at`` as fallbacks. Rows with no
+    timestamps at all are included — they're the most-suspect candidates
+    for backfill, and filtering them out would leave the weekly
+    dashboard permanently blind on them.
+    """
+    from datetime import UTC
+
+    stamp = (
+        getattr(row, "last_checked", None)
+        or getattr(row, "merged_at", None)
+        or getattr(row, "first_seen_at", None)
+    )
+    if stamp is None:
+        return True
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    return bool(stamp >= cutoff)
+
+
+@main.command("backfill-attribution")
+@click.option(
+    "--config",
+    default=DEFAULT_DOCTOR_CONFIG,
+    show_default=True,
+    type=click.Path(),
+    help="Path to config.yml. Defaults to .github/maintainer/config.yml.",
+)
+@click.option(
+    "--since",
+    default="30d",
+    show_default=True,
+    help=(
+        "Look back window. Accepts 'Nd' / 'Nw' / 'Nh' or an ISO-8601 datetime. "
+        "Rows older than this are skipped."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print what would change without mutating persisted state.",
+)
+def backfill_attribution(config: str, since: str, dry_run: bool) -> None:
+    """Backfill attribution telemetry on existing tracked state.
+
+    Walks every PR / issue in the orchestrator state store and reconciles
+    the attribution fields (``caretaker_touched`` / ``caretaker_merged``
+    / ``caretaker_closed``) against what can be inferred from the
+    existing history. Best-effort: any field that can't be reconstructed
+    is left at its default, which renders as "unknown" in the dashboard.
+
+    This is a one-shot. Running it more than once on the same state is
+    a no-op for rows that are already coherent.
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from caretaker.orchestrator import Orchestrator
+    from caretaker.state.intervention_detector import backfill_missing_fields
+
+    _configure_logging(None, debug=False)
+
+    try:
+        loaded = MaintainerConfig.from_yaml(config)
+    except FileNotFoundError as exc:
+        click.echo(f"backfill-attribution: config file not found: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    cutoff = _parse_since(since)
+    del loaded
+    orch = Orchestrator.from_config_path(config)
+
+    async def _run() -> tuple[int, int, int]:
+        await orch._state_tracker.load()
+        state = orch._state_tracker.state
+        filtered_prs = {
+            n: pr for n, pr in state.tracked_prs.items() if _row_active_since(pr, cutoff)
+        }
+        filtered_issues = {
+            n: issue
+            for n, issue in state.tracked_issues.items()
+            if _row_active_since(issue, cutoff)
+        }
+        pr_inferred = 0
+        for pr in filtered_prs.values():
+            if pr.state == _PR_MERGED and not pr.caretaker_merged:
+                pr.caretaker_merged = True
+                pr.caretaker_touched = True
+                pr_inferred += 1
+            elif pr.state == _PR_ESCALATED and not pr.caretaker_touched:
+                pr.caretaker_touched = True
+                pr_inferred += 1
+        issue_inferred = 0
+        for issue in filtered_issues.values():
+            if issue.state in (_ISSUE_STALE, _ISSUE_CLOSED) and not issue.caretaker_touched:
+                issue.caretaker_touched = True
+                if issue.state == _ISSUE_STALE:
+                    issue.caretaker_closed = True
+                issue_inferred += 1
+        reconciled = backfill_missing_fields(state.tracked_prs, state.tracked_issues)
+        if dry_run:
+            click.echo(
+                _json.dumps(
+                    {
+                        "dry_run": True,
+                        "since": cutoff.isoformat(),
+                        "prs_in_window": len(filtered_prs),
+                        "issues_in_window": len(filtered_issues),
+                        "prs_inferred": pr_inferred,
+                        "issues_inferred": issue_inferred,
+                        "invariant_reconciliations": reconciled,
+                    },
+                    indent=2,
+                )
+            )
+            return pr_inferred, issue_inferred, reconciled
+        if pr_inferred or issue_inferred or reconciled:
+            await orch._state_tracker.save()
+        return pr_inferred, issue_inferred, reconciled
+
+    try:
+        pr_inferred, issue_inferred, reconciled = _asyncio.run(_run())
+    except Exception as exc:  # pragma: no cover - surfaced to CLI user
+        click.echo(f"backfill-attribution: internal error: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    click.echo(
+        f"Backfill complete: PRs updated={pr_inferred} Issues updated={issue_inferred} "
+        f"Invariant fixes={reconciled}"
+    )
+    _ = datetime.now(UTC) - timedelta(days=1)
 
 
 if __name__ == "__main__":

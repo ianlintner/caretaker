@@ -42,6 +42,19 @@ class IssueAgentReport:
     errors: list[str] = field(default_factory=list)
 
 
+def _mark_caretaker_touched(tracking: TrackedIssue) -> None:
+    """Stamp the attribution fields on a tracked issue after a write action.
+
+    Called after any comment / label / close / escalation on the issue
+    via the GitHub client. Keeps ``last_caretaker_action_at`` aligned
+    with the latest write so the intervention detector can tell human
+    activity that landed *after* caretaker's touch apart from activity
+    that landed between caretaker actions.
+    """
+    tracking.caretaker_touched = True
+    tracking.last_caretaker_action_at = datetime.now(UTC)
+
+
 def _compare_triage_tuple(
     legacy_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
     candidate_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
@@ -276,6 +289,7 @@ class IssueAgent:
                     result = await self._dispatcher.dispatch(issue, classification)
                     if result:
                         tracking.state = IssueTrackingState.ASSIGNED
+                        _mark_caretaker_touched(tracking)
                         report.assigned.append(issue.number)
 
             case IssueClassification.BUG_COMPLEX:
@@ -289,6 +303,7 @@ class IssueAgent:
                     result = await self._dispatcher.dispatch(issue, classification)
                     if result:
                         tracking.state = IssueTrackingState.ASSIGNED
+                        _mark_caretaker_touched(tracking)
                         report.assigned.append(issue.number)
                 else:
                     if tracking.state in (
@@ -304,6 +319,7 @@ class IssueAgent:
                     debug_data={"classification": classification.value},
                 )
                 tracking.state = IssueTrackingState.ESCALATED
+                _mark_caretaker_touched(tracking)
                 report.escalated.append(issue.number)
 
             case IssueClassification.QUESTION:
@@ -316,6 +332,8 @@ class IssueAgent:
                     )
                     await self._issues.update(issue.number, state="closed")
                     tracking.state = IssueTrackingState.CLOSED
+                    _mark_caretaker_touched(tracking)
+                    tracking.caretaker_closed = True
                     report.closed.append(issue.number)
 
             case IssueClassification.DUPLICATE:
@@ -326,6 +344,8 @@ class IssueAgent:
                 )
                 await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.CLOSED
+                _mark_caretaker_touched(tracking)
+                tracking.caretaker_closed = True
                 report.closed.append(issue.number)
 
             case IssueClassification.STALE:
@@ -335,6 +355,8 @@ class IssueAgent:
                 )
                 await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.STALE
+                _mark_caretaker_touched(tracking)
+                tracking.caretaker_closed = True
                 report.closed.append(issue.number)
 
             case IssueClassification.INFRA_OR_CONFIG:
@@ -344,6 +366,7 @@ class IssueAgent:
                     debug_data={"classification": classification.value},
                 )
                 tracking.state = IssueTrackingState.ESCALATED
+                _mark_caretaker_touched(tracking)
                 report.escalated.append(issue.number)
 
             case _:

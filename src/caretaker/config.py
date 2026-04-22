@@ -641,6 +641,37 @@ class AdminDashboardConfig(StrictBaseModel):
     public_base_url: str = ""
 
 
+class AttributionConfig(StrictBaseModel):
+    """Attribution telemetry knobs (R&D workstream A2).
+
+    The telemetry fields themselves (``caretaker_touched`` / ``merged`` /
+    ``operator_intervened`` on :class:`~caretaker.state.models.TrackedPR`
+    and :class:`~caretaker.state.models.TrackedIssue`) round-trip through
+    Pydantic JSON with defaults, so existing Mongo/SQLite rows load cleanly
+    without a destructive schema migration. What this knob governs is
+    *when* those defaults get materialised back into the persisted state:
+
+    * ``lazy`` (default) — populate on next write. Existing rows keep
+      their missing fields until the next run causes ``save()`` to serialise
+      them fresh. Zero runtime cost; the only caveat is that the weekly
+      attribution rollup will count under-reported values for repos that
+      haven't run since the feature shipped.
+    * ``eager`` — the orchestrator runs a one-pass
+      :func:`caretaker.state.intervention_detector.backfill_missing_fields`
+      on load() so every tracked row has the attribution fields set before
+      the first action of the run. Costs one extra pass over the tracked
+      state; useful for operators who want the weekly dashboard accurate
+      from the first run post-upgrade.
+
+    Lazy is the safe default: the worst case is a few days of partial
+    attribution data for repos that run infrequently. Eager is the
+    preferred mode for high-value repos where the dashboard needs to be
+    correct immediately.
+    """
+
+    migration_strategy: Literal["eager", "lazy"] = "lazy"
+
+
 class GraphStoreConfig(StrictBaseModel):
     """Configuration for the Neo4j graph store."""
 
@@ -1074,6 +1105,7 @@ class MaintainerConfig(StrictBaseModel):
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
     agentic: AgenticConfig = Field(default_factory=AgenticConfig)
+    attribution: AttributionConfig = Field(default_factory=AttributionConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

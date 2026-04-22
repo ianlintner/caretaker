@@ -216,6 +216,58 @@ GITHUB_SCOPE_GAP_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# ── Attribution telemetry (R&D workstream A2) ───────────────────────
+#
+# Answers "did caretaker actually save human toil this week?" The three
+# counters below aggregate the per-PR / per-issue booleans stored on
+# :class:`~caretaker.state.models.TrackedPR` /
+# :class:`~caretaker.state.models.TrackedIssue` into rolling totals the
+# admin dashboard can graph. Cardinality is bounded by a small fixed
+# enum of ``outcome`` / ``reason`` labels and the set of repos caretaker
+# runs in.
+#
+# The ``repo`` label is the ``owner/repo`` slug. We intentionally do not
+# include per-PR numbers — that would blow up cardinality to something
+# like one series per open PR, and Prometheus would start evicting
+# series at scale. The per-PR state lives in the graph store instead.
+
+CARETAKER_PR_OUTCOME_TOTAL = Counter(
+    "caretaker_pr_outcome_total",
+    "PR outcomes classified by attribution status (touched / merged / "
+    "closed_unmerged / operator_rescued / abandoned).",
+    ["service", "repo", "outcome"],
+    registry=REGISTRY,
+)
+
+CARETAKER_ISSUE_OUTCOME_TOTAL = Counter(
+    "caretaker_issue_outcome_total",
+    "Issue outcomes classified by attribution status (triaged / "
+    "closed_by_caretaker / closed_by_operator / stale_closed).",
+    ["service", "repo", "outcome"],
+    registry=REGISTRY,
+)
+
+CARETAKER_OPERATOR_INTERVENTION_TOTAL = Counter(
+    "caretaker_operator_intervention_total",
+    "Human interventions that superseded a caretaker action, by reason.",
+    ["service", "repo", "reason"],
+    registry=REGISTRY,
+)
+
+# Bounded enums for the ``outcome`` / ``reason`` labels. Re-exported so
+# callers don't fat-finger label values (which would silently create new
+# series and break the cardinality budget).
+PR_OUTCOMES: frozenset[str] = frozenset(
+    {"touched", "merged", "closed_unmerged", "operator_rescued", "abandoned"}
+)
+ISSUE_OUTCOMES: frozenset[str] = frozenset(
+    {"triaged", "closed_by_caretaker", "closed_by_operator", "stale_closed"}
+)
+INTERVENTION_REASONS: frozenset[str] = frozenset(
+    {"manual_merge", "manual_close", "label_changed", "force_push", "commit_added"}
+)
+
+
 # ── LLM prompt-cache telemetry ───────────────────────────────────────
 #
 # Emitted by :mod:`caretaker.llm.provider` on every completion.  Together
@@ -632,6 +684,39 @@ def record_github_scope_gap(scope: str) -> None:
     GITHUB_SCOPE_GAP_TOTAL.labels(service=_SERVICE_LABEL, scope=scope).inc()
 
 
+def record_pr_outcome(repo: str, outcome: str) -> None:
+    """Increment the ``caretaker_pr_outcome_total`` counter.
+
+    ``outcome`` must be one of :data:`PR_OUTCOMES` — unknown values are
+    silently dropped so a typo in the caller can never expand cardinality.
+    """
+    if outcome not in PR_OUTCOMES:
+        logger.warning("record_pr_outcome called with unknown outcome=%r; dropping", outcome)
+        return
+    CARETAKER_PR_OUTCOME_TOTAL.labels(service=_SERVICE_LABEL, repo=repo, outcome=outcome).inc()
+
+
+def record_issue_outcome(repo: str, outcome: str) -> None:
+    """Increment the ``caretaker_issue_outcome_total`` counter."""
+    if outcome not in ISSUE_OUTCOMES:
+        logger.warning("record_issue_outcome called with unknown outcome=%r; dropping", outcome)
+        return
+    CARETAKER_ISSUE_OUTCOME_TOTAL.labels(service=_SERVICE_LABEL, repo=repo, outcome=outcome).inc()
+
+
+def record_operator_intervention(repo: str, reason: str) -> None:
+    """Increment the ``caretaker_operator_intervention_total`` counter."""
+    if reason not in INTERVENTION_REASONS:
+        logger.warning(
+            "record_operator_intervention called with unknown reason=%r; dropping",
+            reason,
+        )
+        return
+    CARETAKER_OPERATOR_INTERVENTION_TOTAL.labels(
+        service=_SERVICE_LABEL, repo=repo, reason=reason
+    ).inc()
+
+
 def record_llm_cache_usage(
     *,
     provider: str,
@@ -661,7 +746,9 @@ def record_llm_cache_usage(
 __all__ = [
     "APP_INFO",
     "CARETAKER_ERRORS_TOTAL",
-    "ORCHESTRATOR_SOFT_FAIL_TOTAL",
+    "CARETAKER_ISSUE_OUTCOME_TOTAL",
+    "CARETAKER_OPERATOR_INTERVENTION_TOTAL",
+    "CARETAKER_PR_OUTCOME_TOTAL",
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
     "GITHUB_SCOPE_GAP_TOTAL",
@@ -669,9 +756,13 @@ __all__ = [
     "HTTP_CLIENT_REQUEST_DURATION_SECONDS",
     "HTTP_SERVER_REQUESTS_TOTAL",
     "HTTP_SERVER_REQUEST_DURATION_SECONDS",
+    "INTERVENTION_REASONS",
+    "ISSUE_OUTCOMES",
     "LATENCY_BUCKETS",
     "LLM_CACHE_CREATION_TOKENS_TOTAL",
     "LLM_CACHE_READ_TOKENS_TOTAL",
+    "ORCHESTRATOR_SOFT_FAIL_TOTAL",
+    "PR_OUTCOMES",
     "RATE_LIMIT_COOLDOWN_SECONDS",
     "RATE_LIMIT_REMAINING",
     "REGISTRY",
@@ -684,8 +775,11 @@ __all__ = [
     "record_error",
     "record_github_scope_gap",
     "record_http_client",
+    "record_issue_outcome",
     "record_llm_cache_usage",
+    "record_operator_intervention",
     "record_orchestrator_soft_fail",
+    "record_pr_outcome",
     "record_worker_job",
     "set_rate_limit_cooldown",
     "set_rate_limit_remaining",
