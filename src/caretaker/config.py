@@ -675,10 +675,18 @@ class FleetConfig(StrictBaseModel):
       ``repo`` values a ``:Skill`` signature must appear in before it
       is eligible for the two-gate promotion (the other gate being the
       abstraction pass in ``caretaker.fleet.abstraction``).
+    * ``include_global_in_prompts`` closes the read-loop on promotion
+      (T-E3). When ``True`` (the default), ``InsightStore.get_relevant``
+      returns the union of local ``:Skill`` hits and fleet-promoted
+      ``:GlobalSkill`` hits so the prompt builder can surface
+      cross-repo skills with a ``[fleet]`` prefix. Operators can flip
+      this off per-repo if a shared skill misfires — promotion itself
+      is unaffected.
     """
 
     share_skills: bool = False
     min_repos_for_promotion: int = 3
+    include_global_in_prompts: bool = True
 
 
 class GitHubAppConfig(StrictBaseModel):

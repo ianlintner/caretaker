@@ -345,6 +345,69 @@ class GraphStore:
                 )
         return rows
 
+    async def list_global_skill_rows(self, category: str | None = None) -> list[dict[str, Any]]:
+        """Return one row per ``:GlobalSkill`` node.
+
+        Mirrors :meth:`list_skill_rows` but targets the fleet-promoted
+        tier. Used by :class:`caretaker.fleet.graph.GraphBackedGlobalSkillReader`
+        (T-E3) to close the read-loop on skill promotion — promotion
+        was previously write-only.
+
+        ``:GlobalSkill`` nodes do not carry per-repo counters; the
+        ``confidence`` / ``success_count`` / ``fail_count`` fields are
+        synthesised downstream from ``repo_count`` so the fleet hit
+        surfaces with a plausible rank in the prompt renderer.
+
+        When *category* is supplied the result is filtered to that
+        category; a ``GlobalSkill`` whose source ``:Skill`` nodes all
+        shared one category will carry it on the node itself, but the
+        filter is lenient — nodes with no ``category`` property are
+        returned for every category so a partial backfill does not
+        silently hide hits.
+        """
+        rows: list[dict[str, Any]] = []
+        if category is None:
+            query = (
+                "MATCH (g:GlobalSkill) "
+                "RETURN g.id AS id, "
+                "       coalesce(g.signature, '') AS signature, "
+                "       coalesce(g.name, '') AS name, "
+                "       coalesce(g.category, '') AS category, "
+                "       coalesce(g.abstracted_sop_text, '') AS sop_text, "
+                "       coalesce(g.repo_count, 0) AS repo_count, "
+                "       coalesce(g.abstracted_at, '') AS abstracted_at"
+            )
+            params: dict[str, Any] = {}
+        else:
+            query = (
+                "MATCH (g:GlobalSkill) "
+                "WHERE g.category = $category OR g.category IS NULL OR g.category = '' "
+                "RETURN g.id AS id, "
+                "       coalesce(g.signature, '') AS signature, "
+                "       coalesce(g.name, '') AS name, "
+                "       coalesce(g.category, '') AS category, "
+                "       coalesce(g.abstracted_sop_text, '') AS sop_text, "
+                "       coalesce(g.repo_count, 0) AS repo_count, "
+                "       coalesce(g.abstracted_at, '') AS abstracted_at"
+            )
+            params = {"category": category}
+
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, **params)
+            async for record in result:
+                rows.append(
+                    {
+                        "id": record["id"],
+                        "signature": record["signature"],
+                        "name": record["name"],
+                        "category": record["category"],
+                        "sop_text": record["sop_text"],
+                        "repo_count": record["repo_count"],
+                        "abstracted_at": record["abstracted_at"],
+                    }
+                )
+        return rows
+
     async def get_stats(self) -> GraphStats:
         """Return node and edge counts by type."""
         stats = GraphStats()

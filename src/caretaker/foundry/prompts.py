@@ -92,13 +92,22 @@ def _fence(tag: str, body: str) -> str:
 def _format_skills(skills: list[Skill] | None) -> str:
     if not skills:
         return ""
-    lines = ["# Hints from past successful fixes in this repo"]
+    # Header intentionally mentions "this repo and the fleet" because the
+    # list may now include :GlobalSkill promotions surfaced via
+    # :class:`caretaker.evolution.insight_store.GlobalSkillReader` —
+    # those are prefixed with ``[fleet]`` below so the model can tell
+    # them apart from the repo's own verified fixes.
+    lines = ["# Hints from past successful fixes in this repo and the fleet"]
     for s in skills[:3]:
         confidence = getattr(s, "confidence", 0.0)
         attempts = getattr(s, "total_attempts", 0)
         successes = getattr(s, "success_count", 0)
         text = getattr(s, "sop_text", str(s))
-        lines.append(f"- {text} (confidence: {confidence:.0%}, {successes}/{attempts} attempts)")
+        scope = getattr(s, "scope", "local")
+        prefix = "[fleet] " if scope == "global" else ""
+        lines.append(
+            f"- {prefix}{text} (confidence: {confidence:.0%}, {successes}/{attempts} attempts)"
+        )
     return "\n".join(lines)
 
 
