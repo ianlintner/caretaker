@@ -121,9 +121,7 @@ class OAuth2ClientCredentials:
             ) from exc
 
         if resp.status_code != 200:
-            raise OAuth2TokenError(
-                f"token endpoint returned {resp.status_code}: {resp.text[:200]}"
-            )
+            raise OAuth2TokenError(f"token endpoint returned {resp.status_code}: {resp.text[:200]}")
 
         try:
             payload = resp.json()

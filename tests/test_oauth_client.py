@@ -35,9 +35,7 @@ class _MockTransport(httpx.MockTransport):
             raise AssertionError("mock transport ran out of responses") from exc
 
 
-def _success_response(
-    access_token: str = "tok-xyz", expires_in: int = 3600
-) -> httpx.Response:
+def _success_response(access_token: str = "tok-xyz", expires_in: int = 3600) -> httpx.Response:
     return httpx.Response(
         200,
         json={
@@ -117,9 +115,7 @@ async def test_concurrent_callers_coalesce_on_single_refresh() -> None:
             client_secret="secret",
             token_url="https://auth.test/oauth/token",
         )
-        results = await asyncio.gather(
-            *(oauth.get_token(client=client) for _ in range(10))
-        )
+        results = await asyncio.gather(*(oauth.get_token(client=client) for _ in range(10)))
 
     assert results == ["once"] * 10
     assert len(transport.requests) == 1
@@ -127,9 +123,7 @@ async def test_concurrent_callers_coalesce_on_single_refresh() -> None:
 
 @pytest.mark.asyncio
 async def test_non_200_raises_token_error() -> None:
-    transport = _MockTransport(
-        [httpx.Response(401, json={"error": "invalid_client"})]
-    )
+    transport = _MockTransport([httpx.Response(401, json={"error": "invalid_client"})])
     async with httpx.AsyncClient(transport=transport) as client:
         oauth = OAuth2ClientCredentials(
             client_id="id",
@@ -211,9 +205,7 @@ def test_build_client_from_env_succeeds_when_set(
 
 @pytest.mark.asyncio
 async def test_expires_in_clamped_to_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
-    transport = _MockTransport(
-        [httpx.Response(200, json={"access_token": "t", "expires_in": 0})]
-    )
+    transport = _MockTransport([httpx.Response(200, json={"access_token": "t", "expires_in": 0})])
     async with httpx.AsyncClient(transport=transport) as client:
         oauth = OAuth2ClientCredentials(
             client_id="id",
