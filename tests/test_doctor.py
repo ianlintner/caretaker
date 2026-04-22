@@ -382,13 +382,29 @@ class TestDoctorCLI:
         cfg = _write_config(tmp_path / "config.yml")
         monkeypatch.setenv("GITHUB_TOKEN", "ghs_fake")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
-        runner = CliRunner()
+        # CliRunner constructor changed between click 8.1 (mix_stderr kwarg)
+        # and 8.2 (streams always separate). Construct without the kwarg and
+        # parse the JSON block out of combined output — cheaper than a
+        # version probe and works on both.
+        try:
+            runner = CliRunner(mix_stderr=False)  # type: ignore[call-arg]
+        except TypeError:
+            runner = CliRunner()
         result = runner.invoke(
             cli_main,
             ["doctor", "--config", str(cfg), "--skip-github", "--json"],
         )
         assert result.exit_code == 0
-        data = json.loads(result.stdout)
+        # The human table is emitted first (to stderr on 8.1 with
+        # mix_stderr=False; to combined output on 8.2). The JSON payload
+        # is the last contiguous JSON object in ``result.output``.
+        combined = result.output
+        first_brace = combined.find("\n{")
+        if first_brace == -1 and combined.startswith("{"):
+            first_brace = 0
+        else:
+            first_brace += 1  # skip the leading newline
+        data = json.loads(combined[first_brace:])
         assert data["status"] in {"ok", "warn"}
         assert "checks" in data
 
