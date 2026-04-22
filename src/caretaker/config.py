@@ -191,6 +191,19 @@ class FeatureModelConfig(StrictBaseModel):
     max_tokens: int | None = None
 
 
+class AgenticBotIdentityConfig(StrictBaseModel):
+    """Tunables for :mod:`caretaker.identity`'s LLM fallback path.
+
+    When ``llm_lookup_enabled`` is False (default) the classifier never calls
+    the LLM — it behaves identically to the synchronous deterministic
+    allowlist. Enable only once the deterministic coverage has been audited.
+    """
+
+    llm_lookup_enabled: bool = False
+    llm_ttl_seconds: int = 86_400
+    llm_cache_max_size: int = 1_000
+
+
 class LLMConfig(StrictBaseModel):
     claude_enabled: Literal["auto", "true", "false"] = "auto"
     claude_features: list[str] = Field(
@@ -219,6 +232,11 @@ class LLMConfig(StrictBaseModel):
     # returns malformed JSON or a payload that fails pydantic validation.
     # Set to 0 to disable the self-correcting retry loop.
     structured_output_retries: int = 1
+    # Tunables for :mod:`caretaker.identity`'s optional LLM fallback when
+    # classifying an unfamiliar login. Temporarily nested under ``LLMConfig``
+    # until a dedicated ``AgenticConfig`` lands (T-D1); may be promoted
+    # without a breaking change because callers read through this model.
+    bot_identity: AgenticBotIdentityConfig = Field(default_factory=AgenticBotIdentityConfig)
 
 
 class OrchestratorConfig(StrictBaseModel):

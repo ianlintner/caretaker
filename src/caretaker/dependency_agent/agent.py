@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from caretaker.identity import classify_identity
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
@@ -88,9 +89,13 @@ class DependencyAgent:
             report.errors.append(f"list_pull_requests: {e}")
             return report
 
-        dep_prs = [
-            pr for pr in all_prs if pr.user.login in ("dependabot[bot]", "dependabot-preview[bot]")
-        ]
+        # Select PRs authored by the Dependabot family specifically — we
+        # care about version-bump semantics, not any automation login.
+        dep_prs: list[Any] = []
+        for pr in all_prs:
+            identity = await classify_identity(pr.user.login)
+            if identity.family == "dependabot":
+                dep_prs.append(pr)
         report.prs_reviewed = len(dep_prs)
         logger.info("Dependency agent: %d Dependabot PR(s) open", len(dep_prs))
 

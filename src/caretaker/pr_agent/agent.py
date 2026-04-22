@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from caretaker.causal import make_causal_marker
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
+from caretaker.identity import is_automated
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
@@ -217,7 +218,7 @@ class PRAgent:
                 user = getattr(review, "user", None)
                 login = getattr(user, "login", "") if user else ""
                 # Only human approvals count — bot reviewers don't count
-                if login and not ("[bot]" in login or login.startswith("copilot")):
+                if login and not is_automated(login):
                     return False
         return True
 
