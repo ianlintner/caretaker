@@ -895,6 +895,27 @@ class ExecutorConfig(StrictBaseModel):
     k8s_worker: K8sAgentWorkerConfig = Field(default_factory=K8sAgentWorkerConfig)
 
 
+class AgenticEnforceGateConfig(StrictBaseModel):
+    """Gate that blocks ``shadow → enforce`` flips below an agreement floor.
+
+    Consumed by :mod:`caretaker.eval.gate` and the ``enforce-gate``
+    GitHub Actions workflow. The threshold is inclusive — a site whose
+    7-day rolling agreement rate equals the floor is allowed to flip.
+    """
+
+    min_agreement_rate: float = Field(
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum 7-day rolling agreement rate (across all per-site scorers) "
+            "required before a PR is allowed to flip ``mode`` from ``shadow`` to "
+            "``enforce`` for this site. Checked by the enforce-gate CI workflow "
+            "against the most recent :mod:`caretaker.eval.store` report."
+        ),
+    )
+
+
 class AgenticDomainConfig(StrictBaseModel):
     """Per-decision-site knobs for the Phase 2 agentic migration.
 
@@ -914,6 +935,7 @@ class AgenticDomainConfig(StrictBaseModel):
     """
 
     mode: Literal["off", "shadow", "enforce"] = "off"
+    enforce_gate: AgenticEnforceGateConfig = Field(default_factory=AgenticEnforceGateConfig)
 
 
 class IssueTriageAgenticConfig(AgenticDomainConfig):

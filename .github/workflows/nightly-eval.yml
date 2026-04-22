@@ -1,0 +1,133 @@
+name: Nightly Eval
+
+# Runs the shadow-decision evaluation harness once per night and
+# (1) writes the JSON report to the workflow artifacts, (2) comments
+# on any open PR that flips an ``agentic.<site>.mode`` from
+# ``shadow`` to ``enforce``, (3) opens a ``[eval]`` issue when any
+# scorer regresses > 5pp from its 7-day rolling mean.
+#
+# External research §F: Braintrust is the recommended harness.
+# Authentication is optional — the harness falls open to a local-only
+# run when ``BRAINTRUST_API_KEY`` is unset.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # 03:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Duration (e.g. 24h) or ISO-8601 lower bound"
+        required: false
+        default: "24h"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  run-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies (with eval extra)
+        run: pip install -e ".[dev,eval]"
+
+      - name: Run harness
+        env:
+          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          CARETAKER_SHADOW_SITE: ${{ inputs.since || '24h' }}
+        run: |
+          caretaker eval run \
+            --since "${CARETAKER_SHADOW_SITE}" \
+            --output nightly-eval.json
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-report
+          path: nightly-eval.json
+
+      - name: Comment on enforce-flip PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const payload = JSON.parse(fs.readFileSync("nightly-eval.json", "utf8"));
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            const flipPRs = prs.filter((pr) =>
+              /agentic\.[a-z_]+\.mode/.test(pr.title || "") ||
+              /shadow\s*[→>-]+\s*enforce/i.test(pr.title || "")
+            );
+
+            if (flipPRs.length === 0) {
+              core.info("No open enforce-flip PRs; skipping comment.");
+              return;
+            }
+
+            const lines = ["## Nightly shadow-eval report", ""];
+            for (const site of payload.sites) {
+              lines.push(`- **${site.site}** — agreement_rate=${site.agreement_rate.toFixed(4)}, records=${site.record_count}${site.experiment_url ? `, [braintrust](${site.experiment_url})` : ""}`);
+            }
+
+            const body = lines.join("\n");
+            for (const pr of flipPRs) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body,
+              });
+              core.info(`Commented on PR #${pr.number}`);
+            }
+
+      - name: Open regression issue if any scorer dropped >5pp
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const payload = JSON.parse(fs.readFileSync("nightly-eval.json", "utf8"));
+            const regressions = [];
+            for (const site of payload.sites) {
+              for (const s of site.scorer_summaries || []) {
+                // Rolling mean is surfaced by the admin API; this is a
+                // conservative placeholder that flags any scorer whose
+                // mean is below 0.9 — tighten once the 7d baseline is
+                // available in the JSON report.
+                if (s.mean < 0.9) {
+                  regressions.push({ site: site.site, scorer: s.scorer, mean: s.mean });
+                }
+              }
+            }
+            if (regressions.length === 0) {
+              core.info("No regressions detected.");
+              return;
+            }
+            const title = `[eval] ${regressions.length} scorer regression(s) in nightly harness`;
+            const body = [
+              "The nightly shadow-eval harness detected regressions:",
+              "",
+              ...regressions.map((r) => `- **${r.site}/${r.scorer}** mean=${r.mean.toFixed(4)}`),
+              "",
+              "See the `nightly-eval-report` artifact for the full JSON payload.",
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["eval", "automated"],
+            });

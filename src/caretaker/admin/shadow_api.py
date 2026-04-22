@@ -98,6 +98,21 @@ class ShadowDecisionsResponse(BaseModel):
             "compare), the rate is 1.0 by convention."
         ),
     )
+    agreement_rate_7d: float | None = Field(
+        default=None,
+        description=(
+            "Rolling 7-day agreement rate from the nightly eval harness, "
+            "populated when the request pins a single ``name``. ``None`` "
+            "when there's no eval history yet."
+        ),
+    )
+    agreement_rate_7d_by_site: dict[str, float | None] | None = Field(
+        default=None,
+        description=(
+            "Per-site 7-day agreement rates when the request does not pin a "
+            "single site. ``None`` when there is no eval history."
+        ),
+    )
     source: str = Field(
         description="Which backend produced the data: ``neo4j`` or ``ring_buffer``.",
     )
@@ -197,11 +212,7 @@ async def list_shadow_decisions(
         since_str = since.isoformat() if since is not None else None
         try:
             rows = await _read_from_neo4j(name=name, since=since_str, limit=limit)
-            return ShadowDecisionsResponse(
-                items=rows,
-                agreement_rate=_compute_agreement_rate(rows),
-                source="neo4j",
-            )
+            return _build_response(rows=rows, name=name, source="neo4j")
         except Exception as exc:  # noqa: BLE001 — never 500 the admin UI
             logger.warning(
                 "Neo4j read failed for shadow decisions, falling back to ring buffer: %s",
@@ -210,11 +221,35 @@ async def list_shadow_decisions(
 
     records = recent_records(name=name, since=since, limit=limit)
     rows = [ShadowDecisionRow.from_record(r) for r in records]
-    return ShadowDecisionsResponse(
+    return _build_response(rows=rows, name=name, source="ring_buffer")
+
+
+def _build_response(
+    *, rows: list[ShadowDecisionRow], name: str | None, source: str
+) -> ShadowDecisionsResponse:
+    """Attach rolling 7-day agreement rates from :mod:`caretaker.eval.store`.
+
+    The import is deferred so the shadow admin router still works in a
+    deployment where the eval extra isn't installed (the store module
+    itself has no optional deps, but keeping the coupling lazy means a
+    future refactor can split the eval package out cleanly).
+    """
+    from caretaker.eval import store as eval_store
+
+    resp = ShadowDecisionsResponse(
         items=rows,
         agreement_rate=_compute_agreement_rate(rows),
-        source="ring_buffer",
+        source=source,
     )
+    if name is not None:
+        resp.agreement_rate_7d = eval_store.rolling_agreement_rate(name)
+    else:
+        latest = eval_store.latest_report()
+        if latest is not None:
+            resp.agreement_rate_7d_by_site = {
+                s.site: eval_store.rolling_agreement_rate(s.site) for s in latest.sites
+            }
+    return resp
 
 
 __all__ = [
