@@ -754,6 +754,8 @@ class PRAgent:
             reviews,
             nitpick_threshold=self._config.review.nitpick_threshold,
             llm_router=self._llm,
+            pr_title=pr.title or "",
+            repo_slug=f"{self._owner}/{self._repo}",
         )
 
         if not analyses:
