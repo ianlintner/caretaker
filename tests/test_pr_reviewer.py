@@ -122,20 +122,20 @@ def test_routing_score_capped_at_100() -> None:
 
 @pytest.mark.asyncio
 async def test_inline_review_success() -> None:
-    import json
+    from caretaker.pr_reviewer.inline_reviewer import InlineReviewResult
 
-    mock_response = json.dumps(
-        {
-            "summary": "Looks good overall.",
-            "verdict": "APPROVE",
-            "comments": [{"path": "src/foo.py", "line": 10, "body": "Consider a docstring here."}],
-        }
+    payload = InlineReviewResult(
+        summary="Looks good overall.",
+        verdict="APPROVE",
+        comments=[
+            {"path": "src/foo.py", "line": 10, "body": "Consider a docstring here."},  # type: ignore[list-item]
+        ],
     )
 
     mock_llm = MagicMock()
     mock_llm.available = True
     mock_llm.claude = MagicMock()
-    mock_llm.claude.complete = AsyncMock(return_value=mock_response)
+    mock_llm.claude.structured_complete = AsyncMock(return_value=payload)
 
     mock_github = MagicMock()
     diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y"
@@ -157,6 +157,10 @@ async def test_inline_review_success() -> None:
     assert "Looks good" in result.summary
     assert len(result.comments) == 1
     assert result.comments[0].path == "src/foo.py"
+    # Sanity-check that structured_complete was passed the schema and feature key.
+    call = mock_llm.claude.structured_complete.call_args
+    assert call.kwargs["schema"].__name__ == "InlineReviewResult"
+    assert call.kwargs["feature"] == "pr_inline_review"
 
 
 @pytest.mark.asyncio
@@ -184,7 +188,7 @@ async def test_inline_review_empty_diff() -> None:
 async def test_inline_review_llm_failure() -> None:
     mock_llm = MagicMock()
     mock_llm.claude = MagicMock()
-    mock_llm.claude.complete = AsyncMock(side_effect=RuntimeError("timeout"))
+    mock_llm.claude.structured_complete = AsyncMock(side_effect=RuntimeError("timeout"))
 
     mock_github = MagicMock()
     mock_github.get_pull_diff = AsyncMock(return_value="diff content")
@@ -202,6 +206,36 @@ async def test_inline_review_llm_failure() -> None:
     )
     assert result.verdict == "COMMENT"
     assert "failed" in result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_inline_review_malformed_response_raises_loudly() -> None:
+    """StructuredCompleteError must bubble up — no silent verdict=COMMENT downgrade."""
+    from caretaker.llm.claude import StructuredCompleteError
+    from caretaker.pr_reviewer.inline_reviewer import review
+
+    mock_llm = MagicMock()
+    mock_llm.claude = MagicMock()
+    mock_llm.claude.structured_complete = AsyncMock(
+        side_effect=StructuredCompleteError(
+            raw_text='{"summary": "ok"}',  # missing required `verdict`
+            validation_error=ValueError("field required"),
+        )
+    )
+
+    mock_github = MagicMock()
+    mock_github.get_pull_diff = AsyncMock(return_value="diff")
+
+    with pytest.raises(StructuredCompleteError):
+        await review(
+            github=mock_github,
+            owner="org",
+            repo="repo",
+            pr_number=3,
+            pr_title="Foo",
+            pr_body="",
+            llm=mock_llm,
+        )
 
 
 # ── claude-code hand-off tests ─────────────────────────────────────────────
