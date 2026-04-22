@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] — 2026-04-22
+
+Completes **Wave A** of the 2026-Q2 R&D plan (`/tmp/caretaker-rd/00-rd-master-plan.md`). Six PRs land foundation work identified by the R&D review — fleet-data unblockers, deterministic-first escalation, standing eval harness, guardrails hardening, and attribution telemetry. All new behaviour is opt-in; defaults keep runtime behaviour byte-identical to 0.15.0.
+
+### Added
+
+- **Deterministic-first fix ladder** (#504) — new `caretaker.self_heal_agent.fix_ladder` implements the Factory.ai / BitsAI-Fix / KubeIntellect pattern: classify the failure signature, run a bounded sandbox of candidate shell commands (ruff format, ruff check --fix, mypy install-types, pip-compile upgrade, pytest --lf), and only escalate to the LLM when every rung failed. Escalation prompt now carries the `error_sig`, the rungs that ran, and the top-5 past `:Incident` hits from `MemoryRetriever` — turning `:Incident` nodes into a retrievable corpus instead of a write-only log. `caretaker memory backfill-embeddings` populates `summary_embedding` on existing `:Incident` + `:AgentCoreMemory` nodes so the retriever has something to work with on day one. Default off (`self_heal.fix_ladder.enabled: false`).
+- **Braintrust nightly eval harness + enforce gate** (#503) — new `caretaker.eval` package wires the shadow-decision store into Braintrust as paired (legacy, candidate) experiments with per-site scorers (exact-match for classification sites, llm-as-judge for generation) and a disagreement-rate scorer. `caretaker eval run --since 24h` drives the nightly workflow (`.github/workflows/nightly-eval.yml`); `.github/workflows/enforce-gate.yml` blocks PRs that flip any `agentic.<site>.mode` from `shadow` to `enforce` unless the site's 7-day rolling agreement rate clears `agentic.<site>.enforce_gate.min_agreement_rate` (defaults to 0.95). Gate fails closed on missing data.
+- **Guardrails consolidation** (#505) — new `caretaker.guardrails` package lands `sanitize_input`, `filter_output`, and `checkpoint_and_rollback`. Seven external-input boundaries (issue bodies, PR review comments, webhook payloads, LLM outputs about to hit GitHub, etc.) are wired to sanitize before use; outbound GitHub writes pass through `filter_output` to strip ANSI sequences, zero-width characters, deceptive Markdown links (rewritten to explicit `visible -> target` form), caretaker-marker echoes, and sigil echoes. The `maybe_rollback` hook in `pr_agent.merge` undoes merge/label/comment side effects when a post-write invariant fails. Metrics: `caretaker_guardrail_{sanitize,filter_blocked,rollback_fired}_total`.
+- **Attribution telemetry** (#506) — `TrackedPR` and `TrackedIssue` grew `caretaker_touched` / `caretaker_merged` / `caretaker_closed` / `operator_intervened` boolean fields; new `caretaker.state.intervention_detector` reconciles them against GitHub event history. Admin endpoint `GET /api/admin/attribution/summary` exposes per-repo counters so the next fleet audit can answer "did caretaker do the work vs the operator." One-shot `caretaker backfill-attribution --since 30d` reconciles existing state store rows.
+- **`audio_engineer` bootstrap unblock** (#502) — root cause of the 8/8-failing `audio_engineer` workflow wave was an invalid `workflows: write` entry in `maintainer.yml` (not a valid GITHUB_TOKEN scope). Fixed the workflow + added `caretaker doctor --bootstrap-check`: an offline preflight (no GitHub, no network) that parses config.yml, reads the pinned version file, and checks env vars for every enabled agent. Consumer workflows should wire this as the first step before the full doctor call.
+- **`TriageAgent` live** (#501) — removed the blanket `dry_run` override; triage now follows the orchestrator-level dry-run flag like every other agent. First site in the fleet to run live at the orchestrator level.
+
+### Notes
+
+- CI: `nightly-eval.yml` only has data once `@shadow_decision` sites accumulate disagreements — expect empty reports for the first few nights on quiet repos. The enforce gate skips cleanly (no flips = no gate) on PRs that don't touch `agentic.*.mode`.
+- The R&D plan's Wave B (enforce-flip on Example-React, Aider-style architect/editor split, Neo4j vector index upgrade, cascade router) and Wave C (architectural refactor) are deferred to follow-ups.
+
 ## [0.15.0] — 2026-04-22
 
 Completes Phase 3 of the 2026-Q2 agentic migration plan (`docs/plans/`). Four PRs turn caretaker's write-only memory and fleet graphs into read-and-decide surfaces, plus a first-cut Dependabot group bisector.
