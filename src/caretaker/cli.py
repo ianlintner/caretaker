@@ -846,6 +846,7 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
     import re
     import urllib.request as _req
     from pathlib import Path as _Path
+    from typing import Any
 
     import yaml  # already a transitive dep via pyyaml
 
@@ -881,10 +882,10 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
 
     gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
-    def _gh_get(path: str) -> dict | list | None:
+    def _gh_get(path: str) -> dict[str, Any] | list[Any] | None:
         """Call the GitHub REST API; return parsed JSON or None on error."""
         url = f"https://api.github.com{path}"
-        headers = {
+        headers: dict[str, str] = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
@@ -893,7 +894,8 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
         try:
             req = _req.Request(url, headers=headers)
             with _req.urlopen(req, timeout=15) as resp:
-                return _json.loads(resp.read())
+                result: dict[str, Any] | list[Any] = _json.loads(resp.read())
+                return result
         except Exception as exc:  # pragma: no cover
             click.echo(f"  [warn] GitHub API error for {path}: {exc}", err=True)
             return None
@@ -902,7 +904,7 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
     # Audit each repo
     # ------------------------------------------------------------------
     now = datetime.datetime.now(datetime.UTC)
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     violations: list[str] = []
 
     for entry in fleet_cfg.get("fleet", []):
@@ -925,7 +927,7 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
 
         # 2. Fetch open upgrade PRs
         prs_resp = _gh_get(f"/repos/{repo}/pulls?state=open&per_page=50")
-        open_upgrade_prs: list[dict] = []
+        open_upgrade_prs: list[dict[str, Any]] = []
         if isinstance(prs_resp, list):
             for pr in prs_resp:
                 title: str = pr.get("title", "")
@@ -1037,7 +1039,7 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
     # ------------------------------------------------------------------
     # Render output
     # ------------------------------------------------------------------
-    report = {
+    report: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "latest_caretaker_version": latest_version,
         "thresholds": {
