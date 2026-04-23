@@ -1,17 +1,24 @@
 {
   "releases": [
     {
+      "version": "0.19.0",
+      "min_compatible": "0.18.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.0 -->\n\n## What's Changed\n### Other Changes\n* feat: QA follow-ups \u2014 issues #522\u2013#525 (security probe auto-detect, releases.json automation, init-workflow CLI, regression tests) by @ianlintner in https://github.com/ianlintner/caretaker/pull/533\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.18.0...v0.19.0",
+      "breaking": false
+    },
+    {
       "version": "0.18.0",
       "min_compatible": "0.11.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.18.0",
-      "upgrade_notes": "Reduces stuck PRs/issues from caretaker-qa QA findings. (1) LLMConfig field claude_enabled renamed to llm_enabled (legacy alias preserved) with clearer docstring and a WARN log when disabled despite credentials — setting this to 'false' kills the entire LLM router, not just the Claude probe. (2) pr_reviewer defaults flipped: webhook_only now defaults to False and trigger_actions expanded to ['opened','synchronize','reopened','ready_for_review'] so polling-only deployments and draft-to-ready transitions get reviewed. (3) New pr_ci_approver agent surfaces (or, when auto_approve is set, approves) action_required workflow runs queued by trusted bot actors (Copilot, github-actions[bot], dependabot[bot], etc.), closing the owner-approval gap for automated-review loops. Also lazy-loads fastapi in caretaker.fleet to fix Orchestrator startup when fastapi extras aren't installed.",
+      "upgrade_notes": "Reduces stuck PRs/issues from caretaker-qa QA findings. (1) LLMConfig field claude_enabled renamed to llm_enabled (legacy alias preserved) with clearer docstring and a WARN log when disabled despite credentials \u2014 setting this to 'false' kills the entire LLM router, not just the Claude probe. (2) pr_reviewer defaults flipped: webhook_only now defaults to False and trigger_actions expanded to ['opened','synchronize','reopened','ready_for_review'] so polling-only deployments and draft-to-ready transitions get reviewed. (3) New pr_ci_approver agent surfaces (or, when auto_approve is set, approves) action_required workflow runs queued by trusted bot actors (Copilot, github-actions[bot], dependabot[bot], etc.), closing the owner-approval gap for automated-review loops. Also lazy-loads fastapi in caretaker.fleet to fix Orchestrator startup when fastapi extras aren't installed.",
       "breaking": false
     },
     {
       "version": "0.17.0",
       "min_compatible": "0.11.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.17.0",
-      "upgrade_notes": "QA gap trio fix. (1) Issues containing the caretaker:qa-scenario HTML marker are now suppressed from all triage passes and the issue-agent classify/dispatch loop — these are synthetic test fixtures that must not be acted on. (2) close_empty_body_prs() added to PR triage — standalone PRs with empty or boilerplate bodies are closed with a description-request comment regardless of diff content. (3) Copilot-authored draft PRs whose CI shows action_required runs are no longer escalated as stuck — they are awaiting owner workflow approval, which is expected.",
+      "upgrade_notes": "QA gap trio fix. (1) Issues containing the caretaker:qa-scenario HTML marker are now suppressed from all triage passes and the issue-agent classify/dispatch loop \u2014 these are synthetic test fixtures that must not be acted on. (2) close_empty_body_prs() added to PR triage \u2014 standalone PRs with empty or boilerplate bodies are closed with a description-request comment regardless of diff content. (3) Copilot-authored draft PRs whose CI shows action_required runs are no longer escalated as stuck \u2014 they are awaiting owner workflow approval, which is expected.",
       "breaking": false
     },
     {
