@@ -1,6 +1,55 @@
 {
   "releases": [
     {
+      "version": "0.17.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.17.0",
+      "upgrade_notes": "QA gap trio fix. (1) Issues containing the caretaker:qa-scenario HTML marker are now suppressed from all triage passes and the issue-agent classify/dispatch loop — these are synthetic test fixtures that must not be acted on. (2) close_empty_body_prs() added to PR triage — standalone PRs with empty or boilerplate bodies are closed with a description-request comment regardless of diff content. (3) Copilot-authored draft PRs whose CI shows action_required runs are no longer escalated as stuck — they are awaiting owner workflow approval, which is expected.",
+      "breaking": false
+    },
+    {
+      "version": "0.16.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.16.0",
+      "upgrade_notes": "Wave A of the 2026-Q2 R&D plan. Adds deterministic-first fix ladder + memory embedding backfill in self-heal agent, Braintrust nightly eval harness, sanitize_input and filter_output guardrails, GitHub App JWT self-minting for caretaker process tokens, and --llm-probe online endpoint preflight in caretaker doctor.",
+      "breaking": false
+    },
+    {
+      "version": "0.15.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.15.0",
+      "upgrade_notes": "Phase 3 of the 2026-Q2 agentic migration plan. Cross-run memory retrieval wired into decision sites, fleet-graph read-paths for upgrade and security agents, and a first-cut Dependabot-group bisector that pins a single package at a time to localise breakage.",
+      "breaking": false
+    },
+    {
+      "version": "0.14.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.14.0",
+      "upgrade_notes": "Phase 2 of the 2026-Q2 agentic migration plan. Twelve decision-site migrations behind per-domain agentic.<name>.mode feature flags (default off). Includes agentic PR evaluation, issue classification, stale detection, security triage, and docs summarisation. No runtime change until operators opt in per repo.",
+      "breaking": false
+    },
+    {
+      "version": "0.13.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.13.0",
+      "upgrade_notes": "Phase 1 of the 2026-Q2 agentic migration plan. Adds Anthropic prompt caching across both providers, LiteLLM provider with Azure AI Foundry routing, cache-token Prometheus metrics, and foundational agentic scaffolding. All additive; no breaking changes.",
+      "breaking": false
+    },
+    {
+      "version": "0.12.1",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.12.1",
+      "upgrade_notes": "Bug-fix release. Fixes FleetOAuthClientCache module-level globals, corrects OAuth2 token expiry handling, resolves fleet-registry heartbeat race, and patches JWT audience validation. No breaking changes.",
+      "breaking": false
+    },
+    {
+      "version": "0.12.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.12.0",
+      "upgrade_notes": "Opt-in OAuth2 client_credentials client for service-to-service auth. Caretaker can now attach a bearer JWT to outbound fleet-registry heartbeats alongside or instead of the existing HMAC signature path. Configure via fleet.oauth2 in config.yml.",
+      "breaking": false
+    },
+    {
       "version": "0.11.0",
       "min_compatible": "0.10.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.11.0",
