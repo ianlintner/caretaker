@@ -269,7 +269,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # LLM credentials — Azure AI Foundry is the primary path.
+          # ANTHROPIC_API_KEY is intentionally absent: provider=litellm
+          # routes Claude through Azure AI Foundry (AZURE_AI_API_KEY).
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
         run: |
           set +e
           caretaker doctor --config .github/maintainer/config.yml --json \
@@ -380,6 +386,11 @@ jobs:
           name: caretaker-memory-snapshot-${{ github.run_id }}
           path: .caretaker-memory-snapshot.json
           if-no-files-found: ignore
+          # Dotfiles are excluded by default in upload-artifact v4 — must
+          # set include-hidden-files: true so .caretaker-memory-snapshot.json
+          # is actually captured. Without this the step always logs "No files
+          # were found" even when the snapshot was written successfully.
+          include-hidden-files: true
           retention-days: 30
 
   # When the caretaker run itself fails, trigger the self-heal agent.
