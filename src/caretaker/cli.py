@@ -670,5 +670,119 @@ def backfill_attribution(config: str, since: str, dry_run: bool) -> None:
     _ = datetime.now(UTC) - timedelta(days=1)
 
 
+@main.command("init-workflow")
+@click.option(
+    "--output",
+    default=".github/workflows/maintainer.yml",
+    show_default=True,
+    help="Destination path for the generated workflow file.",
+)
+@click.option(
+    "--llm",
+    "llm_provider",
+    type=click.Choice(["azure-ai", "openai", "anthropic", "all"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="LLM provider(s) to include secret blocks for.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite an existing workflow file without prompting.",
+)
+def init_workflow(output: str, llm_provider: str, force: bool) -> None:
+    """Generate a ready-to-use caretaker maintainer workflow.
+
+    Writes the canonical workflow template to OUTPUT (default:
+    .github/workflows/maintainer.yml). The template includes the correct
+    permissions block, all required pull_request trigger types, and secret
+    blocks for the chosen LLM provider(s).
+
+    \b
+    Examples
+    --------
+    # Minimal — Azure AI Foundry only
+    caretaker init-workflow --llm azure-ai
+
+    # All providers (default), custom path
+    caretaker init-workflow --output .github/workflows/caretaker.yml
+
+    \b
+    After generation
+    ----------------
+    1. Add the secrets listed in the workflow to your repo / org secrets.
+    2. Copy docs/examples/config.yml to .github/maintainer/config.yml and
+       edit to taste (or run ``caretaker validate-config`` afterwards).
+    3. Commit and push — the first scheduled run fires within 15 minutes.
+    """
+    import importlib.resources as _ir
+
+    # Locate the bundled template
+    try:
+        # Python 3.9+ path
+        ref = _ir.files("caretaker") / "../../templates/maintainer.yml"
+        template_text = ref.read_text(encoding="utf-8")
+    except Exception:
+        # Fallback: look relative to this file
+        template_path = Path(__file__).parent.parent.parent / "templates" / "maintainer.yml"
+        if not template_path.is_file():
+            click.echo(
+                "caretaker init-workflow: bundled template not found. "
+                "Please file a bug at https://github.com/ianlintner/caretaker",
+                err=True,
+            )
+            raise SystemExit(1)
+        template_text = template_path.read_text(encoding="utf-8")
+
+    # Filter LLM secret blocks based on --llm flag
+    if llm_provider != "all":
+        _PROVIDER_VARS = {
+            "azure-ai": ["AZURE_AI_API_KEY", "AZURE_AI_API_BASE", "AZURE_AI_API_VERSION"],
+            "openai": ["OPENAI_API_KEY"],
+            "anthropic": ["ANTHROPIC_API_KEY"],
+        }
+        keep_vars = set(_PROVIDER_VARS.get(llm_provider, []))
+        all_vars = {v for vlist in _PROVIDER_VARS.values() for v in vlist}
+        drop_vars = all_vars - keep_vars
+        lines: list[str] = []
+        for line in template_text.splitlines(keepends=True):
+            stripped = line.strip()
+            if any(dv in stripped for dv in drop_vars):
+                continue  # drop secret line and surrounding comment if any
+            lines.append(line)
+        template_text = "".join(lines)
+
+    dest = Path(output)
+    if dest.exists() and not force:
+        click.confirm(
+            f"'{dest}' already exists. Overwrite?",
+            abort=True,
+        )
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(template_text, encoding="utf-8")
+
+    click.echo(f"Wrote workflow to {dest}")
+    click.echo("")
+    click.echo("Next steps:")
+    click.echo(
+        "  1. Add secrets to your repo: Settings → Secrets and variables → Actions"
+    )
+    if llm_provider in ("azure-ai", "all"):
+        click.echo(
+            "     AZURE_AI_API_KEY, AZURE_AI_API_BASE, AZURE_AI_API_VERSION"
+        )
+    if llm_provider in ("openai", "all"):
+        click.echo("     OPENAI_API_KEY")
+    if llm_provider in ("anthropic", "all"):
+        click.echo("     ANTHROPIC_API_KEY")
+    click.echo(
+        "  2. Create .github/maintainer/config.yml "
+        "(copy from docs/examples/config.yml)"
+    )
+    click.echo("  3. Commit and push — first scheduled run fires within 15 min.")
+
+
 if __name__ == "__main__":
     main()

@@ -1,0 +1,158 @@
+name: Update releases.json on new release
+
+# Triggered when a GitHub Release is published (not draft, not pre-release by default).
+# Appends a new entry to releases.json and opens a PR so the upgrade-agent
+# picks up the new version on the next run.
+#
+# Rationale: releases.json is the upgrade-agent's source-of-truth for "what is
+# the latest known version".  Without this automation, the file must be updated
+# by hand before each release — a step that was missed for v0.12.0–v0.17.0 and
+# caused the upgrade-agent to silently report "already on latest" for months.
+# See ianlintner/caretaker#523.
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: update-releases-json-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write        # push branch + read releases.json
+  pull-requests: write   # open the update PR
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch the default branch so we can push the update PR against it.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Extract release metadata
+        id: meta
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          CHANGELOG_URL: ${{ github.event.release.html_url }}
+        run: |
+          # Strip the leading "v" from the tag (e.g. v0.19.0 → 0.19.0)
+          VERSION="${TAG_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Determine min_compatible: default to the previous entry's version.
+          # We read the first "version" value in releases.json (which is the newest
+          # entry since the array is sorted descending) as the predecessor.
+          PREV_VERSION=$(python3 -c "
+          import json, sys
+          data = json.load(open('releases.json'))
+          versions = data.get('releases', [])
+          print(versions[0]['version'] if versions else '0.1.0')
+          ")
+          echo "min_compatible=${PREV_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "changelog_url=${CHANGELOG_URL}" >> "$GITHUB_OUTPUT"
+
+          # Capture first 2000 chars of release body as upgrade_notes.
+          NOTES="${RELEASE_BODY:0:2000}"
+          # Escape for safe JSON embedding (strip control chars, escape quotes).
+          NOTES_JSON=$(echo "${NOTES}" | python3 -c "
+          import json, sys
+          raw = sys.stdin.read().rstrip()
+          print(json.dumps(raw))
+          ")
+          echo "upgrade_notes=${NOTES_JSON}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if pre-release
+        if: steps.meta.outputs.is_prerelease == 'true'
+        run: |
+          echo "Pre-release detected — skipping releases.json update."
+          exit 0
+
+      - name: Prepend entry to releases.json
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          MIN_COMPATIBLE: ${{ steps.meta.outputs.min_compatible }}
+          CHANGELOG_URL: ${{ steps.meta.outputs.changelog_url }}
+          UPGRADE_NOTES: ${{ steps.meta.outputs.upgrade_notes }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          version        = os.environ["VERSION"]
+          min_compatible = os.environ["MIN_COMPATIBLE"]
+          changelog_url  = os.environ["CHANGELOG_URL"]
+          # upgrade_notes was stored as a JSON string literal (double-encoded)
+          upgrade_notes  = json.loads(os.environ["UPGRADE_NOTES"])
+
+          releases_path = "releases.json"
+          with open(releases_path) as f:
+              data = json.load(f)
+
+          releases = data.get("releases", [])
+
+          # Guard: don't add a duplicate entry if the workflow fires twice.
+          if any(r["version"] == version for r in releases):
+              print(f"Version {version} already present in releases.json — skipping.")
+              raise SystemExit(0)
+
+          new_entry = {
+              "version": version,
+              "min_compatible": min_compatible,
+              "changelog_url": changelog_url,
+              "upgrade_notes": upgrade_notes,
+              "breaking": False,
+          }
+
+          # Prepend (newest first) and write back with consistent formatting.
+          data["releases"] = [new_entry] + releases
+          with open(releases_path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+
+          print(f"Prepended version {version} to releases.json")
+          PYEOF
+
+      - name: Commit and push update branch
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          BRANCH="chore/releases-json-v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
+          git add releases.json
+          git commit -m "chore: add v${VERSION} to releases.json"
+          git push origin "${BRANCH}"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+        id: push
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh pr create \
+            --title "chore: add v${VERSION} to releases.json" \
+            --body "$(cat <<EOF
+          Automated update from the release workflow (see #523).
+
+          Prepends the v${VERSION} entry to \`releases.json\` so the upgrade-agent picks up
+          the new version on its next run.
+
+          **Please review and merge promptly** — the upgrade-agent will not offer this
+          version to managed repositories until this PR lands.
+
+          > This PR was opened automatically by \`.github/workflows/update-releases-json.yml\`.
+          EOF
+          )" \
+            --base "${DEFAULT_BRANCH}" \
+            --head "${BRANCH}" \
+            --label "caretaker:reviewed"
