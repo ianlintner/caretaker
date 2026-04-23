@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.18.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.18.0",
+      "upgrade_notes": "Reduces stuck PRs/issues from caretaker-qa QA findings. (1) LLMConfig field claude_enabled renamed to llm_enabled (legacy alias preserved) with clearer docstring and a WARN log when disabled despite credentials — setting this to 'false' kills the entire LLM router, not just the Claude probe. (2) pr_reviewer defaults flipped: webhook_only now defaults to False and trigger_actions expanded to ['opened','synchronize','reopened','ready_for_review'] so polling-only deployments and draft-to-ready transitions get reviewed. (3) New pr_ci_approver agent surfaces (or, when auto_approve is set, approves) action_required workflow runs queued by trusted bot actors (Copilot, github-actions[bot], dependabot[bot], etc.), closing the owner-approval gap for automated-review loops. Also lazy-loads fastapi in caretaker.fleet to fix Orchestrator startup when fastapi extras aren't installed.",
+      "breaking": false
+    },
+    {
       "version": "0.17.0",
       "min_compatible": "0.11.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.17.0",
