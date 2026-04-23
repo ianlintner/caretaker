@@ -522,16 +522,40 @@ async def check_github_scopes(
     try:
         resp = await _raw_get_with_headers(github, "/user")
     except Exception as exc:  # noqa: BLE001 — preflight is tolerant
-        results.append(
-            CheckResult(
-                category="github",
-                name="GET /user",
-                severity=Severity.FAIL,
-                detail=f"token rejected by GitHub: {exc}",
+        exc_str = str(exc)
+        # GitHub App installation tokens cannot call /user — they are
+        # scoped to a repository, not a user identity. A 403 here is
+        # expected and normal; treat it as WARN and continue probing
+        # repo-scoped endpoints. Only hard-fail for non-403 errors
+        # (network failure, bad token prefix, etc.) that indicate the
+        # token itself is unusable for any API call.
+        if "403" in exc_str:
+            results.append(
+                CheckResult(
+                    category="github",
+                    name="GET /user",
+                    severity=Severity.WARN,
+                    detail=(
+                        "GET /user returned 403 — likely a GitHub App installation "
+                        "token (expected; installation tokens are repo-scoped and "
+                        "cannot call /user). Skipping scope-header check; "
+                        "repo-scoped probes will still run."
+                    ),
+                )
             )
-        )
-        # No point probing further with a bad token.
-        return results
+            # Fall through to the repo-scoped probes below.
+        else:
+            results.append(
+                CheckResult(
+                    category="github",
+                    name="GET /user",
+                    severity=Severity.FAIL,
+                    detail=f"token rejected by GitHub: {exc}",
+                )
+            )
+            # Non-403 means the token is entirely unusable — no point
+            # probing repo endpoints.
+            return results
     else:
         declared = resp.get("x-oauth-scopes", "")
         if declared:
