@@ -1043,6 +1043,42 @@ class GitHubClient:
         result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
         return result is None  # 204 = success
 
+    async def list_workflow_runs(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        status: str | None = None,
+        event: str | None = None,
+        actor: str | None = None,
+        per_page: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List repository workflow runs with optional filters.
+
+        Used by ``pr_ci_approver`` to enumerate runs blocked on
+        ``action_required`` for whitelisted bot actors. Returns the raw
+        API payload (one dict per run) so the agent can read ``actor``,
+        ``triggering_actor``, ``conclusion``, ``event``, ``head_branch``,
+        etc. without defining a pydantic model for a transient inspection.
+
+        See: https://docs.github.com/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        """
+        params: dict[str, Any] = {"per_page": per_page}
+        if status is not None:
+            params["status"] = status
+        if event is not None:
+            params["event"] = event
+        if actor is not None:
+            params["actor"] = actor
+        data = await self._get(
+            f"/repos/{owner}/{repo}/actions/runs",
+            params=params,
+        )
+        if not isinstance(data, dict):
+            return []
+        runs = data.get("workflow_runs", [])
+        return list(runs) if isinstance(runs, list) else []
+
     async def approve_workflow_run(self, owner: str, repo: str, run_id: int) -> bool:
         """Approve a workflow run for a fork pull request."""
         token = await self._creds.default_token()

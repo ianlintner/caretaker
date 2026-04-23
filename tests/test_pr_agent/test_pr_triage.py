@@ -177,7 +177,6 @@ async def test_close_empty_body_prs_closes_blank_body() -> None:
 @pytest.mark.asyncio
 async def test_close_empty_body_prs_closes_boilerplate_body() -> None:
     """A PR body with only checklist boilerplate is treated as empty."""
-    from caretaker.github_client.models import User
     from tests.conftest import make_pr as _make_pr
 
     pr = _make_pr(number=100)
@@ -191,7 +190,9 @@ async def test_close_empty_body_prs_closes_boilerplate_body() -> None:
 async def test_close_empty_body_prs_keeps_real_description() -> None:
     """PRs with a substantive description must not be closed."""
     pr = make_pr(number=101)
-    pr = pr.model_copy(update={"body": "This PR fixes the authentication bug by adding token refresh logic."})
+    pr = pr.model_copy(
+        update={"body": "This PR fixes the authentication bug by adding token refresh logic."}
+    )
     gh = _FakeGH()
     closed = await close_empty_body_prs(gh, "o", "r", [pr])
     assert closed == []

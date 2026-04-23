@@ -10,8 +10,11 @@ updated PR it:
    applies a trigger label + hand-off comment (claude-code path).
 
 Enabled by default; set ``pr_reviewer.enabled = false`` to disable.
-With ``webhook_only = true`` (default) the agent only acts on webhook-
-delivered events, so polling runs incur zero extra GitHub API calls.
+By default the agent runs on both webhook and polling paths
+(``webhook_only = false``). Set ``webhook_only = true`` only if you have
+a webhook dispatcher wired up AND want to minimise GitHub REST calls.
+Idempotency is provided by ``skip_labels`` (defaults to
+``["caretaker:reviewed"]``) rather than a narrow trigger list.
 """
 
 from __future__ import annotations

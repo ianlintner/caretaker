@@ -208,6 +208,10 @@ class RunSummary(BaseModel):
     # Migration agent metrics
     migration_deprecations_found: int = 0
     migration_fixes_applied: int = 0
+    # PR CI approver metrics
+    ci_runs_stuck: int = 0
+    ci_runs_approved: int = 0
+    ci_runs_surfaced: int = 0
     # Goal engine metrics
     goal_health: float | None = None
     goal_escalation_count: int = 0

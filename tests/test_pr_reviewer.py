@@ -343,8 +343,19 @@ async def test_post_review_falls_back_on_error() -> None:
 def test_pr_reviewer_config_defaults() -> None:
     cfg = PRReviewerConfig()
     assert cfg.enabled is True
-    assert cfg.webhook_only is True
-    assert cfg.trigger_actions == ["opened"]
+    # webhook_only defaults to False so polling-only deployments (the common
+    # case for a GitHub Actions cron) still get reviews. See QA finding #5
+    # (docs/qa-findings-2026-04-23.md).
+    assert cfg.webhook_only is False
+    # Full trigger set so Copilot-bot drafts (opened-as-draft → ready_for_review)
+    # and force-pushed revisions (synchronize) are all caught. Idempotency is
+    # handled by skip_labels not by a narrow trigger list.
+    assert cfg.trigger_actions == [
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+    ]
     assert cfg.routing_threshold == 40
     assert cfg.skip_draft is True
     assert "caretaker:reviewed" in cfg.skip_labels
@@ -369,7 +380,6 @@ def test_pr_reviewer_webhook_only_skips_polling() -> None:
     """webhook_only=True must make the agent a no-op when no event_payload."""
     cfg = PRReviewerConfig(enabled=True, webhook_only=True)
     assert cfg.webhook_only is True
-    assert cfg.trigger_actions == ["opened"]
 
 
 def test_pr_reviewer_trigger_actions_customizable() -> None:
