@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.19.1",
+      "min_compatible": "0.19.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.1 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.19.0 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/534\n* fix(release): ensure caretaker:reviewed label exists before gh pr create by @ianlintner in https://github.com/ianlintner/caretaker/pull/540\n* feat: fleet-wide upgrade defaults \u2014 auto_approve + auto_ready_drafts (v0.19.1) by @ianlintner in https://github.com/ianlintner/caretaker/pull/543\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.19.0...v0.19.1",
+      "breaking": false
+    },
+    {
       "version": "0.19.0",
       "min_compatible": "0.18.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.0",
