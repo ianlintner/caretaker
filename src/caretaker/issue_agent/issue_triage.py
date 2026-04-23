@@ -77,6 +77,20 @@ async def _close_issue(
         return False
 
 
+_QA_SCENARIO_MARKER = "<!-- caretaker:qa-scenario -->"
+
+
+def is_qa_scenario_issue(issue: Issue) -> bool:
+    """Return True when the issue body contains the QA-scenario suppression marker.
+
+    Issues created by caretaker-qa embed this marker to prevent caretaker from
+    triaging, dispatching, or escalating them. The marker is checked in both
+    the issue body and (for belt-and-suspenders safety) issue title.
+    """
+    haystack = f"{issue.title}\n{issue.body or ''}"
+    return _QA_SCENARIO_MARKER in haystack
+
+
 async def close_empty_issues(
     github: GitHubClient,
     owner: str,
@@ -92,6 +106,9 @@ async def close_empty_issues(
             continue
         # Protect human-authored issues with labels — only bot/empty stubs.
         if issue.has_label("pinned") or issue.has_label("keep-open"):
+            continue
+        # Never close QA-scenario issues — they are synthetic test fixtures.
+        if is_qa_scenario_issue(issue):
             continue
         reason = "issue body is empty or contains only boilerplate; no actionable content."
         if dry_run:
@@ -118,6 +135,8 @@ async def close_duplicate_issues(
 
     groups: dict[str, list[Issue]] = {}
     for issue in open_issues:
+        if is_qa_scenario_issue(issue):
+            continue
         key = _group_key(issue)
         if key is None:
             continue
@@ -164,6 +183,8 @@ async def mark_stale_issues(
 
     for issue in open_issues:
         if issue.has_label("pinned") or issue.has_label("keep-open"):
+            continue
+        if is_qa_scenario_issue(issue):
             continue
         last_touched = issue.updated_at or issue.created_at
         if last_touched is None:

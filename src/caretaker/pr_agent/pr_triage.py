@@ -49,6 +49,22 @@ def _is_binary_only_diff(files: list[dict[str, object]], binary_paths: list[str]
     return True
 
 
+def _is_empty_pr_body(pr: PullRequest) -> bool:
+    """Return True when the PR has no substantive description.
+
+    A PR body is considered empty when it is blank, shorter than 20 characters,
+    or contains only checklist / boilerplate markup with no real text.
+    """
+    body = (pr.body or "").strip()
+    if len(body) < 20:
+        return True
+    # Body composed only of checklist markers, whitespace, or common placeholders.
+    meaningful = re.sub(
+        r"[-*\[\]\s`]|(?:TODO|N/A|<!--.*?-->)", "", body, flags=re.IGNORECASE | re.DOTALL
+    )
+    return len(meaningful) < 10
+
+
 def _extract_group_key(pr: PullRequest) -> str | None:
     """Return a grouping key for duplicate detection — CVE id or bumped package."""
     haystack = f"{pr.title}\n{pr.body}"
@@ -112,6 +128,39 @@ async def close_empty_prs(
             closed.append(pr.number)
         except Exception as exc:
             logger.warning("Failed to close empty PR #%d: %s", pr.number, exc)
+    return closed
+
+
+async def close_empty_body_prs(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    open_prs: list[PullRequest],
+    *,
+    dry_run: bool = False,
+) -> list[int]:
+    """Close PRs that have no substantive description in their body.
+
+    A PR body is considered empty when it is blank or contains only boilerplate
+    (checklists, HTML comments, placeholder text). This heuristic applies
+    regardless of PR author so that QA scenario PRs with placeholder bodies
+    (e.g. ``qa/scenario-10-empty-pr``) are caught even when opened by the
+    repo owner.
+    """
+    closed: list[int] = []
+    for pr in open_prs:
+        if not _is_empty_pr_body(pr):
+            continue
+        reason = "PR description is empty or contains only boilerplate; please add context."
+        if dry_run:
+            closed.append(pr.number)
+            continue
+        await _post_close_comment(github, owner, repo, pr.number, reason)
+        try:
+            await github.update_issue(owner, repo, pr.number, state="closed")
+            closed.append(pr.number)
+        except Exception as exc:
+            logger.warning("Failed to close empty-body PR #%d: %s", pr.number, exc)
     return closed
 
 
@@ -288,6 +337,14 @@ async def run_pr_triage(
         )
     except Exception as exc:
         report.errors.append(f"close_empty_prs: {exc}")
+
+    try:
+        empty_body = await close_empty_body_prs(
+            github, owner, repo, open_prs, dry_run=config.dry_run
+        )
+        report.closed_empty.extend(empty_body)
+    except Exception as exc:
+        report.errors.append(f"close_empty_body_prs: {exc}")
 
     try:
         report.closed_conflicted = await close_binary_conflicted_prs(

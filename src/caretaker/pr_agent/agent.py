@@ -481,10 +481,22 @@ class PRAgent:
         # / merge_queue / solo_repo_no_reviewer and picks a matching
         # action. Skipped if already escalated (terminal) or the PR is
         # closed/merged.
-        if not tracking.escalated and tracking.state not in (
-            PRTrackingState.ESCALATED,
-            PRTrackingState.MERGED,
-            PRTrackingState.CLOSED,
+        #
+        # Exception: Copilot-authored PRs with ``action_required`` CI runs
+        # are waiting for owner workflow approval — this is normal expected
+        # behaviour, not a stall. Suppress the stuck gate so caretaker
+        # does not escalate while the owner has simply not yet clicked
+        # "Approve and run" in the Actions tab.
+        _copilot_awaiting_approval = pr.is_copilot_pr and bool(evaluation.ci.action_required_runs)
+        if (
+            not tracking.escalated
+            and tracking.state
+            not in (
+                PRTrackingState.ESCALATED,
+                PRTrackingState.MERGED,
+                PRTrackingState.CLOSED,
+            )
+            and not _copilot_awaiting_approval
         ):
             stuck_verdict = await self._evaluate_stuck_verdict(
                 pr, check_runs, reviews, evaluation.readiness_verdict

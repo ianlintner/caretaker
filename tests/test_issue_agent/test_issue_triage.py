@@ -77,6 +77,54 @@ async def test_close_empty_issues_respects_keep_open_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_empty_issues_skips_qa_scenario() -> None:
+    """Issues with the QA-scenario marker must never be closed by triage."""
+    qa_issue = make_issue(
+        5,
+        body="<!-- caretaker:qa-scenario -->\n\nThis is a test fixture.",
+    )
+    gh = _FakeGH()
+    closed = await close_empty_issues(gh, "o", "r", [qa_issue])
+    assert closed == []
+    assert gh.closed == []
+
+
+@pytest.mark.asyncio
+async def test_close_duplicate_issues_skips_qa_scenario() -> None:
+    """QA-scenario issues must not be considered for duplicate detection."""
+    from caretaker.issue_agent.issue_triage import close_duplicate_issues
+
+    qa_issue = make_issue(
+        10,
+        title="duplicate title for testing",
+        body="<!-- caretaker:qa-scenario -->\nsome content here",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    qa_issue2 = make_issue(
+        11,
+        title="duplicate title for testing",
+        body="<!-- caretaker:qa-scenario -->\nsome content here too",
+        created_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+    gh = _FakeGH()
+    closed = await close_duplicate_issues(gh, "o", "r", [qa_issue, qa_issue2])
+    assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_mark_stale_issues_skips_qa_scenario() -> None:
+    """QA-scenario issues must not be closed as stale."""
+    qa_issue = make_issue(
+        20,
+        body="<!-- caretaker:qa-scenario -->\nThis is a test fixture.",
+        updated_at=datetime.now(UTC) - timedelta(days=300),
+    )
+    gh = _FakeGH()
+    closed = await mark_stale_issues(gh, "o", "r", [qa_issue], stale_days=30)
+    assert closed == []
+
+
+@pytest.mark.asyncio
 async def test_close_duplicate_issues_by_cve() -> None:
     older = make_issue(
         10,
