@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -355,6 +355,8 @@ async def evaluate_pr_readiness_llm(
     *,
     claude: ClaudeClient,
     retriever: MemoryRetriever | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
 ) -> Readiness | None:
     """Call the LLM and return its :class:`Readiness` verdict, or ``None``.
 
@@ -368,6 +370,14 @@ async def evaluate_pr_readiness_llm(
     matching the PR and the formatted block is inlined at the head of
     the prompt payload. Retrieval is best-effort: a failing retriever
     degrades to the no-memory prompt rather than failing the call.
+
+    When ``model`` is set — the ``@shadow_decision`` decorator injects
+    this kwarg from :attr:`AgenticDomainConfig.model_override` — the
+    candidate LLM call uses the explicit model instead of the router's
+    ``default_model`` feature resolution. Used by the nightly-eval
+    harness A/B pattern (see docs/plans/2026-Q2-agentic-migration.md).
+    ``max_tokens`` is the matching per-site override; ``None`` means
+    "use the feature's resolved default".
     """
     memory_block: str | None = None
     if retriever is not None:
@@ -375,11 +385,23 @@ async def evaluate_pr_readiness_llm(
 
     prompt = build_readiness_prompt(context, memory_block=memory_block)
     try:
+        # Pass ``model`` through only when the override is set so the
+        # default feature-resolution path stays unchanged for operators
+        # who haven't opted into the A/B. ``max_tokens`` has a
+        # non-``None`` default in ``structured_complete`` (2000), so we
+        # only override it when the site config explicitly asked for a
+        # different cap.
+        kwargs: dict[str, Any] = {}
+        if model is not None:
+            kwargs["model"] = model
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         return await claude.structured_complete(
             prompt,
             schema=Readiness,
             feature="pr_readiness",
             system=_READINESS_SYSTEM_PROMPT,
+            **kwargs,
         )
     except StructuredCompleteError as exc:
         logger.info(

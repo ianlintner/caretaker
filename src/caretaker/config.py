@@ -1026,6 +1026,15 @@ class AgenticDomainConfig(StrictBaseModel):
 
     mode: Literal["off", "shadow", "enforce"] = "off"
     enforce_gate: AgenticEnforceGateConfig = Field(default_factory=AgenticEnforceGateConfig)
+    # Optional per-site model override. When set, the candidate leg of
+    # @shadow_decision uses this model instead of llm.default_model, enabling
+    # A/B comparison of two models against the legacy heuristic via the
+    # nightly-eval harness. Example: set to "azure_ai/claude-sonnet-4" while
+    # the legacy leg (and LLM calls outside shadow decisions) continues to
+    # use llm.default_model. Leave None to inherit.
+    model_override: str | None = None
+    # Optional per-site max-tokens override; only consumed when model_override is set.
+    max_tokens_override: int | None = None
 
 
 class IssueTriageAgenticConfig(AgenticDomainConfig):
