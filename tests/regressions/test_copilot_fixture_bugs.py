@@ -166,11 +166,17 @@ def test_filter_output_same_host_paren_url_not_flagged_as_hidden_link() -> None:
     the target at the first ``)`` inside a path like
     ``/wiki/Python_(lang)``, the domain extraction still extracts the correct
     host — but the test makes the intent explicit so future regex changes that
-    break the parenhandling will fail here.
+    break the paren handling will fail here.
+
+    We use the visible-URL-as-text form (URL in both label and target) so
+    that the filter's domain-comparison path is actually exercised.  A plain
+    label link like ``[Python](url)`` would short-circuit the check before the
+    domain comparison runs.
     """
     from caretaker.guardrails.filter import filter_output
 
-    # Both visible text and target resolve to en.wikipedia.org
+    # Both visible text and target resolve to en.wikipedia.org; the parens in
+    # the path must not produce a false-positive hidden-link verdict.
     content = (
         "See [https://en.wikipedia.org/wiki/Python_(programming_language)]"
         "(https://en.wikipedia.org/wiki/Python_(programming_language))"
