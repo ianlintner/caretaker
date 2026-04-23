@@ -303,15 +303,18 @@ async def ready_valid_copilot_drafts(
             readied.append(pr.number)
             continue
         try:
-            # Flip draft → ready via GraphQL markPullRequestReadyForReview; fall
-            # back to a body edit request for clients without GraphQL. The GH
-            # client doesn't expose this directly today — log and skip so the
-            # existing PR agent's ready-for-review path handles it next cycle.
-            logger.info(
-                "PR #%d is a passing Copilot draft — leaving draft flip to PR agent",
-                pr.number,
-            )
-            readied.append(pr.number)
+            if not pr.node_id:
+                logger.warning(
+                    "PR #%d has no node_id — cannot flip draft bit via GraphQL; skipping",
+                    pr.number,
+                )
+                continue
+            ok = await github.mark_pull_request_ready(pr.node_id)
+            if ok:
+                logger.info("Marked draft PR #%d ready-for-review", pr.number)
+                readied.append(pr.number)
+            else:
+                logger.warning("mark_pull_request_ready returned False for PR #%d", pr.number)
         except Exception as exc:
             logger.warning("Failed to ready draft PR #%d: %s", pr.number, exc)
     return readied

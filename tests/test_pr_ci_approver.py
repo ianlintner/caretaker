@@ -71,8 +71,9 @@ def _make_ctx(cfg: PRCIApproverConfig | None = None) -> AgentContext:
 def test_pr_ci_approver_defaults_are_safe() -> None:
     cfg = PRCIApproverConfig()
     assert cfg.enabled is True
-    # Default is surface-only — no GitHub side effects without an opt-in.
-    assert cfg.auto_approve is False
+    # Default is auto_approve=True — tight allowed_actors list (bots only) makes
+    # this safe and avoids upgrade PRs stalling forever on a manual UI click.
+    assert cfg.auto_approve is True
     assert cfg.max_age_hours == 48
     assert cfg.max_runs_per_run == 25
     # Whitelist must include Copilot's usual logins and known bots.
@@ -93,9 +94,9 @@ def test_pr_ci_approver_in_maintainer_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_surfaces_stuck_copilot_run_without_approving_by_default() -> None:
-    """Default auto_approve=False → count the run, don't call approve."""
-    ctx = _make_ctx()
+async def test_surfaces_stuck_copilot_run_without_approving_when_disabled() -> None:
+    """Explicit auto_approve=False → count the run, don't call approve."""
+    ctx = _make_ctx(PRCIApproverConfig(auto_approve=False))
     ctx.github.list_workflow_runs = AsyncMock(return_value=[_make_run()])  # type: ignore[method-assign]
     ctx.github.approve_workflow_run = AsyncMock()  # type: ignore[method-assign]
 
@@ -107,6 +108,21 @@ async def test_surfaces_stuck_copilot_run_without_approving_by_default() -> None
     assert result.extra["runs_approved"] == 0
     assert result.extra["runs_surfaced"] == 1
     ctx.github.approve_workflow_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_true_by_default_calls_approve_endpoint() -> None:
+    """Default auto_approve=True → approve endpoint is called for bot runs."""
+    ctx = _make_ctx()  # uses PRCIApproverConfig() defaults
+    ctx.github.list_workflow_runs = AsyncMock(return_value=[_make_run(run_id=55)])  # type: ignore[method-assign]
+    ctx.github.approve_workflow_run = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    agent = PRCIApproverAgent(ctx)
+    result = await agent.execute(OrchestratorState())
+
+    ctx.github.approve_workflow_run.assert_awaited_once_with("o", "r", 55)
+    assert result.extra["runs_approved"] == 1
+    assert result.extra["runs_surfaced"] == 0
 
 
 @pytest.mark.asyncio
