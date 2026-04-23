@@ -243,12 +243,18 @@ class TestMarkdownLinkFilterScenario07:
         assert "hidden_link" in result.blocked_reasons
 
     def test_deceptive_link_is_rewritten_to_show_both_urls(self) -> None:
-        """Rewritten deceptive link must expose both the visible and target URLs."""
+        """Rewritten deceptive link must expose both the visible and target URLs.
+
+        The neutralised form is ``visible -> target`` so reviewers can see both
+        sides at a glance. We assert the exact rewritten string to avoid the
+        CodeQL py/incomplete-url-substring-sanitization false positive that fires
+        when full URLs are used in ``in`` containment checks.
+        """
         content = "[https://legit.example.com](https://attacker.test/steal)"
         result = filter_output("github_comment", content)
-        # The neutralised form is "visible -> target" so reviewers see both sides.
-        assert "https://legit.example.com" in result.content
-        assert "https://attacker.test/steal" in result.content
+        # Exact rewrite: "visible -> target" (spaces around the arrow).
+        expected = "https://legit.example.com -> https://attacker.test/steal"
+        assert result.content == expected
 
 
 # ── Scenario 09: Dispatch-guard issues:labeled filter (caretaker-qa#14) ──────
