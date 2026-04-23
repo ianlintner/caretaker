@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from caretaker.config import UpgradeAgentConfig
-from caretaker.github_client.models import PullRequest
+from caretaker.github_client.models import PRState, PullRequest, User
 from caretaker.upgrade_agent.agent import UpgradeAgent
 from caretaker.upgrade_agent.release_checker import Release
 
@@ -92,10 +92,11 @@ class TestUpgradeAgent:
         draft_pr = PullRequest(
             number=7,
             title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
             head_sha="abc123",
             draft=True,
             node_id="PR_kwDOABC123",
-            user_login="copilot-swe-agent[bot]",
         )
         github.list_pull_requests = AsyncMock(return_value=[draft_pr])
         github.get_combined_status = AsyncMock(return_value="success")
@@ -122,10 +123,11 @@ class TestUpgradeAgent:
         draft_pr = PullRequest(
             number=8,
             title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
             head_sha="def456",
             draft=True,
             node_id="PR_kwDODEF456",
-            user_login="copilot-swe-agent[bot]",
         )
         github.list_pull_requests = AsyncMock(return_value=[draft_pr])
         github.get_combined_status = AsyncMock(return_value="success")
@@ -152,10 +154,11 @@ class TestUpgradeAgent:
         ready_pr = PullRequest(
             number=9,
             title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
             head_sha="ghi789",
             draft=False,
             node_id="PR_kwDOGHI789",
-            user_login="copilot-swe-agent[bot]",
         )
         github.list_pull_requests = AsyncMock(return_value=[ready_pr])
         github.get_combined_status = AsyncMock(return_value="success")
