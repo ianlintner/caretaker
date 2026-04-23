@@ -312,7 +312,10 @@ class TestLLMRouter:
                 "hard-disabled" in record.message.lower()
                 and "credentials are present" in record.message.lower()
                 for record in caplog.records
-            ), f"Expected warning about hard-disabled router; got: {[r.message for r in caplog.records]}"
+            ), (
+                "Expected warning about hard-disabled router; got: "
+                f"{[r.message for r in caplog.records]}"
+            )
 
 
 # ── structured_complete ──────────────────────────────────────────────────────

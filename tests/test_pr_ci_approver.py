@@ -24,7 +24,6 @@ from caretaker.github_client.api import GitHubAPIError
 from caretaker.pr_ci_approver.agent import PRCIApproverAgent
 from caretaker.state.models import OrchestratorState, RunSummary
 
-
 # ── helpers ───────────────────────────────────────────────────────────────
 
 
