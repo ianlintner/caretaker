@@ -268,6 +268,12 @@ jobs:
         id: doctor
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # GitHub App raw credentials — lets caretaker self-mint tokens via
+          # GitHubAppCredentialsProvider instead of consuming the pre-minted
+          # GITHUB_TOKEN (which can't auto-refresh on long runs).
+          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
+          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
+          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           # LLM credentials — Azure AI Foundry is the primary path.
           # ANTHROPIC_API_KEY is intentionally absent: provider=litellm
@@ -336,6 +342,12 @@ jobs:
         id: caretaker_run
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # GitHub App raw credentials — lets caretaker self-mint tokens via
+          # GitHubAppCredentialsProvider instead of consuming the pre-minted
+          # GITHUB_TOKEN (which can't auto-refresh on long runs).
+          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
+          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
+          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
           # Fine-grained PAT for a real write-capable user or machine user.
           # Caretaker uses this for Copilot issue assignment and @copilot comments
           # that must not be authored as github-actions[bot].
@@ -425,6 +437,12 @@ jobs:
       - name: Self-heal — analyse own failure
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # GitHub App raw credentials — lets caretaker self-mint tokens via
+          # GitHubAppCredentialsProvider instead of consuming the pre-minted
+          # GITHUB_TOKEN (which can't auto-refresh on long runs).
+          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
+          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
+          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
           # Fine-grained PAT for a real write-capable user or machine user.
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
