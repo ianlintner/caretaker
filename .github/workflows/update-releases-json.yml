@@ -132,6 +132,15 @@ jobs:
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
         id: push
 
+      - name: Ensure caretaker:reviewed label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "caretaker:reviewed" \
+            --description "Reviewed by caretaker — safe to merge without further review" \
+            --color "0e8a16" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
       - name: Open pull request
         env:
           GH_TOKEN: ${{ github.token }}
