@@ -37,9 +37,7 @@ def _make_run(
     head_branch: str = "copilot/fix-xyz",
 ) -> dict[str, Any]:
     """Build a workflow-run payload shaped like the GitHub REST response."""
-    created_at = (datetime.now(UTC) - timedelta(hours=age_hours)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    created_at = (datetime.now(UTC) - timedelta(hours=age_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "id": run_id,
         "name": workflow_name,

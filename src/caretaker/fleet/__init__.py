@@ -44,9 +44,7 @@ if TYPE_CHECKING:
         set_fleet_alert_dependencies,
     )
 
-_LAZY_API_NAMES = frozenset(
-    {"admin_router", "public_router", "set_fleet_alert_dependencies"}
-)
+_LAZY_API_NAMES = frozenset({"admin_router", "public_router", "set_fleet_alert_dependencies"})
 
 
 def __getattr__(name: str) -> Any:
@@ -55,6 +53,7 @@ def __getattr__(name: str) -> Any:
 
         return getattr(_api, name)
     raise AttributeError(f"module 'caretaker.fleet' has no attribute {name!r}")
+
 
 __all__ = [
     "AttributionSummary",

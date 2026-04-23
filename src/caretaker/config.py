@@ -598,9 +598,7 @@ class PRCIApproverConfig(StrictBaseModel):
     # Only act on runs whose event is in this set. ``pull_request`` is the
     # common case; ``issue_comment`` covers @copilot nudges that re-trigger
     # workflows.
-    trigger_events: list[str] = Field(
-        default_factory=lambda: ["pull_request", "issue_comment"]
-    )
+    trigger_events: list[str] = Field(default_factory=lambda: ["pull_request", "issue_comment"])
 
 
 class MemoryStoreConfig(StrictBaseModel):
