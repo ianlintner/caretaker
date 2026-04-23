@@ -12,6 +12,7 @@ from caretaker.evolution.shadow import shadow_decision
 from caretaker.evolution.shadow_config import get_active_config
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
+from caretaker.issue_agent.issue_triage import is_qa_scenario_issue
 from caretaker.issue_agent.triage_llm import (
     IssueTriage,
     classify_issue_llm,
@@ -139,6 +140,14 @@ class IssueAgent:
                     continue
 
                 tracking = self._reconcile_issue_progress(issue, pull_requests, tracking)
+
+                # Skip QA-scenario issues — they are synthetic test fixtures and
+                # must never be triaged, dispatched, labelled, or escalated.
+                if is_qa_scenario_issue(issue):
+                    logger.debug("Issue #%d: QA-scenario marker — skipping", issue.number)
+                    tracking.last_checked = datetime.now(UTC)
+                    tracked_issues[issue.number] = tracking
+                    continue
 
                 # Skip issues that are already actioned or in-flight
                 if tracking.state in (

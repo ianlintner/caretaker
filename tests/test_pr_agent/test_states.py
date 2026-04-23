@@ -550,3 +550,55 @@ class TestEvaluatePRAutoMergeGate:
         checks = [make_check_run(name="test")]
         result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)
         assert result.recommended_state == PRTrackingState.MERGE_READY
+
+
+# ── Fix 3: Copilot PR awaiting workflow approval ─────────────────────
+
+
+class TestCopilotActionRequired:
+    """Fix 3: Copilot PRs with action_required runs must surface action_required_runs
+    so the stuck-PR guard in agent.py can suppress escalation."""
+
+    def test_copilot_pr_action_required_surfaced(self) -> None:
+        """action_required_runs is populated for Copilot PRs — agent guard can fire."""
+        from caretaker.github_client.models import User
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(user=copilot_user)
+        assert pr.is_copilot_pr
+
+        action_req_run = make_check_run(
+            name="CI / test",
+            status=CheckStatus.COMPLETED,
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        result = evaluate_pr(
+            pr,
+            [action_req_run],
+            [],
+            PRTrackingState.CI_PENDING,
+            auto_approve_workflows=False,
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+        assert len(result.ci.action_required_runs) == 1
+
+    def test_copilot_awaiting_approval_guard_condition(self) -> None:
+        """Verify the guard condition: is_copilot_pr AND action_required_runs non-empty."""
+        from caretaker.github_client.models import User
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        copilot_pr = make_pr(user=copilot_user)
+        human_pr = make_pr()
+
+        action_req_run = make_check_run(
+            name="CI / test",
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        ci_eval = evaluate_ci([action_req_run])
+
+        # Copilot PR with action_required → guard suppresses stuck escalation
+        assert copilot_pr.is_copilot_pr and bool(ci_eval.action_required_runs)
+
+        # Human PR with action_required → guard does NOT suppress (human-owned stalls are real)
+        assert not (human_pr.is_copilot_pr and bool(ci_eval.action_required_runs))

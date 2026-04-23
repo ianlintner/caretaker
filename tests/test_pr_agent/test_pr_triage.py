@@ -11,6 +11,7 @@ from caretaker.github_client.models import PRState
 from caretaker.pr_agent.pr_triage import (
     close_binary_conflicted_prs,
     close_duplicate_fix_prs,
+    close_empty_body_prs,
     close_empty_prs,
     run_pr_triage,
 )
@@ -157,3 +158,61 @@ async def test_run_pr_triage_pr_triage_toggle() -> None:
     report = await run_pr_triage(gh, "o", "r", [pr], cfg)
     assert report.closed_empty == []
     assert gh.closed == []
+
+
+# ── Fix 2: close_empty_body_prs ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_close_empty_body_prs_closes_blank_body() -> None:
+    """A PR with no body at all should be closed."""
+    pr = make_pr(number=99)
+    # make_pr defaults body to "" — meets the empty criterion
+    gh = _FakeGH()
+    closed = await close_empty_body_prs(gh, "o", "r", [pr])
+    assert closed == [99]
+    assert 99 in gh.closed
+
+
+@pytest.mark.asyncio
+async def test_close_empty_body_prs_closes_boilerplate_body() -> None:
+    """A PR body with only checklist boilerplate is treated as empty."""
+    from caretaker.github_client.models import User
+    from tests.conftest import make_pr as _make_pr
+
+    pr = _make_pr(number=100)
+    pr = pr.model_copy(update={"body": "- [ ] TODO\n- [ ] N/A\n<!-- placeholder -->"})
+    gh = _FakeGH()
+    closed = await close_empty_body_prs(gh, "o", "r", [pr])
+    assert closed == [100]
+
+
+@pytest.mark.asyncio
+async def test_close_empty_body_prs_keeps_real_description() -> None:
+    """PRs with a substantive description must not be closed."""
+    pr = make_pr(number=101)
+    pr = pr.model_copy(update={"body": "This PR fixes the authentication bug by adding token refresh logic."})
+    gh = _FakeGH()
+    closed = await close_empty_body_prs(gh, "o", "r", [pr])
+    assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_close_empty_body_prs_dry_run() -> None:
+    pr = make_pr(number=102)
+    gh = _FakeGH()
+    closed = await close_empty_body_prs(gh, "o", "r", [pr], dry_run=True)
+    assert closed == [102]
+    assert gh.closed == []
+
+
+@pytest.mark.asyncio
+async def test_run_pr_triage_closes_empty_body_pr() -> None:
+    """Scenario 10: empty-body PR is closed by the triage pass regardless of author."""
+    pr = make_pr(number=20)
+    # body="" — empty
+    gh = _FakeGH(files_by_pr={20: [{"path": "src/real.py", "additions": 5}]})
+    cfg = TriageConfig()
+    report = await run_pr_triage(gh, "o", "r", [pr], cfg)
+    assert 20 in report.closed_empty
+    assert 20 in gh.closed
