@@ -109,7 +109,8 @@ class TestUpgradeAgent:
             current_version="1.1.0",
         )
         release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
-        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=AsyncMock(return_value=[release])):
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
             report = await agent.run()
 
         github.mark_pull_request_ready.assert_awaited_once_with("PR_kwDOABC123")
@@ -138,7 +139,8 @@ class TestUpgradeAgent:
             current_version="1.1.0",
         )
         release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
-        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=AsyncMock(return_value=[release])):
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
             report = await agent.run()
 
         github.mark_pull_request_ready.assert_not_awaited()
@@ -167,7 +169,8 @@ class TestUpgradeAgent:
             current_version="1.1.0",
         )
         release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
-        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=AsyncMock(return_value=[release])):
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
             report = await agent.run()
 
         github.mark_pull_request_ready.assert_not_awaited()
