@@ -174,6 +174,7 @@ class Issue(BaseModel):
     assignees: list[User] = Field(default_factory=list)
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
+    closed_at: dt.datetime | None = None
     html_url: str = ""
 
     def has_label(self, name: str) -> bool:

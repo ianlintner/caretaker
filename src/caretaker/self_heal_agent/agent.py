@@ -167,7 +167,8 @@ class SelfHealAgent:
 
         for job_name, log_text in failure_logs:
             kind, title, details = _classify_failure(job_name, log_text)
-            sig = _sig(job_name, kind, title)
+            step_name = _extract_failing_step(log_text)
+            sig = _sig(job_name, kind, title, step_name)
 
             if sig in existing_sigs:
                 logger.debug("Self-heal: skipping duplicate for %s", job_name)
@@ -488,12 +489,35 @@ class SelfHealAgent:
         return False, ""
 
     async def _get_existing_self_heal_sigs(self) -> set[str]:
-        issues = await self._issues.list(state="open", labels=SELF_HEAL_LABEL)
+        """Return the set of error signatures for existing self-heal issues.
+
+        Checks both open issues *and* recently-closed issues (last 24 h) so
+        that a failure whose issue was resolved and closed between runs does
+        not immediately reopen a duplicate.
+        """
+        from datetime import UTC, timedelta
+        from datetime import datetime as _dt
+
         sigs: set[str] = set()
-        for issue in issues:
-            sig = _extract_sig_from_body(issue.body or "")
-            if sig:
-                sigs.add(sig)
+        cutoff = _dt.now(UTC) - timedelta(hours=24)
+
+        for state in ("open", "closed"):
+            issues = await self._issues.list(state=state, labels=SELF_HEAL_LABEL)
+            for issue in issues:
+                # For closed issues only include those closed within the last 24 h
+                # to avoid an ever-growing dedup window that would suppress
+                # legitimate re-occurrences of old failures.
+                if state == "closed":
+                    closed_at = getattr(issue, "closed_at", None)
+                    if closed_at is None:
+                        continue
+                    if closed_at.tzinfo is None:
+                        closed_at = closed_at.replace(tzinfo=UTC)
+                    if closed_at < cutoff:
+                        continue
+                sig = _extract_sig_from_body(issue.body or "")
+                if sig:
+                    sigs.add(sig)
         return sigs
 
     async def _run_id_already_tracked(self, run_id: int) -> bool:
@@ -670,7 +694,8 @@ class SelfHealAgent:
             f"and opened **ianlintner/caretaker#{upstream_issue}** upstream.\n\n"
             f"This issue tracks the local impact. It will be auto-closed when the upstream "
             f"fix is released and caretaker is upgraded.\n\n"
-            f"<details><summary>Log snippet</summary>\n\n```\n{log_text[-2000:]}\n```\n\n</details>"
+            f"<details><summary>Log snippet</summary>\n\n"
+            f"```\n{_clean_log_snippet(log_text)}\n```\n\n</details>"
         )
         await self._ensure_label(SELF_HEAL_LABEL, "0075ca", "Caretaker self-heal: fix needed")
         return await self._issues.create(
@@ -728,6 +753,89 @@ _TRANSIENT_PATTERNS = [
     re.compile(r"secondary rate limit", re.IGNORECASE),
 ]
 
+# Lines that appear in the GitHub Actions post-job cleanup phase and carry no
+# diagnostic value.  Used to strip noise before classification and before
+# building the log snippet shown in self-heal issues.
+_CLEANUP_LINE_RE = re.compile(
+    r"git config --unset|Post job cleanup|Cleaning up orphan processes"
+    r"|HOME=|RUNNER_|##\[endgroup\]",
+    re.IGNORECASE,
+)
+
+
+def _extract_error_context(log_text: str, context_lines: int = 50) -> str:
+    """Return a context window centred on the last ``##[error]`` marker.
+
+    Searches the **full** log so that errors buried before the post-job
+    cleanup phase are not missed.  Returns the ``context_lines`` lines
+    immediately preceding the last error marker plus up to 10 lines after
+    it, giving the classifier enough signal to pattern-match on both the
+    error annotation and the surrounding output.
+
+    Falls back to the last ``context_lines`` non-cleanup lines when the
+    log contains no ``##[error]`` marker.
+    """
+    lines = log_text.splitlines()
+
+    # Locate the last ##[error] line index in the full log.
+    error_idx: int | None = None
+    for i, line in enumerate(lines):
+        if "##[error]" in line:
+            error_idx = i
+
+    if error_idx is not None:
+        start = max(0, error_idx - context_lines)
+        end = min(len(lines), error_idx + 10)
+        return "\n".join(lines[start:end])
+
+    # Fallback: strip cleanup lines and return the tail.
+    clean = [ln for ln in lines if not _CLEANUP_LINE_RE.search(ln)]
+    if clean:
+        return "\n".join(clean[-context_lines:])
+    return log_text[-4000:]
+
+
+def _extract_failing_step(log_text: str) -> str | None:
+    """Return the GitHub Actions step name that contained the ``##[error]`` marker.
+
+    Scans the log for ``##[group]<step name>`` lines and returns the last
+    one that appears *before* the last ``##[error]`` line.  Returns ``None``
+    when no step boundary is found.
+    """
+    lines = log_text.splitlines()
+
+    # Locate the last ##[error] line.
+    error_idx: int | None = None
+    for i, line in enumerate(lines):
+        if "##[error]" in line:
+            error_idx = i
+
+    if error_idx is None:
+        return None
+
+    # Walk backward from the error to find the enclosing ##[group] step header.
+    for i in range(error_idx - 1, -1, -1):
+        stripped = lines[i].strip()
+        if "##[group]" in stripped:
+            step = re.sub(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*", "", stripped)
+            step = step.replace("##[group]", "").strip()
+            return step[:100] if step else None
+
+    return None
+
+
+def _clean_log_snippet(log_text: str, n: int = 30) -> str:
+    """Return the last ``n`` non-cleanup lines from a job log.
+
+    Lines matching common post-job-cleanup patterns (``git config --unset``,
+    ``Post job cleanup``, ``Cleaning up orphan processes``, ``HOME=``, etc.)
+    are excluded so the snippet shown in self-heal issue bodies contains
+    actionable diagnostic context rather than runner housekeeping noise.
+    """
+    lines = log_text.splitlines()
+    clean = [ln for ln in lines if not _CLEANUP_LINE_RE.search(ln)]
+    return "\n".join(clean[-n:]) if clean else "\n".join(lines[-n:])
+
 
 def _decode_job_log_payload(content: bytes, fallback_text: str) -> str:
     """Decode Actions job log payload from zip/gzip/plain text."""
@@ -753,7 +861,9 @@ def _decode_job_log_payload(content: bytes, fallback_text: str) -> str:
 
 def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, str]:
     """Return (kind, short title, description) from a job log."""
-    log_tail = log_text[-4000:]
+    # Use error-context window (centred on ##[error]) rather than the raw
+    # tail to avoid reading post-job cleanup noise.
+    log_tail = _extract_error_context(log_text)
 
     if any(p.search(log_tail) for p in _TRANSIENT_PATTERNS):
         return (
@@ -862,10 +972,11 @@ def _extract_first_error(log_text: str) -> str:
     return log_text.strip()[:200]
 
 
-def _sig(job_name: str, kind: FailureKind, title: str) -> str:
+def _sig(job_name: str, kind: FailureKind, title: str, step_name: str | None = None) -> str:
     import hashlib
 
-    raw = f"{job_name}:{kind.value}:{title[:60]}"
+    step_part = f":{step_name}" if step_name else ""
+    raw = f"{job_name}{step_part}:{kind.value}:{title[:60]}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -916,7 +1027,7 @@ def _build_fix_issue_body(
         f"{details}\n\n"
         f"**Job:** `{job_name}`\n\n"
         f"<details><summary>Log snippet</summary>\n\n"
-        f"```\n{log_text[-3000:]}\n```\n\n</details>\n\n"
+        f"```\n{_clean_log_snippet(log_text)}\n```\n\n</details>\n\n"
         f"{ladder_block}"
         f"---\n\n"
         f"<!-- caretaker:self-heal-assignment -->\n"

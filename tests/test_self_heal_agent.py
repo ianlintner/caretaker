@@ -14,7 +14,10 @@ from caretaker.self_heal_agent.agent import (
     FailureKind,
     SelfHealAgent,
     _classify_failure,
+    _clean_log_snippet,
     _decode_job_log_payload,
+    _extract_error_context,
+    _extract_failing_step,
     _extract_first_error,
 )
 
@@ -641,3 +644,193 @@ class TestClassifyFailureTrackingIssueFull:
         log = "Commenting is disabled on issues with more than 2500 comments\n"
         kind, _, _ = _classify_failure("maintain", log)
         assert kind == FailureKind.CONFIG_ERROR
+
+
+class TestExtractErrorContext:
+    """_extract_error_context should find the ##[error] marker in the full log."""
+
+    def test_returns_context_around_error_marker(self) -> None:
+        preamble = "\n".join(f"2026-04-14T23:22:{i:02d}Z setup line {i}" for i in range(30))
+        error_line = "2026-04-14T23:23:00Z ##[error]Process completed with exit code 1."
+        cleanup = "\n".join(
+            [
+                "2026-04-14T23:23:01Z Post job cleanup.",
+                "2026-04-14T23:23:02Z git config --unset ...",
+                "2026-04-14T23:23:03Z Cleaning up orphan processes",
+                "2026-04-14T23:23:04Z HOME=/home/runner",
+            ]
+        )
+        log = f"{preamble}\n{error_line}\n{cleanup}"
+
+        context = _extract_error_context(log)
+
+        # The ##[error] line must be present in the returned context.
+        assert "##[error]" in context
+        # Lines well before the error (setup context) should be included.
+        assert "setup line" in context
+
+    def test_error_marker_before_cleanup_is_included(self) -> None:
+        """The ##[error] line should be in the context even when buried before cleanup."""
+        caretaker_lines = "\n".join(
+            f"2026-04-14T23:22:{i:02d}Z caretaker output line {i}" for i in range(20)
+        )
+        error_line = "2026-04-14T23:22:50Z ##[error]Process completed with exit code 1."
+        # Simulate a very long cleanup section that would dominate log_text[-4000:]
+        cleanup = (
+            "\n".join(f"2026-04-14T23:22:5{i}Z Post job cleanup step {i}" for i in range(9))
+            + "\n"
+            + "2026-04-14T23:23:00Z Cleaning up orphan processes\n" * 50
+        )
+        log = f"{caretaker_lines}\n{error_line}\n{cleanup}"
+
+        context = _extract_error_context(log)
+
+        assert "##[error]" in context
+
+    def test_fallback_strips_cleanup_lines_when_no_error_marker(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z Meaningful log line\n"
+            "2026-04-14T23:22:01Z Post job cleanup.\n"
+            "2026-04-14T23:22:02Z git config --unset token\n"
+            "2026-04-14T23:22:03Z Cleaning up orphan processes\n"
+        )
+        context = _extract_error_context(log)
+        assert "Meaningful log line" in context
+        assert "Post job cleanup" not in context
+
+    def test_uses_last_error_marker_when_multiple_present(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z ##[error]First error\n"
+            "2026-04-14T23:22:10Z Some recovery attempt\n"
+            "2026-04-14T23:22:20Z ##[error]Second error\n"
+            "2026-04-14T23:22:21Z Post job cleanup.\n"
+        )
+        context = _extract_error_context(log)
+        assert "Second error" in context
+
+
+class TestExtractFailingStep:
+    """_extract_failing_step should return the step name wrapping the ##[error]."""
+
+    def test_returns_step_name_before_error(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z ##[group]Run caretaker maintain\n"
+            "2026-04-14T23:22:01Z Some output\n"
+            "2026-04-14T23:22:02Z ##[error]Process completed with exit code 1.\n"
+            "2026-04-14T23:22:03Z ##[endgroup]\n"
+        )
+        step = _extract_failing_step(log)
+        assert step == "Run caretaker maintain"
+
+    def test_returns_none_when_no_error_marker(self) -> None:
+        log = "2026-04-14T23:22:00Z ##[group]Run tests\nAll passed.\n"
+        assert _extract_failing_step(log) is None
+
+    def test_returns_none_when_no_group_before_error(self) -> None:
+        log = "2026-04-14T23:22:00Z ##[error]Process completed with exit code 1.\n"
+        assert _extract_failing_step(log) is None
+
+    def test_picks_nearest_group_header(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z ##[group]Set up job\n"
+            "2026-04-14T23:22:01Z ##[endgroup]\n"
+            "2026-04-14T23:22:02Z ##[group]Run pytest\n"
+            "2026-04-14T23:22:03Z FAILED tests/test_x.py\n"
+            "2026-04-14T23:22:04Z ##[error]Process completed with exit code 1.\n"
+        )
+        step = _extract_failing_step(log)
+        assert step == "Run pytest"
+
+    def test_strips_timestamp_prefix(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z ##[group]Run caretaker maintain\n"
+            "2026-04-14T23:22:01Z ##[error]exit code 1.\n"
+        )
+        step = _extract_failing_step(log)
+        assert step is not None
+        assert "2026-04-14" not in step
+
+
+class TestCleanLogSnippet:
+    """_clean_log_snippet should strip cleanup lines and return last n useful lines."""
+
+    def test_strips_post_job_cleanup(self) -> None:
+        log = (
+            "2026-04-14T23:22:00Z Real error output\n"
+            "2026-04-14T23:22:01Z Post job cleanup.\n"
+            "2026-04-14T23:22:02Z git config --unset token\n"
+            "2026-04-14T23:22:03Z Cleaning up orphan processes\n"
+            "2026-04-14T23:22:04Z HOME=/home/runner RUNNER_TOOL=...\n"
+        )
+        snippet = _clean_log_snippet(log, n=30)
+        assert "Real error output" in snippet
+        assert "Post job cleanup" not in snippet
+        assert "git config --unset" not in snippet
+        assert "Cleaning up orphan" not in snippet
+
+    def test_returns_last_n_lines(self) -> None:
+        lines = [f"2026-04-14T23:22:{i:02d}Z line {i}" for i in range(60)]
+        log = "\n".join(lines)
+        snippet = _clean_log_snippet(log, n=10)
+        # Last 10 lines are indices 50-59
+        assert "line 59" in snippet
+        assert "line 50" in snippet
+        assert "line 49" not in snippet
+
+    def test_falls_back_to_raw_lines_when_all_cleaned(self) -> None:
+        """If every line matches cleanup pattern, return last n raw lines."""
+        log = "\n".join(
+            [
+                "Post job cleanup.",
+                "git config --unset token",
+                "Cleaning up orphan processes",
+            ]
+        )
+        snippet = _clean_log_snippet(log, n=30)
+        # Should not crash; must return something
+        assert len(snippet) > 0
+
+
+@pytest.mark.asyncio
+class TestSelfHealDedup:
+    """_get_existing_self_heal_sigs should also check recently closed issues."""
+
+    async def test_deduplicates_against_recently_closed_issue(self) -> None:
+        from datetime import UTC, timedelta
+        from datetime import datetime as _dt
+        from unittest.mock import AsyncMock
+
+        from caretaker.github_client.models import Issue, User
+
+        github = AsyncMock()
+        agent = SelfHealAgent(github=github, owner="o", repo="r", report_upstream=False)
+
+        recently_closed = Issue(
+            number=10,
+            title="🩺 x",
+            body="<!-- caretaker:self-heal --> sig:aabbccddeeff -->",
+            state="closed",
+            user=User(login="bot", id=0, type="Bot"),
+            created_at=_dt.now(UTC) - timedelta(hours=1),
+            closed_at=_dt.now(UTC) - timedelta(minutes=30),
+        )
+        old_closed = Issue(
+            number=11,
+            title="🩺 x",
+            body="<!-- caretaker:self-heal --> sig:112233445566 -->",
+            state="closed",
+            user=User(login="bot", id=0, type="Bot"),
+            created_at=_dt.now(UTC) - timedelta(days=7),
+            closed_at=_dt.now(UTC) - timedelta(days=7),
+        )
+
+        async def mock_list(state: str = "open", **_kw: Any) -> list[Issue]:
+            if state == "open":
+                return []
+            return [recently_closed, old_closed]
+
+        with patch.object(agent._issues, "list", side_effect=mock_list):
+            sigs = await agent._get_existing_self_heal_sigs()
+
+        assert "aabbccddeeff" in sigs, "recently-closed issue sig should be deduped"
+        assert "112233445566" not in sigs, "old closed issue sig should not be deduped"
