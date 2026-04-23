@@ -198,6 +198,26 @@ DEFAULT_DOCTOR_CONFIG = ".github/maintainer/config.yml"
     ),
 )
 @click.option(
+    "--llm-probe",
+    "llm_probe",
+    is_flag=True,
+    default=False,
+    help=(
+        "Run only the online LLM-endpoint probe: resolve every distinct "
+        "model string (default_model, feature_models[*].model, "
+        "fallback_models) and ping each with a cheap 1-token "
+        "litellm.acompletion call to confirm the endpoint is live. "
+        "Catches typos in model names, missing/rotated API keys, wrong "
+        "region/deployment ids, and unknown Azure deployments. Spends a "
+        "handful of tokens per run (tiny but nonzero cost) so run it "
+        "once on onboarding or after rotating keys, not on every commit. "
+        "Only runs the LLM-probe checks; for full preflight use "
+        "--bootstrap-check or the default. --bootstrap-check is offline "
+        "and fast (parses config, reads env, validates secrets); "
+        "--llm-probe is online and spends a handful of tokens."
+    ),
+)
+@click.option(
     "--pin-path",
     default=None,
     type=click.Path(),
@@ -213,6 +233,7 @@ def doctor(
     strict: bool,
     skip_github: bool,
     bootstrap_check: bool,
+    llm_probe: bool,
     pin_path: str | None,
 ) -> None:
     """Preflight every required secret, scope, and external service.
@@ -222,6 +243,23 @@ def doctor(
     * 0 — no FAILs
     * 1 — at least one FAIL
     * 2 — internal error (preflight itself crashed)
+
+    Flag modes (mutually exclusive with the default full run):
+
+    * --bootstrap-check — offline, fast: parses config, reads env vars,
+      validates the version-pin file. No network calls. Wire this in as
+      the first step of a consumer workflow so a bad pin or missing
+      secret shows up as a readable FAIL row.
+    * --llm-probe — online, ~1 paid token per configured model: resolves
+      every distinct model in default_model / feature_models /
+      fallback_models against the LiteLLM registry and pings each
+      endpoint. Catches model typos, wrong/missing API keys, and
+      unknown Azure deployments that otherwise stay invisible until
+      the first feature fires. Run once on onboarding or after
+      rotating keys.
+
+    CI recipe: chain ``caretaker doctor && caretaker doctor --llm-probe``
+    to get both the offline and online preflights in sequence.
     """
     # Imports are deferred so ``caretaker --help`` stays fast and test
     # fixtures that stub the CLI entrypoint don't pay for httpx + pydantic.
@@ -233,6 +271,7 @@ def doctor(
         render_table,
         run_bootstrap_check,
         run_doctor_sync,
+        run_llm_probe_sync,
     )
 
     # --bootstrap-check is the tight, offline preflight: it parses the
@@ -252,6 +291,33 @@ def doctor(
             click.echo(traceback.format_exc(), err=True)
             raise SystemExit(2) from exc
 
+        click.echo(render_table(report), err=True)
+        if emit_json:
+            click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        if any(r.severity is Severity.FAIL for r in report.results):
+            raise SystemExit(1)
+        return
+
+    # --llm-probe is the online counterpart: it parses the config and
+    # spends real tokens hitting every configured model endpoint. We
+    # load the config first so a parse failure is an exit-2 "internal
+    # error" (mirrors the full-doctor path); the probe itself reports
+    # per-model FAIL rows with exit 1 when a model is misconfigured.
+    if llm_probe:
+        try:
+            loaded = MaintainerConfig.from_yaml(config)
+        except FileNotFoundError as exc:
+            click.echo(f"doctor: config file not found: {exc}", err=True)
+            raise SystemExit(2) from exc
+        except Exception as exc:
+            click.echo(f"doctor: failed to load config: {exc}", err=True)
+            raise SystemExit(2) from exc
+        try:
+            report = run_llm_probe_sync(loaded)
+        except Exception as exc:  # pragma: no cover - surfaced to CLI user
+            click.echo(f"doctor: internal error during llm-probe: {exc}", err=True)
+            click.echo(traceback.format_exc(), err=True)
+            raise SystemExit(2) from exc
         click.echo(render_table(report), err=True)
         if emit_json:
             click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
