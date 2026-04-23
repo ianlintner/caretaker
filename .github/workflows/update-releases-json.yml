@@ -21,6 +21,7 @@ concurrency:
 permissions:
   contents: write        # push branch + read releases.json
   pull-requests: write   # open the update PR
+  issues: write          # create labels if they don't exist
 
 jobs:
   update:
@@ -139,6 +140,12 @@ jobs:
           BRANCH: ${{ steps.push.outputs.branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # Ensure the label exists; create it if it doesn't (idempotent).
+          gh label create "caretaker:reviewed" \
+            --description "Reviewed by caretaker — safe to merge without further review" \
+            --color "0e8a16" \
+            2>/dev/null || true
+
           gh pr create \
             --title "chore: add v${VERSION} to releases.json" \
             --body "$(cat <<EOF
