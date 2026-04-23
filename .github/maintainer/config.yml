@@ -107,11 +107,41 @@ escalation:
   labels: ["maintainer:escalated"]
 
 llm:
-  claude_enabled: auto
+  # Route through LiteLLM so any Azure AI Foundry / Azure OpenAI key works.
+  # provider: anthropic would require ANTHROPIC_API_KEY which is not used in
+  # this fleet — Claude is accessed via Azure AI Foundry (AZURE_AI_API_KEY).
+  provider: litellm
+  claude_enabled: "true"
+  default_model: azure_ai/gpt-4.1-mini
+  fallback_models:
+    - azure/gpt-4o
+  feature_models:
+    # Reasoning-heavy features — route to Claude via Azure AI Foundry for
+    # prompt-cache benefits (_supports_prompt_cache keys on "claude" substring).
+    architectural_review:
+      model: azure_ai/claude-sonnet-4-5
+      max_tokens: 8000
+    principal_architecture_review:
+      model: azure_ai/claude-sonnet-4-5
+      max_tokens: 8000
+    issue_decomposition:
+      model: azure_ai/gpt-4.1
+      max_tokens: 4000
+    # Log grinding — fast + cheap
+    ci_log_analysis:
+      model: azure_ai/gpt-4.1-mini
+      max_tokens: 1500
   claude_features:
     - ci_log_analysis
     - architectural_review
     - issue_decomposition
+    - upgrade_impact_analysis
+    - principal_architecture_review
+    - principal_create_prd
+    - refactor_analysis
+    - refactor_plan
+    - migration_analysis
+    - test_skeleton_generation
 
 executor:
   provider: auto
