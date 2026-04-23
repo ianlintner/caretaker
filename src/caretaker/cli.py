@@ -723,7 +723,7 @@ def init_workflow(output: str, llm_provider: str, force: bool) -> None:
         # Python 3.9+ path
         ref = _ir.files("caretaker") / "../../templates/maintainer.yml"
         template_text = ref.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as _load_err:  # noqa: BLE001
         # Fallback: look relative to this file
         template_path = Path(__file__).parent.parent.parent / "templates" / "maintainer.yml"
         if not template_path.is_file():
@@ -732,18 +732,18 @@ def init_workflow(output: str, llm_provider: str, force: bool) -> None:
                 "Please file a bug at https://github.com/ianlintner/caretaker",
                 err=True,
             )
-            raise SystemExit(1)
+            raise SystemExit(1) from _load_err
         template_text = template_path.read_text(encoding="utf-8")
 
     # Filter LLM secret blocks based on --llm flag
+    _provider_vars = {
+        "azure-ai": ["AZURE_AI_API_KEY", "AZURE_AI_API_BASE", "AZURE_AI_API_VERSION"],
+        "openai": ["OPENAI_API_KEY"],
+        "anthropic": ["ANTHROPIC_API_KEY"],
+    }
     if llm_provider != "all":
-        _PROVIDER_VARS = {
-            "azure-ai": ["AZURE_AI_API_KEY", "AZURE_AI_API_BASE", "AZURE_AI_API_VERSION"],
-            "openai": ["OPENAI_API_KEY"],
-            "anthropic": ["ANTHROPIC_API_KEY"],
-        }
-        keep_vars = set(_PROVIDER_VARS.get(llm_provider, []))
-        all_vars = {v for vlist in _PROVIDER_VARS.values() for v in vlist}
+        keep_vars = set(_provider_vars.get(llm_provider, []))
+        all_vars = {v for vlist in _provider_vars.values() for v in vlist}
         drop_vars = all_vars - keep_vars
         lines: list[str] = []
         for line in template_text.splitlines(keepends=True):
