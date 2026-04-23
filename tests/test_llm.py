@@ -257,7 +257,7 @@ class TestLiteLLMProvider:
 class TestLLMRouter:
     def test_feature_enabled_respects_allowlist(self) -> None:
         provider = FakeProvider()
-        config = LLMConfig(claude_enabled="true")
+        config = LLMConfig(llm_enabled="true")
         router = LLMRouter(config)
         # Inject provider so availability resolves deterministically
         router._claude = ClaudeClient(config=config, provider=provider)
@@ -267,18 +267,52 @@ class TestLLMRouter:
         assert router.feature_enabled("not_on_list") is False
 
     def test_disabled_mode_turns_off_all_features(self) -> None:
-        router = LLMRouter(LLMConfig(claude_enabled="false"))
+        router = LLMRouter(LLMConfig(llm_enabled="false"))
         assert router.feature_enabled("ci_log_analysis") is False
         assert router.available is False
 
     def test_auto_mode_follows_provider_availability(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            router = LLMRouter(LLMConfig(claude_enabled="auto", provider="anthropic"))
+            router = LLMRouter(LLMConfig(llm_enabled="auto", provider="anthropic"))
             assert router.available is False
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}, clear=True):
-            router = LLMRouter(LLMConfig(claude_enabled="auto", provider="anthropic"))
+            router = LLMRouter(LLMConfig(llm_enabled="auto", provider="anthropic"))
             assert router.available is True
+
+    def test_legacy_claude_enabled_alias_still_accepted(self) -> None:
+        """The legacy ``claude_enabled`` field name is preserved as a
+        populate-by-alias for backwards compatibility. It maps to the new
+        canonical ``llm_enabled`` field. Drop this shim only on a major
+        version bump after a deprecation cycle.
+        """
+        config = LLMConfig(claude_enabled="false")  # type: ignore[call-arg]
+        assert config.llm_enabled == "false"
+
+        # Loading via dict (mimicking yaml.safe_load) exercises the same
+        # alias path.
+        from_dict = LLMConfig.model_validate({"claude_enabled": "true"})
+        assert from_dict.llm_enabled == "true"
+
+    def test_disabled_with_credentials_emits_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When llm_enabled='false' is set but provider credentials are
+        present, the router must emit a WARNING — this is the misconfiguration
+        class that silently broke pr_reviewer in the QA testbed."""
+        import logging
+
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}, clear=True),
+            caplog.at_level(logging.WARNING, logger="caretaker.llm.router"),
+        ):
+            router = LLMRouter(LLMConfig(llm_enabled="false", provider="anthropic"))
+            assert router.available is False
+            assert any(
+                "hard-disabled" in record.message.lower()
+                and "credentials are present" in record.message.lower()
+                for record in caplog.records
+            ), f"Expected warning about hard-disabled router; got: {[r.message for r in caplog.records]}"
 
 
 # ── structured_complete ──────────────────────────────────────────────────────

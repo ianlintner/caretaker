@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from caretaker.guardrails.policy import GuardrailsConfig, MergeRollbackConfig
 
@@ -216,7 +216,35 @@ class AgenticBotIdentityConfig(StrictBaseModel):
 
 
 class LLMConfig(StrictBaseModel):
-    claude_enabled: Literal["auto", "true", "false"] = "auto"
+    # Allow population by either the new canonical name ``llm_enabled`` or the
+    # legacy name ``claude_enabled`` so existing configs keep working. We
+    # override the StrictBaseModel ``extra`` policy here only for the alias;
+    # unknown keys still raise per StrictBaseModel's default.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Master switch for the ENTIRE LLM router (not just the Claude/Anthropic
+    # provider). When set to ``"false"`` the router hard-disables regardless
+    # of which provider is selected — including LiteLLM / Azure AI / OpenAI /
+    # Vertex — and every LLM-dependent feature falls back to its non-LLM path.
+    #
+    # Values:
+    #   - ``"auto"``   (default) – activate if any provider credentials are found.
+    #   - ``"true"``   – force-activate and WARN if credentials are missing.
+    #   - ``"false"``  – hard-disable the router (all providers).
+    #
+    # The legacy field name ``claude_enabled`` is accepted as an alias for
+    # backwards compatibility and will be removed in a future major release.
+    # See ``docs/configuration.md`` for migration guidance.
+    llm_enabled: Literal["auto", "true", "false"] = Field(
+        default="auto",
+        validation_alias=AliasChoices("llm_enabled", "claude_enabled"),
+        serialization_alias="llm_enabled",
+        description=(
+            "Master switch for the LLM router. 'false' disables ALL providers "
+            "(including LiteLLM / Azure AI / OpenAI), not just Claude. "
+            "Alias: claude_enabled (deprecated)."
+        ),
+    )
     claude_features: list[str] = Field(
         default_factory=lambda: [
             "ci_log_analysis",
@@ -485,18 +513,31 @@ class PRReviewerConfig(StrictBaseModel):
     - High-complexity PRs get handed off to the ``claude-code-action``
       workflow via a trigger label + structured ``@claude`` comment.
 
-    Set ``enabled = false`` to disable. The agent only fires on webhook
-    events by default (``webhook_only = true``), so it consumes no extra
-    GitHub API quota during scheduled polling runs.
+    Set ``enabled = false`` to disable. By default the agent also runs on
+    polling-only deployments (``webhook_only = false``) so it works out of
+    the box without a webhook bridge. The ``skip_labels`` guard prevents
+    re-review loops.
     """
 
     enabled: bool = True
     # When True, skip the polling fallback — only act on webhook-delivered
-    # pull_request events. Keeps GitHub API usage near-zero.
-    webhook_only: bool = True
-    # PR actions that trigger a review. Defaults to "opened" only to avoid
-    # reviewing every push to an existing PR.
-    trigger_actions: list[str] = Field(default_factory=lambda: ["opened"])
+    # pull_request events. Default is False so that polling-only deployments
+    # (the common case for GitHub Actions cron triggers) still run pr_reviewer.
+    # Set to True only if you have a webhook dispatcher wired up AND want to
+    # minimise GitHub REST calls.
+    webhook_only: bool = False
+    # PR actions that trigger a review. Defaults include ready_for_review so
+    # Copilot-bot drafts (which always open as drafts and are flipped to
+    # ready later) are caught, and synchronize/reopened so force-pushed
+    # revisions get re-reviewed (paired with ``skip_labels`` for idempotency).
+    trigger_actions: list[str] = Field(
+        default_factory=lambda: [
+            "opened",
+            "synchronize",
+            "reopened",
+            "ready_for_review",
+        ]
+    )
     # Score threshold: score >= threshold → claude-code hand-off; else inline LLM.
     routing_threshold: int = 40
     # Label/mention used for the claude-code-action hand-off.
@@ -512,6 +553,54 @@ class PRReviewerConfig(StrictBaseModel):
     skip_labels: list[str] = Field(default_factory=lambda: ["caretaker:reviewed"])
     # Review event forced on all inline reviews — "AUTO" lets the LLM decide.
     review_event: Literal["AUTO", "COMMENT", "APPROVE", "REQUEST_CHANGES"] = "AUTO"
+
+
+class PRCIApproverConfig(StrictBaseModel):
+    """Configuration for the ``pr_ci_approver`` agent.
+
+    Closes the operational gap where GitHub Actions workflow runs
+    triggered by bot accounts (Copilot, dependabot, github-actions[bot])
+    land with ``conclusion=action_required`` and require manual owner
+    approval via the Actions UI. With no intervention these runs sit
+    forever, and caretaker's ``pr_reviewer`` → merge loop silently
+    stalls because PRs never go green. See ``docs/qa-findings-2026-04-23.md``
+    finding #7 for the motivating scenario.
+
+    Default behaviour is **surface-only** (``auto_approve = false``):
+    we detect stuck runs and escalate them into the digest so an
+    operator can approve with one click. Enable ``auto_approve = true``
+    only after you've verified your ``allowed_actors`` list is tight.
+    """
+
+    enabled: bool = True
+    # Bot actors whose runs are considered safe to surface/approve.
+    # Exact-match against the run's ``actor.login`` and ``triggering_actor.login``.
+    # Keep this list tight: adding a general account here is equivalent to
+    # giving that account bypass-on-first-party-code rights.
+    allowed_actors: list[str] = Field(
+        default_factory=lambda: [
+            "Copilot",
+            "copilot-swe-agent[bot]",
+            "github-actions[bot]",
+            "dependabot[bot]",
+            "the-care-taker[bot]",
+        ]
+    )
+    # When True, call the approve endpoint. When False (default) the agent
+    # only *surfaces* stuck runs in the digest and as a maintainer:escalated
+    # issue hint — no side effects on GitHub.
+    auto_approve: bool = False
+    # Maximum runs to process per caretaker run (cap API usage).
+    max_runs_per_run: int = 25
+    # Skip runs older than this many hours (avoids approving ancient runs
+    # that have been superseded by later pushes).
+    max_age_hours: int = 48
+    # Only act on runs whose event is in this set. ``pull_request`` is the
+    # common case; ``issue_comment`` covers @copilot nudges that re-trigger
+    # workflows.
+    trigger_events: list[str] = Field(
+        default_factory=lambda: ["pull_request", "issue_comment"]
+    )
 
 
 class MemoryStoreConfig(StrictBaseModel):
@@ -1104,6 +1193,7 @@ class MaintainerConfig(StrictBaseModel):
     goal_engine: GoalEngineConfig = Field(default_factory=GoalEngineConfig)
     review_agent: ReviewAgentConfig = Field(default_factory=ReviewAgentConfig)
     pr_reviewer: PRReviewerConfig = Field(default_factory=PRReviewerConfig)
+    pr_ci_approver: PRCIApproverConfig = Field(default_factory=PRCIApproverConfig)
     principal_agent: PrincipalAgentConfig = Field(default_factory=PrincipalAgentConfig)
     test_agent: TestAgentConfig = Field(default_factory=TestAgentConfig)
     refactor_agent: RefactorAgentConfig = Field(default_factory=RefactorAgentConfig)

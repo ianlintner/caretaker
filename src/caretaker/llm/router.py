@@ -43,9 +43,9 @@ class LLMRouter:
         self._config = config
         self._claude = ClaudeClient(config=config)
 
-        if config.claude_enabled == "auto":
+        if config.llm_enabled == "auto":
             self._active = self._claude.available
-        elif config.claude_enabled == "true":
+        elif config.llm_enabled == "true":
             self._active = self._claude.available
             if not self._active:
                 logger.warning(
@@ -53,7 +53,21 @@ class LLMRouter:
                     config.provider,
                 )
         else:
+            # Hard-disabled by config (llm_enabled="false"). Warn loudly when
+            # credentials for the selected provider *are* present — this is
+            # almost always a misconfiguration: the legacy field name
+            # ``claude_enabled`` makes it look like it only toggles Anthropic,
+            # but it actually kills the whole router (LiteLLM / Azure AI /
+            # OpenAI included). See ``docs/qa-findings-2026-04-23.md`` #1.
             self._active = False
+            if self._claude.available:
+                logger.warning(
+                    "LLM router hard-disabled by config (llm_enabled='false') "
+                    "but provider credentials are present (provider=%s). "
+                    "All LLM features will fall back to their non-LLM paths. "
+                    "If this is unintentional, set llm_enabled='auto'.",
+                    config.provider,
+                )
 
         if self._active:
             logger.info(
