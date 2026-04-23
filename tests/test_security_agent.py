@@ -275,7 +275,7 @@ class TestResolveProbes:
             cfg_secret_scanning=True,
             is_private=True,
         )
-        assert dep is True   # Dependabot works on private repos
+        assert dep is True  # Dependabot works on private repos
         assert code is False  # GHAS not available without license
         assert secret is False  # GHAS not available without license
 

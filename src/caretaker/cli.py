@@ -766,21 +766,14 @@ def init_workflow(output: str, llm_provider: str, force: bool) -> None:
     click.echo(f"Wrote workflow to {dest}")
     click.echo("")
     click.echo("Next steps:")
-    click.echo(
-        "  1. Add secrets to your repo: Settings → Secrets and variables → Actions"
-    )
+    click.echo("  1. Add secrets to your repo: Settings → Secrets and variables → Actions")
     if llm_provider in ("azure-ai", "all"):
-        click.echo(
-            "     AZURE_AI_API_KEY, AZURE_AI_API_BASE, AZURE_AI_API_VERSION"
-        )
+        click.echo("     AZURE_AI_API_KEY, AZURE_AI_API_BASE, AZURE_AI_API_VERSION")
     if llm_provider in ("openai", "all"):
         click.echo("     OPENAI_API_KEY")
     if llm_provider in ("anthropic", "all"):
         click.echo("     ANTHROPIC_API_KEY")
-    click.echo(
-        "  2. Create .github/maintainer/config.yml "
-        "(copy from docs/examples/config.yml)"
-    )
+    click.echo("  2. Create .github/maintainer/config.yml (copy from docs/examples/config.yml)")
     click.echo("  3. Commit and push — first scheduled run fires within 15 min.")
 
 

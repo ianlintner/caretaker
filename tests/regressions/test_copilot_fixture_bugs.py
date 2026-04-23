@@ -32,11 +32,13 @@ import pytest
 # We test the invariant directly by inlining the two versions and asserting
 # that the *correct* version rejects non-network exceptions.
 
+
 # ── Buggy version (as delivered by Copilot in caretaker-qa#15) ──────────────
 def _buggy_is_retryable_http_error(exc: Exception) -> bool:
     """The Copilot version that catches ALL exceptions — DO NOT USE."""
     try:
         import httpx  # noqa: F401
+
         return isinstance(exc, (httpx.RequestError, httpx.TimeoutException))
     except Exception:  # ← bug: bare except returns True for every ImportError etc.
         return True  # fallthrough makes this function lie
