@@ -77,13 +77,29 @@ class ScorerSummary:
 
 @dataclass(frozen=True)
 class SiteReport:
-    """Per-decision-site results for one nightly run."""
+    """Per-decision-site results for one nightly run.
+
+    When :class:`ShadowDecisionRecord.candidate_model` varies across the
+    records in the window (because an operator set
+    ``agentic.<site>.model_override`` to run an A/B between two models),
+    this report aggregates across *all* models — see
+    :attr:`per_model_reports` for the per-model break-out.
+    """
 
     site: str
     record_count: int
     scorer_summaries: list[ScorerSummary]
     experiment_url: str | None
     braintrust_logged: bool
+    # Per-``candidate_model`` break-out when the window contains records
+    # produced by more than one model. Empty when every record shares a
+    # single model (the common case). Populated by :func:`_score_records`
+    # via :func:`_group_by_model`.
+    per_model_reports: list[PerModelReport] = field(default_factory=list)
+    # The single ``candidate_model`` for the whole window when the set
+    # reduces to one; ``None`` when the window is empty or contains
+    # multiple models (use :attr:`per_model_reports` for that case).
+    candidate_model: str | None = None
 
     def agreement_rate(self) -> float:
         """Mean across all scorer means; 1.0 when no records scored."""
@@ -99,6 +115,37 @@ class SiteReport:
             "scorer_summaries": [s.to_dict() for s in self.scorer_summaries],
             "experiment_url": self.experiment_url,
             "braintrust_logged": self.braintrust_logged,
+            "candidate_model": self.candidate_model,
+            "per_model_reports": [m.to_dict() for m in self.per_model_reports],
+        }
+
+
+@dataclass(frozen=True)
+class PerModelReport:
+    """Break-out of one ``candidate_model`` inside a :class:`SiteReport`.
+
+    Exists so the nightly harness can surface A/B comparisons when an
+    operator sets :attr:`AgenticDomainConfig.model_override` and lets
+    two models accumulate shadow decisions against the same legacy
+    heuristic in one window. Consumed by the report JSON and the
+    agreement-rate log line in :func:`run_nightly_eval`.
+    """
+
+    candidate_model: str | None
+    record_count: int
+    scorer_summaries: list[ScorerSummary]
+
+    def agreement_rate(self) -> float:
+        if not self.scorer_summaries:
+            return 1.0
+        return statistics.fmean(s.mean for s in self.scorer_summaries)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_model": self.candidate_model,
+            "record_count": self.record_count,
+            "agreement_rate": self.agreement_rate(),
+            "scorer_summaries": [s.to_dict() for s in self.scorer_summaries],
         }
 
 
@@ -218,6 +265,29 @@ def run_nightly_eval(
         for summary in summaries:
             EVAL_AGREEMENT_RATE.labels(site=site, scorer=summary.scorer).set(summary.mean)
 
+        # Per-``candidate_model`` breakout — empty when the window is
+        # uniform (the common case: operator hasn't set ``model_override``
+        # yet). We compute the breakout ONLY when the record set has
+        # more than one distinct model, because scoring each bucket
+        # re-invokes the scorers (which include the LLM judge on
+        # ``readiness``) and we don't want to double the judge's API
+        # cost for the common single-model window.
+        distinct_models = {r.candidate_model for r in records}
+        single_model: str | None = None
+        if len(distinct_models) == 1:
+            single_model = next(iter(distinct_models))
+        breakout: list[PerModelReport] = []
+        if len(distinct_models) > 1:
+            breakout = _group_by_model(records, scorers, site=site)
+            for pm in breakout:
+                logger.info(
+                    "eval site=%s candidate_model=%s agreement_rate=%.3f records=%d",
+                    site,
+                    pm.candidate_model,
+                    pm.agreement_rate(),
+                    pm.record_count,
+                )
+
         site_reports.append(
             SiteReport(
                 site=site,
@@ -225,6 +295,8 @@ def run_nightly_eval(
                 scorer_summaries=summaries,
                 experiment_url=experiment_result.experiment_url,
                 braintrust_logged=experiment_result.logged,
+                per_model_reports=breakout,
+                candidate_model=single_model,
             )
         )
 
@@ -309,6 +381,46 @@ def _score_records(
     return summaries, cases
 
 
+def _group_by_model(
+    records: Sequence[ShadowDecisionRecord],
+    scorers: Sequence[Scorer],
+    *,
+    site: str,
+) -> list[PerModelReport]:
+    """Group ``records`` by ``candidate_model`` and score each bucket.
+
+    The top-level site report already aggregates across every record in
+    the window; this helper produces the same scorer summaries for each
+    individual ``candidate_model`` so the nightly report can surface A/B
+    splits cleanly. Buckets with zero records are dropped. Ordering is
+    stable: ``None`` last, then the remaining models sorted alphabetically
+    so successive nightly runs render predictably in diffs.
+    """
+    buckets: dict[str | None, list[ShadowDecisionRecord]] = {}
+    for record in records:
+        buckets.setdefault(record.candidate_model, []).append(record)
+    if not buckets:
+        return []
+
+    def _sort_key(model: str | None) -> tuple[int, str]:
+        return (1 if model is None else 0, model or "")
+
+    reports: list[PerModelReport] = []
+    for model in sorted(buckets.keys(), key=_sort_key):
+        bucket = buckets[model]
+        if not bucket:
+            continue
+        summaries, _ = _score_records(bucket, scorers, site=site)
+        reports.append(
+            PerModelReport(
+                candidate_model=model,
+                record_count=len(bucket),
+                scorer_summaries=summaries,
+            )
+        )
+    return reports
+
+
 def _maybe_log_experiment(
     *,
     site: str,
@@ -343,6 +455,7 @@ def _maybe_log_experiment(
 __all__ = [
     "EVAL_AGREEMENT_RATE",
     "NightlyReport",
+    "PerModelReport",
     "RecordLoader",
     "ScorerSummary",
     "SiteReport",

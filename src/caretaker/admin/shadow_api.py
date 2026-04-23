@@ -68,6 +68,12 @@ class ShadowDecisionRow(BaseModel):
     candidate_verdict_json: str | None
     disagreement_reason: str | None
     context_json: str
+    # Per-PR #503 follow-up: expose model attribution to the admin UI so
+    # operators can tell at a glance whether a disagreement row was
+    # produced by a model swap or a prompt change. Defaults to ``None``
+    # so rows persisted before the field existed deserialise cleanly.
+    legacy_model: str | None = None
+    candidate_model: str | None = None
 
     @classmethod
     def from_record(cls, rec: ShadowDecisionRecord) -> ShadowDecisionRow:
@@ -82,6 +88,8 @@ class ShadowDecisionRow(BaseModel):
             candidate_verdict_json=rec.candidate_verdict_json,
             disagreement_reason=rec.disagreement_reason,
             context_json=rec.context_json,
+            legacy_model=rec.legacy_model,
+            candidate_model=rec.candidate_model,
         )
 
 
@@ -155,6 +163,13 @@ async def _read_from_neo4j(
                 continue
             candidate = props.get("candidate_verdict_json") or None
             reason = props.get("disagreement_reason") or None
+            # Models are stored as empty-string-for-None in Neo4j (see the
+            # write path in :func:`caretaker.evolution.shadow.write_shadow_decision`);
+            # normalise back to ``None`` so the admin UI / tests don't
+            # have to know about the storage-layer quirk. Missing keys
+            # (pre-field rows) also land at ``None`` here.
+            legacy_model = props.get("legacy_model") or None
+            candidate_model = props.get("candidate_model") or None
             rows.append(
                 ShadowDecisionRow(
                     id=str(props.get("id", "")),
@@ -167,6 +182,8 @@ async def _read_from_neo4j(
                     candidate_verdict_json=candidate,
                     disagreement_reason=reason,
                     context_json=str(props.get("context_json", "{}")),
+                    legacy_model=legacy_model,
+                    candidate_model=candidate_model,
                 )
             )
         return rows

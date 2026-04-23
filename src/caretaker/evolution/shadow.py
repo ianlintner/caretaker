@@ -162,6 +162,30 @@ class ShadowDecisionRecord(BaseModel):
         default="{}",
         description="JSON-serialised caller context (repo, pr number, etc.).",
     )
+    # Per-PR #503 (nightly-eval harness): capture which model produced the
+    # legacy vs candidate verdict so paired Braintrust experiments can
+    # disambiguate a prompt-change regression from a model-swap regression.
+    # Both default to ``None`` so rows written before these fields existed
+    # load cleanly — Neo4j nodes persisted pre-field lack the property and
+    # pydantic's ``extra='forbid'`` on StrictBaseModel doesn't apply here.
+    legacy_model: str | None = Field(
+        default=None,
+        description=(
+            "Model used by the legacy leg, if any. ``None`` when the legacy "
+            "leg is a pure heuristic (the usual case) — most sites only set "
+            "``candidate_model`` because only the candidate leg calls an LLM."
+        ),
+    )
+    candidate_model: str | None = Field(
+        default=None,
+        description=(
+            "Model used by the candidate leg. Equals the site's "
+            "``AgenticDomainConfig.model_override`` when set, else the "
+            "router's ``llm.default_model`` at the time of the call. "
+            "``None`` when the decorator was unable to determine a model "
+            "(e.g. candidate errored before issuing an LLM request)."
+        ),
+    )
 
 
 # ── Graph-store write helper ─────────────────────────────────────────────
@@ -199,6 +223,11 @@ def write_shadow_decision(record: ShadowDecisionRecord) -> None:
         "candidate_verdict_json": record.candidate_verdict_json or "",
         "disagreement_reason": record.disagreement_reason or "",
         "context_json": record.context_json,
+        # Empty string rather than None so the Neo4j storage layer doesn't
+        # have to special-case ``NULL`` property values; the admin API
+        # normalises the empty-string back to ``None`` on read.
+        "legacy_model": record.legacy_model or "",
+        "candidate_model": record.candidate_model or "",
     }
     stats = writer.stats()
     if stats.get("enabled"):
@@ -292,6 +321,55 @@ def _resolve_mode(name: str) -> ShadowMode:
     return cast("ShadowMode", mode)
 
 
+def _resolve_model_overrides(name: str) -> tuple[str | None, int | None]:
+    """Return ``(model_override, max_tokens_override)`` for ``name``.
+
+    Both are ``None`` when no :class:`~caretaker.config.AgenticConfig` is
+    installed or the domain has no override configured. The decorator
+    threads a non-``None`` ``model_override`` into the candidate call as
+    a ``model=`` kwarg so the candidate's LLM call picks it up instead
+    of the router's ``default_model``.
+    """
+    from caretaker.evolution import shadow_config
+
+    cfg = shadow_config.get_active_config()
+    if cfg is None:
+        return None, None
+    domain = getattr(cfg, name, None)
+    if domain is None:
+        return None, None
+    model_override = getattr(domain, "model_override", None)
+    max_tokens_override = getattr(domain, "max_tokens_override", None)
+    return model_override, max_tokens_override
+
+
+def _resolve_default_model() -> str | None:
+    """Return the router's ``llm.default_model``, if a config is installed.
+
+    Used to stamp :class:`ShadowDecisionRecord.candidate_model` (and
+    ``legacy_model`` when the legacy leg itself is LLM-backed — rare, but
+    possible on sites like ``dispatch_guard`` where the ``legacy``
+    heuristic is itself a regex-then-LLM cascade). ``None`` when no
+    ``MaintainerConfig`` is reachable from the active shadow config — the
+    :class:`AgenticConfig` resolver doesn't carry a backref to the
+    parent, so this helper reads the full config resolver registered by
+    the admin backend / orchestrator.
+    """
+    from caretaker.evolution import shadow_config
+
+    cfg_getter = getattr(shadow_config, "get_active_maintainer_config", None)
+    if cfg_getter is None:
+        return None
+    maintainer = cfg_getter()
+    if maintainer is None:
+        return None
+    llm_cfg = getattr(maintainer, "llm", None)
+    if llm_cfg is None:
+        return None
+    default_model = getattr(llm_cfg, "default_model", None)
+    return default_model if isinstance(default_model, str) else None
+
+
 async def _maybe_await(value: Any) -> Any:
     """Await ``value`` if it is awaitable, otherwise return it unchanged."""
     if inspect.isawaitable(value):
@@ -383,12 +461,38 @@ def shadow_decision(
                 )
 
             mode = _resolve_mode(name)
+            # Per-site model override (PR #503 follow-up). When set, the
+            # candidate leg receives a ``model=<override>`` kwarg so its
+            # LLM call resolves through ``ClaudeClient.structured_complete``
+            # / ``.complete`` with the override rather than the router's
+            # ``default_model``. The legacy leg is never given this kwarg —
+            # the legacy function signature must stay unchanged.
+            model_override, max_tokens_override = _resolve_model_overrides(name)
+            default_model = _resolve_default_model()
+            candidate_model = model_override or default_model
             # ``service`` is captured for metric label consistency but is
             # not used here; the Counter already pins the label set and
             # standard ``logging`` would reject an ``extra={"name": ...}``
             # kwarg because ``name`` is a reserved :class:`LogRecord`
             # attribute.
             _ = get_service_label()
+
+            def _candidate_kwargs() -> dict[str, Any]:
+                """Inject ``model`` / ``max_tokens`` override kwargs for the candidate.
+
+                We copy ``kwargs`` and only add the override keys when the
+                override is set so the candidate signature doesn't have
+                to declare them (it only needs to accept ``**kwargs``).
+                Sites that don't call an LLM in their candidate (or that
+                already hardcode a specific model) simply drop these
+                kwargs without any runtime cost.
+                """
+                extra = dict(kwargs)
+                if model_override is not None:
+                    extra["model"] = model_override
+                if max_tokens_override is not None:
+                    extra["max_tokens"] = max_tokens_override
+                return extra
 
             # ── off ────────────────────────────────────────────────
             if mode == "off":
@@ -398,7 +502,7 @@ def shadow_decision(
             # ── enforce ────────────────────────────────────────────
             if mode == "enforce":
                 try:
-                    candidate_result = await _maybe_await(candidate(*args, **kwargs))
+                    candidate_result = await _maybe_await(candidate(*args, **_candidate_kwargs()))
                 except Exception as exc:  # noqa: BLE001 — enforce must fall through
                     logger.warning(
                         "shadow_decision enforce: candidate raised for name=%s; "
@@ -435,7 +539,7 @@ def shadow_decision(
             candidate_verdict: Any = None
             candidate_error: BaseException | None = None
             try:
-                candidate_verdict = await _maybe_await(candidate(*args, **kwargs))
+                candidate_verdict = await _maybe_await(candidate(*args, **_candidate_kwargs()))
             except Exception as exc:  # noqa: BLE001 — shadow must swallow
                 candidate_error = exc
 
@@ -460,6 +564,8 @@ def shadow_decision(
                     candidate_verdict_json=None,
                     disagreement_reason=err_reason,
                     context_json=_serialise_context(ctx_dict),
+                    legacy_model=default_model,
+                    candidate_model=candidate_model,
                 )
                 write_shadow_decision(err_record)
                 SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome="candidate_error").inc()
@@ -486,6 +592,8 @@ def shadow_decision(
                 candidate_verdict_json=_serialise_verdict(candidate_verdict),
                 disagreement_reason=reason,
                 context_json=_serialise_context(ctx_dict),
+                legacy_model=default_model,
+                candidate_model=candidate_model,
             )
             write_shadow_decision(record)
             SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome=outcome).inc()

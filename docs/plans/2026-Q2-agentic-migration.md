@@ -169,3 +169,46 @@ The supervisor itself is a reasonable candidate for its own sub-agent in a follo
 - **Prompt-cache TTL (R2).** Tool loops regularly exceed 5 min; cache wins may be smaller than expected on long-running Foundry runs. Measure before claiming savings.
 - **M4 + M5 are simple code fixes but each unblocks large fleet-wide silences.** Do not save them for Phase 2.
 - **S6 is self-inflicted** — shipped in v0.12.0 this morning. Patch in Phase 1 W1 or mark the v0.12.0 docs.
+
+### Per-site model overrides (2026-04-22)
+
+`agentic.<site>.model_override` (and its sibling `max_tokens_override`)
+lets the nightly-eval harness A/B different LLM models against the same
+legacy heuristic on a single decision site. When the override is set,
+the candidate leg of `@shadow_decision` receives a `model=` kwarg that
+propagates into `ClaudeClient.structured_complete` /
+`ClaudeClient.complete`; the legacy leg, and every LLM call outside
+shadow decisions, continues to use `llm.default_model`. Leave the
+override at `None` to inherit the router default.
+
+**Two-model A/B pattern (recommended rollout):**
+
+1. Site already running in `mode: shadow` on `llm.default_model` (call
+   it *model A*) for at least 7 days; baseline agreement-rate
+   established in the Braintrust dashboard.
+2. Set `agentic.<site>.model_override: "<model B>"`. Leave the site in
+   `mode: shadow` for another 7 days. The candidate leg now runs on
+   model B; the legacy leg is unchanged; every `:ShadowDecision` row
+   stamps `candidate_model = "<model B>"`.
+3. Compare the two windows in Braintrust. The harness surfaces
+   `per_model_reports` in the nightly JSON report and logs an
+   `eval site=... candidate_model=... agreement_rate=...` line per
+   model when the window is mixed, so the split shows up both in the
+   CI comment and in the admin dashboard.
+4. If model B's agreement rate ≥ model A's (and the disagreement
+   samples look qualitatively better), clear `model_override` — model A
+   is now the router default so the enforce-mode flip will use it —
+   OR promote model B to `llm.default_model` and clear the override.
+   Either way, the override is removed once the A/B concludes so the
+   site returns to a single-model shadow stream.
+
+**Known follow-up:** the enforce-gate's `min_agreement_rate` check
+(see `AgenticEnforceGateConfig.min_agreement_rate`) applies per-site
+and does *not* distinguish candidate models. If model B is winning in
+the A/B but the site-wide rolling mean is dragged down by model A's
+earlier samples, the gate may refuse to unlock until the window rolls
+far enough forward. A future refinement is a per-model
+`min_agreement_rate` map (e.g. `{"azure_ai/gpt-5": 0.93}`) so the
+enforce flip can be gated specifically on the model about to become
+authoritative. Not in scope for this change — tracked as a separate
+follow-up on the 2026-Q2 migration plan.

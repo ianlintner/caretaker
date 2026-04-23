@@ -20,10 +20,16 @@ import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from caretaker.config import AgenticConfig
+    from caretaker.config import AgenticConfig, MaintainerConfig
 
 _lock = threading.Lock()
 _active: AgenticConfig | None = None
+# Separate slot for the full :class:`MaintainerConfig` so the shadow
+# decorator can reach ``llm.default_model`` without widening the
+# ``AgenticConfig`` surface (``AgenticConfig`` intentionally has no
+# backref to its parent — adding one would make the model graph
+# cyclic, which pydantic v2 handles but which is confusing to read).
+_active_maintainer: MaintainerConfig | None = None
 
 
 def configure(config: AgenticConfig) -> None:
@@ -37,6 +43,22 @@ def configure(config: AgenticConfig) -> None:
         _active = config
 
 
+def configure_maintainer(config: MaintainerConfig) -> None:
+    """Install the full :class:`MaintainerConfig`.
+
+    Sibling of :func:`configure`: the shadow decorator calls
+    :func:`get_active_maintainer_config` to resolve
+    ``llm.default_model`` for the ``candidate_model`` field on
+    :class:`ShadowDecisionRecord`. Callers that already install the
+    :class:`AgenticConfig` subfield via :func:`configure` can call this
+    helper immediately after so the pair of slots stays consistent.
+    """
+    global _active, _active_maintainer  # noqa: PLW0603 — process singleton.
+    with _lock:
+        _active_maintainer = config
+        _active = config.agentic
+
+
 def get_active_config() -> AgenticConfig | None:
     """Return the installed config, or ``None`` when uncofigured.
 
@@ -47,11 +69,31 @@ def get_active_config() -> AgenticConfig | None:
         return _active
 
 
+def get_active_maintainer_config() -> MaintainerConfig | None:
+    """Return the installed :class:`MaintainerConfig`, if any.
+
+    Returns ``None`` when only :func:`configure` has been called with a
+    bare :class:`AgenticConfig` (the common test path) — the decorator
+    treats that as "no known default_model" and stamps ``None`` on the
+    ``candidate_model`` / ``legacy_model`` fields of the written
+    :class:`ShadowDecisionRecord`.
+    """
+    with _lock:
+        return _active_maintainer
+
+
 def reset_for_tests() -> None:
     """Clear the active config. Used by test fixtures."""
-    global _active  # noqa: PLW0603 — process singleton.
+    global _active, _active_maintainer  # noqa: PLW0603 — process singleton.
     with _lock:
         _active = None
+        _active_maintainer = None
 
 
-__all__ = ["configure", "get_active_config", "reset_for_tests"]
+__all__ = [
+    "configure",
+    "configure_maintainer",
+    "get_active_config",
+    "get_active_maintainer_config",
+    "reset_for_tests",
+]

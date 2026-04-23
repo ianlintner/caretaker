@@ -1083,7 +1083,17 @@ class PRAgent:
         async def _legacy_path() -> Readiness:
             return readiness_from_legacy(legacy_eval)
 
-        async def _candidate_path() -> Readiness | None:
+        async def _candidate_path(
+            *,
+            model: str | None = None,
+            max_tokens: int | None = None,
+        ) -> Readiness | None:
+            # ``model`` / ``max_tokens`` are injected by the
+            # @shadow_decision decorator when
+            # ``agentic.readiness.model_override`` is set (see
+            # :func:`caretaker.evolution.shadow._resolve_model_overrides`);
+            # both stay ``None`` in the default case so the call shape
+            # is identical to pre-override code.
             if self._llm is None or not self._llm.available:
                 return None
             context = PRReadinessContext(
@@ -1097,6 +1107,8 @@ class PRAgent:
                 context,
                 claude=self._llm.claude,
                 retriever=self._memory_retriever,
+                model=model,
+                max_tokens=max_tokens,
             )
 
         try:
