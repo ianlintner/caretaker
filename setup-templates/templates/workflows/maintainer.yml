@@ -128,7 +128,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Add your LLM provider credentials here. Examples:
+          # Azure AI Foundry (recommended):
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          # Azure OpenAI (classic):
+          # AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          # AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          # Direct Anthropic (if not using Azure AI Foundry):
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           caretaker doctor \
             --config .github/maintainer/config.yml \
@@ -141,7 +149,12 @@ jobs:
           # Caretaker uses this for Copilot issue assignment and @copilot comments
           # that must not be authored as github-actions[bot].
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # LLM provider credentials — add whichever your config uses:
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          # AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          # AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
           CARETAKER_RUN_MODE: ${{ github.event.inputs.mode || 'full' }}
           CARETAKER_EVENT_TYPE: ${{ github.event_name }}
@@ -161,6 +174,8 @@ jobs:
           name: caretaker-memory-snapshot-${{ github.run_number }}
           path: .caretaker-memory-snapshot.json
           if-no-files-found: ignore
+          # Required: upload-artifact v4 excludes dotfiles by default.
+          include-hidden-files: true
           retention-days: 30
 
   # When the caretaker run itself fails, trigger the self-heal agent
@@ -195,7 +210,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Fine-grained PAT for a real write-capable user or machine user.
           COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
           CARETAKER_EVENT_PAYLOAD: >-
             {
