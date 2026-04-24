@@ -67,6 +67,35 @@ class ReviewState(StrEnum):
     PENDING = "PENDING"
 
 
+class MergeStateStatus(StrEnum):
+    """GraphQL ``mergeStateStatus`` values surfaced for shepherd routing.
+
+    ``mergeable`` on the REST API is a tri-state bool and conflates distinct
+    failure modes the shepherd needs to distinguish:
+
+    * ``BEHIND``  — branch is up-to-date-free but lags base; needs
+      ``update-branch`` (the shepherd's cascade-handling case).
+    * ``DIRTY``   — real merge conflict; needs rebase or stale-reap.
+    * ``BLOCKED`` — required reviews or status checks aren't satisfied.
+    * ``UNSTABLE`` — mergeable but at least one non-required check is
+      failing (common intermediate state while CI re-runs).
+    * ``HAS_HOOKS`` — mergeable after required hooks pass.
+    * ``CLEAN``   — fully mergeable.
+    * ``UNKNOWN`` — GitHub hasn't finished computing mergeability.
+
+    Populated by the shepherd via a targeted GraphQL lookup because the
+    REST API does not return this field on the PR list endpoint.
+    """
+
+    BEHIND = "BEHIND"
+    DIRTY = "DIRTY"
+    BLOCKED = "BLOCKED"
+    UNSTABLE = "UNSTABLE"
+    HAS_HOOKS = "HAS_HOOKS"
+    CLEAN = "CLEAN"
+    UNKNOWN = "UNKNOWN"
+
+
 class User(BaseModel):
     login: str
     id: int
@@ -129,6 +158,12 @@ class PullRequest(BaseModel):
     head_repo_full_name: str = ""
     base_repo_full_name: str = ""
     mergeable: bool | None = None
+    # GraphQL-only field — distinguishes BEHIND (needs update-branch) from
+    # DIRTY (needs rebase) from BLOCKED (needs review/CI). The REST PR list
+    # endpoint does not populate this; shepherd enriches via GraphQL.
+    # ``None`` means the field was never fetched (legacy callers); callers
+    # should treat ``None`` as "unknown, skip shepherd routing".
+    merge_state_status: MergeStateStatus | None = None
     merged: bool = False
     draft: bool = False
     # GitHub's global node ID — required for GraphQL mutations such as

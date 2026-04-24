@@ -13,6 +13,7 @@ from caretaker.issue_agent.adapter import IssueAgentAdapter
 from caretaker.migration_agent.agent import MigrationAgent
 from caretaker.perf_agent.agent import PerformanceAgent
 from caretaker.pr_agent.adapter import PRAgentAdapter
+from caretaker.pr_agent.shepherd_adapter import ShepherdAgentAdapter
 from caretaker.pr_agent.triage_adapter import TriageAgentAdapter
 from caretaker.pr_ci_approver.agent import PRCIApproverAgent
 from caretaker.pr_reviewer.agent import PRReviewerAgent
@@ -50,6 +51,7 @@ ALL_ADAPTERS: list[type[BaseAgent]] = [
     PRReviewerAgent,
     PRCIApproverAgent,
     TriageAgentAdapter,
+    ShepherdAgentAdapter,
 ]
 
 # Maps agent name -> set of run modes that include it
@@ -74,6 +76,10 @@ AGENT_MODES: dict[str, set[str]] = {
     "pr-reviewer": {"full", "pr-only", "pr-reviewer"},
     "pr-ci-approver": {"full", "pr-only", "pr-ci-approver"},
     "triage": {"full", "triage"},
+    # Shepherd is intentionally NOT in "full" — it runs only on the
+    # dedicated "shepherd" mode so scheduled hourly runs keep their
+    # current behavior until the operator opts in.
+    "shepherd": {"shepherd"},
 }
 
 # Maps GitHub event types -> list of agent names to run

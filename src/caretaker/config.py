@@ -153,6 +153,45 @@ class TriageConfig(StrictBaseModel):
     stale_issue_days: int = 30
 
 
+class ShepherdConfig(StrictBaseModel):
+    """Shepherd mode — codify the manual PR cleanup loop as a routine pass.
+
+    Phases (run in order when enabled):
+      1. Inventory  — list open PRs, enrich with mergeStateStatus via GraphQL.
+      2. Dedupe     — reuse ``close_duplicate_fix_prs`` (CVE/pkg grouping).
+      3. Promote    — reuse ``ready_valid_copilot_drafts`` to flip green drafts
+                      ready-for-review (CI-green only).
+      4. Mechanical — Delta C: run ruff/line-wrap/F401 fixers on lint-failing PRs.
+      5. Rebase     — Delta C: ``update_branch_if_behind`` for BEHIND PRs.
+      6. Reap       — Delta C: close DIRTY drafts older than ``stale_dirty_days``.
+      7. Merge chain — Delta C/D: squash in dependency order w/ update between.
+      8. LLM escalate — Delta F: metered ``stuck_pr_llm`` for stuck PRs.
+
+    Disabled by default; opt-in via ``shepherd.enabled: true`` in config.yml.
+    Dry-run inherits from ``orchestrator.dry_run`` unless overridden.
+    """
+
+    enabled: bool = False
+    # Phase toggles — let operators stage rollout instead of all-or-nothing.
+    dedupe: bool = True
+    promote_drafts: bool = True
+    mechanical_fixes: bool = True
+    auto_update_branch: bool = True
+    stale_dirty_reaper: bool = True
+    merge_chain: bool = True
+    # Per-run LLM call budget (Delta F). 0 disables LLM escalation entirely.
+    max_llm_calls_per_run: int = 3
+    # Age in days before a DIRTY draft is closed as stale.
+    stale_dirty_days: int = 14
+    # Which mechanical fixers to try, in order. Names map to fix_ladder rungs.
+    mechanical_fix_rungs: list[str] = Field(
+        default_factory=lambda: ["ruff-format", "ruff-check-fix"],
+    )
+    # When true, shepherd writes report but takes no destructive action.
+    # Falls back to ``orchestrator.dry_run`` when unset at runtime.
+    dry_run: bool = False
+
+
 class UpgradeAgentConfig(StrictBaseModel):
     enabled: bool = True
     strategy: Literal["auto-minor", "auto-patch", "latest", "pinned", "manual"] = "auto-minor"
@@ -1185,6 +1224,10 @@ class MaintainerConfig(StrictBaseModel):
     pr_agent: PRAgentConfig = Field(default_factory=PRAgentConfig)
     issue_agent: IssueAgentConfig = Field(default_factory=IssueAgentConfig)
     triage: TriageConfig = Field(default_factory=TriageConfig)
+    # Shepherd mode — PR cleanup loop codified from the manual Apr-24 session
+    # (see memory/project_pr_shepherd.md when added). Disabled by default; the
+    # default-constructed config keeps current behavior byte-identical.
+    shepherd: ShepherdConfig = Field(default_factory=ShepherdConfig)
     upgrade_agent: UpgradeAgentConfig = Field(default_factory=UpgradeAgentConfig)
     devops_agent: DevOpsAgentConfig = Field(default_factory=DevOpsAgentConfig)
     self_heal_agent: SelfHealAgentConfig = Field(default_factory=SelfHealAgentConfig)

@@ -96,6 +96,25 @@ stale_agent:
     - caretaker:self-heal
     - devops:build-failure
 
+shepherd:
+  # Off by default — flip to true to opt into the PR shepherd loop
+  # (dedupe, draft promotion, auto-rebase, stale-dirty reaper).
+  # Only runs in the dedicated "shepherd" mode; hourly "full" runs
+  # are unchanged.
+  enabled: false
+  dedupe: true
+  promote_drafts: true
+  mechanical_fixes: true
+  auto_update_branch: true
+  stale_dirty_reaper: true
+  merge_chain: true
+  max_llm_calls_per_run: 3
+  stale_dirty_days: 14
+  mechanical_fix_rungs:
+    - ruff-format
+    - ruff-check-fix
+  dry_run: false
+
 human_escalation:
   enabled: true
   post_digest_issue: true

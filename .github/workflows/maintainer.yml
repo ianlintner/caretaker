@@ -38,6 +38,7 @@ on:
             docs,
             stale,
             escalation,
+            shepherd,
             dry-run,
           ]
 

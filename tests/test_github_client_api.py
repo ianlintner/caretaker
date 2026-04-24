@@ -1040,3 +1040,233 @@ async def test_create_or_update_file_preserves_existing_newline() -> None:
     assert isinstance(payload, dict)
     decoded = base64.b64decode(payload["content"]).decode()
     assert decoded == original
+
+
+# ── merge_state_status + update_pull_request_branch (Delta A) ──────────────
+
+
+def _shepherd_pr_payload(
+    number: int, mergeable_state: str | None = None
+) -> dict[str, object]:
+    """Minimal PR REST payload used by the shepherd Delta A tests.
+
+    Kept distinct from the ``_pr_payload`` helper defined earlier in the file
+    (which has a different signature used by read-cache tests).
+    """
+    body: dict[str, object] = {
+        "number": number,
+        "title": f"PR #{number}",
+        "body": "",
+        "state": "open",
+        "user": {"login": "copilot-swe-agent[bot]", "id": 1},
+        "head": {"ref": f"feat-{number}", "sha": "abc", "repo": {"full_name": "o/r"}},
+        "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+        "mergeable": True,
+        "merged": False,
+        "draft": False,
+        "node_id": f"PR_{number}",
+        "labels": [],
+        "html_url": f"https://github.com/o/r/pull/{number}",
+    }
+    if mergeable_state is not None:
+        body["mergeable_state"] = mergeable_state
+    return body
+
+
+@pytest.mark.asyncio
+async def test_parse_pr_populates_merge_state_status_from_rest() -> None:
+    """Single-PR REST reads (``get_pull_request``) carry ``mergeable_state``.
+
+    The shepherd relies on ``PullRequest.merge_state_status`` being set after
+    a targeted single-PR fetch so simple loops don't need to call
+    ``enrich_merge_state_status`` for each one.
+    """
+    from caretaker.github_client.models import MergeStateStatus
+
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    pr = GitHubClient._parse_pr(_shepherd_pr_payload(1, mergeable_state="behind"))
+    assert pr.merge_state_status is MergeStateStatus.BEHIND
+
+    pr2 = GitHubClient._parse_pr(_shepherd_pr_payload(2, mergeable_state="dirty"))
+    assert pr2.merge_state_status is MergeStateStatus.DIRTY
+
+    # No ``mergeable_state`` key at all → field stays ``None`` (unknown).
+    pr3 = GitHubClient._parse_pr(_shepherd_pr_payload(3))
+    assert pr3.merge_state_status is None
+    _ = gh  # silence unused-var lint
+
+
+@pytest.mark.asyncio
+async def test_parse_pr_handles_unmapped_merge_state() -> None:
+    """Unknown/future REST values fall back to ``UNKNOWN`` rather than raising."""
+    from caretaker.github_client.models import MergeStateStatus
+
+    pr = GitHubClient._parse_pr(_shepherd_pr_payload(4, mergeable_state="future_value"))
+    assert pr.merge_state_status is MergeStateStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_get_pr_merge_state_status_graphql_success() -> None:
+    """GraphQL lookup for a single PR returns the parsed enum."""
+    from caretaker.github_client.models import MergeStateStatus
+
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._post = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}
+        }
+    )
+    result = await gh.get_pr_merge_state_status("o", "r", 42)
+    assert result is MergeStateStatus.BEHIND
+
+    gh._post.assert_awaited_once()
+    call_kwargs = gh._post.await_args.kwargs
+    assert "pullRequest(number:$number)" in call_kwargs["json"]["query"]
+    assert call_kwargs["json"]["variables"] == {"owner": "o", "name": "r", "number": 42}
+
+
+@pytest.mark.asyncio
+async def test_get_pr_merge_state_status_returns_none_on_failure() -> None:
+    """Transport failures return ``None`` so shepherd treats it as 'unknown'."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._post = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    assert await gh.get_pr_merge_state_status("o", "r", 99) is None
+
+
+@pytest.mark.asyncio
+async def test_get_pr_merge_state_status_returns_none_on_graphql_errors() -> None:
+    """GraphQL error responses also produce ``None``."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._post = AsyncMock(  # type: ignore[method-assign]
+        return_value={"errors": [{"message": "Could not resolve"}]}
+    )
+    assert await gh.get_pr_merge_state_status("o", "r", 1) is None
+
+
+@pytest.mark.asyncio
+async def test_enrich_merge_state_status_batched_success() -> None:
+    """Batch enrichment populates ``merge_state_status`` on every PR in one call."""
+    from caretaker.github_client.models import MergeStateStatus, PullRequest, User
+
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    prs = [
+        PullRequest(number=1, title="a", state="open", user=User(login="u", id=1)),
+        PullRequest(number=2, title="b", state="open", user=User(login="u", id=1)),
+        PullRequest(number=3, title="c", state="open", user=User(login="u", id=1)),
+    ]
+    gh._post = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "data": {
+                "repository": {
+                    "pr0": {"number": 1, "mergeStateStatus": "CLEAN"},
+                    "pr1": {"number": 2, "mergeStateStatus": "BEHIND"},
+                    "pr2": {"number": 3, "mergeStateStatus": "DIRTY"},
+                }
+            }
+        }
+    )
+
+    result = await gh.enrich_merge_state_status("o", "r", prs)
+    assert result is prs  # mutates in-place, returns same list
+    assert prs[0].merge_state_status is MergeStateStatus.CLEAN
+    assert prs[1].merge_state_status is MergeStateStatus.BEHIND
+    assert prs[2].merge_state_status is MergeStateStatus.DIRTY
+    # One GraphQL call total (not 3)
+    gh._post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_enrich_merge_state_status_falls_back_to_sequential() -> None:
+    """Batch failure → sequential per-PR lookups via ``get_pr_merge_state_status``."""
+    from caretaker.github_client.models import MergeStateStatus, PullRequest, User
+
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    prs = [
+        PullRequest(number=10, title="a", state="open", user=User(login="u", id=1)),
+        PullRequest(number=11, title="b", state="open", user=User(login="u", id=1)),
+    ]
+
+    call_count = {"n": 0}
+
+    async def fake_post(*_args: object, **_kwargs: object) -> dict[str, object]:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First batched call fails with errors
+            return {"errors": [{"message": "boom"}]}
+        # Subsequent per-PR calls succeed with alternating statuses.
+        if call_count["n"] == 2:
+            return {
+                "data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}
+            }
+        return {
+            "data": {"repository": {"pullRequest": {"mergeStateStatus": "DIRTY"}}}
+        }
+
+    gh._post = AsyncMock(side_effect=fake_post)  # type: ignore[method-assign]
+    result = await gh.enrich_merge_state_status("o", "r", prs)
+    assert result[0].merge_state_status is MergeStateStatus.BEHIND
+    assert result[1].merge_state_status is MergeStateStatus.DIRTY
+    assert call_count["n"] == 3  # 1 batch + 2 fallbacks
+
+
+@pytest.mark.asyncio
+async def test_enrich_merge_state_status_empty_list_is_noop() -> None:
+    """Empty input → no API call, empty output."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._post = AsyncMock()  # type: ignore[method-assign]
+    result = await gh.enrich_merge_state_status("o", "r", [])
+    assert result == []
+    gh._post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_branch_sends_put_and_returns_true() -> None:
+    """``update-branch`` returns True on 202-style response payload."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._put = AsyncMock(  # type: ignore[method-assign]
+        return_value={"message": "Updating pull request branch.", "url": "https://..."}
+    )
+    ok = await gh.update_pull_request_branch("o", "r", 539, expected_head_sha="dead1")
+    assert ok is True
+    path = gh._put.await_args.args[0]
+    body = gh._put.await_args.kwargs.get("json")
+    assert path == "/repos/o/r/pulls/539/update-branch"
+    assert body == {"expected_head_sha": "dead1"}
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_branch_returns_false_on_exception() -> None:
+    """Transport failures resolve to False (shepherd will retry next run)."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._put = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    assert await gh.update_pull_request_branch("o", "r", 1) is False
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_branch_without_expected_sha() -> None:
+    """No expected SHA → PUT body is None (endpoint accepts empty body)."""
+    with patch.dict("os.environ", {"GITHUB_TOKEN": "fake-token"}):
+        gh = GitHubClient(token="fake-token")
+
+    gh._put = AsyncMock(return_value={"url": "https://..."})  # type: ignore[method-assign]
+    ok = await gh.update_pull_request_branch("o", "r", 7)
+    assert ok is True
+    assert gh._put.await_args.kwargs.get("json") is None
