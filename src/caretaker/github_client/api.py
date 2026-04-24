@@ -22,6 +22,7 @@ from .models import (
     Comment,
     Issue,
     Label,
+    MergeStateStatus,
     PullRequest,
     Repository,
     Review,
@@ -452,6 +453,201 @@ class GitHubClient:
             return not is_draft
         except (KeyError, TypeError):
             return result is not None and "errors" not in result
+
+    async def get_pr_merge_state_status(
+        self, owner: str, repo: str, number: int
+    ) -> MergeStateStatus | None:
+        """Fetch GraphQL ``mergeStateStatus`` for a single PR.
+
+        Returns ``None`` on lookup failure so callers can treat the value as
+        "unknown, skip shepherd routing" rather than having to distinguish
+        transport errors from legitimate ``UNKNOWN`` states. GitHub returns
+        the enum value ``UNKNOWN`` while the mergeability computation is
+        pending on its side; that is reported as ``MergeStateStatus.UNKNOWN``
+        so the caller can decide whether to retry or defer.
+
+        Used by the shepherd orchestration to distinguish:
+        * BEHIND  → call :meth:`update_pull_request_branch`
+        * DIRTY   → send to mechanical fixer or stale reaper
+        * BLOCKED → wait on CI / reviewers
+        * CLEAN   → forward to merge-chain phase
+        """
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            " repository(owner:$owner,name:$name){"
+            "  pullRequest(number:$number){mergeStateStatus}"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={
+                    "query": query,
+                    "variables": {"owner": owner, "name": repo, "number": number},
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "get_pr_merge_state_status: GraphQL failed for %s/%s#%d: %s",
+                owner,
+                repo,
+                number,
+                exc,
+            )
+            return None
+        if not result or result.get("errors"):
+            if result and result.get("errors"):
+                logger.warning(
+                    "get_pr_merge_state_status errors for %s/%s#%d: %s",
+                    owner,
+                    repo,
+                    number,
+                    result["errors"],
+                )
+            return None
+        try:
+            raw = result["data"]["repository"]["pullRequest"]["mergeStateStatus"]
+        except (KeyError, TypeError):
+            return None
+        if not raw:
+            return None
+        try:
+            return MergeStateStatus(raw)
+        except ValueError:
+            logger.info(
+                "get_pr_merge_state_status: unmapped status %r for %s/%s#%d",
+                raw,
+                owner,
+                repo,
+                number,
+            )
+            return MergeStateStatus.UNKNOWN
+
+    async def enrich_merge_state_status(
+        self, owner: str, repo: str, prs: list[PullRequest]
+    ) -> list[PullRequest]:
+        """Populate ``merge_state_status`` on a batch of PRs via one GraphQL call.
+
+        Mutates the passed ``PullRequest`` instances in-place and returns the
+        same list for chaining. Falls back to per-PR sequential lookups when
+        the batched query fails (e.g. one PR was deleted between list and
+        enrich), so callers never get a partial result silently.
+
+        Rationale for batching: the shepherd typically inspects 5-50 open
+        PRs per run; one ``mergeStateStatus`` call apiece would burn budget
+        against GitHub's secondary rate limits. A single aliased GraphQL
+        query returns all values in one request.
+        """
+        if not prs:
+            return prs
+
+        # Build an aliased query: pr0: pullRequest(number:1){...}, pr1: ...
+        fields: list[str] = []
+        variables: dict[str, Any] = {"owner": owner, "name": repo}
+        for idx, pr in enumerate(prs):
+            var = f"n{idx}"
+            variables[var] = pr.number
+            fields.append(f"pr{idx}: pullRequest(number:${var}){{number mergeStateStatus}}")
+        var_decls = "$owner:String!,$name:String!," + ",".join(
+            f"$n{i}:Int!" for i in range(len(prs))
+        )
+        query = (
+            f"query({var_decls}){{ repository(owner:$owner,name:$name){{ {' '.join(fields)} }}}}"
+        )
+
+        try:
+            result = await self._post(
+                "/graphql",
+                json={"query": query, "variables": variables},
+            )
+        except Exception as exc:
+            logger.warning(
+                "enrich_merge_state_status batch failed for %s/%s (%d PRs): %s — "
+                "falling back to sequential lookups",
+                owner,
+                repo,
+                len(prs),
+                exc,
+            )
+            result = None
+
+        if result and not result.get("errors"):
+            repo_data = (result.get("data") or {}).get("repository") or {}
+            for idx, pr in enumerate(prs):
+                node = repo_data.get(f"pr{idx}")
+                if not node:
+                    continue
+                raw = node.get("mergeStateStatus")
+                if not raw:
+                    continue
+                try:
+                    pr.merge_state_status = MergeStateStatus(raw)
+                except ValueError:
+                    pr.merge_state_status = MergeStateStatus.UNKNOWN
+            # Any PR still without a status gets a per-PR retry below.
+            missing = [p for p in prs if p.merge_state_status is None]
+            if not missing:
+                return prs
+            prs_to_retry = missing
+        else:
+            if result and result.get("errors"):
+                logger.warning(
+                    "enrich_merge_state_status errors for %s/%s: %s",
+                    owner,
+                    repo,
+                    result["errors"],
+                )
+            prs_to_retry = list(prs)
+
+        # Fallback: sequential lookups for whatever is missing.
+        for pr in prs_to_retry:
+            status = await self.get_pr_merge_state_status(owner, repo, pr.number)
+            if status is not None:
+                pr.merge_state_status = status
+        return prs
+
+    async def update_pull_request_branch(
+        self, owner: str, repo: str, number: int, expected_head_sha: str | None = None
+    ) -> bool:
+        """Merge the base branch into the PR's head branch (``update-branch``).
+
+        This is the shepherd's cascade-handling primitive: when PR #542 merges
+        and pushes PR #539 into ``BEHIND``, the shepherd calls this to re-align
+        #539 without asking Copilot to do it. Mirrors the ``gh pr update-branch``
+        behaviour and the GitHub REST endpoint
+        ``PUT /repos/{owner}/{repo}/pulls/{number}/update-branch``.
+
+        ``expected_head_sha`` is passed through when known so GitHub rejects
+        the call if another push raced the shepherd. Returns ``True`` when
+        GitHub responds with 202 Accepted (the update is queued
+        asynchronously; the branch may still be ``BEHIND`` for a few seconds
+        while GitHub processes the merge).
+        """
+        body: dict[str, Any] = {}
+        if expected_head_sha:
+            body["expected_head_sha"] = expected_head_sha
+        try:
+            result = await self._put(
+                f"/repos/{owner}/{repo}/pulls/{number}/update-branch",
+                json=body or None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "update_pull_request_branch: %s/%s#%d failed: %s",
+                owner,
+                repo,
+                number,
+                exc,
+            )
+            return False
+        # Endpoint returns 202 + {"message": "...", "url": "..."} on success.
+        if result is None:
+            return False
+        # Some code paths treat non-dict responses as success (202 no body).
+        if isinstance(result, dict) and "url" in result:
+            return True
+        return bool(result)
 
     async def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = "squash"
@@ -1325,6 +1521,19 @@ class GitHubClient:
         base = data.get("base") or {}
         head_repo = (head.get("repo") or {}).get("full_name", "") or ""
         base_repo = (base.get("repo") or {}).get("full_name", "") or ""
+        # ``mergeable_state`` on the REST API is a string mirror of the
+        # GraphQL ``mergeStateStatus`` (lowercase on REST, uppercase on GQL).
+        # We normalise here so callers can rely on ``merge_state_status`` on
+        # PRs fetched by ``get_pull_request`` even without an explicit
+        # ``enrich_merge_state_status`` call. List endpoints do NOT populate
+        # it; only single-PR reads do.
+        merge_state_raw = data.get("mergeable_state")
+        parsed_merge_state: MergeStateStatus | None = None
+        if merge_state_raw:
+            try:
+                parsed_merge_state = MergeStateStatus(str(merge_state_raw).upper())
+            except ValueError:
+                parsed_merge_state = MergeStateStatus.UNKNOWN
         return PullRequest(
             number=data["number"],
             title=data["title"],
@@ -1337,6 +1546,7 @@ class GitHubClient:
             head_repo_full_name=head_repo,
             base_repo_full_name=base_repo,
             mergeable=data.get("mergeable"),
+            merge_state_status=parsed_merge_state,
             merged=data.get("merged", False),
             draft=data.get("draft", False),
             node_id=data.get("node_id", ""),

@@ -61,6 +61,7 @@ class RunMode(StrEnum):
     REFACTOR = "refactor"
     PERF = "perf"
     MIGRATION = "migration"
+    SHEPHERD = "shepherd"
     DRY_RUN = "dry-run"
     EVENT = "event"
 

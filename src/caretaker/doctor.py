@@ -1597,6 +1597,94 @@ def check_version_pin(pin_path: str | Path) -> CheckResult:
     )
 
 
+async def check_version_pin_published(
+    pin_path: str | Path,
+    *,
+    package: str | None = None,
+    client: Any = None,
+    timeout: float = 5.0,
+) -> CheckResult:
+    """Confirm the pinned caretaker version is live + installable on PyPI.
+
+    :func:`check_version_pin` only validates *shape* — it cannot catch
+    the space-tycoon PR #15 class of failure where the pin was a
+    syntactically-valid version that PyPI had yanked. This check
+    closes that gap by querying PyPI JSON for the pinned version.
+
+    Severity mapping:
+
+    * ``OK``    — version published and at least one artefact is live.
+    * ``FAIL``  — version missing or yanked on PyPI; ``pip install`` will fail.
+    * ``WARN``  — pin file missing/empty or PyPI unreachable (we don't want
+      to flip preflight red for a transient outage).
+
+    Network-dependent by design — bootstrap/offline paths keep using
+    :func:`check_version_pin` instead.
+    """
+    # Local import avoids pulling httpx/fleet into the offline
+    # ``check_version_pin`` code path used by bootstrap.
+    from caretaker.fleet.version_drift import DEFAULT_CARETAKER_PACKAGE, check_pypi_version
+
+    path = Path(pin_path)
+    package_name = package or DEFAULT_CARETAKER_PACKAGE
+    if not path.is_file():
+        return CheckResult(
+            category="bootstrap",
+            name="version pin published",
+            severity=Severity.WARN,
+            detail=f"pin file missing: {path}",
+            hint=str(path),
+        )
+    raw = path.read_text().strip()
+    if not raw:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin published",
+            severity=Severity.WARN,
+            detail=f"pin file is empty: {path}",
+            hint=str(path),
+        )
+    status = await check_pypi_version(package_name, raw, client=client, timeout=timeout)
+    if status.exists:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin published",
+            severity=Severity.OK,
+            detail=f"{package_name}=={status.version} live on PyPI",
+            hint=str(path),
+        )
+    if status.yanked:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin published",
+            severity=Severity.FAIL,
+            detail=(
+                f"{package_name}=={status.version} yanked on PyPI — "
+                f"pip install will warn/fail. Bump pin."
+            ),
+            hint=str(path),
+        )
+    # "unreachable" vs "version missing" — we only FAIL on the latter.
+    if "unreachable" in status.reason:
+        return CheckResult(
+            category="bootstrap",
+            name="version pin published",
+            severity=Severity.WARN,
+            detail=f"PyPI unreachable while checking {package_name}=={status.version}",
+            hint=str(path),
+        )
+    return CheckResult(
+        category="bootstrap",
+        name="version pin published",
+        severity=Severity.FAIL,
+        detail=(
+            f"{package_name}=={status.version} not found on PyPI: {status.reason}. "
+            f"Check package rename or typo in pin."
+        ),
+        hint=str(path),
+    )
+
+
 def check_bootstrap_env_secrets(config: MaintainerConfig, env: dict[str, str]) -> list[CheckResult]:
     """Return a ``FAIL`` row for every env var an *enabled* block needs that isn't set.
 
@@ -1790,6 +1878,7 @@ __all__ = [
     "check_github_scopes",
     "check_import_ok",
     "check_version_pin",
+    "check_version_pin_published",
     "collect_env_references",
     "render_table",
     "run_bootstrap_check",
