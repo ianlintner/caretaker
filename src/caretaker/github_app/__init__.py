@@ -21,6 +21,12 @@ from .dispatch_guard import (
     judge_dispatch_llm,
     legacy_dispatch_verdict,
 )
+from .dispatcher import (
+    DispatchMode,
+    DispatchResult,
+    WebhookDispatcher,
+    dispatch_in_background,
+)
 from .events import (
     EVENT_AGENT_MAP,
     agents_for_event,
@@ -43,13 +49,17 @@ __all__ = [
     "EVENT_AGENT_MAP",
     "AppJWTSigner",
     "DispatchEvent",
+    "DispatchMode",
+    "DispatchResult",
     "DispatchVerdict",
     "GitHubAppCredentialsProvider",
     "InstallationToken",
     "InstallationTokenCache",
     "InstallationTokenMinter",
+    "WebhookDispatcher",
     "WebhookSignatureError",
     "agents_for_event",
+    "dispatch_in_background",
     "evaluate_dispatch",
     "judge_dispatch",
     "judge_dispatch_llm",

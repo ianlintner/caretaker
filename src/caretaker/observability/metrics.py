@@ -164,6 +164,21 @@ WORKER_QUEUE_DEPTH = Gauge(
     registry=REGISTRY,
 )
 
+# ── GitHub webhook dispatch (Phase 2 App) ─────────────────────────────
+#
+# Counts every webhook delivery that reaches the dispatcher, labelled by
+# the resolved event type, the dispatcher mode (off/shadow/active), and
+# the terminal outcome. Kept separate from ``worker_jobs_total`` because
+# one webhook can fan out to N agent invocations — we want cardinality
+# for "how many deliveries arrived" vs. "how many agent jobs ran".
+
+WEBHOOK_EVENTS_TOTAL = Counter(
+    "caretaker_webhook_events_total",
+    "Total GitHub webhook deliveries handled by the dispatcher.",
+    ["service", "event", "mode", "outcome"],
+    registry=REGISTRY,
+)
+
 # ── Domain errors ────────────────────────────────────────────────────
 
 CARETAKER_ERRORS_TOTAL = Counter(
@@ -677,6 +692,22 @@ def set_worker_queue_depth(queue: str, depth: int) -> None:
     WORKER_QUEUE_DEPTH.labels(service=_SERVICE_LABEL, queue=queue).set(float(depth))
 
 
+def record_webhook_event(event: str, mode: str, outcome: str) -> None:
+    """Record a single GitHub webhook delivery handled by the dispatcher.
+
+    ``event`` is the ``X-GitHub-Event`` header value (bounded by the
+    GitHub API event catalog). ``mode`` is one of ``off``/``shadow``/
+    ``active``. ``outcome`` is one of ``dispatched``/``no_agents``/
+    ``duplicate``/``error``.
+    """
+    WEBHOOK_EVENTS_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        event=event,
+        mode=mode,
+        outcome=outcome,
+    ).inc()
+
+
 def record_error(kind: str) -> None:
     """Record a single classified caretaker error (bounded enum ``kind``)."""
     CARETAKER_ERRORS_TOTAL.labels(service=_SERVICE_LABEL, kind=kind).inc()
@@ -826,6 +857,7 @@ __all__ = [
     "RATE_LIMIT_COOLDOWN_SECONDS",
     "RATE_LIMIT_REMAINING",
     "REGISTRY",
+    "WEBHOOK_EVENTS_TOTAL",
     "WORKER_JOBS_TOTAL",
     "WORKER_JOB_DURATION_SECONDS",
     "WORKER_QUEUE_DEPTH",
@@ -843,6 +875,7 @@ __all__ = [
     "record_operator_intervention",
     "record_orchestrator_soft_fail",
     "record_pr_outcome",
+    "record_webhook_event",
     "record_worker_job",
     "set_rate_limit_cooldown",
     "set_rate_limit_remaining",
