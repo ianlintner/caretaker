@@ -81,6 +81,8 @@ spec:
                   optional: true
             - name: CARETAKER_GITHUB_APP_INSTALLATION_ID
               value: "124850811"
+            - name: CARETAKER_WEBHOOK_DISPATCH_MODE
+              value: "active"
             - name: CARETAKER_ADMIN_WATCHED_REPO
               value: "ianlintner/caretaker"
             - name: CARETAKER_ADMIN_ENABLED
