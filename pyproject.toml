@@ -91,7 +91,7 @@ admin = [
 # Anthropic SDK remains the default; install this extra and set
 # ``llm.provider: litellm`` in config to enable other backends.
 llm-multi = [
-    "litellm>=1.50,<2",
+    "litellm>=1.83.7,<2",
     "aiohttp>=3.13.4",  # security: CVE-2026-34516 multipart header bypass + CVE-2024-52304 zip bomb
 ]
 # Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
