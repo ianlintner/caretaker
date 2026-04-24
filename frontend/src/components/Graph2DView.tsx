@@ -79,33 +79,6 @@ function NodeTooltip({ state }: { state: TooltipState }) {
     <div
       className="fixed z-50 pointer-events-none"
       style={{ left: state.x + 14, top: state.y - 10 }}
-
-export default function Graph2DView({
-  subgraph,
-  onNodeClick,
-}: {
-  subgraph: SubGraph
-  onNodeClick?: (nodeId: string, nodeType: string) => void
-}) {
-  const { nodes, edges } = useMemo(() => layout(subgraph), [subgraph])
-
-  const handleNodeClick: NodeMouseHandler = useCallback(
-    (_evt, node) => {
-      if (!onNodeClick) return
-      const original = subgraph.nodes.find((n) => n.id === node.id)
-      onNodeClick(node.id, original?.type ?? 'Unknown')
-    },
-    [onNodeClick, subgraph.nodes],
-  )
-
-  return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      fitView
-      fitViewOptions={{ padding: 0.2 }}
-      minZoom={0.1}
-      onNodeClick={onNodeClick ? handleNodeClick : undefined}
     >
       <div
         style={{
@@ -130,7 +103,7 @@ export default function Graph2DView({
               const display = typeof v === 'string' && v.length > 50 ? v.slice(0, 50) + '…' : String(v)
               return (
                 <div key={k} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                  <span style={{ color: '#6b7280', shrink: 0, minWidth: 70 }}>{k}:</span>
+                  <span style={{ color: '#6b7280', flexShrink: 0, minWidth: 70 }}>{k}:</span>
                   <span style={{ color: '#d1d5db', wordBreak: 'break-word' }}>{display}</span>
                 </div>
               )
