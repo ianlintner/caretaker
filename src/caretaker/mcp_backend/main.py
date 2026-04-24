@@ -31,6 +31,8 @@ from pydantic import BaseModel
 
 from caretaker.github_app import (
     DispatchMode,
+    GitHubAppContextFactory,
+    RegistryAgentRunner,
     WebhookDispatcher,
     WebhookSignatureError,
     agents_for_event,
@@ -347,11 +349,72 @@ _dispatcher: WebhookDispatcher | None = None
 
 
 def _get_dispatcher() -> WebhookDispatcher:
-    """Return the module-level dispatcher singleton, building on first use."""
+    """Return the module-level dispatcher singleton, building on first use.
+
+    Active mode requires the GitHub App to be configured (``_token_broker``
+    must not be ``None``). If the App is unconfigured and mode is ``active``,
+    the dispatcher falls back to ``off`` with a warning so the webhook handler
+    keeps returning 202s rather than crashing.
+    """
     global _dispatcher  # noqa: PLW0603
     if _dispatcher is None:
         mode = DispatchMode.parse(os.environ.get("CARETAKER_WEBHOOK_DISPATCH_MODE"))
-        _dispatcher = WebhookDispatcher(mode=mode)
+
+        context_factory = None
+        agent_runner = None
+        active_agents: frozenset[str] | None = None
+
+        if mode is DispatchMode.ACTIVE:
+            if _token_broker is None:
+                logger.warning(
+                    "CARETAKER_WEBHOOK_DISPATCH_MODE=active but GitHub App is not "
+                    "configured; downgrading to 'off'. Set CARETAKER_GITHUB_APP_ID "
+                    "and CARETAKER_GITHUB_APP_PRIVATE_KEY to enable active dispatch."
+                )
+                mode = DispatchMode.OFF
+            else:
+                from caretaker.config import MaintainerConfig
+                from caretaker.llm.router import LLMRouter
+
+                cfg_path = os.environ.get("CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml")
+                try:
+                    default_cfg = MaintainerConfig.from_yaml(cfg_path)
+                except Exception:
+                    logger.info(
+                        "No local maintainer config at %r; using defaults for active dispatch",
+                        cfg_path,
+                    )
+                    default_cfg = MaintainerConfig()
+
+                llm_router = LLMRouter(default_cfg.llm)
+                dry_run = os.environ.get("CARETAKER_DRY_RUN", "").lower() in ("1", "true", "yes")
+
+                context_factory = GitHubAppContextFactory(
+                    minter=_token_broker,
+                    llm_router=llm_router,
+                    default_config=default_cfg,
+                    dry_run=dry_run,
+                )
+                agent_runner = RegistryAgentRunner()
+
+                # CARETAKER_WEBHOOK_ACTIVE_AGENTS: comma-separated allow-list,
+                # e.g. "pr-reviewer,pr". When unset all resolved agents run.
+                raw_active = os.environ.get("CARETAKER_WEBHOOK_ACTIVE_AGENTS", "").strip()
+                if raw_active:
+                    active_agents = frozenset(
+                        name.strip() for name in raw_active.split(",") if name.strip()
+                    )
+                    logger.info(
+                        "webhook active dispatch allow-list: %s",
+                        sorted(active_agents),
+                    )
+
+        _dispatcher = WebhookDispatcher(
+            mode=mode,
+            context_factory=context_factory,
+            agent_runner=agent_runner,
+            active_agents=active_agents,
+        )
         logger.info("webhook dispatcher initialised mode=%s", mode.value)
     return _dispatcher
 

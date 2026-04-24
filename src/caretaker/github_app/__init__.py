@@ -13,6 +13,8 @@ and the FastAPI webhook receiver without circular imports.
 
 from __future__ import annotations
 
+from .agent_runner import RegistryAgentRunner
+from .context_factory import GitHubAppContextFactory
 from .dispatch_guard import (
     DispatchEvent,
     DispatchVerdict,
@@ -48,6 +50,8 @@ from .webhooks import (
 __all__ = [
     "EVENT_AGENT_MAP",
     "AppJWTSigner",
+    "GitHubAppContextFactory",
+    "RegistryAgentRunner",
     "DispatchEvent",
     "DispatchMode",
     "DispatchResult",
