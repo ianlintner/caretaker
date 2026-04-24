@@ -548,16 +548,12 @@ class GitHubClient:
         for idx, pr in enumerate(prs):
             var = f"n{idx}"
             variables[var] = pr.number
-            fields.append(
-                f"pr{idx}: pullRequest(number:${var}){{number mergeStateStatus}}"
-            )
+            fields.append(f"pr{idx}: pullRequest(number:${var}){{number mergeStateStatus}}")
         var_decls = "$owner:String!,$name:String!," + ",".join(
             f"$n{i}:Int!" for i in range(len(prs))
         )
         query = (
-            f"query({var_decls}){{"
-            f" repository(owner:$owner,name:$name){{ {' '.join(fields)} }}"
-            f"}}"
+            f"query({var_decls}){{ repository(owner:$owner,name:$name){{ {' '.join(fields)} }}}}"
         )
 
         try:

@@ -48,14 +48,10 @@ class _FakeShepherdGH:
         # Delta C surface
         self.update_branch_calls: list[tuple[int, str | None]] = []
 
-    async def list_pull_requests(
-        self, owner: str, repo: str, state: str = "open"
-    ) -> list[Any]:
+    async def list_pull_requests(self, owner: str, repo: str, state: str = "open") -> list[Any]:
         return list(self._open_prs)
 
-    async def enrich_merge_state_status(
-        self, owner: str, repo: str, prs: list[Any]
-    ) -> list[Any]:
+    async def enrich_merge_state_status(self, owner: str, repo: str, prs: list[Any]) -> list[Any]:
         self.enrich_calls += 1
         for pr in prs:
             pr.merge_state_status = self._merge_states.get(pr.number)
@@ -66,14 +62,10 @@ class _FakeShepherdGH:
     ) -> list[dict[str, object]]:
         return []
 
-    async def add_issue_comment(
-        self, owner: str, repo: str, number: int, body: str
-    ) -> None:
+    async def add_issue_comment(self, owner: str, repo: str, number: int, body: str) -> None:
         self.comments.append((number, body))
 
-    async def update_issue(
-        self, owner: str, repo: str, number: int, **kw: object
-    ) -> None:
+    async def update_issue(self, owner: str, repo: str, number: int, **kw: object) -> None:
         if kw.get("state") == "closed":
             self.closed.append(number)
 
@@ -96,16 +88,12 @@ class _FakeShepherdGH:
         # still see a successful rebase recorded.
         return self._update_branch_results.get(number, True)
 
-    async def get_check_runs(
-        self, owner: str, repo: str, ref: str
-    ) -> list[Any]:
+    async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[Any]:
         # Delta F surface — shepherd enriches PR context for stuck_pr_llm.
         # Empty is fine; stub doesn't need real check data for budget/filter tests.
         return []
 
-    async def get_pr_reviews(
-        self, owner: str, repo: str, number: int
-    ) -> list[Any]:
+    async def get_pr_reviews(self, owner: str, repo: str, number: int) -> list[Any]:
         # Delta F surface — see get_check_runs.
         return []
 
@@ -344,9 +332,7 @@ async def test_shepherd_inventory_failure_returns_error_without_raising() -> Non
     """One phase failing doesn't abort the run — errors are collected."""
 
     class _BrokenGH(_FakeShepherdGH):
-        async def list_pull_requests(
-            self, owner: str, repo: str, state: str = "open"
-        ) -> list[Any]:
+        async def list_pull_requests(self, owner: str, repo: str, state: str = "open") -> list[Any]:
             raise RuntimeError("GitHub 502")
 
     gh = _BrokenGH()
@@ -366,9 +352,7 @@ async def test_shepherd_update_issue_error_does_not_break_promote() -> None:
     """update_issue failing for a duplicate should not stop the promote phase."""
 
     class _UpdateBrokenGH(_FakeShepherdGH):
-        async def update_issue(
-            self, owner: str, repo: str, number: int, **kw: object
-        ) -> None:
+        async def update_issue(self, owner: str, repo: str, number: int, **kw: object) -> None:
             raise RuntimeError("update_issue API down")
 
     copilot_user = User(login="copilot-swe-agent", id=1, type="Bot")
@@ -715,9 +699,7 @@ async def test_shepherd_llm_escalation_honours_budget_and_marks_exhausted(
         call_order.append(ctx.pr.number)
         return _make_verdict()
 
-    monkeypatch.setattr(
-        "caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval
-    )
+    monkeypatch.setattr("caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval)
 
     report = await run_shepherd(gh, "o", "r", config, claude=_FakeClaude())
 
@@ -766,9 +748,7 @@ async def test_shepherd_llm_escalation_skips_non_candidate_statuses(
         called_numbers.append(ctx.pr.number)
         return _make_verdict()
 
-    monkeypatch.setattr(
-        "caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval
-    )
+    monkeypatch.setattr("caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval)
 
     report = await run_shepherd(gh, "o", "r", config, claude=_FakeClaude())
 
@@ -812,9 +792,7 @@ async def test_shepherd_llm_escalation_skips_already_handled_prs(
         called_numbers.append(ctx.pr.number)
         return _make_verdict()
 
-    monkeypatch.setattr(
-        "caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval
-    )
+    monkeypatch.setattr("caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval)
 
     report = await run_shepherd(gh, "o", "r", config, claude=_FakeClaude())
 
@@ -857,9 +835,7 @@ async def test_shepherd_llm_escalation_none_verdict_consumes_budget(
         calls.append(ctx.pr.number)
         return None  # Simulate StructuredCompleteError → None
 
-    monkeypatch.setattr(
-        "caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval
-    )
+    monkeypatch.setattr("caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval)
 
     report = await run_shepherd(gh, "o", "r", config, claude=_FakeClaude())
 
@@ -899,9 +875,7 @@ async def test_shepherd_llm_escalation_honours_dry_run(
         eval_called = True
         return _make_verdict()
 
-    monkeypatch.setattr(
-        "caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval
-    )
+    monkeypatch.setattr("caretaker.pr_agent.shepherd.evaluate_stuck_pr_llm", fake_eval)
 
     report = await run_shepherd(gh, "o", "r", config, claude=_FakeClaude())
 

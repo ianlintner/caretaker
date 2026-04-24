@@ -142,9 +142,7 @@ def test_latest_non_yanked_none_input() -> None:
 async def test_fetch_pypi_package_info_success() -> None:
     payload = _pypi_info(releases={"0.19.2": [{"yanked": False}]})
     url = PYPI_JSON_URL.format(package=DEFAULT_CARETAKER_PACKAGE)
-    transport = _make_transport(
-        {url: httpx.Response(status_code=200, content=json.dumps(payload))}
-    )
+    transport = _make_transport({url: httpx.Response(status_code=200, content=json.dumps(payload))})
     async with httpx.AsyncClient(transport=transport) as client:
         info = await fetch_pypi_package_info(DEFAULT_CARETAKER_PACKAGE, client=client)
     assert info is not None
@@ -166,9 +164,7 @@ async def test_fetch_pypi_package_info_503_returns_none() -> None:
     # from a real 404 or the scanner would falsely flag packages as
     # missing during PyPI outages.
     url = PYPI_JSON_URL.format(package=DEFAULT_CARETAKER_PACKAGE)
-    transport = _make_transport(
-        {url: httpx.Response(status_code=503, json={"error": "upstream"})}
-    )
+    transport = _make_transport({url: httpx.Response(status_code=503, json={"error": "upstream"})})
     async with httpx.AsyncClient(transport=transport) as client:
         info = await fetch_pypi_package_info(DEFAULT_CARETAKER_PACKAGE, client=client)
     assert info is None
@@ -196,9 +192,7 @@ async def test_check_pypi_version_yanked_flows_through() -> None:
         }
     )
     url = PYPI_JSON_URL.format(package=DEFAULT_CARETAKER_PACKAGE)
-    transport = _make_transport(
-        {url: httpx.Response(status_code=200, content=json.dumps(payload))}
-    )
+    transport = _make_transport({url: httpx.Response(status_code=200, content=json.dumps(payload))})
     async with httpx.AsyncClient(transport=transport) as client:
         status = await check_pypi_version(DEFAULT_CARETAKER_PACKAGE, "0.7.2", client=client)
     assert status.yanked is True
@@ -221,9 +215,7 @@ async def test_scan_fleet_version_drift_identifies_drifting_repos() -> None:
         }
     )
     url = PYPI_JSON_URL.format(package=DEFAULT_CARETAKER_PACKAGE)
-    transport = _make_transport(
-        {url: httpx.Response(status_code=200, content=json.dumps(payload))}
-    )
+    transport = _make_transport({url: httpx.Response(status_code=200, content=json.dumps(payload))})
     pinned = {
         "ianlintner/space-tycoon": "0.7.2",
         "ianlintner/other-yanked": "0.7.2",
@@ -268,9 +260,7 @@ async def test_scan_fleet_version_drift_deduplicates_shared_versions() -> None:
     # sneak past review.
     payload = _pypi_info(releases={"0.19.2": [{"yanked": False}]})
     url = PYPI_JSON_URL.format(package=DEFAULT_CARETAKER_PACKAGE)
-    transport = _make_transport(
-        {url: httpx.Response(status_code=200, content=json.dumps(payload))}
-    )
+    transport = _make_transport({url: httpx.Response(status_code=200, content=json.dumps(payload))})
     pinned = {f"ianlintner/repo-{i}": "0.19.2" for i in range(8)}
     async with httpx.AsyncClient(transport=transport) as client:
         report = await scan_fleet_version_drift(pinned, client=client)

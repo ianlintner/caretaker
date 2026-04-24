@@ -1045,9 +1045,7 @@ async def test_create_or_update_file_preserves_existing_newline() -> None:
 # ── merge_state_status + update_pull_request_branch (Delta A) ──────────────
 
 
-def _shepherd_pr_payload(
-    number: int, mergeable_state: str | None = None
-) -> dict[str, object]:
+def _shepherd_pr_payload(number: int, mergeable_state: str | None = None) -> dict[str, object]:
     """Minimal PR REST payload used by the shepherd Delta A tests.
 
     Kept distinct from the ``_pr_payload`` helper defined earlier in the file
@@ -1116,9 +1114,7 @@ async def test_get_pr_merge_state_status_graphql_success() -> None:
         gh = GitHubClient(token="fake-token")
 
     gh._post = AsyncMock(  # type: ignore[method-assign]
-        return_value={
-            "data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}
-        }
+        return_value={"data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}}
     )
     result = await gh.get_pr_merge_state_status("o", "r", 42)
     assert result is MergeStateStatus.BEHIND
@@ -1207,12 +1203,8 @@ async def test_enrich_merge_state_status_falls_back_to_sequential() -> None:
             return {"errors": [{"message": "boom"}]}
         # Subsequent per-PR calls succeed with alternating statuses.
         if call_count["n"] == 2:
-            return {
-                "data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}
-            }
-        return {
-            "data": {"repository": {"pullRequest": {"mergeStateStatus": "DIRTY"}}}
-        }
+            return {"data": {"repository": {"pullRequest": {"mergeStateStatus": "BEHIND"}}}}
+        return {"data": {"repository": {"pullRequest": {"mergeStateStatus": "DIRTY"}}}}
 
     gh._post = AsyncMock(side_effect=fake_post)  # type: ignore[method-assign]
     result = await gh.enrich_merge_state_status("o", "r", prs)

@@ -225,9 +225,7 @@ async def _reap_stale_dirty_drafts(
             continue
         updated_at = _parse_dt(pr.updated_at)
         if updated_at is None:
-            logger.debug(
-                "shepherd: reaper skipping #%d (no parseable updated_at)", pr.number
-            )
+            logger.debug("shepherd: reaper skipping #%d (no parseable updated_at)", pr.number)
             continue
         age_days = (now - updated_at).days
         if age_days < threshold_days:
@@ -247,9 +245,7 @@ async def _reap_stale_dirty_drafts(
             logger.warning("shepherd: reap #%d failed: %s", pr.number, exc)
             continue
         closed.append(pr.number)
-        logger.info(
-            "shepherd: closed stale DIRTY draft #%d (age=%d days)", pr.number, age_days
-        )
+        logger.info("shepherd: closed stale DIRTY draft #%d (age=%d days)", pr.number, age_days)
     return closed
 
 
@@ -346,22 +342,16 @@ async def _escalate_stuck_prs(
         try:
             check_runs = await github.get_check_runs(owner, repo, pr.head_sha)
         except Exception as exc:
-            logger.warning(
-                "shepherd: check_runs fetch for #%d failed: %s", pr.number, exc
-            )
+            logger.warning("shepherd: check_runs fetch for #%d failed: %s", pr.number, exc)
         try:
             reviews = await github.get_pr_reviews(owner, repo, pr.number)
         except Exception as exc:
-            logger.warning(
-                "shepherd: reviews fetch for #%d failed: %s", pr.number, exc
-            )
+            logger.warning("shepherd: reviews fetch for #%d failed: %s", pr.number, exc)
 
         now = datetime.now(UTC)
         created_at = _parse_dt(pr.created_at)
         updated_at = _parse_dt(pr.updated_at)
-        age_hours = (
-            (now - created_at).total_seconds() / 3600.0 if created_at is not None else 0.0
-        )
+        age_hours = (now - created_at).total_seconds() / 3600.0 if created_at is not None else 0.0
         last_activity_hours: float | None = (
             (now - updated_at).total_seconds() / 3600.0 if updated_at is not None else None
         )
@@ -568,10 +558,7 @@ async def run_shepherd(
     else:
         try:
             already_handled = frozenset(
-                report.closed_duplicate
-                + report.promoted
-                + report.rebased
-                + report.closed_stale
+                report.closed_duplicate + report.promoted + report.rebased + report.closed_stale
             )
             calls_spent, verdicts, exhausted = await _escalate_stuck_prs(
                 github,
