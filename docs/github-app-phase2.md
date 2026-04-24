@@ -42,7 +42,7 @@ Set via `CARETAKER_WEBHOOK_DISPATCH_MODE` on the backend:
 |---|---|
 | `off` (default) | Webhook endpoint is a plain 202-acking recorder. Matches Phase 1 exactly. |
 | `shadow` | Dispatcher resolves agents, emits metrics + structured logs, does **not** run any agent. Safe everywhere. |
-| `active` | Dispatcher runs resolved agents. **Not wired yet** — raises `NotImplementedError` (which the dispatcher catches and records as `outcome=error`). Follow-up PR lands this. |
+| `active` | Dispatcher runs resolved agents via the injected `AgentContextFactory` + `AgentRunner`. A `CARETAKER_WEBHOOK_ACTIVE_AGENTS` allow-list lets you promote agents one at a time — un-promoted agents fall back to shadow logging. Misconfiguration (mode set but no factory wired) records `outcome=error` instead of silently doing nothing. |
 
 Unknown values downgrade to `off` with a warning log — never crash the
 webhook handler over a typo in an env var.
@@ -79,10 +79,13 @@ down":
 
 Deliberate cuts so this PR stays small:
 
-1. **Per-installation `AgentContext` construction.** Active mode needs
-   it (installation token → `GitHubClient`, `.github/maintainer/config.yml`
-   fetched via Contents API, memory store opened against the shared
-   backend). Separate PR.
+1. **Concrete `AgentContextFactory` + `AgentRunner` wiring.** The
+   dispatcher now accepts both as injected collaborators, and the
+   Protocols are defined in `caretaker.github_app.dispatcher`. The
+   concrete implementations (installation token → `GitHubClient`,
+   `.github/maintainer/config.yml` fetched via Contents API, memory
+   store opened against the shared backend, `AgentRegistry.run_one`
+   adapter) land in the follow-up PR that wires the backend startup.
 2. **Agent `event_payload` handling.** The base protocol already
    accepts `event_payload` but no agent currently uses it — that
    migration is per-agent and independent of the dispatcher.

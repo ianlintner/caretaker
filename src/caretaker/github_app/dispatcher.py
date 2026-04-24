@@ -45,7 +45,7 @@ import logging
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from caretaker.github_app.events import agents_for_event
 from caretaker.observability.metrics import (
@@ -55,9 +55,46 @@ from caretaker.observability.metrics import (
 )
 
 if TYPE_CHECKING:
+    from caretaker.agent_protocol import AgentContext
     from caretaker.github_app.webhooks import ParsedWebhook
 
 logger = logging.getLogger(__name__)
+
+
+class AgentContextFactory(Protocol):
+    """Build an :class:`AgentContext` for a parsed webhook.
+
+    Implementations resolve the installation token, construct a
+    ``GitHubClient``, fetch the target repo's maintainer config, and
+    open a ``MemoryStore`` — all the plumbing active-mode dispatch needs
+    but the dispatcher itself deliberately stays ignorant of. The
+    concrete factory lives in a separate module so ``WebhookDispatcher``
+    has zero dependency on the GitHub App credential broker at import
+    time; ``off`` / ``shadow`` modes never build a context.
+    """
+
+    async def build(self, parsed: ParsedWebhook) -> AgentContext: ...
+
+
+class AgentRunner(Protocol):
+    """Execute a single named agent against a built ``AgentContext``.
+
+    The dispatcher doesn't know about ``AgentRegistry`` / ``BaseAgent``
+    / ``OrchestratorState`` — it delegates agent execution entirely.
+    This keeps the active-mode unit tests free of agent-runtime
+    imports.
+
+    Returns a bounded outcome label suitable for Prometheus: one of
+    ``"success"``, ``"failure"``, or ``"disabled"``.
+    """
+
+    async def run(
+        self,
+        *,
+        agent_name: str,
+        context: AgentContext,
+        parsed: ParsedWebhook,
+    ) -> str: ...
 
 
 class DispatchMode(StrEnum):
@@ -123,9 +160,18 @@ class WebhookDispatcher:
         *,
         mode: DispatchMode = DispatchMode.OFF,
         agent_timeout_seconds: float = _DEFAULT_AGENT_TIMEOUT_SECONDS,
+        context_factory: AgentContextFactory | None = None,
+        agent_runner: AgentRunner | None = None,
+        active_agents: frozenset[str] | None = None,
     ) -> None:
         self._mode = mode
         self._agent_timeout = agent_timeout_seconds
+        self._context_factory = context_factory
+        self._agent_runner = agent_runner
+        # None = all agents resolved by ``agents_for_event`` run in active
+        # mode. A set = the allow-list; agents not in it silently fall back
+        # to ``shadow`` treatment so we can roll out one agent at a time.
+        self._active_agents = active_agents
 
     @property
     def mode(self) -> DispatchMode:
@@ -206,23 +252,102 @@ class WebhookDispatcher:
         return f"shadow-dispatched to {len(agents)} agents"
 
     async def _run_active(self, parsed: ParsedWebhook, agents: tuple[str, ...]) -> tuple[str, str]:
-        """Run resolved agents (follow-up PR).
+        """Run resolved agents against a per-installation context.
 
-        Intentionally not implemented. Active mode requires a
-        per-installation ``AgentContext`` factory — installation token
-        from the broker, ``.github/maintainer/config.yml`` fetched from
-        the target repo via Contents API, ``MemoryStore`` opened
-        against the shared backend, ``GitHubClient`` constructed from
-        the installation token — which is a separate, testable piece
-        of work. Raising here ensures an operator who sets
-        ``CARETAKER_WEBHOOK_DISPATCH_MODE=active`` before that work
-        lands gets a loud failure instead of a silent no-op.
+        Agents in :attr:`_active_agents` (or all, when ``None``) run
+        through :attr:`_agent_runner`; others fall back to shadow
+        logging so a partial allow-list still produces observability
+        for the un-promoted agents during rollout. Each invocation is
+        bounded by :attr:`_agent_timeout` and fully error-isolated —
+        one failing agent never affects siblings.
+
+        Missing factory / runner is a misconfiguration: raises so
+        ``dispatch``'s outer guard records ``outcome="error"`` instead
+        of silently doing nothing.
         """
-        raise NotImplementedError(
-            "active dispatch mode is not yet wired — run shadow mode until "
-            "per-installation AgentContext construction lands (see "
-            "docs/github-app-phase2.md)."
-        )
+        if self._context_factory is None or self._agent_runner is None:
+            raise RuntimeError(
+                "active dispatch mode requires both context_factory and "
+                "agent_runner — pass them to WebhookDispatcher(...) or "
+                "keep mode=shadow until they are wired (see "
+                "docs/github-app-phase2.md)."
+            )
+
+        context = await self._context_factory.build(parsed)
+        ran: list[str] = []
+        shadowed: list[str] = []
+        failed: list[str] = []
+
+        for agent in agents:
+            if self._active_agents is not None and agent not in self._active_agents:
+                # Outside the allow-list → shadow. Keeps dashboards
+                # populated for un-promoted agents during rollout.
+                self._log_agent_would_run(parsed, agent)
+                record_worker_job(job=f"webhook:{agent}", outcome="shadow", duration=0.0)
+                shadowed.append(agent)
+                continue
+
+            outcome = await self._run_one_active_agent(parsed, agent, context)
+            if outcome == "success":
+                ran.append(agent)
+            else:
+                failed.append(agent)
+
+        self._log(parsed, "active", agents)
+        detail = f"active ran={len(ran)} failed={len(failed)} shadowed={len(shadowed)}"
+        outcome = "active" if not failed else "active_partial"
+        return outcome, detail
+
+    async def _run_one_active_agent(
+        self,
+        parsed: ParsedWebhook,
+        agent: str,
+        context: AgentContext,
+    ) -> str:
+        """Run a single agent with timeout + error isolation.
+
+        Returns the per-agent outcome label recorded on
+        ``worker_jobs_total{job="webhook:<agent>"}``.
+        """
+        assert self._agent_runner is not None  # guarded by _run_active
+        started = time.monotonic()
+        outcome = "failure"
+        try:
+            outcome = await asyncio.wait_for(
+                self._agent_runner.run(
+                    agent_name=agent,
+                    context=context,
+                    parsed=parsed,
+                ),
+                timeout=self._agent_timeout,
+            )
+        except TimeoutError:
+            logger.error(
+                "webhook active agent timeout agent=%s event=%s delivery=%s timeout=%.1fs",
+                agent,
+                parsed.event_type,
+                parsed.delivery_id,
+                self._agent_timeout,
+            )
+            record_error(kind="webhook_dispatch")
+            outcome = "timeout"
+        except Exception as exc:
+            logger.exception(
+                "webhook active agent failed agent=%s event=%s delivery=%s: %s",
+                agent,
+                parsed.event_type,
+                parsed.delivery_id,
+                exc,
+            )
+            record_error(kind="webhook_dispatch")
+            outcome = "failure"
+        finally:
+            record_worker_job(
+                job=f"webhook:{agent}",
+                outcome=outcome,
+                duration=time.monotonic() - started,
+            )
+        return outcome
 
     # ── Logging helpers ─────────────────────────────────────────────
 
@@ -278,6 +403,8 @@ def dispatch_in_background(
 
 
 __all__ = [
+    "AgentContextFactory",
+    "AgentRunner",
     "DispatchMode",
     "DispatchResult",
     "WebhookDispatcher",

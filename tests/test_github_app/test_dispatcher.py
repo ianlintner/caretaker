@@ -7,6 +7,8 @@ import asyncio
 import pytest
 
 from caretaker.github_app.dispatcher import (
+    AgentContextFactory,
+    AgentRunner,
     DispatchMode,
     WebhookDispatcher,
     dispatch_in_background,
@@ -115,18 +117,204 @@ async def test_shadow_mode_emits_structured_log_per_agent(
 # ── active mode ──────────────────────────────────────────────────────
 
 
+class _FakeContext:
+    """Stand-in for ``AgentContext`` — the dispatcher treats it as opaque."""
+
+
+class _FakeFactory:
+    """Records build() calls so tests can assert we don't build once per agent."""
+
+    def __init__(self) -> None:
+        self.builds: list[ParsedWebhook] = []
+
+    async def build(self, parsed: ParsedWebhook) -> _FakeContext:  # type: ignore[override]
+        self.builds.append(parsed)
+        return _FakeContext()
+
+
+class _RecordingRunner:
+    """Runner that returns a caller-supplied outcome per agent name."""
+
+    def __init__(self, outcomes: dict[str, str]) -> None:
+        self._outcomes = outcomes
+        self.calls: list[str] = []
+
+    async def run(
+        self,
+        *,
+        agent_name: str,
+        context: _FakeContext,  # type: ignore[override]
+        parsed: ParsedWebhook,
+    ) -> str:
+        self.calls.append(agent_name)
+        outcome = self._outcomes.get(agent_name, "success")
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 @pytest.mark.asyncio
-async def test_active_mode_surfaces_error_outcome_until_wired() -> None:
-    """Active mode is intentionally unwired — dispatch catches the
-    NotImplementedError and maps it to an ``error`` outcome so a
-    premature flip still produces a metric instead of a crash."""
+async def test_active_mode_without_factory_or_runner_surfaces_error() -> None:
+    """Missing collaborators is a misconfiguration — dispatch must record
+    an error outcome loudly rather than silently running nothing."""
     dispatcher = WebhookDispatcher(mode=DispatchMode.ACTIVE)
     result = await dispatcher.dispatch(_make_parsed())
 
     assert result.mode is DispatchMode.ACTIVE
     assert result.outcome == "error"
     assert result.detail is not None
-    assert "NotImplementedError" in result.detail
+    assert "context_factory" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_active_mode_runs_resolved_agents_and_builds_context_once() -> None:
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"pr": "success", "pr-reviewer": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    assert result.outcome == "active"
+    assert result.detail == "active ran=2 failed=0 shadowed=0"
+    # Context must be built once per dispatch, not once per agent — it's
+    # the installation token / GitHubClient that's expensive to mint.
+    assert len(factory.builds) == 1
+    # Runner called once per agent, in order.
+    assert runner.calls == ["pr", "pr-reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_active_mode_allow_list_shadows_unlisted_agents() -> None:
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"pr-reviewer": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+        active_agents=frozenset({"pr-reviewer"}),
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    # Only pr-reviewer runs; "pr" is shadowed.
+    assert runner.calls == ["pr-reviewer"]
+    assert result.outcome == "active"
+    assert result.detail == "active ran=1 failed=0 shadowed=1"
+
+
+@pytest.mark.asyncio
+async def test_active_mode_empty_allow_list_shadows_everything() -> None:
+    """A rollout starting with zero promoted agents still builds context
+    and logs — but never calls the runner."""
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+        active_agents=frozenset(),
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    assert runner.calls == []
+    assert result.outcome == "active"
+    assert result.detail == "active ran=0 failed=0 shadowed=2"
+
+
+@pytest.mark.asyncio
+async def test_active_mode_isolates_one_agent_failure_from_siblings() -> None:
+    """One agent raising must not abort the rest of the fan-out."""
+    factory = _FakeFactory()
+    runner = _RecordingRunner(
+        outcomes={
+            "pr": RuntimeError("pr agent exploded"),
+            "pr-reviewer": "success",
+        },
+    )
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    # Both agents were attempted — the second still ran after the first raised.
+    assert runner.calls == ["pr", "pr-reviewer"]
+    assert result.outcome == "active_partial"
+    assert result.detail == "active ran=1 failed=1 shadowed=0"
+
+
+@pytest.mark.asyncio
+async def test_active_mode_per_agent_timeout_maps_to_timeout_outcome() -> None:
+    """A slow agent must be bounded by ``agent_timeout_seconds`` and
+    surface as ``active_partial`` without hanging the dispatch."""
+
+    class _SlowRunner:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def run(
+            self,
+            *,
+            agent_name: str,
+            context: _FakeContext,  # type: ignore[override]
+            parsed: ParsedWebhook,
+        ) -> str:
+            self.calls.append(agent_name)
+            await asyncio.sleep(10.0)
+            return "success"  # pragma: no cover — timeout fires first
+
+    factory = _FakeFactory()
+    runner = _SlowRunner()
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        agent_timeout_seconds=0.05,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+        active_agents=frozenset({"pr"}),  # keep the fan-out to one agent
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    assert runner.calls == ["pr"]
+    assert result.outcome == "active_partial"
+    assert "failed=1" in (result.detail or "")
+
+
+@pytest.mark.asyncio
+async def test_active_mode_factory_failure_records_error_outcome() -> None:
+    """If the factory itself raises (e.g. installation token mint
+    failed), dispatch must record ``error`` — not partial success."""
+
+    class _BrokenFactory:
+        async def build(self, parsed: ParsedWebhook) -> _FakeContext:  # type: ignore[override]
+            raise RuntimeError("token broker unreachable")
+
+    runner = _RecordingRunner(outcomes={})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=_BrokenFactory(),  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    result = await dispatcher.dispatch(_make_parsed())
+
+    assert result.outcome == "error"
+    assert runner.calls == []
+    assert "token broker unreachable" in (result.detail or "")
+
+
+def test_protocols_are_runtime_importable() -> None:
+    """Protocols are exported from the dispatcher module so third-party
+    implementations can type-check against them."""
+    assert AgentContextFactory is not None
+    assert AgentRunner is not None
 
 
 # ── dispatch() error isolation ──────────────────────────────────────
