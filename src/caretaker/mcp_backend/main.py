@@ -30,8 +30,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from caretaker.github_app import (
+    DispatchMode,
+    WebhookDispatcher,
     WebhookSignatureError,
     agents_for_event,
+    dispatch_in_background,
     parse_webhook,
     verify_signature,
 )
@@ -334,6 +337,25 @@ async def _remember_delivery(delivery_id: str) -> bool:
 _token_broker = build_token_broker()
 
 
+# ── Webhook dispatcher (Phase 2) ──────────────────────────────────────
+#
+# Mode is read from ``CARETAKER_WEBHOOK_DISPATCH_MODE`` once at import
+# time. Defaults to ``off`` so existing deployments are unchanged; set
+# to ``shadow`` to observe real traffic before enabling execution.
+
+_dispatcher: WebhookDispatcher | None = None
+
+
+def _get_dispatcher() -> WebhookDispatcher:
+    """Return the module-level dispatcher singleton, building on first use."""
+    global _dispatcher  # noqa: PLW0603
+    if _dispatcher is None:
+        mode = DispatchMode.parse(os.environ.get("CARETAKER_WEBHOOK_DISPATCH_MODE"))
+        _dispatcher = WebhookDispatcher(mode=mode)
+        logger.info("webhook dispatcher initialised mode=%s", mode.value)
+    return _dispatcher
+
+
 # ── Models -------------------------------------------------------------
 
 
@@ -489,9 +511,9 @@ def _webhook_secret() -> str:
 async def github_webhook(request: Request) -> WebhookAck:
     """Receive, verify, and acknowledge a GitHub webhook.
 
-    In Phase 1 this endpoint only *records* deliveries — it does not yet
-    run agents.  Phase 2 pilots the security agent by wiring the matching
-    agent name(s) from :func:`agents_for_event` into the orchestrator.
+    Signature + dedup run inline; agent dispatch (when the dispatcher
+    is in ``shadow`` or ``active`` mode) runs in a background task so
+    this handler returns well under GitHub's 10-second retry budget.
     """
     secret = _webhook_secret()
     if not secret:
@@ -533,6 +555,13 @@ async def github_webhook(request: Request) -> WebhookAck:
         not is_new,
         agents,
     )
+
+    # Only dispatch fresh deliveries — GitHub retries with the same
+    # delivery id on non-2xx, and we already acked once.
+    if is_new:
+        dispatcher = _get_dispatcher()
+        if dispatcher.mode is not DispatchMode.OFF:
+            dispatch_in_background(dispatcher, parsed)
 
     return WebhookAck(
         status="accepted",
