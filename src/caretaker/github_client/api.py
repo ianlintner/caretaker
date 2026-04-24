@@ -417,6 +417,42 @@ class GitHubClient:
             return []
         return [int(n["number"]) for n in nodes if n and "number" in n]
 
+    async def mark_pull_request_ready(self, pr_node_id: str) -> bool:
+        """Flip a draft PR to ready-for-review via GraphQL mutation.
+
+        Uses the ``markPullRequestReadyForReview`` mutation which requires
+        the global node ID (``PR.node_id``, not the integer number).
+        Returns ``True`` on success, ``False`` if the mutation reports errors
+        or the request fails.
+        """
+        mutation = (
+            "mutation($id:ID!){"
+            " markPullRequestReadyForReview(input:{pullRequestId:$id}){"
+            "  pullRequest{isDraft}"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={"query": mutation, "variables": {"id": pr_node_id}},
+            )
+        except Exception as exc:
+            logger.warning("markPullRequestReadyForReview failed for %s: %s", pr_node_id, exc)
+            return False
+        if result and result.get("errors"):
+            logger.warning(
+                "markPullRequestReadyForReview errors for %s: %s",
+                pr_node_id,
+                result["errors"],
+            )
+            return False
+        try:
+            is_draft = result["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"]
+            return not is_draft
+        except (KeyError, TypeError):
+            return result is not None and "errors" not in result
+
     async def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = "squash"
     ) -> bool:
@@ -1303,6 +1339,7 @@ class GitHubClient:
             mergeable=data.get("mergeable"),
             merged=data.get("merged", False),
             draft=data.get("draft", False),
+            node_id=data.get("node_id", ""),
             labels=[
                 Label(name=lbl["name"], color=lbl.get("color", ""))
                 for lbl in data.get("labels", [])

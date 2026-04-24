@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from caretaker.pr_agent.pr_triage import ready_valid_copilot_drafts
 from caretaker.upgrade_agent.planner import UpgradePlanner
 from caretaker.upgrade_agent.release_checker import fetch_releases, needs_upgrade
 
@@ -24,6 +25,7 @@ class UpgradeAgentReport:
     upgrade_needed: bool = False
     upgrade_issue: int | None = None
     superseded_prs: list[int] = field(default_factory=list)
+    readied_draft_prs: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -86,5 +88,26 @@ class UpgradeAgent:
         except Exception as e:
             logger.error("Upgrade check failed: %s", e)
             report.errors.append(str(e))
+
+        # Promote our own draft upgrade PRs once CI passes, regardless of
+        # whether an upgrade was needed this run.  This closes the loop where
+        # Copilot opens upgrade PRs as drafts and they stall forever because
+        # pr_ci_approver isn't enabled on the consumer repo.
+        if self._config.auto_ready_drafts:
+            try:
+                open_prs = await self._github.list_pull_requests(
+                    self._owner, self._repo, state="open"
+                )
+                report.readied_draft_prs = await ready_valid_copilot_drafts(
+                    self._github, self._owner, self._repo, open_prs
+                )
+                if report.readied_draft_prs:
+                    logger.info(
+                        "auto_ready_drafts: promoted %d draft PR(s) to ready-for-review: %s",
+                        len(report.readied_draft_prs),
+                        report.readied_draft_prs,
+                    )
+            except Exception as e:
+                logger.warning("auto_ready_drafts check failed: %s", e)
 
         return report

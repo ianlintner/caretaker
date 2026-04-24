@@ -158,6 +158,11 @@ class UpgradeAgentConfig(StrictBaseModel):
     strategy: Literal["auto-minor", "auto-patch", "latest", "pinned", "manual"] = "auto-minor"
     channel: Literal["stable", "preview"] = "stable"
     auto_merge_non_breaking: bool = True
+    # When True, the upgrade-agent will mark its own draft PRs ready-for-review
+    # once all required CI checks pass.  This closes the loop where Copilot opens
+    # upgrade PRs as drafts and they never auto-promote because ``pr_ci_approver``
+    # isn't enabled on the consumer repo.
+    auto_ready_drafts: bool = True
 
 
 class EscalationConfig(StrictBaseModel):
@@ -586,10 +591,13 @@ class PRCIApproverConfig(StrictBaseModel):
             "the-care-taker[bot]",
         ]
     )
-    # When True, call the approve endpoint. When False (default) the agent
-    # only *surfaces* stuck runs in the digest and as a maintainer:escalated
+    # When True, call the approve endpoint. When False the agent only
+    # *surfaces* stuck runs in the digest and as a maintainer:escalated
     # issue hint — no side effects on GitHub.
-    auto_approve: bool = False
+    # Defaulting to True because the ``allowed_actors`` list is intentionally
+    # tight (bots only) and the common fleet issue is upgrade PRs that stall
+    # forever awaiting a manual Actions UI click.
+    auto_approve: bool = True
     # Maximum runs to process per caretaker run (cap API usage).
     max_runs_per_run: int = 25
     # Skip runs older than this many hours (avoids approving ancient runs

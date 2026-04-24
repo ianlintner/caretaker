@@ -777,5 +777,315 @@ def init_workflow(output: str, llm_provider: str, force: bool) -> None:
     click.echo("  3. Commit and push — first scheduled run fires within 15 min.")
 
 
+@main.group("fleet")
+def fleet_group() -> None:  # pragma: no cover
+    """Commands for auditing the caretaker consumer fleet."""
+
+
+@fleet_group.command("lag")
+@click.option(
+    "--fleet",
+    "fleet_file",
+    default="docs/fleet.yml",
+    show_default=True,
+    help="Path to the fleet membership YAML (docs/fleet.yml).",
+)
+@click.option(
+    "--releases",
+    "releases_file",
+    default="releases.json",
+    show_default=True,
+    help="Path to releases.json that records the latest caretaker version.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Write the JSON report to this file in addition to stdout.",
+)
+@click.option(
+    "--fail-on-violations",
+    is_flag=True,
+    default=False,
+    help="Exit with code 1 when any repo violates the lag or stuck-PR thresholds.",
+)
+@click.option(
+    "--file-issues",
+    is_flag=True,
+    default=False,
+    help="Open a GitHub Issue in each laggard repo (requires GH_TOKEN env var).",
+)
+def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
+    fleet_file: str,
+    releases_file: str,
+    output: str | None,
+    fail_on_violations: bool,
+    file_issues: bool,
+) -> None:
+    """Audit consumer repos for version lag and stuck upgrade PRs.
+
+    Reads docs/fleet.yml for the list of repos and releases.json for the
+    latest caretaker version, then queries the GitHub API to check each
+    repo's pinned version and open upgrade PRs.
+
+    Exit codes:
+      0 — all repos are within the allowed lag window
+      1 — one or more repos violate lag/stuck-PR thresholds (with --fail-on-violations)
+      2 — internal error (missing files, bad auth, etc.)
+
+    \b
+    Examples
+    --------
+    # Print a summary table to stdout
+    caretaker fleet lag
+
+    # Write JSON report and fail CI if any violations found
+    caretaker fleet lag --output fleet-lag-report.json --fail-on-violations
+    """
+    import datetime
+    import json as _json
+    import re
+    import urllib.request as _req
+    from pathlib import Path as _Path
+    from typing import Any
+
+    import yaml  # already a transitive dep via pyyaml
+
+    # ------------------------------------------------------------------
+    # Load fleet config
+    # ------------------------------------------------------------------
+    fleet_path = _Path(fleet_file)
+    if not fleet_path.is_file():
+        click.echo(f"fleet lag: fleet file not found: {fleet_file}", err=True)
+        raise SystemExit(2)
+
+    releases_path = _Path(releases_file)
+    if not releases_path.is_file():
+        click.echo(f"fleet lag: releases file not found: {releases_file}", err=True)
+        raise SystemExit(2)
+
+    fleet_cfg = yaml.safe_load(fleet_path.read_text())
+    thresholds = fleet_cfg.get("thresholds", {})
+    max_lag_minor: int = thresholds.get("max_version_lag_minor", 2)
+    max_stuck_days: int = thresholds.get("max_stuck_pr_days", 7)
+
+    releases_data = _json.loads(releases_path.read_text())
+    latest_version: str = releases_data["releases"][0]["version"]
+
+    def _parse_version(v: str) -> tuple[int, int, int]:
+        """Parse 'X.Y.Z' → (X, Y, Z); fall back to (0, 0, 0) on error."""
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v.lstrip("v"))
+        if not m:
+            return (0, 0, 0)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    latest_tuple = _parse_version(latest_version)
+
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+
+    def _gh_get(path: str) -> dict[str, Any] | list[Any] | None:
+        """Call the GitHub REST API; return parsed JSON or None on error."""
+        url = f"https://api.github.com{path}"
+        headers: dict[str, str] = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+        try:
+            req = _req.Request(url, headers=headers)
+            with _req.urlopen(req, timeout=15) as resp:
+                result: dict[str, Any] | list[Any] = _json.loads(resp.read())
+                return result
+        except Exception as exc:  # pragma: no cover
+            click.echo(f"  [warn] GitHub API error for {path}: {exc}", err=True)
+            return None
+
+    # ------------------------------------------------------------------
+    # Audit each repo
+    # ------------------------------------------------------------------
+    now = datetime.datetime.now(datetime.UTC)
+    results: list[dict[str, Any]] = []
+    violations: list[str] = []
+
+    for entry in fleet_cfg.get("fleet", []):
+        repo: str = entry["repo"]
+        role: str = entry.get("role", "production")
+        notes: str = entry.get("notes", "")
+
+        # 1. Fetch pinned version
+        pinned_version = "unknown"
+        version_resp = _gh_get(f"/repos/{repo}/contents/.github/maintainer/.version")
+        if isinstance(version_resp, dict) and "content" in version_resp:
+            import base64
+
+            raw = base64.b64decode(version_resp["content"]).decode().strip()
+            pinned_version = raw
+
+        pinned_tuple = _parse_version(pinned_version)
+        same_major = latest_tuple[0] == pinned_tuple[0]
+        minor_lag = (latest_tuple[1] - pinned_tuple[1]) if same_major else 99
+
+        # 2. Fetch open upgrade PRs
+        prs_resp = _gh_get(f"/repos/{repo}/pulls?state=open&per_page=50")
+        open_upgrade_prs: list[dict[str, Any]] = []
+        if isinstance(prs_resp, list):
+            for pr in prs_resp:
+                title: str = pr.get("title", "")
+                if "upgrade" in title.lower() and "caretaker" in title.lower():
+                    created_at_str: str = pr.get("created_at", "")
+                    try:
+                        created_at = datetime.datetime.fromisoformat(
+                            created_at_str.rstrip("Z") + "+00:00"
+                        )
+                        age_days = (now - created_at).days
+                    except ValueError:
+                        age_days = 0
+                    open_upgrade_prs.append(
+                        {
+                            "number": pr["number"],
+                            "title": title,
+                            "draft": pr.get("draft", False),
+                            "age_days": age_days,
+                        }
+                    )
+
+        stuck_prs = [p for p in open_upgrade_prs if p["age_days"] > max_stuck_days]
+
+        # 3. Determine violations
+        repo_violations: list[str] = []
+        if pinned_version != "unknown" and minor_lag >= max_lag_minor:
+            repo_violations.append(
+                f"version lag {minor_lag} minor versions "
+                f"(pinned={pinned_version} latest={latest_version})"
+            )
+        for stuck in stuck_prs:
+            repo_violations.append(
+                f"upgrade PR #{stuck['number']} stuck for {stuck['age_days']} days"
+            )
+
+        status = "OK" if not repo_violations else "VIOLATION"
+        if repo_violations:
+            violations.append(repo)
+
+        result_entry = {
+            "repo": repo,
+            "role": role,
+            "pinned_version": pinned_version,
+            "latest_version": latest_version,
+            "minor_lag": minor_lag,
+            "open_upgrade_prs": open_upgrade_prs,
+            "stuck_prs_count": len(stuck_prs),
+            "violations": repo_violations,
+            "status": status,
+        }
+        if notes:
+            result_entry["notes"] = notes
+        results.append(result_entry)
+
+    # ------------------------------------------------------------------
+    # Optionally file GitHub Issues for violations
+    # ------------------------------------------------------------------
+    if file_issues and violations and gh_token:
+        for entry_result in results:
+            if entry_result["status"] != "VIOLATION":
+                continue
+            repo = entry_result["repo"]
+            body_lines = [
+                "## caretaker Fleet Lag Alert",
+                "",
+                "This repo is lagging behind the latest caretaker release.",
+                "",
+                "| Field | Value |",
+                "|---|---|",
+                f"| Pinned version | `{entry_result['pinned_version']}` |",
+                f"| Latest version | `{entry_result['latest_version']}` |",
+                f"| Minor version lag | {entry_result['minor_lag']} |",
+                f"| Stuck upgrade PRs | {entry_result['stuck_prs_count']} |",
+                "",
+                "**Violations:**",
+            ]
+            for v in entry_result["violations"]:
+                body_lines.append(f"- {v}")
+            body_lines += [
+                "",
+                "_Auto-filed by `caretaker fleet lag --file-issues`._",
+            ]
+            payload = _json.dumps(
+                {
+                    "title": (
+                        f"[caretaker] Fleet lag: pinned to"
+                        f" {entry_result['pinned_version']},"
+                        f" latest is {latest_version}"
+                    ),
+                    "body": "\n".join(body_lines),
+                    "labels": ["caretaker:fleet-lag"],
+                }
+            ).encode()
+            url = f"https://api.github.com/repos/{repo}/issues"
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {gh_token}",
+                "Content-Type": "application/json",
+            }
+            try:
+                req = _req.Request(url, data=payload, headers=headers, method="POST")
+                with _req.urlopen(req, timeout=15) as resp:
+                    issue_data = _json.loads(resp.read())
+                    click.echo(f"  [info] Filed issue #{issue_data['number']} in {repo}")
+            except Exception as exc:  # pragma: no cover
+                click.echo(f"  [warn] Failed to file issue in {repo}: {exc}", err=True)
+
+    # ------------------------------------------------------------------
+    # Render output
+    # ------------------------------------------------------------------
+    report: dict[str, Any] = {
+        "generated_at": now.isoformat(),
+        "latest_caretaker_version": latest_version,
+        "thresholds": {
+            "max_version_lag_minor": max_lag_minor,
+            "max_stuck_pr_days": max_stuck_days,
+        },
+        "summary": {
+            "total_repos": len(results),
+            "ok": sum(1 for r in results if r["status"] == "OK"),
+            "violations": len(violations),
+        },
+        "repos": results,
+    }
+
+    report_json = _json.dumps(report, indent=2)
+
+    if output:
+        _Path(output).write_text(report_json)
+        click.echo(f"Report written to {output}")
+
+    # Print a compact table to stdout
+    click.echo(f"\nFleet lag report — latest caretaker: v{latest_version}\n" + "-" * 72)
+    col = "{:<35} {:<10} {:<10} {:<10} {}"
+    click.echo(col.format("REPO", "PINNED", "LAG", "STUCK_PRS", "STATUS"))
+    click.echo("-" * 72)
+    for r in results:
+        lag_str = f"+{r['minor_lag']}" if isinstance(r["minor_lag"], int) else "?"
+        click.echo(
+            col.format(
+                r["repo"].split("/")[1][:34],
+                r["pinned_version"],
+                lag_str,
+                str(r["stuck_prs_count"]),
+                r["status"],
+            )
+        )
+    click.echo("-" * 72)
+    click.echo(
+        f"Summary: {report['summary']['ok']} OK / "
+        f"{report['summary']['violations']} violation(s) / "
+        f"{report['summary']['total_repos']} total\n"
+    )
+
+    if violations and fail_on_violations:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

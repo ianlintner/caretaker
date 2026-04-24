@@ -131,6 +131,11 @@ class PullRequest(BaseModel):
     mergeable: bool | None = None
     merged: bool = False
     draft: bool = False
+    # GitHub's global node ID — required for GraphQL mutations such as
+    # markPullRequestReadyForReview.  Populated from the REST ``node_id``
+    # field; empty string when fetched via older code paths that pre-date
+    # this field.
+    node_id: str = ""
     labels: list[Label] = Field(default_factory=list)
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
