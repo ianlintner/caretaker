@@ -83,9 +83,7 @@ class DispatchMode(StrEnum):
         try:
             return cls(raw.strip().lower())
         except ValueError:
-            logger.warning(
-                "Unknown dispatch mode %r; defaulting to 'off'", raw
-            )
+            logger.warning("Unknown dispatch mode %r; defaulting to 'off'", raw)
             return cls.OFF
 
 
@@ -189,9 +187,7 @@ class WebhookDispatcher:
 
     # ── Mode implementations ─────────────────────────────────────────
 
-    def _run_shadow(
-        self, parsed: ParsedWebhook, agents: tuple[str, ...]
-    ) -> str:
+    def _run_shadow(self, parsed: ParsedWebhook, agents: tuple[str, ...]) -> str:
         """Record what *would* be dispatched without touching any agent.
 
         Shadow mode is the observation pass: we want to see real event
@@ -209,9 +205,7 @@ class WebhookDispatcher:
         self._log(parsed, "shadow", agents)
         return f"shadow-dispatched to {len(agents)} agents"
 
-    async def _run_active(
-        self, parsed: ParsedWebhook, agents: tuple[str, ...]
-    ) -> tuple[str, str]:
+    async def _run_active(self, parsed: ParsedWebhook, agents: tuple[str, ...]) -> tuple[str, str]:
         """Run resolved agents (follow-up PR).
 
         Intentionally not implemented. Active mode requires a
@@ -251,9 +245,7 @@ class WebhookDispatcher:
             list(agents),
         )
 
-    def _log_agent_would_run(
-        self, parsed: ParsedWebhook, agent: str
-    ) -> None:
+    def _log_agent_would_run(self, parsed: ParsedWebhook, agent: str) -> None:
         logger.info(
             "webhook shadow would-dispatch agent=%s event=%s action=%s "
             "delivery=%s installation=%s repository=%s",

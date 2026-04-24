@@ -105,9 +105,7 @@ async def test_shadow_mode_emits_structured_log_per_agent(
     with caplog.at_level("INFO", logger="caretaker.github_app.dispatcher"):
         await dispatcher.dispatch(_make_parsed(event="pull_request"))
 
-    would_run_lines = [
-        r.message for r in caplog.records if "would-dispatch" in r.message
-    ]
+    would_run_lines = [r.message for r in caplog.records if "would-dispatch" in r.message]
     # One line per agent registered for pull_request (pr + pr-reviewer).
     assert len(would_run_lines) == 2
     # Delivery id threads through so operators can grep by it.
@@ -145,9 +143,7 @@ async def test_dispatch_never_raises_even_on_internal_error(
     def boom(*_args: object, **_kwargs: object) -> list[str]:
         raise RuntimeError("agent map blew up")
 
-    monkeypatch.setattr(
-        "caretaker.github_app.dispatcher.agents_for_event", boom
-    )
+    monkeypatch.setattr("caretaker.github_app.dispatcher.agents_for_event", boom)
 
     dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
     result = await dispatcher.dispatch(_make_parsed())
