@@ -870,6 +870,17 @@ async def _probe_endpoint(github: GitHubClient, probe: _ScopeProbe) -> CheckResu
                 detail=f"403 scope-gap: needs {probe.scope} ({probe.needed_when})",
                 hint=probe.scope,
             )
+        # Rate-limit 403s are transient — treat as WARN so a momentary
+        # burst in the installation's quota doesn't hard-block the run.
+        lowered_message = message.casefold()
+        if "rate limit" in lowered_message:
+            return CheckResult(
+                category="github",
+                name=f"{probe.method} {probe.path}",
+                severity=Severity.WARN,
+                detail=f"403 rate-limit (transient; retry later): {message}",
+                hint=probe.scope,
+            )
         return CheckResult(
             category="github",
             name=f"{probe.method} {probe.path}",
