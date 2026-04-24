@@ -248,6 +248,51 @@ class TestCheckGithubScopes:
         assert any(path.endswith("/dependabot/alerts") for _m, path in calls)
 
     @pytest.mark.asyncio
+    async def test_403_rate_limit_is_warn(self) -> None:
+        """A 403 caused by API rate limiting is transient and must not block the run."""
+        calls: list[tuple[str, str]] = []
+        _rate_limit_message = (
+            "API rate limit exceeded for installation ID 124850811. "
+            "If you reach out to GitHub Support for help, please include "
+            "the request ID and timestamp."
+        )
+
+        class _RateLimitClient:
+            async def request(self, method: str, path: str, **_kw: Any) -> Any:
+                calls.append((method, path))
+
+                class _Resp:
+                    status_code = 403
+                    text = json.dumps({"message": _rate_limit_message})
+
+                    def json(self) -> dict[str, Any]:
+                        return {"message": _rate_limit_message}
+
+                return _Resp()
+
+        class _FakeCreds:
+            async def default_token(self, *, installation_id: int | None = None) -> str:  # noqa: ARG002
+                return "tok"
+
+        class _FakeGithub:
+            def __init__(self) -> None:
+                self._creds = _FakeCreds()
+                self._client = _RateLimitClient()
+
+            async def close(self) -> None:
+                return None
+
+        config = _load_config()
+        github = _FakeGithub()
+        rows = await check_github_scopes(config, github, env={"GITHUB_REPOSITORY": "o/r"})
+        # All repo-scoped probes return 403 rate-limit — none should be FAIL.
+        probe_rows = [r for r in rows if r.category == "github" and r.name != "GET /user"]
+        assert all(r.severity is Severity.WARN for r in probe_rows), (
+            f"Expected all probe rows to be WARN, got: {probe_rows}"
+        )
+        assert any("rate-limit" in (r.detail or "") for r in probe_rows)
+
+    @pytest.mark.asyncio
     async def test_disabled_security_agent_skips_probes(self) -> None:
         config = _load_config({"security_agent": {"enabled": False}})
         github, calls = _make_mock_github()
