@@ -98,6 +98,22 @@ class _FakeShepherdGH:
         return []
 
 
+def test_shepherd_config_rejects_zero_stale_dirty_days() -> None:
+    """`stale_dirty_days=0` would close every DIRTY draft on first run —
+    reject at config load so operators see the error immediately."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ShepherdConfig(stale_dirty_days=0)
+
+
+def test_shepherd_config_rejects_negative_max_llm_calls() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ShepherdConfig(max_llm_calls_per_run=-1)
+
+
 @pytest.mark.asyncio
 async def test_shepherd_disabled_returns_empty_report_without_listing_prs() -> None:
     """Disabled config is the byte-identical opt-out — no inventory call."""
