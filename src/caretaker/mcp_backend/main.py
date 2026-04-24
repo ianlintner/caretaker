@@ -496,8 +496,19 @@ def _enforce_auth(
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
-    """Basic health probe for Kubernetes or Container Apps."""
-    return {"status": "ok", "version": app.version}
+    """Basic health probe for Kubernetes or Container Apps.
+
+    Includes ``dispatch_mode`` so operators can verify the live webhook
+    dispatch configuration without reading env vars or restarting.
+    Also reports ``github_app_configured`` so staging/prod mismatches
+    are visible in monitoring dashboards.
+    """
+    return {
+        "status": "ok",
+        "version": app.version,
+        "dispatch_mode": _get_dispatcher().mode.value,
+        "github_app_configured": str(_token_broker is not None).lower(),
+    }
 
 
 @app.get("/mcp/tools")
