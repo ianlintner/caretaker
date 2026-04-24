@@ -1,0 +1,60 @@
+# Fleet membership for caretaker's own consumer repos.
+#
+# The ``caretaker fleet lag`` CLI command and the ``fleet-lag-report.yml``
+# CI workflow both read this file to determine which repos to audit.
+#
+# Schema
+# ------
+# fleet:
+#   - repo:     "<owner>/<repo>"          # required
+#     role:     qa | production | demo    # optional, default: production
+#     notes:    "..."                     # optional free-text
+#
+# Thresholds (applied across all entries unless per-repo overrides are added):
+#   max_version_lag_minor: 2   # fail if pinned is ≥2 minor versions behind latest
+#   max_stuck_pr_days:     7   # fail if an open upgrade PR is older than 7 days
+
+thresholds:
+  max_version_lag_minor: 2
+  max_stuck_pr_days: 7
+
+fleet:
+  - repo: ianlintner/caretaker-qa
+    role: qa
+    notes: "QA testbed — intentionally keeps scenario fixture PRs open; version lag expected."
+
+  - repo: ianlintner/audio_engineer
+    role: production
+    notes: "Workflows:write parse error fixed 2026-04-23 (PR #70 merged)."
+
+  - repo: ianlintner/kubernetes-apply-vscode
+    role: production
+
+  - repo: ianlintner/Example-React-AI-Chat-App
+    role: demo
+
+  - repo: ianlintner/python_dsa
+    role: production
+
+  - repo: ianlintner/flashcards
+    role: production
+
+  - repo: ianlintner/rust-oauth2-server
+    role: production
+    notes: "CI-fix PRs #244 and #245 (KinD/e2e) are intentionally long-lived; ignore when counting stuck upgrade PRs."
+
+  - repo: ianlintner/portfolio
+    role: demo
+
+  - repo: ianlintner/space-tycoon
+    role: demo
+
+  - repo: ianlintner/tail_vapor
+    role: production
+
+  - repo: ianlintner/AI-Pipeline
+    role: production
+
+  - repo: ianlintner/algo_functional
+    role: production
+    notes: "Re-bootstrapped to v0.19.1 on 2026-04-23 (PR #13)."

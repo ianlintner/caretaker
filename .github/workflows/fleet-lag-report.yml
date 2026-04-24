@@ -1,0 +1,56 @@
+name: Fleet Lag Report
+
+# Runs weekly to check that all consumer repos in docs/fleet.yml are
+# keeping up with caretaker releases.  The job fails (and sends a GitHub
+# notification) if any repo is:
+#   - pinned to a version that is ≥ max_version_lag_minor behind the
+#     latest release recorded in releases.json, OR
+#   - has an open upgrade pull-request that is older than max_stuck_pr_days.
+#
+# A JSON summary is uploaded as an artifact and printed to the job log.
+# Use --file-issues on the CLI sub-command to also open GitHub Issues.
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  fleet-lag:
+    name: Check fleet version lag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install caretaker
+        run: pip install caretaker --quiet
+
+      - name: Run fleet lag check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Exit code 1 when violations are found → job fails → notification sent.
+        run: |
+          caretaker fleet lag \
+            --fleet docs/fleet.yml \
+            --releases releases.json \
+            --output fleet-lag-report.json \
+            --fail-on-violations
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-lag-report
+          path: fleet-lag-report.json
+          retention-days: 30

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from caretaker.config import UpgradeAgentConfig
+from caretaker.github_client.models import PRState, PullRequest, User
 from caretaker.upgrade_agent.agent import UpgradeAgent
 from caretaker.upgrade_agent.release_checker import Release
 
@@ -80,3 +81,100 @@ class TestUpgradeAgent:
         assert report.checked is True
         assert report.upgrade_needed is False
         assert report.upgrade_issue is None
+
+    async def test_auto_ready_drafts_default_is_true(self) -> None:
+        cfg = UpgradeAgentConfig()
+        assert cfg.auto_ready_drafts is True
+
+    async def test_auto_ready_drafts_promotes_passing_copilot_draft(self) -> None:
+        """When auto_ready_drafts=True and a Copilot draft PR has CI green, it is readied."""
+        github = AsyncMock()
+        draft_pr = PullRequest(
+            number=7,
+            title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
+            head_sha="abc123",
+            draft=True,
+            node_id="PR_kwDOABC123",
+        )
+        github.list_pull_requests = AsyncMock(return_value=[draft_pr])
+        github.get_combined_status = AsyncMock(return_value="success")
+        github.mark_pull_request_ready = AsyncMock(return_value=True)
+
+        agent = UpgradeAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=UpgradeAgentConfig(enabled=True, auto_ready_drafts=True),
+            current_version="1.1.0",
+        )
+        release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
+            report = await agent.run()
+
+        github.mark_pull_request_ready.assert_awaited_once_with("PR_kwDOABC123")
+        assert report.readied_draft_prs == [7]
+
+    async def test_auto_ready_drafts_disabled_skips_draft_promotion(self) -> None:
+        """When auto_ready_drafts=False, draft PRs are not touched."""
+        github = AsyncMock()
+        draft_pr = PullRequest(
+            number=8,
+            title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
+            head_sha="def456",
+            draft=True,
+            node_id="PR_kwDODEF456",
+        )
+        github.list_pull_requests = AsyncMock(return_value=[draft_pr])
+        github.get_combined_status = AsyncMock(return_value="success")
+        github.mark_pull_request_ready = AsyncMock(return_value=True)
+
+        agent = UpgradeAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=UpgradeAgentConfig(enabled=True, auto_ready_drafts=False),
+            current_version="1.1.0",
+        )
+        release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
+            report = await agent.run()
+
+        github.mark_pull_request_ready.assert_not_awaited()
+        assert report.readied_draft_prs == []
+
+    async def test_auto_ready_drafts_non_draft_pr_not_touched(self) -> None:
+        """Non-draft PRs are not affected even if CI is green."""
+        github = AsyncMock()
+        ready_pr = PullRequest(
+            number=9,
+            title="Upgrade to v1.1.0",
+            state=PRState.OPEN,
+            user=User(login="copilot-swe-agent[bot]", id=1),
+            head_sha="ghi789",
+            draft=False,
+            node_id="PR_kwDOGHI789",
+        )
+        github.list_pull_requests = AsyncMock(return_value=[ready_pr])
+        github.get_combined_status = AsyncMock(return_value="success")
+        github.mark_pull_request_ready = AsyncMock(return_value=True)
+
+        agent = UpgradeAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=UpgradeAgentConfig(enabled=True, auto_ready_drafts=True),
+            current_version="1.1.0",
+        )
+        release = Release(version="1.1.0", min_compatible="1.0.0", changelog_url="")
+        fetch_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=fetch_mock):
+            report = await agent.run()
+
+        github.mark_pull_request_ready.assert_not_awaited()
+        assert report.readied_draft_prs == []
