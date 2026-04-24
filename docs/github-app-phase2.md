@@ -101,18 +101,19 @@ Deliberate cuts so this PR stays small:
 
 ## Rollout steps
 
-1. **Ship Phase 2 dispatcher PR (this one).** Default mode stays
-   `off`; no behaviour change.
-2. **Flip `CARETAKER_WEBHOOK_DISPATCH_MODE=shadow` on staging.**
-   Point a real GitHub App install at it and let real deliveries
-   flow. Watch metrics + logs for a day.
-3. **Flip staging to `shadow` for a week.** Read the dashboards. Add
-   a test install that deliberately fires every event type in the
-   map to verify fan-out matches the table.
-4. **Build active mode (follow-up PR).** Per-installation context
-   factory, one agent at a time, behind an allow-list env var so we
-   can go agent-by-agent.
-5. **Flip one agent to `active`** (probably `pr-reviewer`, which is
-   the pain point that motivated this work). Rest stay in shadow
-   until each one is validated.
-6. **Expand to all agents; then deprecate the CLI orchestrator.**
+Active-mode is now wired (PRs #553 and #554). The operator runbook
+covering each promotion stage — shadow → first agent → full fleet →
+CLI deprecation — lives in
+[`docs/github-app-rollout.md`](./github-app-rollout.md).
+
+Short summary:
+
+1. **Stage 1** — `CARETAKER_WEBHOOK_DISPATCH_MODE=shadow` on staging.
+   Observe real traffic for 48 h; validate metrics + log shape.
+2. **Stage 2** — `active` + `CARETAKER_WEBHOOK_ACTIVE_AGENTS=pr-reviewer`.
+   Single low-risk agent; watch 24 h.
+3. **Stages 3–4** — Expand allow-list one agent at a time
+   (`pr`, `devops`, `self-heal`, `issue`, `security`, `docs`), then
+   drop the allow-list entirely.
+4. **Stage 5** — Repeat in production starting from shadow.
+5. **Stage 6** — After 2 weeks stable, deprecate the CLI orchestrator.

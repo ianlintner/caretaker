@@ -105,6 +105,18 @@ def test_health_returns_200():
     assert "version" in body
 
 
+def test_health_includes_dispatch_mode_and_app_configured():
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    # Dispatch mode is surfaced so operators can verify live config
+    # without reading env vars or restarting.
+    assert "dispatch_mode" in body
+    assert body["dispatch_mode"] in ("off", "shadow", "active")
+    assert "github_app_configured" in body
+    assert body["github_app_configured"] in ("true", "false")
+
+
 # ── /webhooks/github -------------------------------------------------------
 
 
