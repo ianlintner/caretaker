@@ -180,9 +180,10 @@ class ShepherdConfig(StrictBaseModel):
     stale_dirty_reaper: bool = True
     merge_chain: bool = True
     # Per-run LLM call budget (Delta F). 0 disables LLM escalation entirely.
-    max_llm_calls_per_run: int = 3
-    # Age in days before a DIRTY draft is closed as stale.
-    stale_dirty_days: int = 14
+    max_llm_calls_per_run: int = Field(default=3, ge=0)
+    # Age in days before a DIRTY draft is closed as stale. Must be >= 1 so
+    # a misconfigured 0 doesn't close every DIRTY draft on first run.
+    stale_dirty_days: int = Field(default=14, ge=1)
     # Which mechanical fixers to try, in order. Names map to fix_ladder rungs.
     mechanical_fix_rungs: list[str] = Field(
         default_factory=lambda: ["ruff-format", "ruff-check-fix"],
