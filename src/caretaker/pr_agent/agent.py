@@ -1406,9 +1406,10 @@ class PRAgent:
                         # when ownership check above couldn't detect a conflict (e.g.
                         # app_id was missing from the check run metadata).  Fall back
                         # to creating a new check run so readiness is always published.
-                        if update_err.status_code == 403 and "invalid app_id" in str(
-                            update_err
-                        ).lower():
+                        if (
+                            update_err.status_code == 403
+                            and "invalid app_id" in str(update_err).lower()
+                        ):
                             logger.info(
                                 "PR #%d: check_run id=%d rejected with app_id mismatch — "
                                 "falling back to create a new %s check",
