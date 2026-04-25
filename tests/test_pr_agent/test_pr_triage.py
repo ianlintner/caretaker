@@ -28,6 +28,7 @@ class _FakeGH:
         self.statuses: dict[str, str] = {}
         self.check_runs_by_sha: dict[str, list[Any]] = {}
         self.readied_node_ids: list[str] = []
+        self.review_requests: list[tuple[int, list[str]]] = []
 
     async def list_pull_request_files(
         self, owner: str, repo: str, number: int
@@ -50,6 +51,12 @@ class _FakeGH:
     async def mark_pull_request_ready(self, node_id: str) -> bool:
         self.readied_node_ids.append(node_id)
         return True
+
+    async def request_reviewers(
+        self, owner: str, repo: str, pr_number: int, reviewers: list[str]
+    ) -> dict[str, Any]:
+        self.review_requests.append((pr_number, reviewers))
+        return {}
 
 
 @pytest.mark.asyncio
@@ -330,3 +337,92 @@ async def test_ready_valid_copilot_drafts_dry_run() -> None:
 
     assert readied == [15]
     assert gh.readied_node_ids == []
+
+
+# ── ready_valid_copilot_drafts — caretaker branch promotion ──────────
+
+
+def _caretaker_draft(number: int, sha: str, node_id: str = "", branch: str = "") -> Any:
+    """Return a draft caretaker PR stub (claude/ branch, human author)."""
+    from tests.conftest import make_pr as _make_pr
+
+    pr = _make_pr(number=number, draft=True)
+    pr.head_sha = sha
+    pr.head_ref = branch or f"claude/fix-something-{number}"
+    pr.node_id = node_id or f"node-caretaker-{number}"
+    return pr
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_when_ci_green() -> None:
+    """Caretaker draft on claude/ branch is promoted when CI passes."""
+    pr = _caretaker_draft(20, "sha-ct-green", "node-ct-20")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-green"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [20]
+    assert gh.readied_node_ids == ["node-ct-20"]
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_requests_copilot_review() -> None:
+    """After promoting a caretaker draft, Copilot review is requested."""
+    pr = _caretaker_draft(21, "sha-ct-review", "node-ct-21")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-review"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert gh.review_requests == [(21, ["copilot-pull-request-reviewer"])]
+
+
+@pytest.mark.asyncio
+async def test_copilot_draft_does_not_request_review() -> None:
+    """Promoting a Copilot-authored draft does NOT trigger a review request."""
+    pr = _copilot_draft(22, "sha-cp-noreview", "node-cp-22")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-cp-noreview"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert gh.readied_node_ids == ["node-cp-22"]
+    assert gh.review_requests == []
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_dry_run_no_review_request() -> None:
+    """dry_run suppresses both the ready flip and the review request."""
+    pr = _caretaker_draft(23, "sha-ct-dry", "node-ct-23")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-dry"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr], dry_run=True)
+
+    assert readied == [23]
+    assert gh.readied_node_ids == []
+    assert gh.review_requests == []
+
+
+@pytest.mark.asyncio
+async def test_caretaker_branch_prefix_caretaker_slash() -> None:
+    """caretaker/ branch prefix is also recognised as a caretaker PR."""
+    pr = _caretaker_draft(24, "sha-ct-prefix", "node-ct-24", branch="caretaker/some-fix")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-prefix"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [24]
+    assert gh.review_requests == [(24, ["copilot-pull-request-reviewer"])]

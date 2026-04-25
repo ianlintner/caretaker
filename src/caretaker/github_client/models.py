@@ -197,6 +197,15 @@ class PullRequest(BaseModel):
         return deterministic_family(self.user.login) == "dependabot"
 
     @property
+    def is_caretaker_pr(self) -> bool:
+        """Return True for PRs authored by the caretaker agent itself.
+
+        Identified by head-branch prefix: ``claude/`` (Claude Code sessions)
+        or ``caretaker/`` (dedicated caretaker agent branches).
+        """
+        return self.head_ref.startswith(("claude/", "caretaker/"))
+
+    @property
     def is_maintainer_pr(self) -> bool:
         return any(lbl.name.startswith("maintainer:") for lbl in self.labels)
 
