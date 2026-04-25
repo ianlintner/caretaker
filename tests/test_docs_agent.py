@@ -78,6 +78,38 @@ class TestCleanTitle:
         assert _clean_title("chore: bump version") == "bump version"
 
 
+class TestPrependChangelogEntry:
+    def test_first_entry_into_empty_file_ends_in_single_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(1, "feat: x")])
+        result = _prepend_changelog_entry("", entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+
+    def test_first_entry_after_h1_ends_in_single_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(1, "feat: x")])
+        result = _prepend_changelog_entry("# Changelog\n", entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+        assert result.startswith("# Changelog\n\n")
+
+    def test_subsequent_entry_keeps_single_trailing_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(2, "fix: y")])
+        existing = "# Changelog\n\n## [2026-W16] — 2026-04-18\n\n- old (#0)\n"
+        result = _prepend_changelog_entry(existing, entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+        assert "## [2026-W16]" in result
+
+    def test_subsequent_entry_appears_before_prior_section(self) -> None:
+        entry = _build_changelog_entry([_pr(2, "fix: unique-marker-y")])
+        existing = "# Changelog\n\n## [2026-W16] — 2026-04-18\n\n- old (#0)\n"
+        result = _prepend_changelog_entry(existing, entry)
+        # _clean_title strips "fix: " prefix, so search for the cleaned text
+        new_pos = result.index("unique-marker-y")
+        old_pos = result.index("## [2026-W16]")
+        assert new_pos < old_pos
+
+
 class TestBuildChangelogEntry:
     def test_produces_markdown_with_pr_links(self) -> None:
         prs = [

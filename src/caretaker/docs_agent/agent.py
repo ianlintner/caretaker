@@ -277,15 +277,18 @@ def _clean_title(title: str) -> str:
 
 
 def _prepend_changelog_entry(current: str, entry: str) -> str:
-    """Insert the new entry after the top-level # heading (if any), otherwise prepend."""
+    """Insert the new entry after the top-level # heading (if any), otherwise prepend.
+
+    Invariant: returned content ends in exactly one '\\n'.
+    ``entry`` is guaranteed to end in '\\n' by ``_build_changelog_entry``.
+    """
     if "\n## " in current:
         pos = current.index("\n## ")
-        return current[:pos] + "\n" + entry + "\n" + current[pos + 1 :]
-    # First entry ever
+        return current[: pos + 1] + entry + "\n" + current[pos + 1 :]
     if current.startswith("# "):
         newline_pos = current.index("\n")
-        return current[: newline_pos + 1] + "\n" + entry + "\n" + current[newline_pos + 1 :]
-    return entry + "\n" + current
+        return current[: newline_pos + 1] + "\n" + entry + current[newline_pos + 1 :]
+    return entry + current if current else entry
 
 
 def _build_pr_body(prs: list[Any], changelog_entry: str) -> str:

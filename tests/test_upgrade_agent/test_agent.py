@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from caretaker.config import UpgradeAgentConfig
-from caretaker.github_client.models import PRState, PullRequest, User
+from caretaker.github_client.models import CheckConclusion, CheckStatus, PRState, PullRequest, User
 from caretaker.upgrade_agent.agent import UpgradeAgent
 from caretaker.upgrade_agent.release_checker import Release
+from tests.conftest import make_check_run
 
 
 @pytest.mark.asyncio
@@ -98,8 +99,9 @@ class TestUpgradeAgent:
             draft=True,
             node_id="PR_kwDOABC123",
         )
+        passing_run = make_check_run("lint", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
         github.list_pull_requests = AsyncMock(return_value=[draft_pr])
-        github.get_combined_status = AsyncMock(return_value="success")
+        github.get_check_runs = AsyncMock(return_value=[passing_run])
         github.mark_pull_request_ready = AsyncMock(return_value=True)
 
         agent = UpgradeAgent(
@@ -130,7 +132,7 @@ class TestUpgradeAgent:
             node_id="PR_kwDODEF456",
         )
         github.list_pull_requests = AsyncMock(return_value=[draft_pr])
-        github.get_combined_status = AsyncMock(return_value="success")
+        github.get_check_runs = AsyncMock(return_value=[])
         github.mark_pull_request_ready = AsyncMock(return_value=True)
 
         agent = UpgradeAgent(
@@ -161,7 +163,7 @@ class TestUpgradeAgent:
             node_id="PR_kwDOGHI789",
         )
         github.list_pull_requests = AsyncMock(return_value=[ready_pr])
-        github.get_combined_status = AsyncMock(return_value="success")
+        github.get_check_runs = AsyncMock(return_value=[])
         github.mark_pull_request_ready = AsyncMock(return_value=True)
 
         agent = UpgradeAgent(

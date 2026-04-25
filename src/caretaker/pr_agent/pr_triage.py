@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from caretaker.pr_agent.states import CIStatus, evaluate_ci
+
 if TYPE_CHECKING:
     from caretaker.config import TriageConfig
     from caretaker.github_client.api import GitHubClient
@@ -283,21 +285,26 @@ async def ready_valid_copilot_drafts(
     *,
     dry_run: bool = False,
 ) -> list[int]:
-    """Mark Copilot draft PRs ready-for-review when CI is green.
+    """Mark Copilot and caretaker draft PRs ready-for-review when CI is green.
+
+    After promoting a caretaker-authored PR (``claude/`` / ``caretaker/``
+    branch prefix), also requests a Copilot review so the PR enters the
+    review → merge cycle without manual intervention.
 
     Does not merge — delegates to the existing ``merge.evaluate_merge`` flow
     that runs later in the PR agent cycle. Only flips the draft bit.
     """
     readied: list[int] = []
     for pr in open_prs:
-        if not pr.draft or not pr.is_copilot_pr:
+        if not pr.draft or not (pr.is_copilot_pr or pr.is_caretaker_pr):
             continue
         try:
-            status = await github.get_combined_status(owner, repo, pr.head_sha)
+            check_runs = await github.get_check_runs(owner, repo, pr.head_sha)
         except Exception as exc:
-            logger.warning("get_combined_status failed for #%d: %s", pr.number, exc)
+            logger.warning("get_check_runs failed for #%d: %s", pr.number, exc)
             continue
-        if status != "success":
+        ci = evaluate_ci(check_runs)
+        if ci.status != CIStatus.PASSING or not ci.all_completed:
             continue
         if dry_run:
             readied.append(pr.number)
@@ -313,6 +320,18 @@ async def ready_valid_copilot_drafts(
             if ok:
                 logger.info("Marked draft PR #%d ready-for-review", pr.number)
                 readied.append(pr.number)
+                if pr.is_caretaker_pr:
+                    try:
+                        await github.request_reviewers(
+                            owner, repo, pr.number, ["copilot-pull-request-reviewer"]
+                        )
+                        logger.info("Requested Copilot review for caretaker PR #%d", pr.number)
+                    except Exception as review_exc:
+                        logger.warning(
+                            "Failed to request Copilot review for PR #%d: %s",
+                            pr.number,
+                            review_exc,
+                        )
             else:
                 logger.warning("mark_pull_request_ready returned False for PR #%d", pr.number)
         except Exception as exc:

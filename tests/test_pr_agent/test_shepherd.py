@@ -14,9 +14,9 @@ from typing import Any
 import pytest
 
 from caretaker.config import ShepherdConfig
-from caretaker.github_client.models import MergeStateStatus, User
+from caretaker.github_client.models import CheckConclusion, CheckStatus, MergeStateStatus, User
 from caretaker.pr_agent.shepherd import ShepherdReport, run_shepherd
-from tests.conftest import make_pr
+from tests.conftest import make_check_run, make_pr
 
 
 class _FakeShepherdGH:
@@ -26,7 +26,7 @@ class _FakeShepherdGH:
       * ``list_pull_requests`` / ``enrich_merge_state_status`` — inventory
       * ``list_pull_request_files`` / ``add_issue_comment`` / ``update_issue``
         — downstream of close_duplicate_fix_prs
-      * ``get_combined_status`` / ``mark_pull_request_ready`` — downstream of
+      * ``get_check_runs`` / ``mark_pull_request_ready`` — downstream of
         ready_valid_copilot_drafts
     """
 
@@ -89,8 +89,15 @@ class _FakeShepherdGH:
         return self._update_branch_results.get(number, True)
 
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[Any]:
-        # Delta F surface — shepherd enriches PR context for stuck_pr_llm.
-        # Empty is fine; stub doesn't need real check data for budget/filter tests.
+        # Translate the legacy combined_statuses dict into CheckRun objects so
+        # ready_valid_copilot_drafts (now Checks-API-based) behaves correctly.
+        # "success" → one passing check; "failure" → one failing check;
+        # anything else (or missing) → empty list → PENDING → not promoted.
+        status = self._combined_statuses.get(ref)
+        if status == "success":
+            return [make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)]
+        if status == "failure":
+            return [make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.FAILURE)]
         return []
 
     async def get_pr_reviews(self, owner: str, repo: str, number: int) -> list[Any]:

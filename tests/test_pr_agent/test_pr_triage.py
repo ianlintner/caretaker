@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
 from caretaker.config import TriageConfig
-from caretaker.github_client.models import PRState
+from caretaker.github_client.models import CheckConclusion, CheckStatus, PRState, User
 from caretaker.pr_agent.pr_triage import (
     close_binary_conflicted_prs,
     close_duplicate_fix_prs,
     close_empty_body_prs,
     close_empty_prs,
+    ready_valid_copilot_drafts,
     run_pr_triage,
 )
-from tests.conftest import make_pr
+from tests.conftest import make_check_run, make_pr
 
 
 class _FakeGH:
@@ -24,6 +26,9 @@ class _FakeGH:
         self.comments: list[tuple[int, str]] = []
         self.closed: list[int] = []
         self.statuses: dict[str, str] = {}
+        self.check_runs_by_sha: dict[str, list[Any]] = {}
+        self.readied_node_ids: list[str] = []
+        self.review_requests: list[tuple[int, list[str]]] = []
 
     async def list_pull_request_files(
         self, owner: str, repo: str, number: int
@@ -39,6 +44,19 @@ class _FakeGH:
 
     async def get_combined_status(self, owner: str, repo: str, sha: str) -> str:
         return self.statuses.get(sha, "pending")
+
+    async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[Any]:
+        return self.check_runs_by_sha.get(ref, [])
+
+    async def mark_pull_request_ready(self, node_id: str) -> bool:
+        self.readied_node_ids.append(node_id)
+        return True
+
+    async def request_reviewers(
+        self, owner: str, repo: str, pr_number: int, reviewers: list[str]
+    ) -> dict[str, Any]:
+        self.review_requests.append((pr_number, reviewers))
+        return {}
 
 
 @pytest.mark.asyncio
@@ -217,3 +235,194 @@ async def test_run_pr_triage_closes_empty_body_pr() -> None:
     report = await run_pr_triage(gh, "o", "r", [pr], cfg)
     assert 20 in report.closed_empty
     assert 20 in gh.closed
+
+
+# ── ready_valid_copilot_drafts — Checks API gating ───────────────────
+
+
+def _copilot_draft(number: int, sha: str, node_id: str = "") -> Any:
+    """Return a draft Copilot PR stub."""
+    pr = make_pr(number=number, draft=True, user=User(login="copilot-swe-agent", id=1, type="Bot"))
+    pr.head_sha = sha
+    pr.node_id = node_id or f"node-{number}"
+    return pr
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_all_success() -> None:
+    """All checks passing → PR is marked ready."""
+    pr = _copilot_draft(10, "sha-green", "node-10")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-green"] = [
+        make_check_run("lint", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [10]
+    assert gh.readied_node_ids == ["node-10"]
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_ignores_self_check() -> None:
+    """caretaker/pr-readiness in_progress must not block promotion (self-gating guard)."""
+    pr = _copilot_draft(11, "sha-self-gate", "node-11")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-self-gate"] = [
+        make_check_run("lint", CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
+        make_check_run("caretaker/pr-readiness", CheckStatus.IN_PROGRESS, None),
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [11]
+    assert gh.readied_node_ids == ["node-11"]
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_blocks_on_failure() -> None:
+    """A failing check prevents promotion."""
+    pr = _copilot_draft(12, "sha-fail", "node-12")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-fail"] = [
+        make_check_run("lint", CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
+        make_check_run("tests", CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == []
+    assert gh.readied_node_ids == []
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_blocks_on_in_progress() -> None:
+    """A non-ignored in-progress check keeps the PR in draft."""
+    pr = _copilot_draft(13, "sha-pending", "node-13")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-pending"] = [
+        make_check_run("lint", CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
+        make_check_run("tests", CheckStatus.IN_PROGRESS, None),
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == []
+    assert gh.readied_node_ids == []
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_blocks_on_empty_checks() -> None:
+    """No check runs at all → PENDING → PR stays in draft."""
+    pr = _copilot_draft(14, "sha-empty", "node-14")
+    gh = _FakeGH()
+    # check_runs_by_sha has no entry for "sha-empty" → returns []
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == []
+    assert gh.readied_node_ids == []
+
+
+@pytest.mark.asyncio
+async def test_ready_valid_copilot_drafts_dry_run() -> None:
+    """dry_run=True returns the would-be list but does not call mark_pull_request_ready."""
+    pr = _copilot_draft(15, "sha-dry", "node-15")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-dry"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr], dry_run=True)
+
+    assert readied == [15]
+    assert gh.readied_node_ids == []
+
+
+# ── ready_valid_copilot_drafts — caretaker branch promotion ──────────
+
+
+def _caretaker_draft(number: int, sha: str, node_id: str = "", branch: str = "") -> Any:
+    """Return a draft caretaker PR stub (claude/ branch, human author)."""
+    from tests.conftest import make_pr as _make_pr
+
+    pr = _make_pr(number=number, draft=True)
+    pr.head_sha = sha
+    pr.head_ref = branch or f"claude/fix-something-{number}"
+    pr.node_id = node_id or f"node-caretaker-{number}"
+    return pr
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_when_ci_green() -> None:
+    """Caretaker draft on claude/ branch is promoted when CI passes."""
+    pr = _caretaker_draft(20, "sha-ct-green", "node-ct-20")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-green"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [20]
+    assert gh.readied_node_ids == ["node-ct-20"]
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_requests_copilot_review() -> None:
+    """After promoting a caretaker draft, Copilot review is requested."""
+    pr = _caretaker_draft(21, "sha-ct-review", "node-ct-21")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-review"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert gh.review_requests == [(21, ["copilot-pull-request-reviewer"])]
+
+
+@pytest.mark.asyncio
+async def test_copilot_draft_does_not_request_review() -> None:
+    """Promoting a Copilot-authored draft does NOT trigger a review request."""
+    pr = _copilot_draft(22, "sha-cp-noreview", "node-cp-22")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-cp-noreview"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert gh.readied_node_ids == ["node-cp-22"]
+    assert gh.review_requests == []
+
+
+@pytest.mark.asyncio
+async def test_ready_caretaker_draft_dry_run_no_review_request() -> None:
+    """dry_run suppresses both the ready flip and the review request."""
+    pr = _caretaker_draft(23, "sha-ct-dry", "node-ct-23")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-dry"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr], dry_run=True)
+
+    assert readied == [23]
+    assert gh.readied_node_ids == []
+    assert gh.review_requests == []
+
+
+@pytest.mark.asyncio
+async def test_caretaker_branch_prefix_caretaker_slash() -> None:
+    """caretaker/ branch prefix is also recognised as a caretaker PR."""
+    pr = _caretaker_draft(24, "sha-ct-prefix", "node-ct-24", branch="caretaker/some-fix")
+    gh = _FakeGH()
+    gh.check_runs_by_sha["sha-ct-prefix"] = [
+        make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+    ]
+
+    readied = await ready_valid_copilot_drafts(gh, "o", "r", [pr])
+
+    assert readied == [24]
+    assert gh.review_requests == [(24, ["copilot-pull-request-reviewer"])]
