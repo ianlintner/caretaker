@@ -80,6 +80,7 @@ class PRAgentAdapter(BaseAgent):
             llm_router=self._ctx.llm_router,
             dispatcher=self._ctx.executor_dispatcher,
             memory_retriever=_build_memory_retriever(self._ctx),
+            app_id=self._ctx.config.github_app.app_id,
         )
         head_branch: str | None = None
         pr_number: int | None = None

@@ -117,6 +117,11 @@ class CheckRun(BaseModel):
     html_url: str = ""
     output_title: str | None = None
     output_summary: str | None = None
+    # The GitHub App id that *created* this check run.  Populated from the
+    # ``app.id`` field in the API response.  Used to detect cross-App
+    # ownership conflicts before attempting an update (GitHub returns 403
+    # "Invalid app_id" when an update is attempted by a different App).
+    app_id: int | None = None
 
 
 class Review(BaseModel):

@@ -147,6 +147,7 @@ class PRAgent:
         insight_store: InsightStore | None = None,
         dispatcher: ExecutorDispatcher | None = None,
         memory_retriever: MemoryRetriever | None = None,
+        app_id: int | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
@@ -160,6 +161,10 @@ class PRAgent:
         # ``config.memory_store.retrieval_enabled`` knob is off so the
         # prompt is identical to the no-memory path byte-for-byte.
         self._memory_retriever = memory_retriever
+        # The GitHub App id this process runs as.  When set, _publish_readiness_check
+        # can compare against the existing check run's app_id to detect cross-App
+        # ownership conflicts *before* attempting an update (avoids 403 "Invalid app_id").
+        self._app_id = app_id
         self._copilot_protocol = CopilotProtocol(github, owner, repo)
         self._copilot_bridge = PRCopilotBridge(
             self._copilot_protocol,
@@ -1332,28 +1337,101 @@ class PRAgent:
         check_title = get_readiness_check_title(tracking, evaluation.readiness_verdict)
         check_summary = get_readiness_check_summary(tracking, evaluation.readiness_verdict)
 
+        now_iso = datetime.now(UTC).isoformat()
+        create_kwargs: dict[str, Any] = dict(
+            status=check_status,
+            conclusion=check_conclusion,
+            output_title=check_title,
+            output_summary=check_summary,
+            started_at=now_iso,
+            completed_at=(now_iso if check_status == "completed" else None),
+        )
+
         try:
             if existing_check:
-                # Update existing check run
-                await self._github.update_check_run(
-                    self._owner,
-                    self._repo,
-                    existing_check.id,
-                    status=check_status,
-                    conclusion=check_conclusion,
-                    output_title=check_title,
-                    output_summary=check_summary,
-                    completed_at=(
-                        datetime.now(UTC).isoformat() if check_status == "completed" else None
-                    ),
+                # Proactive cross-App ownership check: if we know our own app_id and
+                # the existing check was created by a *different* App, skip the update
+                # and create a new check run instead.  This avoids a 403 "Invalid
+                # app_id" round-trip that GitHub would otherwise return.
+                owned_by_us = (
+                    self._app_id is None  # identity unknown → try anyway
+                    or existing_check.app_id is None  # check has no app metadata → try anyway
+                    or existing_check.app_id == self._app_id
                 )
-                logger.debug(
-                    "PR #%d: Updated %s check (id=%d, conclusion=%s)",
-                    pr.number,
-                    check_name,
-                    existing_check.id,
-                    check_conclusion,
-                )
+                if not owned_by_us:
+                    logger.info(
+                        "PR #%d: check_run id=%d owned by App %d (we are App %d) — "
+                        "creating a new %s check instead of updating",
+                        pr.number,
+                        existing_check.id,
+                        existing_check.app_id,
+                        self._app_id,
+                        check_name,
+                    )
+                    result = await self._github.create_check_run(
+                        self._owner,
+                        self._repo,
+                        check_name,
+                        head_sha,
+                        **create_kwargs,
+                    )
+                    logger.debug(
+                        "PR #%d: Created replacement %s check (id=%s)",
+                        pr.number,
+                        check_name,
+                        result.get("id"),
+                    )
+                else:
+                    # Update existing check run (we own it or identity is unknown)
+                    try:
+                        await self._github.update_check_run(
+                            self._owner,
+                            self._repo,
+                            existing_check.id,
+                            status=check_status,
+                            conclusion=check_conclusion,
+                            output_title=check_title,
+                            output_summary=check_summary,
+                            completed_at=(now_iso if check_status == "completed" else None),
+                        )
+                        logger.debug(
+                            "PR #%d: Updated %s check (id=%d, conclusion=%s)",
+                            pr.number,
+                            check_name,
+                            existing_check.id,
+                            check_conclusion,
+                        )
+                    except GitHubAPIError as update_err:
+                        # Secondary safety net: GitHub returns 403 "Invalid app_id"
+                        # when ownership check above couldn't detect a conflict (e.g.
+                        # app_id was missing from the check run metadata).  Fall back
+                        # to creating a new check run so readiness is always published.
+                        if (
+                            update_err.status_code == 403
+                            and "invalid app_id" in str(update_err).lower()
+                        ):
+                            logger.info(
+                                "PR #%d: check_run id=%d rejected with app_id mismatch — "
+                                "falling back to create a new %s check",
+                                pr.number,
+                                existing_check.id,
+                                check_name,
+                            )
+                            result = await self._github.create_check_run(
+                                self._owner,
+                                self._repo,
+                                check_name,
+                                head_sha,
+                                **create_kwargs,
+                            )
+                            logger.debug(
+                                "PR #%d: Created replacement %s check (id=%s)",
+                                pr.number,
+                                check_name,
+                                result.get("id"),
+                            )
+                        else:
+                            raise
             else:
                 # Create new check run
                 result = await self._github.create_check_run(
@@ -1361,14 +1439,7 @@ class PRAgent:
                     self._repo,
                     check_name,
                     head_sha,
-                    status=check_status,
-                    conclusion=check_conclusion,
-                    output_title=check_title,
-                    output_summary=check_summary,
-                    started_at=datetime.now(UTC).isoformat(),
-                    completed_at=(
-                        datetime.now(UTC).isoformat() if check_status == "completed" else None
-                    ),
+                    **create_kwargs,
                 )
                 logger.debug(
                     "PR #%d: Created %s check (id=%s)",
