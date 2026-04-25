@@ -175,3 +175,11 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["braintrust", "braintrust.*"]
 ignore_missing_imports = true
+
+[tool.uv]
+# Force patched python-dotenv; litellm pins ==1.0.1 exactly but that version
+# has a symlink-following arbitrary-file-overwrite vulnerability (GHSA-*).
+# Upgrade to >=1.2.2 which contains the fix without breaking litellm's API.
+override-dependencies = [
+    "python-dotenv>=1.2.2",
+]
