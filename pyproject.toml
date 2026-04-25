@@ -175,3 +175,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["braintrust", "braintrust.*"]
 ignore_missing_imports = true
+
+# Security: force python-dotenv to the patched version that fixes the
+# symlink-following arbitrary file overwrite (CVE / Dependabot alert #12).
+# litellm hard-pins python-dotenv==1.0.1; this override ensures the safe
+# version is installed regardless of that transitive constraint.
+[tool.uv]
+override-dependencies = ["python-dotenv>=1.2.2"]
