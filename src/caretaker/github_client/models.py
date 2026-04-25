@@ -211,6 +211,27 @@ class PullRequest(BaseModel):
         return self.head_ref.startswith(("claude/", "caretaker/"))
 
     @property
+    def is_maintainer_bot_pr(self) -> bool:
+        """Return True for automated maintenance PRs created by caretaker workflows.
+
+        These are PRs opened by GitHub Actions on behalf of caretaker's own
+        release/maintenance workflows (e.g. ``update-releases-json.yml``).
+        They are safe to auto-approve and auto-merge once CI passes — they
+        contain only mechanical, workflow-generated changes (e.g. releases.json
+        entries) with no human-authored code.
+
+        Identified by:
+        - Head-branch prefix ``chore/releases-json-`` (update-releases-json workflow), OR
+        - Author login ``github-actions[bot]`` combined with a ``chore/`` branch prefix
+          (future-proofs additional chore workflows without requiring per-workflow
+          changes here).
+        """
+        return self.head_ref.startswith("chore/releases-json-") or (
+            self.user.login in ("github-actions[bot]", "github-actions")
+            and self.head_ref.startswith("chore/")
+        )
+
+    @property
     def is_maintainer_pr(self) -> bool:
         return any(lbl.name.startswith("maintainer:") for lbl in self.labels)
 

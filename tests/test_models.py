@@ -31,6 +31,50 @@ class TestPullRequest:
         pr = make_pr(user=User(login="dependabot[bot]", id=2, type="Bot"))
         assert pr.is_dependabot_pr is True
 
+    def test_is_caretaker_pr_claude_prefix(self) -> None:
+        pr = make_pr(head_ref="claude/fix-something")
+        assert pr.is_caretaker_pr is True
+
+    def test_is_caretaker_pr_caretaker_prefix(self) -> None:
+        pr = make_pr(head_ref="caretaker/upgrade-deps")
+        assert pr.is_caretaker_pr is True
+
+    def test_is_not_caretaker_pr(self) -> None:
+        pr = make_pr(head_ref="feature/my-feature")
+        assert pr.is_caretaker_pr is False
+
+    def test_is_maintainer_bot_pr_releases_json_prefix(self) -> None:
+        pr = make_pr(head_ref="chore/releases-json-v0.19.4")
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_maintainer_bot_pr_github_actions_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="chore/update-releases",
+        )
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_maintainer_bot_pr_github_actions_bare_login(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions", id=1, type="Bot"),
+            head_ref="chore/bump-version",
+        )
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_not_maintainer_bot_pr_human_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="dev-user", id=3, type="User"),
+            head_ref="chore/update-deps",
+        )
+        assert pr.is_maintainer_bot_pr is False
+
+    def test_is_not_maintainer_bot_pr_github_actions_non_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="feature/something",
+        )
+        assert pr.is_maintainer_bot_pr is False
+
     def test_is_maintainer_pr(self) -> None:
         pr = make_pr(labels=[Label(name="maintainer:internal")])
         assert pr.is_maintainer_pr is True

@@ -26,6 +26,7 @@ class OwnershipAutoClaimConfig(StrictBaseModel):
     copilot_prs: bool = True
     dependabot_prs: bool = True
     caretaker_prs: bool = True
+    maintainer_bot_prs: bool = True
     human_prs: bool = False
 
 
@@ -71,6 +72,7 @@ class AutoMergeConfig(StrictBaseModel):
     copilot_prs: bool = True
     dependabot_prs: bool = True
     caretaker_prs: bool = True
+    maintainer_bot_prs: bool = True
     human_prs: bool = False
     merge_method: Literal["squash", "merge", "rebase"] = "squash"
 
