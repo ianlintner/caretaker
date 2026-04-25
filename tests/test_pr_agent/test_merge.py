@@ -134,7 +134,7 @@ class TestEvaluateMerge:
         assert len(decision.blockers) >= 3
 
     def test_maintainer_bot_pr_can_merge(self) -> None:
-        """chore/releases-json PRs are allowed to merge when CI passes and maintainer_bot_prs=True."""
+        """chore/releases-json PRs may merge when CI passes and maintainer_bot_prs=True."""
         pr = make_pr(head_ref="chore/releases-json-v0.19.5")
         config = PRAgentConfig()
         decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
