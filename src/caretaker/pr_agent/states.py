@@ -402,6 +402,29 @@ def evaluate_pr(
                 recommended_action="request_review_fix",
             )
 
+    # Auto-approve caretaker-authored PRs (claude/ or caretaker/ branch) when:
+    # - CI is green
+    # - No CHANGES_REQUESTED reviews
+    # - Not yet approved (prevents duplicate approval submissions)
+    # - No fix already in-flight (would re-approve while Copilot is still working)
+    # The caretaker GitHub App is a different identity from the PR author, so
+    # its APPROVE satisfies the required-review gate.
+    if (
+        ci.status == CIStatus.PASSING
+        and pr.is_caretaker_pr
+        and not review_eval.changes_requested
+        and not review_eval.approved
+        and current_state != PRTrackingState.FIX_REQUESTED
+    ):
+        return PRStateEvaluation(
+            pr=pr,
+            ci=ci,
+            reviews=review_eval,
+            readiness=readiness,
+            recommended_state=PRTrackingState.CI_PASSING,
+            recommended_action="request_review_approve",
+        )
+
     # Cap MERGE_READY when auto-merge is disabled for this PR family —
     # otherwise the status comment says "ready for merge" even though
     # caretaker will refuse to merge (see merge.evaluate_merge). Fall through

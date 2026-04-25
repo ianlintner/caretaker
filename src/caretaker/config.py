@@ -96,6 +96,17 @@ class ReviewConfig(StrictBaseModel):
     # decided. Setting this to true today has no effect.
     auto_approve_copilot: bool = False
     nitpick_threshold: Literal["low", "high"] = "low"
+    # When CI is green and there are no blocking review findings on a caretaker
+    # PR (claude/ or caretaker/ branch), automatically submit an APPROVE review
+    # so the repo's required-review gate is satisfied without human intervention.
+    auto_approve_caretaker_prs: bool = True
+    # When a reviewer signals infeasibility (duplicate, won't work, out of
+    # scope), close the PR instead of dispatching a fix — prevents wasting
+    # Copilot/Claude Code cycles on hopeless tasks.
+    close_on_infeasible_review: bool = True
+    # PR additions threshold above which a blocker review triggers escalation
+    # to a human instead of a mechanical fix attempt.
+    high_loc_escalate_threshold: int = 500
 
 
 class PRAgentConfig(StrictBaseModel):

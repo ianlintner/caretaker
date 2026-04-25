@@ -602,3 +602,89 @@ class TestCopilotActionRequired:
 
         # Human PR with action_required → guard does NOT suppress (human-owned stalls are real)
         assert not (human_pr.is_copilot_pr and bool(ci_eval.action_required_runs))
+
+
+# ── request_review_approve — caretaker PR auto-approval ──────────────
+
+
+class TestRequestReviewApprove:
+    """State machine routes caretaker PRs to auto-approval when eligible."""
+
+    def _passing_run(self) -> object:
+        return make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+
+    def test_caretaker_pr_ci_green_no_review_routes_to_approve(self) -> None:
+        """CI green, no reviews → request_review_approve."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_caretaker_pr_already_approved_does_not_re_approve(self) -> None:
+        """If already approved, fall through to MERGE_READY — no re-approval."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        approval = make_review(state=ReviewState.APPROVED)
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [approval],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+    def test_caretaker_pr_changes_requested_does_not_approve(self) -> None:
+        """CHANGES_REQUESTED blocks auto-approval — must go through fix path."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        blocker = make_review(state=ReviewState.CHANGES_REQUESTED, body="Must fix the auth check")
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [blocker],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+        assert result.recommended_action == "request_review_fix"
+
+    def test_caretaker_pr_fix_in_flight_does_not_approve(self) -> None:
+        """When a fix is already in-flight (FIX_REQUESTED), skip auto-approval."""
+        pr = make_pr()
+        pr.head_ref = "caretaker/bump-deps"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.FIX_REQUESTED,
+        )
+        assert result.recommended_action != "request_review_approve"
+
+    def test_human_pr_does_not_get_auto_approved(self) -> None:
+        """Non-caretaker PRs must not be auto-approved."""
+        pr = make_pr()
+        pr.head_ref = "feature/my-cool-thing"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+
+    def test_caretaker_prefix_caretaker_slash_also_routed(self) -> None:
+        """caretaker/ branch prefix is also eligible for auto-approval."""
+        pr = make_pr()
+        pr.head_ref = "caretaker/upgrade-something"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
