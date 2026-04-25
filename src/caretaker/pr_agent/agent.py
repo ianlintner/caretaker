@@ -33,7 +33,7 @@ from caretaker.pr_agent.readiness_llm import (
     evaluate_pr_readiness_llm,
     readiness_from_legacy,
 )
-from caretaker.pr_agent.review import analyze_reviews
+from caretaker.pr_agent.review import ReviewVerdict, analyze_reviews, assess_review_verdict
 from caretaker.pr_agent.states import (
     PRStateEvaluation,
     ReadinessEvaluation,
@@ -111,6 +111,8 @@ async def _decide_stuck_pr(*, legacy: Any, candidate: Any, context: Any = None) 
 class PRAgentReport:
     monitored: int = 0
     merged: list[int] = field(default_factory=list)
+    approved: list[int] = field(default_factory=list)
+    closed: list[int] = field(default_factory=list)
     escalated: list[int] = field(default_factory=list)
     fix_requested: list[int] = field(default_factory=list)
     waiting: list[int] = field(default_factory=list)
@@ -558,6 +560,8 @@ class PRAgent:
                 tracking = await self._handle_wait_for_fix(pr, tracking, report)
             case "request_review_fix":
                 tracking = await self._handle_review_fix(pr, reviews, tracking, report)
+            case "request_review_approve":
+                tracking = await self._handle_review_approve(pr, tracking, report)
             case "wait":
                 report.waiting.append(pr.number)
             case "none":
@@ -954,6 +958,76 @@ class PRAgent:
 
         return tracking
 
+    async def _handle_review_approve(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Submit an approving review for caretaker-owned PRs.
+
+        Called when CI is green, no CHANGES_REQUESTED reviews exist, and the
+        PR has not yet been approved.  The caretaker GitHub App identity is
+        different from the PR author, so its APPROVE satisfies the
+        required-review branch-protection gate.
+        """
+        if not self._config.review.auto_approve_caretaker_prs:
+            report.waiting.append(pr.number)
+            return tracking
+        try:
+            await self._github.create_review(
+                self._owner,
+                self._repo,
+                pr.number,
+                pr.head_sha,
+                body="CI green, no blocking review findings — auto-approving caretaker PR.",
+                event="APPROVE",
+            )
+            logger.info("PR #%d: submitted auto-approval", pr.number)
+            tracking.state = PRTrackingState.MERGE_READY
+            _mark_caretaker_touched(tracking)
+            report.approved.append(pr.number)
+        except Exception as exc:
+            logger.warning("PR #%d: auto-approve failed: %s", pr.number, exc)
+            report.errors.append(f"PR #{pr.number}: auto-approve failed: {exc}")
+            report.waiting.append(pr.number)
+        return tracking
+
+    async def _handle_review_close(
+        self,
+        pr: PullRequest,
+        tracking: TrackedPR,
+        report: PRAgentReport,
+        reason: str,
+    ) -> TrackedPR:
+        """Close a caretaker PR that a reviewer flagged as infeasible or duplicate.
+
+        Posts a closing comment explaining why the PR is being closed, then
+        sets the PR state to closed.  Non-fatal: a failure leaves the PR open
+        and adds to report.errors so the operator can investigate.
+        """
+        body = (
+            "<!-- caretaker:review-close -->\n\n"
+            "🔴 **Caretaker: Closing PR**\n\n"
+            "A reviewer indicated this change is not viable:\n\n"
+            f"> {reason}\n\n"
+            "Closing to keep the repository clean. "
+            "If this was flagged in error, reopen with a comment explaining why "
+            "the concern does not apply."
+        )
+        try:
+            await self._github.add_issue_comment(self._owner, self._repo, pr.number, body)
+            await self._github.update_issue(self._owner, self._repo, pr.number, state="closed")
+            tracking.state = PRTrackingState.CLOSED
+            tracking.notes = f"closed:infeasible_review:{reason[:100]}"
+            _mark_caretaker_touched(tracking)
+            logger.info("PR #%d: closed due to infeasible review: %s", pr.number, reason)
+            report.closed.append(pr.number)
+        except Exception as exc:
+            logger.warning("PR #%d: failed to close infeasible PR: %s", pr.number, exc)
+            report.errors.append(f"PR #{pr.number}: close failed: {exc}")
+        return tracking
+
     async def _handle_review_fix(
         self,
         pr: PullRequest,
@@ -973,6 +1047,33 @@ class PRAgent:
         if not analyses:
             report.waiting.append(pr.number)
             return tracking
+
+        # Before dispatching a fix, assess whether the review signals something
+        # that cannot be fixed mechanically (infeasible / too large / architectural).
+        if self._config.review.close_on_infeasible_review:
+            verdict, reason = assess_review_verdict(
+                analyses,
+                pr_additions=getattr(pr, "additions", 0) or 0,
+                high_loc_threshold=self._config.review.high_loc_escalate_threshold,
+            )
+            if verdict == ReviewVerdict.CLOSE:
+                return await self._handle_review_close(pr, tracking, report, reason)
+            if verdict == ReviewVerdict.ESCALATE:
+                await self._escalate(
+                    pr,
+                    reason,
+                    debug_data={
+                        "verdict": str(verdict),
+                        "review_count": len(analyses),
+                        "pr_additions": getattr(pr, "additions", 0),
+                    },
+                )
+                tracking.state = PRTrackingState.ESCALATED
+                tracking.escalated = True
+                _mark_caretaker_touched(tracking)
+                report.escalated.append(pr.number)
+                return tracking
+            # verdict == FIX or APPROVE — fall through to Copilot dispatch
 
         attempt = tracking.copilot_attempts + 1
         if attempt > self._config.copilot.max_retries:

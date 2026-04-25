@@ -40,6 +40,100 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ReviewVerdict(StrEnum):
+    """Decision the PR agent takes after assessing review analyses."""
+
+    APPROVE = "approve"  # No blocking findings → submit GitHub approval
+    FIX = "fix"  # Fixable issues → dispatch to Copilot / Claude Code
+    CLOSE = "close"  # Infeasible: duplicate, won't work, out of scope
+    ESCALATE = "escalate"  # Too large / architectural / uncertain → human
+
+
+# Keywords in review body that signal the proposed change is infeasible or
+# duplicated and the PR should be closed rather than fixed.
+_CLOSE_SIGNALS: frozenset[str] = frozenset(
+    {
+        "duplicate",
+        "already exists",
+        "already implemented",
+        "already addressed",
+        "already done",
+        "already merged",
+        "won't work",
+        "will not work",
+        "wont work",
+        "not feasible",
+        "infeasible",
+        "not viable",
+        "not possible",
+        "out of scope",
+        "not in scope",
+        "not applicable",
+        "not relevant",
+        "low probability",
+        "unlikely to succeed",
+        "low chance of success",
+        "this is unnecessary",
+        "not needed",
+    }
+)
+
+# Keywords that signal a blocker requiring human architectural judgement rather
+# than a mechanical code fix.
+_ESCALATE_SIGNALS: frozenset[str] = frozenset(
+    {
+        "significant refactor",
+        "major refactor",
+        "architectural change",
+        "redesign",
+        "requires design",
+        "needs design",
+        "complex change",
+        "too large",
+        "breaking change",
+        "needs discussion",
+        "needs rfc",
+        "design doc",
+    }
+)
+
+
+def assess_review_verdict(
+    analyses: list[ReviewAnalysis],
+    pr_additions: int = 0,
+    *,
+    high_loc_threshold: int = 500,
+) -> tuple[ReviewVerdict, str]:
+    """Decide what action to take given a list of review analyses.
+
+    Decision ladder (first match wins):
+    1. No analyses → APPROVE (nothing to fix)
+    2. Any body contains a close signal → CLOSE
+    3. Any body contains an escalate signal → ESCALATE
+    4. Blocker severity on a high-LoC PR (> high_loc_threshold additions) → ESCALATE
+    5. Otherwise → FIX (dispatch to Copilot / Claude Code)
+    """
+    if not analyses:
+        return ReviewVerdict.APPROVE, "No blocking review findings"
+
+    for analysis in analyses:
+        body_lower = analysis.body.lower()
+        if any(sig in body_lower for sig in _CLOSE_SIGNALS):
+            return ReviewVerdict.CLOSE, f"Infeasible / duplicate: {analysis.summary[:120]}"
+        if any(sig in body_lower for sig in _ESCALATE_SIGNALS):
+            return (
+                ReviewVerdict.ESCALATE,
+                f"Architectural concern: {analysis.summary[:120]}",
+            )
+        if analysis.severity == "blocker" and pr_additions > high_loc_threshold:
+            return (
+                ReviewVerdict.ESCALATE,
+                f"Blocker on high-LoC PR ({pr_additions} additions): {analysis.summary[:120]}",
+            )
+
+    return ReviewVerdict.FIX, "Fixable review comments"
+
+
 class ReviewCommentType(StrEnum):
     ACTIONABLE = "ACTIONABLE"
     NITPICK = "NITPICK"

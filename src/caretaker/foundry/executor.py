@@ -15,10 +15,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from caretaker.evolution.executor_routing import (
     ExecutorRoute,
@@ -46,8 +47,9 @@ from caretaker.llm.copilot import (
     TaskType,
 )
 
+TokenSupplier: TypeAlias = Callable[[], Awaitable[str]]  # noqa: UP040 — type keyword is 3.12+; runtime is 3.11
+
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
     from typing import Any
 
     from caretaker.config import FoundryExecutorConfig
@@ -56,8 +58,6 @@ if TYPE_CHECKING:
     from caretaker.github_client.models import PullRequest
     from caretaker.llm.claude import ClaudeClient
     from caretaker.llm.provider import LLMProvider
-
-type TokenSupplier = Callable[[], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
