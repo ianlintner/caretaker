@@ -1602,3 +1602,148 @@ class TestRetryWindowHours:
         assert updated.last_copilot_attempt_at is not None
         delta = (datetime.now(UTC) - updated.last_copilot_attempt_at).total_seconds()
         assert 0 <= delta < 5
+
+
+@pytest.mark.asyncio
+class TestHandleReviewApprove:
+    """Tests for _handle_review_approve idempotency, guards, and config gating.
+
+    Pinning down the "multiple reviews per caretaker PR" symptom (PR #581 / v0.19.3):
+    the auto-approve path must (a) refuse non-caretaker PRs, (b) skip duplicate
+    approvals on the same head SHA, and (c) re-arm naturally when a new commit
+    advances the SHA.
+    """
+
+    async def _run(
+        self,
+        pr,
+        tracking: TrackedPR,
+        *,
+        auto_approve: bool = True,
+        github=None,
+    ):
+        from caretaker.config import ReviewConfig
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+
+        config = make_config()
+        config.review = ReviewConfig(auto_approve_caretaker_prs=auto_approve)
+        github = github or AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        report = PRAgentReport()
+        updated = await agent._handle_review_approve(pr, tracking, report)
+        return updated, report, github
+
+    async def test_approves_caretaker_pr_first_time(self) -> None:
+        pr = make_pr(number=1, head_ref="caretaker/x")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=1)
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_awaited_once()
+        assert updated.state == PRTrackingState.MERGE_READY
+        assert updated.last_approved_sha == "abc123"
+        assert 1 in report.approved
+        assert report.errors == []
+
+    async def test_idempotent_skip_on_same_sha(self) -> None:
+        """Re-entry on the same head SHA must NOT submit a duplicate review."""
+        pr = make_pr(number=2, head_ref="caretaker/x")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=2, last_approved_sha="abc123")
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_not_awaited()
+        assert updated.state == PRTrackingState.MERGE_READY
+        assert updated.last_approved_sha == "abc123"
+        assert 2 in report.approved
+
+    async def test_new_sha_re_approves(self) -> None:
+        """A new commit (different head SHA) re-arms the gate."""
+        pr = make_pr(number=3, head_ref="caretaker/x")
+        pr.head_sha = "newsha"
+        tracking = TrackedPR(number=3, last_approved_sha="oldsha")
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_awaited_once()
+        assert updated.last_approved_sha == "newsha"
+        assert 3 in report.approved
+
+    async def test_refuses_non_caretaker_pr(self) -> None:
+        """Defensive guard: never approve a non-caretaker PR even if routed here."""
+        pr = make_pr(number=4, head_ref="dependabot/npm/foo-1.2.3")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=4)
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_not_awaited()
+        assert updated.state != PRTrackingState.MERGE_READY
+        assert updated.last_approved_sha is None
+        assert 4 in report.waiting
+
+    async def test_disabled_flag_skips(self) -> None:
+        pr = make_pr(number=5, head_ref="caretaker/x")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=5)
+
+        updated, report, github = await self._run(pr, tracking, auto_approve=False)
+
+        github.create_review.assert_not_awaited()
+        assert updated.last_approved_sha is None
+        assert 5 in report.waiting
+
+    async def test_create_review_failure_records_error(self) -> None:
+        pr = make_pr(number=6, head_ref="caretaker/x")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=6)
+        github = AsyncMock()
+        github.create_review.side_effect = RuntimeError("boom")
+
+        updated, report, _ = await self._run(pr, tracking, github=github)
+
+        assert updated.last_approved_sha is None
+        assert any("auto-approve failed" in e for e in report.errors)
+        assert 6 in report.waiting
+
+
+@pytest.mark.asyncio
+class TestHandleReviewClose:
+    """Tests for _handle_review_close reason sanitization."""
+
+    async def test_multiline_reason_collapses_to_single_line(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+
+        pr = make_pr(number=11, head_ref="caretaker/x")
+        tracking = TrackedPR(number=11)
+        config = make_config()
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        report = PRAgentReport()
+
+        reason = "Infeasible / duplicate:\n\nThis already\nlanded in PR #999."
+        await agent._handle_review_close(pr, tracking, report, reason)
+
+        github.add_issue_comment.assert_awaited_once()
+        # The blockquote line in the posted body should be a single line:
+        body = github.add_issue_comment.await_args.args[3]
+        assert "> Infeasible / duplicate: This already landed in PR #999." in body
+        # No newline inside the blockquote:
+        quoted_line = next(line for line in body.splitlines() if line.startswith("> "))
+        assert "\n" not in quoted_line
+
+    async def test_empty_reason_falls_back(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+
+        pr = make_pr(number=12, head_ref="caretaker/x")
+        tracking = TrackedPR(number=12)
+        config = make_config()
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        report = PRAgentReport()
+
+        await agent._handle_review_close(pr, tracking, report, "   \n\n   ")
+        body = github.add_issue_comment.await_args.args[3]
+        assert "> no reason provided" in body
