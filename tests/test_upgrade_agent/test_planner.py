@@ -121,6 +121,49 @@ class TestUpgradePlanner:
         assert number == 42
         github.create_issue.assert_awaited_once()
 
+    async def test_closes_older_open_upgrade_issue_when_newer_version_arrives(self) -> None:
+        """Regression for #510: open v0.15.0 issue must be closed when v0.16.0 is released."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.16.0",
+            min_compatible="0.15.0",
+            changelog_url="https://example.com/changelog",
+        )
+        older_issue = make_issue(10, "Upgrade to v0.15.0", maintainer=True)
+        older_issue.body = "<!-- caretaker:upgrade target=0.15.0 -->"
+        older_issue.state = "open"
+        github.list_issues.return_value = [older_issue]
+        github.create_issue.return_value = make_issue(11, "Upgrade to v0.16.0")
+
+        number = await planner.create_upgrade_issue("0.15.0", target)
+
+        # Older open issue was closed
+        github.update_issue.assert_awaited_once_with("o", "r", 10, state="closed")
+        # New issue was created for the new version
+        assert number == 11
+        github.create_issue.assert_awaited_once()
+
+    async def test_does_not_close_already_closed_older_issue(self) -> None:
+        """Closed older issues must not be touched — only open ones."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.16.0",
+            min_compatible="0.15.0",
+            changelog_url="https://example.com/changelog",
+        )
+        closed_older = make_issue(10, "Upgrade to v0.15.0", maintainer=True)
+        closed_older.body = "<!-- caretaker:upgrade target=0.15.0 -->"
+        closed_older.state = "closed"
+        github.list_issues.return_value = [closed_older]
+        github.create_issue.return_value = make_issue(11, "Upgrade to v0.16.0")
+
+        await planner.create_upgrade_issue("0.15.0", target)
+
+        # The closed issue must not receive a state update
+        github.update_issue.assert_not_awaited()
+
 
 class TestBuildSyncIssueBody:
     def test_body_contains_version_and_marker(self) -> None:
