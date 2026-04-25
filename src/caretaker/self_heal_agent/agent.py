@@ -751,9 +751,30 @@ def _decode_job_log_payload(content: bytes, fallback_text: str) -> str:
     return fallback_text
 
 
+# Markers that indicate GitHub Actions post-job cleanup has started.
+# Everything after the first match is setup/teardown noise, not the real error.
+_POST_CLEANUP_RE = re.compile(
+    r"(?:Post job cleanup\.|Cleaning up orphan processes\.|##\[section\]Finishing Job)",
+    re.IGNORECASE,
+)
+
+
+def _pre_cleanup_log(log_text: str, max_chars: int = 8000) -> str:
+    """Return the log up to (but not including) post-job cleanup lines.
+
+    GitHub Actions appends cleanup steps after every job (``Post job cleanup``,
+    ``Cleaning up orphan processes``).  These lines dominate the tail and
+    caused the classifier to always fall through to UNKNOWN because the real
+    error patterns only appear earlier in the log.
+    """
+    match = _POST_CLEANUP_RE.search(log_text)
+    pre_cleanup = log_text[: match.start()] if match else log_text
+    return pre_cleanup[-max_chars:]
+
+
 def _classify_failure(job_name: str, log_text: str) -> tuple[FailureKind, str, str]:
     """Return (kind, short title, description) from a job log."""
-    log_tail = log_text[-4000:]
+    log_tail = _pre_cleanup_log(log_text)
 
     if any(p.search(log_tail) for p in _TRANSIENT_PATTERNS):
         return (
