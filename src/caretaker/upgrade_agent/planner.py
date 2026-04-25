@@ -287,7 +287,32 @@ class UpgradePlanner:
                 )
             return issue.number
 
-        # Step 3: no existing issue — create one with marker in body
+        # Step 3: close any open upgrade issues for older versions.
+        # Keeps at most one open upgrade issue per repo — resolves the
+        # fleet-wide pile-up described in issue #510.
+        for issue in issues:
+            if issue.state != "open":
+                continue
+            older_match = _UPGRADE_MARKER_RE.search(issue.body or "")
+            if not older_match or older_match.group(1) == target.version:
+                continue
+            logger.info(
+                "Closing superseded upgrade issue #%d (v%s → v%s)",
+                issue.number,
+                older_match.group(1),
+                target.version,
+            )
+            try:
+                await self._issues.comment(
+                    issue.number,
+                    f"Superseded by newer upgrade target v{target.version} — "
+                    "closing to keep only one open upgrade issue per repo.",
+                )
+                await self._issues.update(issue.number, state="closed")
+            except Exception as e:
+                logger.warning("Failed to close superseded upgrade issue #%d: %s", issue.number, e)
+
+        # Step 4: no existing issue — create one with marker in body
         body = build_upgrade_issue_body(current_version, target)
         labels = ["maintainer:internal", "upgrade"]
         if target.breaking:
