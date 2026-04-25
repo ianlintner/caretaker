@@ -175,3 +175,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["braintrust", "braintrust.*"]
 ignore_missing_imports = true
+
+# security: python-dotenv <1.2.2 allows arbitrary file overwrite via symlink following
+# in set_key/unset_key (cross-device rename fallback). litellm pins ==1.0.1 exactly so
+# we must override here; python-dotenv 1.2.2 is API-compatible with 1.0.1.
+# Ref: https://github.com/ianlintner/caretaker/security/dependabot/12
+[tool.uv]
+override-dependencies = [
+    "python-dotenv>=1.2.2",
+]
