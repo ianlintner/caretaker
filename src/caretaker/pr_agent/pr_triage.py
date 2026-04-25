@@ -325,9 +325,7 @@ async def ready_valid_copilot_drafts(
                         await github.request_reviewers(
                             owner, repo, pr.number, ["copilot-pull-request-reviewer"]
                         )
-                        logger.info(
-                            "Requested Copilot review for caretaker PR #%d", pr.number
-                        )
+                        logger.info("Requested Copilot review for caretaker PR #%d", pr.number)
                     except Exception as review_exc:
                         logger.warning(
                             "Failed to request Copilot review for PR #%d: %s",
