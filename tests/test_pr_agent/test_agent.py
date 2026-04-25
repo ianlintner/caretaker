@@ -1747,3 +1747,159 @@ class TestHandleReviewClose:
         await agent._handle_review_close(pr, tracking, report, "   \n\n   ")
         body = github.add_issue_comment.await_args.args[3]
         assert "> no reason provided" in body
+
+
+@pytest.mark.asyncio
+class TestPublishReadinessCheckAppId:
+    """Tests for proactive app_id ownership check in _publish_readiness_check.
+
+    GitHub returns 403 "Invalid app_id" when a check run update is attempted by
+    a different GitHub App than the one that created it.  The fix (v0.19.4 / #585)
+    adds a proactive comparison so we skip the update and create a new check run
+    *before* hitting the API error.
+    """
+
+    def _make_agent(self, github, *, app_id: int | None = None):
+        from caretaker.pr_agent.agent import PRAgent
+
+        config = make_config()
+        config.readiness.enabled = True
+        return PRAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=config,
+            app_id=app_id,
+        )
+
+    def _make_evaluation(self, pr):
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReadinessEvaluation,
+            ReviewEvaluation,
+        )
+
+        readiness = ReadinessEvaluation(
+            score=0.8,
+            blockers=[],
+            summary="Ready",
+            conclusion="success",
+        )
+        ci = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        reviews = ReviewEvaluation(
+            approved=False,
+            changes_requested=False,
+            pending=False,
+            approving_reviews=[],
+            blocking_reviews=[],
+        )
+        return PRStateEvaluation(
+            pr=pr,
+            ci=ci,
+            reviews=reviews,
+            readiness=readiness,
+            readiness_verdict=None,
+        )
+
+    async def test_creates_new_check_when_owned_by_different_app(self) -> None:
+        """When existing check_run.app_id != our app_id, skip update and create new."""
+        github = AsyncMock()
+        # Existing check was created by App 999, we are App 42
+        github.find_check_run = AsyncMock(
+            return_value=make_check_run(
+                name="caretaker/pr-readiness",
+                app_id=999,
+            )
+        )
+        github.create_check_run = AsyncMock(return_value={"id": 77})
+        github.update_check_run = AsyncMock()
+
+        agent = self._make_agent(github, app_id=42)
+        pr = make_pr(number=10, head_ref="caretaker/x")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=10)
+        evaluation = self._make_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        # Must NOT have attempted update (would 403)
+        github.update_check_run.assert_not_awaited()
+        # Must have created a new check run instead
+        github.create_check_run.assert_awaited_once()
+
+    async def test_updates_check_when_owned_by_same_app(self) -> None:
+        """When existing check_run.app_id == our app_id, update the existing check."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(
+            return_value=make_check_run(
+                name="caretaker/pr-readiness",
+                app_id=42,
+            )
+        )
+        github.update_check_run = AsyncMock()
+        github.create_check_run = AsyncMock()
+
+        agent = self._make_agent(github, app_id=42)
+        pr = make_pr(number=11, head_ref="caretaker/x")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=11)
+        evaluation = self._make_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        # Must have updated (not created) since we own the check
+        github.update_check_run.assert_awaited_once()
+        github.create_check_run.assert_not_awaited()
+
+    async def test_attempts_update_when_app_id_unknown(self) -> None:
+        """When self._app_id is None (identity unknown), attempt update as before."""
+        github = AsyncMock()
+        # Existing check has no app_id metadata
+        github.find_check_run = AsyncMock(
+            return_value=make_check_run(
+                name="caretaker/pr-readiness",
+                app_id=None,
+            )
+        )
+        github.update_check_run = AsyncMock()
+        github.create_check_run = AsyncMock()
+
+        # No app_id passed — identity unknown
+        agent = self._make_agent(github, app_id=None)
+        pr = make_pr(number=12, head_ref="caretaker/x")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=12)
+        evaluation = self._make_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        # With unknown identity, we attempt update (best effort)
+        github.update_check_run.assert_awaited_once()
+        github.create_check_run.assert_not_awaited()
+
+    async def test_creates_new_check_when_no_existing_check(self) -> None:
+        """When there is no existing check run at all, create a new one."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 55})
+        github.update_check_run = AsyncMock()
+
+        agent = self._make_agent(github, app_id=42)
+        pr = make_pr(number=13, head_ref="caretaker/x")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=13)
+        evaluation = self._make_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        github.create_check_run.assert_awaited_once()
+        github.update_check_run.assert_not_awaited()

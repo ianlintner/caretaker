@@ -101,6 +101,7 @@ def make_check_run(
     conclusion: CheckConclusion | None = CheckConclusion.SUCCESS,
     output_title: str | None = None,
     output_summary: str | None = None,
+    app_id: int | None = None,
 ) -> CheckRun:
     return CheckRun(
         id=1,
@@ -109,6 +110,7 @@ def make_check_run(
         conclusion=conclusion,
         output_title=output_title,
         output_summary=output_summary,
+        app_id=app_id,
     )
 
 

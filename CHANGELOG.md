@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.4] — 2026-04-25
+
+Hotfix for `caretaker/pr-readiness` check_run app_id mismatch (issue #585) and GitHub Actions workflow permission gap.
+
+### Fixed
+
+- **`pr_agent._publish_readiness_check` proactive app_id ownership check** — GitHub returns 403 "Invalid app_id" when a check run update is attempted by a different GitHub App than the one that created it. Previously caretaker only caught the 403 after it arrived; now it compares `existing_check.app_id` against `self._app_id` *before* calling `update_check_run`. When the IDs differ, it creates a new check run instead (same fallback as before, but without the failed round-trip). Identity is propagated from `MaintainerConfig.github_app.app_id` through `PRAgentAdapter` → `PRAgent.__init__(app_id=...)`. If either app_id is unknown, the old best-effort behaviour is retained with a 403-fallback as a secondary safety net.
+- **`CheckRun.app_id` field added** — the `app.id` field from the GitHub API response is now extracted in `get_check_runs` and stored on the `CheckRun` model, enabling the ownership comparison above.
+
+### Changed
+
+- **GitHub Actions workflow permissions** — `can_approve_pull_request_reviews` enabled on `ianlintner/caretaker` via `PUT /repos/.../actions/permissions/workflow`. This unblocks the `update-releases-json.yml` workflow from auto-creating PRs after a release tag is pushed.
+
 ## [0.19.3] — 2026-04-25
 
 Hotfix release covering the duplicate-review and orchestrator-soft-fail symptoms surfaced on `main` after PR #581 merged.

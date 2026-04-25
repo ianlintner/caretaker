@@ -753,6 +753,10 @@ class GitHubClient:
                 html_url=cr.get("html_url", ""),
                 output_title=cr.get("output", {}).get("title"),
                 output_summary=cr.get("output", {}).get("summary"),
+                # Extract the GitHub App id that created this check run so
+                # callers can detect cross-App ownership conflicts proactively
+                # without waiting for a 403 "Invalid app_id" error.
+                app_id=cr.get("app", {}).get("id"),
             )
             for cr in data.get("check_runs", [])
         ]
