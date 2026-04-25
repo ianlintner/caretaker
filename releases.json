@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.19.3",
+      "min_compatible": "0.19.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.3",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.3 -->\n\n## What's Changed\n### Maintenance\n* chore(deps): bump litellm from 1.83.0 to 1.83.7 in the uv group across 1 directory by @dependabot[bot] in https://github.com/ianlintner/caretaker/pull/548\n### Other Changes\n* chore: add v0.19.2 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/546\n* fix(doctor): treat rate-limit 403s as WARN instead of FAIL by @Copilot in https://github.com/ianlintner/caretaker/pull/542\n* fix(workflow): make caretaker:reviewed label creation idempotent in update-releases-json by @Copilot in https://github.com/ianlintner/caretaker/pull/539\n* security: bump litellm minimum to 1.83.7 (SSTI fix) by @Copilot in https://github.com/ianlintner/caretaker/pull/550\n* feat(github-app): Phase 2 webhook dispatcher (shadow-first) by @ianlintner in https://github.com/ianlintner/caretaker/pull/551\n* feat(shepherd): codify manual PR cleanup into a gated shepherd mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/547\n* fix(shepherd): validate ShepherdConfig numeric bounds by @ianlintner in https://github.com/ianlintner/caretaker/pull/552\n* feat(github-app): wire active-mode dispatcher plumbing by @ianlintner in https://github.com/ianlintner/caretaker/pull/553\n* feat(github-app): wire concrete AgentContextFactory and AgentRunner for active dispatch by @ianlintner in https://github.com/ianlintner/caretaker/pull/554\n* feat(github-app): rollout runbook + dispatch mode in /health by @ianlintner in https://github.com/ianlintner/caretaker/pull/555\n* feat(deploy): flip webhook dispatcher to active mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/556\n* fix(frontend): repair Graph2DView.tsx build break by @ianlintner in https://github.com/ianlintner/caretaker/pull/557\n* fix: CHANGELOG double-newline and draft promoter Checks API gating by @ianlintner in https://github.com/ianlintner/caretaker/pull/560\n* security: upgrade pyt",
+      "breaking": false
+    },
+    {
       "version": "0.19.2",
       "min_compatible": "0.19.1",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.2",
