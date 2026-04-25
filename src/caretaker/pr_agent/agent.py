@@ -970,9 +970,38 @@ class PRAgent:
         PR has not yet been approved.  The caretaker GitHub App identity is
         different from the PR author, so its APPROVE satisfies the
         required-review branch-protection gate.
+
+        Idempotency: ``tracking.last_approved_sha`` records the head SHA of
+        the most recent successful auto-approval. Re-entry on the same SHA
+        (concurrent webhook + scheduled runs, replayed events, or
+        state-machine churn) short-circuits to MERGE_READY without
+        submitting a duplicate review — which is what produced the
+        "multiple reviews per PR" symptom in the field. A new commit
+        advances ``pr.head_sha`` and re-arms the gate naturally.
+
+        Defensive guard: refuse to approve PRs that aren't caretaker-owned
+        even if a state-machine bug routed us here. ``is_caretaker_pr``
+        keys off the ``claude/`` / ``caretaker/`` head-branch prefix.
         """
+        if not getattr(pr, "is_caretaker_pr", False):
+            logger.warning(
+                "PR #%d: refusing auto-approve — not a caretaker PR (head_ref=%r)",
+                pr.number,
+                getattr(pr, "head_ref", ""),
+            )
+            report.waiting.append(pr.number)
+            return tracking
         if not self._config.review.auto_approve_caretaker_prs:
             report.waiting.append(pr.number)
+            return tracking
+        if tracking.last_approved_sha and tracking.last_approved_sha == pr.head_sha:
+            logger.info(
+                "PR #%d: auto-approve idempotency — head SHA %s already approved, skipping",
+                pr.number,
+                pr.head_sha[:8] if pr.head_sha else "?",
+            )
+            tracking.state = PRTrackingState.MERGE_READY
+            report.approved.append(pr.number)
             return tracking
         try:
             await self._github.create_review(
@@ -985,6 +1014,7 @@ class PRAgent:
             )
             logger.info("PR #%d: submitted auto-approval", pr.number)
             tracking.state = PRTrackingState.MERGE_READY
+            tracking.last_approved_sha = pr.head_sha
             _mark_caretaker_touched(tracking)
             report.approved.append(pr.number)
         except Exception as exc:
@@ -1006,11 +1036,16 @@ class PRAgent:
         sets the PR state to closed.  Non-fatal: a failure leaves the PR open
         and adds to report.errors so the operator can investigate.
         """
+        # Reason comes from review-summary text which may include embedded
+        # newlines; preserve them in a single line so the markdown
+        # blockquote (`> {reason}`) renders as one logical quote instead
+        # of fragmenting into multiple sibling blocks.
+        sanitized_reason = " ".join(reason.split()).strip() or "no reason provided"
         body = (
             "<!-- caretaker:review-close -->\n\n"
             "🔴 **Caretaker: Closing PR**\n\n"
             "A reviewer indicated this change is not viable:\n\n"
-            f"> {reason}\n\n"
+            f"> {sanitized_reason}\n\n"
             "Closing to keep the repository clean. "
             "If this was flagged in error, reopen with a comment explaining why "
             "the concern does not apply."

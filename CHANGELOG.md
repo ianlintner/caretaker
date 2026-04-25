@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.3] — 2026-04-25
+
+Hotfix release covering the duplicate-review and orchestrator-soft-fail symptoms surfaced on `main` after PR #581 merged.
+
+### Fixed
+
+- **`pr_agent._handle_review_approve` head-SHA idempotency** — the auto-approve path was racy across concurrent webhook + scheduled runs. When the state machine emitted `request_review_approve` more than once for the same head SHA, each run submitted a fresh `APPROVE` review, producing the "multiple reviews per caretaker PR" symptom in the field. `TrackedPR.last_approved_sha` now records the head SHA of the most recent successful auto-approval; re-entry on the same SHA short-circuits to `MERGE_READY` without calling `create_review`. A new commit advances `pr.head_sha` and re-arms the gate naturally. Defensive `is_caretaker_pr` guard added — refuses to approve PRs whose `head_ref` doesn't start with `claude/` or `caretaker/` even if upstream routing misfires.
+- **`pr_agent._handle_review_close` reason newlines** — `reason` is sourced from `assess_review_verdict`'s summary slice and may carry embedded newlines from the underlying review body. The closing comment's `> {reason}` markdown blockquote rendered as fragmented sibling blocks instead of one logical quote. Reason now collapses to single-line whitespace before formatting.
+- **Orchestrator transient-only soft-fail (already on main via #581)** — this release ships the fix to deployments still on 0.19.2. Rate-limit-only failures with `transient=1, non_transient=0, work_landed=False` no longer mark the workflow as failed.
+
+### Changed
+
+- **`ReviewConfig.auto_approve_caretaker_prs` default flipped to `False`** (was `True`). Per the PR #579 review, auto-approve rolls out per-repo behind an explicit opt-in until the head-SHA idempotency gate has soaked in production.
+- **`ReviewConfig.close_on_infeasible_review` default flipped to `False`** (was `True`). The substring matcher in `assess_review_verdict` has high false-positive risk on noun phrases like "this duplicate field"; staged rollout per-repo until the heuristic is hardened or replaced by a structured decision channel.
+
+### Notes
+
+- Existing repos that explicitly set `review.auto_approve_caretaker_prs: true` or `review.close_on_infeasible_review: true` in their `caretaker.yaml` are unaffected — only repos relying on the old shipped defaults will see the behaviour change.
+- The duplicate Copilot security PRs for the python-dotenv CVE (#563, #567, #569, #571, #573, #575, #577 — all already-superseded by merged #566) are emitted by the GitHub Copilot security flow upstream of caretaker, not by `dependency_agent`. Out of scope for this hotfix; they can be closed manually.
+
 ## [0.16.0] — 2026-04-22
 
 Completes **Wave A** of the 2026-Q2 R&D plan (`/tmp/caretaker-rd/00-rd-master-plan.md`). Six PRs land foundation work identified by the R&D review — fleet-data unblockers, deterministic-first escalation, standing eval harness, guardrails hardening, and attribution telemetry. All new behaviour is opt-in; defaults keep runtime behaviour byte-identical to 0.15.0.

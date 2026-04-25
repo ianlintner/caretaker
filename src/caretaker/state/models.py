@@ -120,6 +120,17 @@ class TrackedPR(BaseModel):
     # "pushed work after caretaker's last action."
     last_caretaker_action_at: datetime | None = None
 
+    # ── Auto-approve idempotency ─────────────────────────────────────────
+    # Head SHA of the most recent successful caretaker auto-approval. The
+    # PR-agent's _handle_review_approve consults this before submitting an
+    # APPROVE review: if it equals pr.head_sha the review is skipped, which
+    # prevents duplicate approval reviews when the state-machine fires
+    # ``request_review_approve`` more than once across concurrent webhook /
+    # scheduled runs. Cleared (left None) on first observation, set on
+    # successful approval; a new push to the PR moves head_sha forward and
+    # naturally re-arms the gate.
+    last_approved_sha: str | None = None
+
 
 class TrackedIssue(BaseModel):
     number: int

@@ -99,11 +99,20 @@ class ReviewConfig(StrictBaseModel):
     # When CI is green and there are no blocking review findings on a caretaker
     # PR (claude/ or caretaker/ branch), automatically submit an APPROVE review
     # so the repo's required-review gate is satisfied without human intervention.
-    auto_approve_caretaker_prs: bool = True
+    #
+    # Defaults to False (staged rollout — see PR #579 review notes). Operators
+    # opt in per-repo once they're comfortable with the auto-approve flow and
+    # the head-SHA idempotency gate in :meth:`_handle_review_approve`.
+    auto_approve_caretaker_prs: bool = False
     # When a reviewer signals infeasibility (duplicate, won't work, out of
     # scope), close the PR instead of dispatching a fix — prevents wasting
     # Copilot/Claude Code cycles on hopeless tasks.
-    close_on_infeasible_review: bool = True
+    #
+    # Defaults to False (staged rollout — substring matching on review body
+    # has high false-positive risk; see PR #579 review notes). Opt in per-repo
+    # once the verdict heuristic has been hardened or replaced by a structured
+    # decision channel.
+    close_on_infeasible_review: bool = False
     # PR additions threshold above which a blocker review triggers escalation
     # to a human instead of a mechanical fix attempt.
     high_loc_escalate_threshold: int = 500
