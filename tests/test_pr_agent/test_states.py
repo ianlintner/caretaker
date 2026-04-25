@@ -688,3 +688,46 @@ class TestRequestReviewApprove:
             PRTrackingState.CI_PASSING,
         )
         assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_releases_json_gets_auto_approved(self) -> None:
+        """chore/releases-json-* PRs must be eligible for auto-approval."""
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_github_actions_chore_gets_auto_approved(self) -> None:
+        """github-actions[bot] chore/ PRs must be eligible for auto-approval."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="chore/bump-version",
+        )
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_auto_merge_allowed(self) -> None:
+        """_auto_merge_allows returns True for maintainer bot PRs by default."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        assert _auto_merge_allows(pr, AutoMergeConfig()) is True
+
+    def test_maintainer_bot_pr_auto_merge_disabled_when_flag_off(self) -> None:
+        """_auto_merge_allows returns False when maintainer_bot_prs=False."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        assert _auto_merge_allows(pr, AutoMergeConfig(maintainer_bot_prs=False)) is False

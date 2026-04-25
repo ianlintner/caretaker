@@ -75,6 +75,9 @@ def evaluate_merge(
     elif pr.is_caretaker_pr:
         if not config.auto_merge.caretaker_prs:
             blockers.append("Auto-merge disabled for caretaker PRs")
+    elif pr.is_maintainer_bot_pr:
+        if not config.auto_merge.maintainer_bot_prs:
+            blockers.append("Auto-merge disabled for maintainer-bot PRs")
     else:
         if not config.auto_merge.human_prs:
             blockers.append("Auto-merge disabled for human PRs")

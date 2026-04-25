@@ -175,6 +175,9 @@ def should_auto_claim(
     if pr.is_caretaker_pr:
         return config.auto_claim.caretaker_prs
 
+    if pr.is_maintainer_bot_pr:
+        return config.auto_claim.maintainer_bot_prs
+
     if config.auto_claim.human_prs:
         return True
 

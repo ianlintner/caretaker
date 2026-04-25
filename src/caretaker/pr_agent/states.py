@@ -286,6 +286,8 @@ def _auto_merge_allows(pr: PullRequest, auto_merge: AutoMergeConfig | None) -> b
         return auto_merge.copilot_prs
     if pr.is_dependabot_pr:
         return auto_merge.dependabot_prs
+    if pr.is_maintainer_bot_pr:
+        return auto_merge.maintainer_bot_prs
     return auto_merge.human_prs
 
 
@@ -402,16 +404,18 @@ def evaluate_pr(
                 recommended_action="request_review_fix",
             )
 
-    # Auto-approve caretaker-authored PRs (claude/ or caretaker/ branch) when:
+    # Auto-approve caretaker-authored or maintainer-bot PRs when:
     # - CI is green
     # - No CHANGES_REQUESTED reviews
     # - Not yet approved (prevents duplicate approval submissions)
     # - No fix already in-flight (would re-approve while Copilot is still working)
     # The caretaker GitHub App is a different identity from the PR author, so
     # its APPROVE satisfies the required-review gate.
+    # Maintainer-bot PRs (e.g. chore/releases-json-*) contain only mechanical,
+    # workflow-generated changes and are equally safe to auto-approve.
     if (
         ci.status == CIStatus.PASSING
-        and pr.is_caretaker_pr
+        and (pr.is_caretaker_pr or pr.is_maintainer_bot_pr)
         and not review_eval.changes_requested
         and not review_eval.approved
         and current_state != PRTrackingState.FIX_REQUESTED

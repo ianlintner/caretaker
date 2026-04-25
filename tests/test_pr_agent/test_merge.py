@@ -132,3 +132,30 @@ class TestEvaluateMerge:
         decision = evaluate_merge(pr, _ci_failing(), _reviews_blocking(), config)
         assert decision.should_merge is False
         assert len(decision.blockers) >= 3
+
+    def test_maintainer_bot_pr_can_merge(self) -> None:
+        """chore/releases-json PRs are allowed to merge when CI passes and maintainer_bot_prs=True."""
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        config = PRAgentConfig()
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is True
+
+    def test_maintainer_bot_pr_blocked_when_flag_off(self) -> None:
+        """chore/releases-json PRs are blocked when maintainer_bot_prs=False."""
+        from caretaker.config import AutoMergeConfig
+
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        config = PRAgentConfig(auto_merge=AutoMergeConfig(maintainer_bot_prs=False))
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is False
+        assert any("maintainer-bot" in b for b in decision.blockers)
+
+    def test_maintainer_bot_pr_github_actions_chore_can_merge(self) -> None:
+        """github-actions[bot] chore/ PRs can merge when flag is True."""
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="chore/update-releases",
+        )
+        config = PRAgentConfig()
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is True

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.5] — 2026-04-25
+
+Teaches caretaker to recognise and manage **maintainer-bot PRs** — the `chore/releases-json-*` and `github-actions`-authored `chore/` PRs that the `update-releases-json.yml` workflow creates after each release. Previously these fell through to the `await_review` (human-PR) branch and were never merged automatically; now they receive full first-class treatment alongside caretaker and Copilot PRs.
+
+### Added
+
+- **`PullRequest.is_maintainer_bot_pr` property** — returns `True` for PRs whose `head_ref` starts with `chore/releases-json-` **or** whose author is `github-actions[bot]`/`github-actions` with a `chore/` prefix. Used as the canonical identity check throughout the merge pipeline.
+- **`AutoMergeConfig.maintainer_bot_prs: bool = True`** — new flag controlling whether maintainer-bot PRs are allowed to auto-merge. Defaults to `True` because these PRs are generated deterministically by the release workflow with zero human-editable content.
+- **`OwnershipAutoClaimConfig.maintainer_bot_prs: bool = True`** — parallel flag so the ownership-claim logic also picks up maintainer-bot PRs automatically.
+
+### Changed
+
+- **`pr_agent.states._auto_merge_allows`** — recognises `is_maintainer_bot_pr`; returns `config.auto_merge.maintainer_bot_prs` (short-circuits before the human-PR fallback).
+- **`pr_agent.states.evaluate_pr` auto-approve path** — `(pr.is_caretaker_pr or pr.is_maintainer_bot_pr)` guard replaces the `is_caretaker_pr`-only check, so maintainer-bot PRs reach `request_review_approve` when CI is green.
+- **`pr_agent.merge.evaluate_merge`** — handles `is_maintainer_bot_pr` before the human-PR block; appends `'Auto-merge disabled for maintainer-bot PRs'` blocker when the flag is `False`.
+- **`pr_agent.ownership.should_auto_claim`** — recognises `is_maintainer_bot_pr`; returns `config.auto_claim.maintainer_bot_prs` analogously to the caretaker-PR path.
+
 ## [0.19.4] — 2026-04-25
 
 Hotfix for `caretaker/pr-readiness` check_run app_id mismatch (issue #585) and GitHub Actions workflow permission gap.
