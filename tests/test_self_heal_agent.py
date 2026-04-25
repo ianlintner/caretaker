@@ -16,6 +16,7 @@ from caretaker.self_heal_agent.agent import (
     _classify_failure,
     _decode_job_log_payload,
     _extract_first_error,
+    _pre_cleanup_log,
 )
 
 
@@ -91,6 +92,52 @@ class TestClassifyFailureUnknown:
         assert "Process completed with exit code 1" in details
         assert "Python_ROOT_DIR" not in title
         assert "dependabot" not in title
+
+
+class TestPreCleanupLog:
+    """Regression for #509: classifier read post-cleanup tail, not actual error."""
+
+    def test_strips_post_job_cleanup_lines(self) -> None:
+        log = (
+            "2026-04-25T10:00:00Z Running caretaker\n"
+            "2026-04-25T10:00:01Z AttributeError: 'NoneType' object has no attribute 'number'\n"
+            "2026-04-25T10:00:02Z ##[error]Process completed with exit code 1.\n"
+            "2026-04-25T10:00:03Z Post job cleanup.\n"
+            "2026-04-25T10:00:04Z git config --unset-all\n"
+            "2026-04-25T10:00:05Z Cleaning up orphan processes\n"
+        )
+        result = _pre_cleanup_log(log)
+        assert "AttributeError" in result
+        assert "Post job cleanup" not in result
+        assert "Cleaning up orphan processes" not in result
+
+    def test_full_log_used_when_no_cleanup_marker(self) -> None:
+        log = "line1\nline2\nAttributeError: boom\n"
+        result = _pre_cleanup_log(log)
+        assert "AttributeError" in result
+
+    def test_classify_catches_upstream_bug_before_cleanup_noise(self) -> None:
+        """Core regression: UPSTREAM_BUG buried before cleanup must not fall through to UNKNOWN."""
+        job_body = (
+            "2026-04-25T10:00:01Z INFO Starting caretaker run\n"
+            "2026-04-25T10:00:02Z Traceback (most recent call last):\n"
+            "2026-04-25T10:00:03Z   File 'agent.py', line 42, in run\n"
+            "2026-04-25T10:00:04Z AttributeError: 'NoneType' object has no attribute 'number'\n"
+            "2026-04-25T10:00:05Z ##[error]Process completed with exit code 1.\n"
+        )
+        cleanup = "2026-04-25T10:00:06Z Post job cleanup.\n" + "\n".join(
+            f"2026-04-25T10:00:{i:02d}Z git config --unset HOME={i}" for i in range(7, 60)
+        )
+        log_text = job_body + cleanup
+
+        kind, title, _details = _classify_failure("maintain", log_text)
+
+        assert kind == FailureKind.UPSTREAM_BUG, (
+            f"Expected UPSTREAM_BUG but got {kind}; classifier read cleanup tail instead of error"
+        )
+        # Title uses the ##[error] line (strongest signal); the important thing
+        # is the kind — not the exact error message in the title.
+        assert "Caretaker library error" in title
 
 
 class TestDecodeJobLogPayload:
