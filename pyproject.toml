@@ -93,6 +93,7 @@ admin = [
 llm-multi = [
     "litellm>=1.83.7,<2",
     "aiohttp>=3.13.5",  # security: CVE-2026-34516 multipart header bypass + CVE-2024-52304 zip bomb
+    "python-dotenv>=1.2.2",  # security: CVE-2025-14974 symlink following in set_key/unset_key
 ]
 # Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
 # docs/custom-coding-agent-plan.md. Only required on the caretaker
