@@ -231,14 +231,14 @@ class TestOrchestratorReportPath:
 
 class TestOrchestratorStateLoadFailure:
     async def test_run_returns_error_when_state_load_fails(self) -> None:
-        """If state_tracker.load() raises, the run returns exit code 1 gracefully."""
+        """If state_tracker.load() raises a non-transient error, the run returns exit code 1."""
         orchestrator = make_orchestrator()
 
         with (
             patch.object(
                 orchestrator._state_tracker,
                 "load",
-                side_effect=Exception("GitHub API error 403: Rate limited."),
+                side_effect=Exception("unexpected internal error during state deserialization"),
             ),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
@@ -255,12 +255,13 @@ class TestOrchestratorStateLoadFailure:
             patch.object(
                 orchestrator._state_tracker,
                 "load",
-                side_effect=RuntimeError("connection refused"),
+                side_effect=RuntimeError("JSON decode error in state file"),
             ),
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
         ):
-            # Should not raise; errors are captured and reported via exit code
+            # Should not raise; errors are captured and reported via exit code.
+            # A non-transient failure during load → exit 1.
             result = await orchestrator.run(mode="dry-run")
 
         assert result == 1
@@ -379,11 +380,12 @@ class TestTransientErrorGate:
 
         assert result == 1
 
-    async def test_run_exits_1_when_all_transient_but_no_work_landed(self) -> None:
-        """Even if every error is transient, a run that did nothing still fails.
+    async def test_run_exits_0_when_all_transient_but_no_work_landed(self) -> None:
+        """All-transient errors with no work done → exit 0 + soft-fail counter.
 
-        Prevents the gate from hiding total outages — if no work finished
-        the workflow still needs to be flagged so operators notice.
+        Rate-limits and other transient conditions can fire before any agents
+        run, so work_landed would be False. We must not treat that as a hard
+        failure or the self-heal ladder creates duplicate bug issues.
         """
         orchestrator = make_orchestrator()
 
@@ -396,10 +398,38 @@ class TestTransientErrorGate:
             patch.object(orchestrator._state_tracker, "save"),
             patch.object(orchestrator._state_tracker, "post_run_summary"),
             patch.object(orchestrator._registry, "run_all", new=_fake_run_all),
+            patch("caretaker.orchestrator.record_orchestrator_soft_fail") as mock_soft_fail,
         ):
             result = await orchestrator.run(mode="full")
 
-        assert result == 1
+        assert result == 0
+        mock_soft_fail.assert_called_once_with(category="transient")
+
+    async def test_run_exits_0_when_rate_limit_before_agents_run(self) -> None:
+        """Rate-limit exception raised during state load → exit 0 (soft-fail).
+
+        This is the exact scenario observed in production: a GitHub 403 rate-limit
+        fires during _state_tracker.load() before any agents execute, so
+        work_landed is False.  The error is transient; the workflow must exit 0
+        so caretaker does not create a self-heal issue and trigger a feedback loop.
+        """
+        from caretaker.github_client.api import RateLimitError
+
+        orchestrator = make_orchestrator()
+
+        async def _raise_rate_limit() -> OrchestratorState:
+            raise RateLimitError(403, "Rate limited. Retry after 26s.", retry_after_seconds=26)
+
+        with (
+            patch.object(orchestrator._state_tracker, "load", side_effect=_raise_rate_limit),
+            patch.object(orchestrator._state_tracker, "save"),
+            patch.object(orchestrator._state_tracker, "post_run_summary"),
+            patch("caretaker.orchestrator.record_orchestrator_soft_fail") as mock_soft_fail,
+        ):
+            result = await orchestrator.run(mode="full")
+
+        assert result == 0
+        mock_soft_fail.assert_called_once_with(category="transient")
 
     async def test_run_exits_0_when_no_errors(self) -> None:
         orchestrator = make_orchestrator()

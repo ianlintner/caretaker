@@ -746,30 +746,28 @@ class Orchestrator:
         # ── Transient-error exit gate ─────────────────────────────
         #
         # Classify each entry in ``summary.errors`` into transient vs
-        # non-transient. If every error is transient AND the run made
-        # some measurable progress (PRs monitored, issues triaged, or a
-        # bucketed agent error that proves work was attempted), we emit
-        # a Prometheus soft-fail counter and exit 0. This keeps the
-        # signal visible without the workflow itself flipping red and
-        # triggering the self-heal-on-failure ladder that produced the
-        # "Unknown caretaker failure: Process completed with exit code 1."
-        # issue storm on Example-React and flashcards.
+        # non-transient. If every error is transient we emit a Prometheus
+        # soft-fail counter and exit 0. This keeps the signal visible
+        # without the workflow itself flipping red and triggering the
+        # self-heal-on-failure ladder that produced the "Unknown caretaker
+        # failure: Process completed with exit code 1." issue storm on
+        # Example-React and flashcards.
+        #
+        # Note: we intentionally do NOT gate on ``work_landed`` here.
+        # When a transient condition (e.g. a GitHub rate-limit) fires
+        # before any agents run, ``work_landed`` is False even though the
+        # failure is purely infrastructure.  Exiting 1 in that case
+        # triggers the self-heal issue ladder and creates a feedback loop
+        # of duplicate bug issues.  Since the transient classification is
+        # conservative (only known-recoverable patterns are accepted),
+        # soft-failing on transient-only runs is safe.
         soft_failed = False
         if summary.errors:
             transient_errors, non_transient_errors = _bucket_errors(summary.errors)
-            work_landed = (
-                summary.prs_monitored > 0
-                or summary.issues_triaged > 0
-                or summary.prs_merged > 0
-                or summary.issues_assigned > 0
-                or summary.issues_closed > 0
-                or summary.build_failures_detected > 0
-                or summary.self_heal_failures_analyzed > 0
-            )
             # ``len(summary.errors) - len(transient_errors)`` is just the
             # non-transient count but using the list makes the branch
             # direct to read.
-            if non_transient_errors or not work_landed:
+            if non_transient_errors:
                 has_errors = True
                 logger.warning(
                     "Run completed with %d error(s): transient=%d, non_transient=%d",
@@ -778,6 +776,7 @@ class Orchestrator:
                     len(non_transient_errors),
                 )
             else:
+                has_errors = False  # transient-only: reset any flag set by the exception handler
                 soft_failed = True
                 record_orchestrator_soft_fail(category="transient")
                 logger.warning(
