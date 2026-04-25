@@ -175,3 +175,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["braintrust", "braintrust.*"]
 ignore_missing_imports = true
+
+[tool.uv]
+# Security override: litellm pins python-dotenv==1.0.1, but that version has a symlink
+# following vulnerability in set_key/unset_key (Dependabot alert #12). Force >=1.2.2.
+override-dependencies = [
+    "python-dotenv>=1.2.2",
+]
