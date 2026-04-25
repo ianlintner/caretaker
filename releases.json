@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.19.4",
+      "min_compatible": "0.19.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.4",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.4 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.19.3 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/583\n* docs(plans): QA test plan for orchestration / PR-lifecycle state machine by @ianlintner in https://github.com/ianlintner/caretaker/pull/584\n* docs(skills): add caretaker-repo-settings skill and plan by @ianlintner in https://github.com/ianlintner/caretaker/pull/586\n* fix(pr_agent): proactive app_id ownership check for check_run updates (#585) by @ianlintner in https://github.com/ianlintner/caretaker/pull/588\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.19.3...v0.19.4",
+      "breaking": false
+    },
+    {
       "version": "0.19.3",
       "min_compatible": "0.19.2",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.3",
