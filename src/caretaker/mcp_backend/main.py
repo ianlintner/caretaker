@@ -101,9 +101,10 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     try:
         from caretaker.auth import bearer as fleet_bearer
 
-        issuer_url = os.environ.get("CARETAKER_OIDC_ISSUER_URL", "").strip() or os.environ.get(
-            "CARETAKER_ADMIN_OIDC_ISSUER_URL", ""
-        ).strip()
+        issuer_url = (
+            os.environ.get("CARETAKER_OIDC_ISSUER_URL", "").strip()
+            or os.environ.get("CARETAKER_ADMIN_OIDC_ISSUER_URL", "").strip()
+        )
         if issuer_url:
             try:
                 await fleet_bearer.configure(
