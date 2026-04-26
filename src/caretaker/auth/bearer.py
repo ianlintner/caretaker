@@ -53,7 +53,7 @@ import jwt
 from fastapi import HTTPException, Request, status
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Callable, Coroutine, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ def _enforce_scopes(principal: BearerPrincipal, scopes: Iterable[str]) -> None:
 
 def require_bearer_token(
     *scopes: str,
-) -> Callable[[Request], Awaitable[BearerPrincipal]]:
+) -> Callable[[Request], Coroutine[Any, Any, BearerPrincipal]]:
     """FastAPI dependency factory: returns a Depends-able callable.
 
     The returned callable validates the request's bearer token and ensures the
