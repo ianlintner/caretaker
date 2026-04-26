@@ -115,6 +115,23 @@ class RelType(StrEnum):
     # mirrors the CoALA "working memory" scope. One edge per agent-run,
     # replaced in-place so the "current core memory" stays at the head.
     CORE_MEMORY_OF = "CORE_MEMORY_OF"
+    # ── Hierarchical scoping + causal materialisation ───────────────────
+    # ``BELONGS_TO`` anchors every per-tenant node (PR/Issue/Run/Skill/
+    # Comment/Executor/CheckRun/CausalEvent) to its owning ``:Repo`` so a
+    # subgraph rooted at the repo is one ``MATCH (r:Repo {id:$id})<-[:BELONGS_TO]-(n)``
+    # away. ``ON`` lifts ``CausalEvent.ref`` (kind+number scalars) into a
+    # real edge — ``(:CausalEvent)-[:ON]->(:PR|:Issue|:Comment)`` — and is
+    # also reused for ``(:Comment)-[:ON]->(:PR|:Issue)`` so a comment is
+    # always attached to its parent thread. ``EMITS`` connects a Comment
+    # to the CausalEvent it carries (1:1 today; 1:N once
+    # :class:`CausalEventStore` learns to ingest multiple markers from a
+    # single body). ``HAS_EVENT`` joins a ``:Run`` to every
+    # ``:CausalEvent`` whose parsed ``run_id`` matches the run's GitHub
+    # workflow id, finally bridging the two halves of the run-of-record.
+    BELONGS_TO = "BELONGS_TO"
+    ON = "ON"
+    EMITS = "EMITS"
+    HAS_EVENT = "HAS_EVENT"
 
 
 class GraphNode(BaseModel):
