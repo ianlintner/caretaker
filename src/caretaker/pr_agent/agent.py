@@ -48,6 +48,8 @@ from caretaker.pr_agent.stuck_pr_llm import (
 from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
 from caretaker.tools.debug_dump import render_debug_dump
 
+from caretaker.config import MergeAuthorityMode
+
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
     from caretaker.evolution.insight_store import InsightStore
@@ -1296,8 +1298,12 @@ class PRAgent:
     ) -> None:
         """Publish the caretaker/pr-readiness check run on the PR's head SHA.
 
-        This publishes a non-required check (Phase 1) that shows PR readiness status.
-        The check is updated on every evaluation to keep the status current.
+        The conclusion depends on ``config.merge_authority.mode``:
+        - advisory (default): blocked PRs publish "neutral" so the check is
+          informational and never triggers branch-protection blocks, even when
+          an operator has listed it as a required check.
+        - gate_only / gate_and_merge: blocked PRs publish "failure" to actively
+          block merges via branch protection (opt-in behaviour).
         """
         if not self._config.readiness.enabled:
             return
@@ -1326,14 +1332,22 @@ class PRAgent:
             self._owner, self._repo, head_sha, check_name
         )
 
-        # Determine conclusion based on readiness
+        # Determine conclusion based on readiness.
+        # In advisory mode the check is informational only: publish "neutral"
+        # instead of "failure" so GitHub branch protection never treats it as
+        # blocking even if an operator adds the check to their required-checks
+        # list.  gate_only / gate_and_merge modes keep the hard "failure"
+        # because those modes explicitly opt in to using the check as a gate.
         conclusion = evaluation.readiness.conclusion
         check_status = "completed"
         check_conclusion = None
         if conclusion == "success":
             check_conclusion = "success"
         elif conclusion == "failure":
-            check_conclusion = "failure"
+            if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
+                check_conclusion = "neutral"
+            else:
+                check_conclusion = "failure"
         else:  # in_progress
             check_status = "in_progress"
 

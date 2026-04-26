@@ -128,6 +128,12 @@ class PRAgentConfig(StrictBaseModel):
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     ownership: OwnershipConfig = Field(default_factory=OwnershipConfig)
     readiness: ReadinessConfig = Field(default_factory=ReadinessConfig)
+    # Controls whether caretaker/pr-readiness is advisory (informational only,
+    # never blocks branch protection) or acts as a required gate.  Defaults to
+    # advisory so operators can add the check to the GitHub UI without it
+    # accidentally blocking PRs.  Set to gate_only or gate_and_merge only when
+    # you have deliberately configured branch protection to require this check.
+    merge_authority: MergeAuthorityConfig = Field(default_factory=MergeAuthorityConfig)
     # When a PR has been open this long without progressing to merge-ready and
     # without a human review approval, escalate it to a human. Catches the
     # long-tail abandonment cases (portfolio #4 was open 10 days; #28 was

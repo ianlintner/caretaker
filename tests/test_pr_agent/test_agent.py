@@ -10,6 +10,8 @@ import pytest
 from caretaker.config import (
     CIConfig,
     CopilotConfig,
+    MergeAuthorityConfig,
+    MergeAuthorityMode,
     OwnershipConfig,
     PRAgentConfig,
     ReadinessConfig,
@@ -1903,3 +1905,174 @@ class TestPublishReadinessCheckAppId:
 
         github.create_check_run.assert_awaited_once()
         github.update_check_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestAdvisoryModeNeutralConclusion:
+    """Advisory mode must publish 'neutral' instead of 'failure' so that
+    the caretaker/pr-readiness check never blocks branch protection even
+    when an operator has listed it as a required check.
+
+    gate_only / gate_and_merge modes must still publish 'failure' to
+    actively gate merges.
+    """
+
+    def _make_agent(self, github, *, mode: MergeAuthorityMode = MergeAuthorityMode.ADVISORY):
+        from caretaker.pr_agent.agent import PRAgent
+
+        config = make_config()
+        config.readiness.enabled = True
+        config.merge_authority = MergeAuthorityConfig(mode=mode)
+        return PRAgent(github=github, owner="o", repo="r", config=config)
+
+    def _make_failing_evaluation(self, pr):
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReadinessEvaluation,
+            ReviewEvaluation,
+        )
+
+        readiness = ReadinessEvaluation(
+            score=0.2,
+            blockers=["ci_failing"],
+            summary="CI failing",
+            conclusion="failure",
+        )
+        ci = CIEvaluation(
+            status=CIStatus.FAILING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        reviews = ReviewEvaluation(
+            approved=False,
+            changes_requested=False,
+            pending=False,
+            approving_reviews=[],
+            blocking_reviews=[],
+        )
+        return PRStateEvaluation(
+            pr=pr,
+            ci=ci,
+            reviews=reviews,
+            readiness=readiness,
+            readiness_verdict=None,
+        )
+
+    async def test_advisory_mode_publishes_neutral_not_failure(self) -> None:
+        """Default advisory mode: a blocked PR must never publish 'failure'."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 1})
+
+        agent = self._make_agent(github, mode=MergeAuthorityMode.ADVISORY)
+        pr = make_pr(number=1, head_ref="fix/something")
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=1)
+        evaluation = self._make_failing_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        github.create_check_run.assert_awaited_once()
+        call_kwargs = github.create_check_run.call_args
+        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        assert conclusion_arg == "neutral", (
+            f"advisory mode must publish 'neutral', got '{conclusion_arg}'"
+        )
+
+    async def test_gate_only_mode_publishes_failure(self) -> None:
+        """gate_only mode must publish 'failure' to block branch protection."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 2})
+
+        agent = self._make_agent(github, mode=MergeAuthorityMode.GATE_ONLY)
+        pr = make_pr(number=2, head_ref="fix/something")
+        pr.head_sha = "def456"
+        tracking = TrackedPR(number=2)
+        evaluation = self._make_failing_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        github.create_check_run.assert_awaited_once()
+        call_kwargs = github.create_check_run.call_args
+        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        assert conclusion_arg == "failure", (
+            f"gate_only mode must publish 'failure', got '{conclusion_arg}'"
+        )
+
+    async def test_gate_and_merge_mode_publishes_failure(self) -> None:
+        """gate_and_merge mode must publish 'failure' to block branch protection."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 3})
+
+        agent = self._make_agent(github, mode=MergeAuthorityMode.GATE_AND_MERGE)
+        pr = make_pr(number=3, head_ref="fix/something")
+        pr.head_sha = "ghi789"
+        tracking = TrackedPR(number=3)
+        evaluation = self._make_failing_evaluation(pr)
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        github.create_check_run.assert_awaited_once()
+        call_kwargs = github.create_check_run.call_args
+        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        assert conclusion_arg == "failure", (
+            f"gate_and_merge mode must publish 'failure', got '{conclusion_arg}'"
+        )
+
+    async def test_advisory_mode_success_still_publishes_success(self) -> None:
+        """Advisory mode must not change 'success' conclusions."""
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReadinessEvaluation,
+            ReviewEvaluation,
+        )
+
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 4})
+
+        agent = self._make_agent(github, mode=MergeAuthorityMode.ADVISORY)
+        pr = make_pr(number=4, head_ref="fix/something")
+        pr.head_sha = "jkl012"
+        tracking = TrackedPR(number=4)
+
+        readiness = ReadinessEvaluation(
+            score=1.0,
+            blockers=[],
+            summary="Ready",
+            conclusion="success",
+        )
+        ci = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        reviews = ReviewEvaluation(
+            approved=True,
+            changes_requested=False,
+            pending=False,
+            approving_reviews=[],
+            blocking_reviews=[],
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr, ci=ci, reviews=reviews, readiness=readiness, readiness_verdict=None
+        )
+
+        await agent._publish_readiness_check(pr, tracking, evaluation)
+
+        github.create_check_run.assert_awaited_once()
+        call_kwargs = github.create_check_run.call_args
+        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        assert conclusion_arg == "success"
