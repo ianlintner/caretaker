@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from caretaker.causal import make_causal_marker, parent_from_body
+from caretaker.config import MergeAuthorityMode
 from caretaker.evolution.shadow import shadow_decision
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
@@ -47,8 +48,6 @@ from caretaker.pr_agent.stuck_pr_llm import (
 )
 from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
 from caretaker.tools.debug_dump import render_debug_dump
-
-from caretaker.config import MergeAuthorityMode
 
 if TYPE_CHECKING:
     from caretaker.config import PRAgentConfig
