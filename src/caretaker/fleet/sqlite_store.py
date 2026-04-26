@@ -36,12 +36,9 @@ import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .store import _HEARTBEAT_HISTORY_MAXLEN, FleetClient
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -472,8 +469,8 @@ def _parse_iso(value: str) -> datetime:
     return dt
 
 
-__all__: Iterable[str] = (
+__all__ = [
     "SQLiteFleetRegistryStore",
     "resolve_db_path",
     "DEFAULT_DB_PATH_ENV",
-)
+]

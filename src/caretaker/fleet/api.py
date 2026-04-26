@@ -250,7 +250,7 @@ async def get_fleet_client(
     record = await store.get_client(slug)
     if record is None:
         raise HTTPException(status_code=404, detail="repo not registered")
-    payload = record.to_dict()
+    payload: dict[str, Any] = record.to_dict()
     if include_history:
         # Coerce heartbeats to JSON-safe primitives. ``recent_heartbeats``
         # may return datetime values for ``run_at`` depending on the

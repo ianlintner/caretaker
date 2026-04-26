@@ -10,7 +10,7 @@ import os
 import sys
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -848,7 +848,6 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
     import re
     import urllib.request as _req
     from pathlib import Path as _Path
-    from typing import Any
 
     import yaml  # already a transitive dep via pyyaml
 
@@ -1230,7 +1229,7 @@ def fleet_register_self(config_path: str, repo_override: str | None) -> None:
         raise SystemExit(1)
 
 
-def _post_heartbeat_manual(registry, heartbeat) -> bool:
+def _post_heartbeat_manual(registry: Any, heartbeat: Any) -> bool:
     """POST a built FleetHeartbeat directly using httpx.
 
     Mirrors the production wire format: JSON body, optional X-Caretaker-Signature
