@@ -506,6 +506,9 @@ class GraphBuilder:
                         "repo": repo_slug,
                         "span_id": event.span_id or "",
                         "parent_span_id": event.parent_span_id or "",
+                        # parent_id is stamped on the node so the SPA
+                        # can filter on it without traversing edges.
+                        "parent_id": event.parent_id or "",
                     },
                 )
                 counts["causal_events"] += 1
