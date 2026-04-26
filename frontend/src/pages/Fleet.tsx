@@ -1,11 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import PageHeader from '@/components/PageHeader'
 import StatPanel from '@/components/StatPanel'
-import { DataTable, type Column } from '@/components/DataTable'
+import {
+  DataTable,
+  type Column,
+  type SortState,
+} from '@/components/DataTable'
+import { sortRows } from '@/lib/tableSort'
 import Pagination from '@/components/Pagination'
 import StatusBadge from '@/components/StatusBadge'
+import SearchInput from '@/components/SearchInput'
+import {
+  FilterBar,
+  FilterSelect,
+  FilterToggle,
+} from '@/components/FilterBar'
 
 type FleetClient = {
   repo: string
@@ -34,6 +45,8 @@ type FleetSummary = {
   version_distribution: Record<string, number>
 }
 
+const STALE_DAY_MS = 24 * 60 * 60 * 1000
+
 function timeAgo(iso: string): string {
   const t = new Date(iso).getTime()
   if (!Number.isFinite(t)) return '—'
@@ -51,21 +64,29 @@ const COLUMNS: Column<FleetClient>[] = [
   {
     key: 'repo',
     header: 'Repository',
+    sortable: true,
+    sortValue: (r) => r.repo,
     render: (r) => <span className="mono text-xs">{r.repo}</span>,
   },
   {
     key: 'version',
     header: 'Version',
+    sortable: true,
+    sortValue: (r) => r.caretaker_version,
     render: (r) => <span className="mono text-xs">{r.caretaker_version}</span>,
   },
   {
     key: 'mode',
     header: 'Last Mode',
+    sortable: true,
+    sortValue: (r) => r.last_mode,
     render: (r) => <StatusBadge value={r.last_mode} />,
   },
   {
     key: 'goal_health',
     header: 'Goal Health',
+    sortable: true,
+    sortValue: (r) => r.last_goal_health,
     render: (r) => (
       <span className="mono text-xs">
         {r.last_goal_health != null ? r.last_goal_health.toFixed(2) : '—'}
@@ -75,6 +96,8 @@ const COLUMNS: Column<FleetClient>[] = [
   {
     key: 'errors',
     header: 'Errors',
+    sortable: true,
+    sortValue: (r) => r.last_error_count,
     render: (r) => (
       <span
         className="mono text-xs"
@@ -90,6 +113,8 @@ const COLUMNS: Column<FleetClient>[] = [
   {
     key: 'agents',
     header: 'Agents',
+    sortable: true,
+    sortValue: (r) => r.enabled_agents.length,
     render: (r) => (
       <span className="text-xs text-[var(--color-muted-foreground)]">
         {r.enabled_agents.length}
@@ -99,11 +124,29 @@ const COLUMNS: Column<FleetClient>[] = [
   {
     key: 'heartbeats',
     header: 'Heartbeats',
+    sortable: true,
+    sortValue: (r) => r.heartbeats_seen,
     render: (r) => <span className="mono text-xs">{r.heartbeats_seen}</span>,
+  },
+  {
+    key: 'first_seen',
+    header: 'First Seen',
+    sortable: true,
+    sortValue: (r) => new Date(r.first_seen).getTime() || null,
+    render: (r) => (
+      <span
+        className="text-xs text-[var(--color-muted-foreground)]"
+        title={r.first_seen}
+      >
+        {timeAgo(r.first_seen)}
+      </span>
+    ),
   },
   {
     key: 'last_seen',
     header: 'Last Seen',
+    sortable: true,
+    sortValue: (r) => new Date(r.last_seen).getTime() || null,
     render: (r) => (
       <span
         className="text-xs text-[var(--color-muted-foreground)]"
@@ -118,19 +161,59 @@ const COLUMNS: Column<FleetClient>[] = [
 export default function Fleet() {
   const navigate = useNavigate()
   const [offset, setOffset] = useState(0)
+  const [search, setSearch] = useState('')
+  const [version, setVersion] = useState<string | ''>('')
+  const [staleOnly, setStaleOnly] = useState(false)
+  const [sort, setSort] = useState<SortState>({ key: 'last_seen', dir: 'desc' })
+  const [now, setNow] = useState(() => Date.now())
   const limit = 50
 
+  // Refresh "now" every 30s so stale-only filtering reflects elapsed time
+  // without forcing impure Date.now() inside render.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  const qs = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  })
+  if (version) qs.set('version', version)
+
   const { data: list, isLoading } = useSWR<FleetList>(
-    `/api/admin/fleet?offset=${offset}&limit=${limit}`,
+    `/api/admin/fleet?${qs}`,
   )
   const { data: summary } = useSWR<FleetSummary>('/api/admin/fleet/summary')
 
   const versions = summary?.version_distribution ?? {}
-  const versionLabel = Object.entries(versions)
+  const versionOptions = Object.entries(versions)
     .sort(([, a], [, b]) => b - a)
+    .map(([v, n]) => ({ value: v, label: `${v} (${n})` }))
+  const versionLabel = versionOptions
     .slice(0, 3)
-    .map(([v, n]) => `${v} (${n})`)
+    .map((o) => o.label)
     .join(' · ')
+
+  const staleThresholdDays = summary?.stale_threshold_days ?? 7
+  const staleThresholdMs = staleThresholdDays * STALE_DAY_MS
+
+  const visibleRows = useMemo(() => {
+    const items = list?.items ?? []
+    const q = search.trim().toLowerCase()
+    let filtered = items
+    if (q) {
+      filtered = filtered.filter((r) => r.repo.toLowerCase().includes(q))
+    }
+    if (staleOnly) {
+      filtered = filtered.filter((r) => {
+        const t = new Date(r.last_seen).getTime()
+        if (!Number.isFinite(t)) return true
+        return now - t >= staleThresholdMs
+      })
+    }
+    return sortRows(filtered, COLUMNS, sort)
+  }, [list?.items, search, staleOnly, staleThresholdMs, sort, now])
 
   return (
     <>
@@ -149,7 +232,7 @@ export default function Fleet() {
           <StatPanel
             label="Stale"
             value={summary?.stale_clients ?? '—'}
-            hint={`No heartbeat in ${summary?.stale_threshold_days ?? 7} days`}
+            hint={`No heartbeat in ${staleThresholdDays} days`}
             accentVar="--chart-4"
           />
           <StatPanel
@@ -172,6 +255,39 @@ export default function Fleet() {
           />
         </div>
 
+        <FilterBar>
+          <SearchInput
+            value={search}
+            onChange={(v) => {
+              setSearch(v)
+              setOffset(0)
+            }}
+            placeholder="Search repository…"
+          />
+          <FilterSelect
+            label="Version"
+            value={version}
+            options={versionOptions}
+            onChange={(v) => {
+              setVersion(v)
+              setOffset(0)
+            }}
+            placeholder="All versions"
+          />
+          <FilterToggle
+            active={staleOnly}
+            onChange={(v) => {
+              setStaleOnly(v)
+              setOffset(0)
+            }}
+          >
+            Stale only ({staleThresholdDays}d+)
+          </FilterToggle>
+          <span className="text-xs text-[var(--color-muted-foreground)] ml-auto">
+            {visibleRows.length} of {list?.total ?? 0}
+          </span>
+        </FilterBar>
+
         {isLoading ? (
           <p className="text-sm text-[var(--color-muted-foreground)]">
             Loading…
@@ -180,14 +296,20 @@ export default function Fleet() {
           <>
             <DataTable
               columns={COLUMNS}
-              rows={list?.items ?? []}
+              rows={visibleRows}
+              sort={sort}
+              onSortChange={setSort}
               onRowClick={(r) => {
                 const [owner, repo] = r.repo.split('/')
                 if (owner && repo) {
                   navigate(`/fleet/${owner}/${repo}`)
                 }
               }}
-              empty="No consumer repositories have registered yet. Set caretaker's fleet_registry.enabled = true and point fleet_registry.endpoint at this backend to opt in."
+              empty={
+                search || staleOnly || version
+                  ? 'No repositories match these filters.'
+                  : "No consumer repositories have registered yet. Set caretaker's fleet_registry.enabled = true and point fleet_registry.endpoint at this backend to opt in."
+              }
             />
             {list && list.total > limit && (
               <Pagination
