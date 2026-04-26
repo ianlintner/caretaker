@@ -1138,16 +1138,12 @@ def fleet_status(config_path: str) -> None:
     click.echo(f"timeout_seconds          : {registry.timeout_seconds}")
     click.echo("oauth2 (canonical auth)  :")
     click.echo(f"  {client_id_env:<22}: {'set' if client_id_present else 'NOT SET'}")
-    click.echo(
-        f"  {client_secret_env:<22}: {'set' if client_secret_present else 'NOT SET'}"
-    )
+    click.echo(f"  {client_secret_env:<22}: {'set' if client_secret_present else 'NOT SET'}")
     click.echo(f"  {token_url_env:<22}: {token_url or 'NOT SET'}")
     click.echo(f"  scope                 : {scope_value or '<empty>'}")
     oauth_ready = client_id_present and client_secret_present and bool(token_url)
     if not oauth_ready:
-        click.echo(
-            "  ⚠ OAuth2 not fully wired — heartbeats will be rejected by backend (401)."
-        )
+        click.echo("  ⚠ OAuth2 not fully wired — heartbeats will be rejected by backend (401).")
 
     if not registry.enabled:
         click.echo("\n⚠ fleet_registry is disabled — heartbeats will NOT be sent.")

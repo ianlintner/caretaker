@@ -147,9 +147,7 @@ async def doctor(
     oauth_token_url = os.environ.get("OAUTH2_TOKEN_URL")
     oauth_present = bool(oauth_id and oauth_secret and oauth_token_url)
     if oauth_present:
-        oauth_detail = (
-            f"OAuth2 client_credentials configured (token_url={oauth_token_url})"
-        )
+        oauth_detail = f"OAuth2 client_credentials configured (token_url={oauth_token_url})"
         oauth_status: CheckStatus = "ok"
     else:
         missing = [
