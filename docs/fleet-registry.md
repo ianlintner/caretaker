@@ -41,7 +41,7 @@ Add to your repo's `.github/maintainer/config.yml`:
 ```yaml
 fleet_registry:
   enabled: true
-  endpoint: https://caretaker-admin.example.com/api/fleet/heartbeat
+  endpoint: https://caretaker.cat-herding.net/api/fleet/heartbeat
   # Optional. When set the emitter signs the payload with HMAC-SHA256
   # and forwards the digest in X-Caretaker-Signature. The backend
   # verifies before recording.
@@ -126,10 +126,15 @@ down a silent consumer.
 - **Fail-open.** Network, auth, or serialization errors are logged at
   `WARNING` and swallowed. A fleet-registry problem can never fail the
   orchestrator run loop.
-- **In-memory store (for now).** The first cut persists only for the
-  lifetime of the backend process. A future revision can plug the same
-  `FleetRegistryStore` interface into the SQLite / Mongo backends that
-  already back `state/` and `evolution/`.
+- **Pluggable persistence.** The default in-memory store keeps the
+  registry for the lifetime of the backend process — useful for
+  ephemeral test deployments. Set `CARETAKER_FLEET_DB_PATH` to a
+  writable filesystem path (default
+  `~/.local/state/caretaker/fleet-registry.db`) to enable the
+  SQLite-backed `FleetRegistryStore`, which survives pod restarts and
+  is the recommended setting for the production
+  `caretaker.cat-herding.net` deployment. Both implementations honor
+  the same async interface.
 - **No auto-discovery.** We chose the client-push model over a backend
   poll so operators without org-wide read PATs can still run a fleet
   dashboard.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -1086,6 +1087,184 @@ def fleet_lag(  # noqa: C901  (complexity: intentionally inline for CLI clarity)
 
     if violations and fail_on_violations:
         raise SystemExit(1)
+
+
+@fleet_group.command("status")
+@click.option(
+    "--config",
+    "config_path",
+    default=".github/maintainer/config.yml",
+    show_default=True,
+    help="Path to the maintainer config that contains the fleet_registry block.",
+)
+def fleet_status(config_path: str) -> None:
+    """Print the local fleet_registry config and resolved emitter target.
+
+    Useful when verifying that a child repo is opted in: shows whether
+    fleet_registry.enabled is true, the configured endpoint, and whether the
+    HMAC secret env var is populated. Performs no network I/O.
+    """
+    cfg_path = Path(config_path)
+    if not cfg_path.is_file():
+        click.echo(f"❌ Config not found: {cfg_path}", err=True)
+        raise SystemExit(2)
+    try:
+        cfg = MaintainerConfig.from_yaml(cfg_path)
+    except Exception as exc:  # pragma: no cover - surfaces config errors
+        click.echo(f"❌ Failed to load config {cfg_path}: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    registry = cfg.fleet_registry
+    repo_slug = os.environ.get("GITHUB_REPOSITORY") or "<unset>"
+    secret_env = registry.secret_env or "CARETAKER_FLEET_SECRET"
+    secret_present = bool(os.environ.get(secret_env))
+
+    click.echo("Caretaker fleet — local status")
+    click.echo("-" * 72)
+    click.echo(f"Config file              : {cfg_path}")
+    click.echo(f"Repo (GITHUB_REPOSITORY) : {repo_slug}")
+    click.echo(f"fleet_registry.enabled   : {registry.enabled}")
+    click.echo(f"fleet_registry.endpoint  : {registry.endpoint or '<unset>'}")
+    click.echo(f"fleet_registry.secret_env: {secret_env}")
+    secret_status = "yes" if secret_present else "no (unsigned heartbeats)"
+    click.echo(f"  secret env populated   : {secret_status}")
+    click.echo(f"include_full_summary     : {registry.include_full_summary}")
+    click.echo(f"timeout_seconds          : {registry.timeout_seconds}")
+    if registry.oauth2 and registry.oauth2.enabled:
+        click.echo("oauth2                   : enabled (will fetch bearer token)")
+    else:
+        click.echo("oauth2                   : disabled")
+
+    if not registry.enabled:
+        click.echo("\n⚠ fleet_registry is disabled — heartbeats will NOT be sent.")
+        click.echo("  Set fleet_registry.enabled: true in config.yml to opt in.")
+    elif not registry.endpoint:
+        click.echo("\n❌ fleet_registry.enabled is true but endpoint is missing.", err=True)
+        raise SystemExit(1)
+    else:
+        click.echo("\n✓ Configuration looks ready. Run `caretaker fleet register-self` to verify.")
+
+
+@fleet_group.command("register-self")
+@click.option(
+    "--config",
+    "config_path",
+    default=".github/maintainer/config.yml",
+    show_default=True,
+    help="Path to the maintainer config that contains the fleet_registry block.",
+)
+@click.option(
+    "--repo",
+    "repo_override",
+    default=None,
+    help="Repository slug (owner/name). Defaults to $GITHUB_REPOSITORY.",
+)
+def fleet_register_self(config_path: str, repo_override: str | None) -> None:
+    """Send a single verification heartbeat to the fleet registry.
+
+    Builds a minimal heartbeat payload from the local config and POSTs it to
+    the configured endpoint. Honours the same HMAC + OAuth2 wiring as the
+    in-process emitter. Use this once after opting a repo in to confirm the
+    backend is receiving signed payloads end-to-end.
+    """
+    cfg_path = Path(config_path)
+    if not cfg_path.is_file():
+        click.echo(f"❌ Config not found: {cfg_path}", err=True)
+        raise SystemExit(2)
+    try:
+        cfg = MaintainerConfig.from_yaml(cfg_path)
+    except Exception as exc:  # pragma: no cover
+        click.echo(f"❌ Failed to load config {cfg_path}: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    registry = cfg.fleet_registry
+    if not registry.enabled:
+        click.echo("❌ fleet_registry.enabled must be true. Edit your config.yml first.", err=True)
+        raise SystemExit(2)
+    if not registry.endpoint:
+        click.echo(
+            "❌ fleet_registry.endpoint is missing. "
+            "Set it to the admin /api/fleet/heartbeat URL.",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    repo_slug = repo_override or os.environ.get("GITHUB_REPOSITORY")
+    if not repo_slug:
+        click.echo(
+            "❌ Cannot determine repo slug. Pass --repo owner/name or set GITHUB_REPOSITORY.",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    # Lazy imports to avoid pulling httpx/Pydantic into the cold-start path of
+    # unrelated CLI commands.
+
+    from caretaker.fleet.emitter import build_heartbeat
+    from caretaker.state.models import RunSummary
+
+    # Provide GITHUB_REPOSITORY for build_heartbeat's slug fallback when --repo
+    # was passed explicitly but the env var is unset.
+    if repo_override and not os.environ.get("GITHUB_REPOSITORY"):
+        os.environ["GITHUB_REPOSITORY"] = repo_override
+
+    summary = RunSummary(mode="register-self")
+    try:
+        heartbeat = build_heartbeat(
+            cfg,
+            summary,
+            repo=repo_slug,
+            include_full_summary=False,
+            state=None,
+        )
+    except Exception as exc:  # pragma: no cover - surfaces config errors
+        click.echo(f"❌ Failed to build heartbeat payload: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    click.echo(f"→ Posting verification heartbeat for {repo_slug} to {registry.endpoint}")
+    ok = _post_heartbeat_manual(registry, heartbeat)
+
+    if ok:
+        click.echo("✓ Heartbeat accepted by registry.")
+    else:
+        click.echo("❌ Heartbeat was rejected or the request failed. Check backend logs.", err=True)
+        raise SystemExit(1)
+
+
+def _post_heartbeat_manual(registry, heartbeat) -> bool:
+    """POST a built FleetHeartbeat directly using httpx.
+
+    Mirrors the production wire format: JSON body, optional X-Caretaker-Signature
+    HMAC-SHA256 header derived from the configured secret env var. Used by the
+    register-self CLI so we don't need an event-loop wrapper.
+    """
+    import hashlib
+    import hmac
+
+    import httpx
+
+    body = heartbeat.model_dump_json().encode()
+    headers = {"Content-Type": "application/json"}
+    secret_env = registry.secret_env or "CARETAKER_FLEET_SECRET"
+    secret = os.environ.get(secret_env, "").strip()
+    if secret:
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Caretaker-Signature"] = f"sha256={sig}"
+    else:
+        click.echo(f"  (no {secret_env} set — sending unsigned)")
+    try:
+        with httpx.Client(timeout=max(registry.timeout_seconds, 5.0)) as client:
+            resp = client.post(str(registry.endpoint), content=body, headers=headers)
+        click.echo(f"  HTTP {resp.status_code}")
+        if resp.status_code >= 400:
+            click.echo(f"  Response: {resp.text[:400]}", err=True)
+            return False
+        with contextlib.suppress(ValueError):
+            click.echo(f"  Response: {resp.json()}")
+    except Exception as exc:  # pragma: no cover - network errors
+        click.echo(f"  Request failed: {exc}", err=True)
+        return False
+    return True
 
 
 if __name__ == "__main__":

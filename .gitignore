@@ -50,3 +50,11 @@ src/caretaker/evolution/backends/mongo_backend.py
 # Claude Code local state
 .claude/
 .caretaker-memory*.db
+
+# Frontend (node_modules is large; restored via npm install)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Hive memory store (local)
+.hive/

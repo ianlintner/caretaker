@@ -26,6 +26,11 @@ from caretaker.fleet.graph import (
     promote_global_skills,
     sync_repos_to_graph,
 )
+from caretaker.fleet.sqlite_store import (
+    DEFAULT_DB_PATH_ENV,
+    SQLiteFleetRegistryStore,
+    resolve_db_path,
+)
 from caretaker.fleet.store import (
     FleetClient,
     FleetRegistryStore,
@@ -57,6 +62,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "AttributionSummary",
+    "DEFAULT_DB_PATH_ENV",
     "FleetAlert",
     "FleetAlertStore",
     "FleetClient",
@@ -64,6 +70,7 @@ __all__ = [
     "FleetOAuthClientCache",
     "FleetRegistryStore",
     "GraphBackedGlobalSkillReader",
+    "SQLiteFleetRegistryStore",
     "abstract_sop",
     "admin_router",
     "build_heartbeat",
@@ -75,6 +82,7 @@ __all__ = [
     "public_router",
     "reset_alert_store_for_tests",
     "reset_store_for_tests",
+    "resolve_db_path",
     "set_fleet_alert_dependencies",
     "sign_payload",
     "sync_repos_to_graph",

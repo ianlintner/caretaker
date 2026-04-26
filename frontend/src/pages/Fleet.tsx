@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import PageHeader from '@/components/PageHeader'
 import StatPanel from '@/components/StatPanel'
@@ -115,6 +116,7 @@ const COLUMNS: Column<FleetClient>[] = [
 ]
 
 export default function Fleet() {
+  const navigate = useNavigate()
   const [offset, setOffset] = useState(0)
   const limit = 50
 
@@ -179,6 +181,12 @@ export default function Fleet() {
             <DataTable
               columns={COLUMNS}
               rows={list?.items ?? []}
+              onRowClick={(r) => {
+                const [owner, repo] = r.repo.split('/')
+                if (owner && repo) {
+                  navigate(`/fleet/${owner}/${repo}`)
+                }
+              }}
               empty="No consumer repositories have registered yet. Set caretaker's fleet_registry.enabled = true and point fleet_registry.endpoint at this backend to opt in."
             />
             {list && list.total > limit && (
