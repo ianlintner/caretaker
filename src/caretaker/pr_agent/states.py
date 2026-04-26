@@ -11,6 +11,7 @@ from caretaker.github_client.models import (
     CheckConclusion,
     CheckRun,
     CheckStatus,
+    Comment,
     PullRequest,
     Review,
     ReviewState,
@@ -52,10 +53,23 @@ class ReviewEvaluation:
     # Reviews with COMMENTED state from automated reviewer bots that contain
     # actionable feedback (e.g. copilot-pull-request-reviewer).
     automated_review_comments: list[Review] = field(default_factory=list)
+    # Successful CheckRuns from configured bot reviewers (e.g. ``claude-review``)
+    # that count as an approval for the readiness gate. Empty when no bot
+    # CheckRun signed off. Surfaced separately from ``approving_reviews`` so
+    # the status comment can render the row as "(bot)".
+    bot_check_approvals: list[CheckRun] = field(default_factory=list)
+    # Bot-authored review comments / issue comments whose body matched a
+    # configured approval marker (e.g. "Approved", "LGTM"). Treated the
+    # same as ``bot_check_approvals`` for the gate.
+    bot_comment_approvals: list[Review | Comment] = field(default_factory=list)
 
     @property
     def has_automated_comments(self) -> bool:
         return len(self.automated_review_comments) > 0
+
+    @property
+    def has_bot_approval(self) -> bool:
+        return bool(self.bot_check_approvals) or bool(self.bot_comment_approvals)
 
 
 @dataclass
@@ -96,9 +110,22 @@ _ALWAYS_IGNORED_CHECK_NAMES: frozenset[str] = frozenset(
 )
 
 
-def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None) -> CIEvaluation:
-    """Evaluate CI status from check runs."""
-    ignore = set(ignore_jobs or []) | _ALWAYS_IGNORED_CHECK_NAMES
+def evaluate_ci(
+    check_runs: list[CheckRun],
+    ignore_jobs: list[str] | None = None,
+    caretaker_workflow_jobs: list[str] | None = None,
+) -> CIEvaluation:
+    """Evaluate CI status from check runs.
+
+    ``caretaker_workflow_jobs`` carries the names of caretaker's own
+    supervisor jobs (``maintainer.yml``: dispatch-guard / doctor /
+    maintain / self-heal-on-failure). They are excluded from the upstream
+    rollup for the same reason ``caretaker/pr-readiness`` is: caretaker
+    must not gate itself.
+    """
+    ignore = (
+        set(ignore_jobs or []) | set(caretaker_workflow_jobs or []) | _ALWAYS_IGNORED_CHECK_NAMES
+    )
     relevant = [cr for cr in check_runs if cr.name not in ignore]
 
     if not relevant:
@@ -154,8 +181,43 @@ def evaluate_ci(check_runs: list[CheckRun], ignore_jobs: list[str] | None = None
     )
 
 
-def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
-    """Evaluate review status — uses latest review per reviewer."""
+def _body_has_marker(body: str | None, markers: list[str]) -> bool:
+    """Return True when ``body`` contains any case-insensitive marker.
+
+    Markers default to common Claude / bot phrasing (``approved``, ``lgtm``).
+    Match is substring, not whole-word, so phrasings like "✅ Approved!" or
+    "**Approved**" both fire.
+    """
+    if not body or not markers:
+        return False
+    needle = body.lower()
+    return any(m.lower() in needle for m in markers)
+
+
+def evaluate_reviews(
+    reviews: list[Review],
+    check_runs: list[CheckRun] | None = None,
+    issue_comments: list[Comment] | None = None,
+    bot_check_names: list[str] | None = None,
+    bot_approval_markers: list[str] | None = None,
+) -> ReviewEvaluation:
+    """Evaluate review status — uses latest review per reviewer.
+
+    Bot approvals are surfaced through three independent channels, any of
+    which on its own satisfies the readiness review-gate:
+
+    1. A formal Reviews API submission with state APPROVED — the existing
+       human + caretaker-app path.
+    2. A successful CheckRun whose name is listed in ``bot_check_names``
+       (default: ``claude-review``). This is the channel caretaker's own
+       review workflow uses; without it PR #609's comment kept reporting
+       ``required_review_missing`` even though the bot had signed off.
+    3. A bot-authored review (state COMMENTED) or PR issue-comment whose
+       body contains an approval marker like "Approved" or "LGTM".
+
+    A formal CHANGES_REQUESTED from any reviewer still blocks regardless
+    of bot approval — only humans should be able to veto.
+    """
     latest_by_user: dict[str, Review] = {}
     for review in reviews:
         existing = latest_by_user.get(review.user.login)
@@ -168,21 +230,53 @@ def evaluate_reviews(reviews: list[Review]) -> ReviewEvaluation:
 
     approvals = [r for r in latest_by_user.values() if r.state == ReviewState.APPROVED]
     blockers = [r for r in latest_by_user.values() if r.state == ReviewState.CHANGES_REQUESTED]
-    automated = [
-        r
-        for r in latest_by_user.values()
-        if r.state == ReviewState.COMMENTED
-        and is_automated(r.user.login)
-        and r.body  # only reviews that carry a summary body
-    ]
+
+    # COMMENTED reviews from bots split two ways: those carrying an explicit
+    # approval marker in their body land in ``bot_comment_approvals`` and
+    # gate ``approved=True``; the rest stay in ``automated_review_comments``
+    # and continue to flag ``automated_feedback_unaddressed`` as a blocker.
+    markers = list(bot_approval_markers or [])
+    automated: list[Review] = []
+    bot_comment_approvals: list[Review | Comment] = []
+    for r in latest_by_user.values():
+        if r.state != ReviewState.COMMENTED or not is_automated(r.user.login) or not r.body:
+            continue
+        if _body_has_marker(r.body, markers):
+            bot_comment_approvals.append(r)
+        else:
+            automated.append(r)
+
+    # Issue comments (separate from the Reviews API) from bots can also
+    # carry an approval marker — e.g. when a bot replies inline rather
+    # than via a formal review.
+    for comment in issue_comments or []:
+        login = comment.user.login if comment.user else ""
+        if not login or not is_automated(login):
+            continue
+        if _body_has_marker(comment.body, markers):
+            bot_comment_approvals.append(comment)
+
+    # CheckRun-based bot approvals: any successful run whose name is in
+    # the configured allowlist counts as a single bot approval.
+    bot_names = set(bot_check_names or [])
+    bot_check_approvals: list[CheckRun] = []
+    for cr in check_runs or []:
+        if cr.name not in bot_names:
+            continue
+        if cr.status == CheckStatus.COMPLETED and cr.conclusion == CheckConclusion.SUCCESS:
+            bot_check_approvals.append(cr)
+
+    has_bot_approval = bool(bot_check_approvals) or bool(bot_comment_approvals)
 
     return ReviewEvaluation(
-        approved=len(approvals) > 0 and len(blockers) == 0,
+        approved=(len(approvals) > 0 or has_bot_approval) and len(blockers) == 0,
         changes_requested=len(blockers) > 0,
-        pending=len(latest_by_user) == 0,
+        pending=len(latest_by_user) == 0 and not has_bot_approval,
         approving_reviews=approvals,
         blocking_reviews=blockers,
         automated_review_comments=automated,
+        bot_check_approvals=bot_check_approvals,
+        bot_comment_approvals=bot_comment_approvals,
     )
 
 
@@ -300,6 +394,10 @@ def evaluate_pr(
     auto_approve_workflows: bool = False,
     required_reviews: int = 1,
     auto_merge: AutoMergeConfig | None = None,
+    issue_comments: list[Comment] | None = None,
+    bot_check_names: list[str] | None = None,
+    bot_approval_markers: list[str] | None = None,
+    caretaker_workflow_jobs: list[str] | None = None,
 ) -> PRStateEvaluation:
     """Full PR evaluation — determines next state and action.
 
@@ -308,9 +406,23 @@ def evaluate_pr(
     reject (e.g. ``human_prs=false``). The PR falls back to ``CI_PASSING`` with
     ``await_review``, which correctly renders as "awaiting review" in the
     status comment instead of the misleading "ready for merge".
+
+    ``bot_check_names`` / ``bot_approval_markers`` / ``issue_comments``: see
+    :func:`evaluate_reviews` — let bot CheckRun successes (e.g. ``claude-review``)
+    and bot comment markers ("Approved", "LGTM") satisfy the review gate.
+
+    ``caretaker_workflow_jobs``: see :func:`evaluate_ci` — exclude caretaker's
+    own supervisor-workflow jobs from the upstream-CI rollup so the agent
+    cannot self-gate.
     """
-    ci = evaluate_ci(check_runs, ignore_jobs)
-    review_eval = evaluate_reviews(reviews)
+    ci = evaluate_ci(check_runs, ignore_jobs, caretaker_workflow_jobs)
+    review_eval = evaluate_reviews(
+        reviews,
+        check_runs=check_runs,
+        issue_comments=issue_comments,
+        bot_check_names=bot_check_names,
+        bot_approval_markers=bot_approval_markers,
+    )
     readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews)
 
     # State transitions

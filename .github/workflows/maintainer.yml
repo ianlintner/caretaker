@@ -2,7 +2,15 @@ name: Caretaker
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    # 5-minute cron is the GitHub Actions practical minimum (best-effort).
+    # Webhooks remain the primary low-latency path; this cron is the
+    # polling fallback that recovers from dropped webhook deliveries —
+    # PR #609's status comment stalled at 30% for ~10 minutes despite all
+    # CI completing, because the agent never re-fetched after the missed
+    # webhook. The dispatch-guard cooldown (EVENT_COOLDOWN_MINUTES=3)
+    # serializes runs so the bumped cadence does not pile up duplicate
+    # invocations.
+    - cron: "*/5 * * * *"
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_review:

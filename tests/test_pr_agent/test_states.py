@@ -731,3 +731,175 @@ class TestRequestReviewApprove:
 
         pr = make_pr(head_ref="chore/releases-json-v0.19.5")
         assert _auto_merge_allows(pr, AutoMergeConfig(maintainer_bot_prs=False)) is False
+
+
+# ── Bot CheckRun + comment-marker approvals (PR #609 regression) ─────
+
+
+class TestBotApprovalChannels:
+    """Bot reviewers signal approval through three channels — all should
+    satisfy the readiness review-gate. See PR #609 incident: claude-review
+    posted a SUCCESS CheckRun, but the comment forever read
+    "required_review_missing" because only formal Reviews counted.
+    """
+
+    def test_bot_check_run_counts_as_approval(self) -> None:
+        """A configured bot CheckRun (e.g. claude-review) success satisfies the gate."""
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        checks = [
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            )
+        ]
+        result = evaluate_reviews([], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is True
+        assert len(result.bot_check_approvals) == 1
+        assert result.has_bot_approval is True
+
+    def test_bot_check_run_pending_does_not_approve(self) -> None:
+        """An in-progress bot CheckRun does not pre-approve the PR."""
+        from caretaker.github_client.models import CheckStatus
+
+        checks = [
+            make_check_run(name="claude-review", status=CheckStatus.IN_PROGRESS, conclusion=None)
+        ]
+        result = evaluate_reviews([], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is False
+        assert len(result.bot_check_approvals) == 0
+
+    def test_bot_review_with_marker_counts_as_approval(self) -> None:
+        """A bot COMMENTED review whose body matches an approval marker satisfies the gate."""
+        from caretaker.github_client.models import User
+
+        bot = User(login="claude[bot]", id=99, type="Bot")
+        rev = make_review(user=bot, state=ReviewState.COMMENTED, body="**Approved** — looks good!")
+        result = evaluate_reviews([rev], bot_approval_markers=["**approved**", "lgtm"])
+        assert result.approved is True
+        assert len(result.bot_comment_approvals) == 1
+
+    def test_bot_review_without_marker_stays_automated_feedback(self) -> None:
+        """A bot COMMENTED review without a marker remains feedback, not approval."""
+        from caretaker.github_client.models import User
+
+        bot = User(login="copilot-pull-request-reviewer[bot]", id=99, type="Bot")
+        rev = make_review(user=bot, state=ReviewState.COMMENTED, body="Consider X")
+        result = evaluate_reviews([rev], bot_approval_markers=["**approved**"])
+        assert result.approved is False
+        assert len(result.automated_review_comments) == 1
+        assert len(result.bot_comment_approvals) == 0
+        assert result.has_automated_comments is True
+
+    def test_bot_issue_comment_with_marker_counts_as_approval(self) -> None:
+        """A bot-authored issue comment with 'LGTM' satisfies the gate even without a Review."""
+        from caretaker.github_client.models import User
+        from tests.conftest import make_comment
+
+        ic = make_comment(body="LGTM!", user=User(login="claude[bot]", id=99, type="Bot"))
+        result = evaluate_reviews([], issue_comments=[ic], bot_approval_markers=["lgtm"])
+        assert result.approved is True
+
+    def test_changes_requested_overrides_bot_approval(self) -> None:
+        """Human CHANGES_REQUESTED still blocks even when a bot CheckRun signed off."""
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        rev_block = make_review(state=ReviewState.CHANGES_REQUESTED, body="Nope")
+        checks = [
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            )
+        ]
+        result = evaluate_reviews([rev_block], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is False
+        assert result.changes_requested is True
+
+
+class TestCaretakerWorkflowExclusion:
+    """Caretaker's own supervisor workflow jobs (dispatch-guard, doctor, etc.)
+    must not gate the readiness CI rollup — including them would create the
+    same self-deadlock that ``caretaker/pr-readiness`` already avoids.
+    """
+
+    def test_pending_caretaker_workflow_job_does_not_block_ci(self) -> None:
+        """An in-progress dispatch-guard does not flag ci_pending."""
+        from caretaker.github_client.models import CheckStatus
+
+        runs = [
+            make_check_run(name="lint"),  # SUCCESS
+            make_check_run(name="dispatch-guard", status=CheckStatus.IN_PROGRESS, conclusion=None),
+        ]
+        ci = evaluate_ci(
+            runs,
+            caretaker_workflow_jobs=[
+                "dispatch-guard",
+                "doctor",
+                "maintain",
+                "self-heal-on-failure",
+            ],
+        )
+        assert ci.status == CIStatus.PASSING
+        assert ci.all_completed is True
+        assert len(ci.pending_runs) == 0
+
+    def test_failing_caretaker_workflow_job_does_not_fail_ci(self) -> None:
+        """A failing maintain job does not flag ci_failing — it's caretaker's own job."""
+        runs = [
+            make_check_run(name="test"),  # SUCCESS
+            make_check_run(name="maintain", conclusion=CheckConclusion.FAILURE),
+        ]
+        ci = evaluate_ci(runs, caretaker_workflow_jobs=["maintain"])
+        assert ci.status == CIStatus.PASSING
+        assert len(ci.failed_runs) == 0
+
+
+class TestPR609Regression:
+    """End-to-end regression for PR #609: human PR, claude-review CheckRun
+    SUCCESS, all real CI green, caretaker workflow jobs running, no formal
+    Reviews API submission. Old behavior gave 70% with required_review_missing.
+    New behavior gives 100% ready.
+    """
+
+    def test_pr609_scenario_reaches_100_percent(self) -> None:
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        pr = make_pr()
+        checks = [
+            make_check_run(name="lint"),
+            make_check_run(name="test"),
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            ),
+            # caretaker workflow jobs that should be ignored
+            make_check_run(name="dispatch-guard"),
+            make_check_run(name="doctor"),
+            make_check_run(name="maintain"),
+            # caretaker's own readiness check (already in _ALWAYS_IGNORED)
+            make_check_run(
+                name="caretaker/pr-readiness", status=CheckStatus.IN_PROGRESS, conclusion=None
+            ),
+        ]
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no formal reviews
+            PRTrackingState.DISCOVERED,
+            required_reviews=1,
+            bot_check_names=["claude-review"],
+            caretaker_workflow_jobs=[
+                "dispatch-guard",
+                "doctor",
+                "maintain",
+                "self-heal-on-failure",
+            ],
+        )
+        assert result.readiness is not None
+        assert result.readiness.score == 1.0
+        assert result.readiness.conclusion == "success"
+        assert result.readiness.blockers == []
+        assert result.reviews.has_bot_approval is True

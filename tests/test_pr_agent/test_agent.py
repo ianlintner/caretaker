@@ -2072,3 +2072,186 @@ class TestAdvisoryModeNeutralConclusion:
         github.create_check_run.assert_awaited_once()
         conclusion_arg = github.create_check_run.call_args.kwargs["conclusion"]
         assert conclusion_arg == "success"
+
+
+class TestTerminalReadinessOnCloseMerge:
+    """Once a PR is merged or closed, ``caretaker/pr-readiness`` must transition
+    to a terminal conclusion regardless of any in-progress blockers in the
+    evaluation. PR #609 was the motivating incident — the check stayed
+    in_progress for hours after the human merged it.
+    """
+
+    def _agent(self, github):
+        from caretaker.pr_agent.agent import PRAgent
+
+        config = make_config()
+        config.readiness.enabled = True
+        return PRAgent(github=github, owner="o", repo="r", config=config)
+
+    def _in_progress_eval(self, pr):
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReadinessEvaluation,
+            ReviewEvaluation,
+        )
+
+        return PRStateEvaluation(
+            pr=pr,
+            ci=CIEvaluation(
+                status=CIStatus.PENDING,
+                failed_runs=[],
+                pending_runs=[],
+                passed_runs=[],
+                action_required_runs=[],
+                all_completed=False,
+            ),
+            reviews=ReviewEvaluation(
+                approved=False,
+                changes_requested=False,
+                pending=True,
+                approving_reviews=[],
+                blocking_reviews=[],
+            ),
+            readiness=ReadinessEvaluation(
+                score=0.3,
+                blockers=["ci_pending", "required_review_missing"],
+                summary="In progress",
+                conclusion="in_progress",
+            ),
+        )
+
+    async def test_merged_pr_publishes_success_even_with_pending_blockers(self) -> None:
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 1})
+
+        agent = self._agent(github)
+        pr = make_pr(number=609, head_ref="feat/x", merged=True, state=PRState.CLOSED)
+        pr.head_sha = "abc123"
+        from datetime import UTC, datetime
+
+        pr.merged_at = datetime(2026, 4, 26, 21, 30, tzinfo=UTC)
+        tracking = TrackedPR(number=609)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "success"
+        assert kwargs["status"] == "completed"
+
+    async def test_closed_unmerged_pr_publishes_neutral(self) -> None:
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 2})
+
+        agent = self._agent(github)
+        pr = make_pr(number=42, head_ref="feat/x", merged=False, state=PRState.CLOSED)
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=42)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "neutral"
+        assert kwargs["status"] == "completed"
+
+    async def test_run_finalizes_readiness_check_for_externally_merged_pr(self) -> None:
+        """run() with pr_number for a PR that's been closed/merged externally
+        must still finalize the readiness check (one-shot, idempotent via
+        ``readiness_check_finalized``).
+        """
+        from datetime import UTC, datetime
+
+        github = AsyncMock()
+        merged_pr = make_pr(number=609, head_ref="feat/x", merged=True, state=PRState.CLOSED)
+        merged_pr.head_sha = "abc123"
+        merged_pr.merged_at = datetime(2026, 4, 26, 21, 30, tzinfo=UTC)
+        github.get_pull_request = AsyncMock(return_value=merged_pr)
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 5})
+
+        agent = self._agent(github)
+        tracking = TrackedPR(number=609)
+        tracked = {609: tracking}
+
+        report, tracked = await agent.run(tracked, pr_number=609)
+
+        # Finalization happened
+        assert tracked[609].readiness_check_finalized is True
+        github.create_check_run.assert_awaited_once()
+        assert github.create_check_run.call_args.kwargs["conclusion"] == "success"
+
+        # Second run() with same closed PR is a no-op (one-shot)
+        github.create_check_run.reset_mock()
+        report2, tracked2 = await agent.run(tracked, pr_number=609)
+        github.create_check_run.assert_not_awaited()
+
+
+class TestResyncOpenPRs:
+    """The resync method is the polling fallback for dropped webhooks. It
+    must call _process_pr for each open PR and update tracking.
+    """
+
+    async def test_resync_processes_each_open_pr(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent
+
+        pr1 = make_pr(number=1, head_ref="feat/a")
+        pr2 = make_pr(number=2, head_ref="feat/b")
+
+        github = AsyncMock()
+        github.list_pull_requests = AsyncMock(return_value=[pr1, pr2])
+
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        # Stub _process_pr so we don't have to wire every downstream call
+        seen: list[int] = []
+
+        async def fake_process(pr, tracking, report):
+            seen.append(pr.number)
+            tracking.readiness_score = 1.0
+            return tracking
+
+        agent._process_pr = fake_process  # type: ignore[method-assign]
+
+        tracked: dict = {}
+        report, tracked = await agent.resync_open_prs(tracked)
+
+        assert sorted(seen) == [1, 2]
+        assert report.monitored == 2
+        assert tracked[1].readiness_score == 1.0
+        assert tracked[2].readiness_score == 1.0
+        assert tracked[1].last_checked is not None
+
+    async def test_resync_continues_after_per_pr_error(self) -> None:
+        from caretaker.pr_agent.agent import PRAgent
+
+        pr1 = make_pr(number=1, head_ref="feat/a")
+        pr2 = make_pr(number=2, head_ref="feat/b")
+
+        github = AsyncMock()
+        github.list_pull_requests = AsyncMock(return_value=[pr1, pr2])
+
+        config = make_config()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        seen: list[int] = []
+
+        async def fake_process(pr, tracking, report):
+            seen.append(pr.number)
+            if pr.number == 1:
+                raise RuntimeError("simulated transient")
+            tracking.readiness_score = 1.0
+            return tracking
+
+        agent._process_pr = fake_process  # type: ignore[method-assign]
+
+        report, tracked = await agent.resync_open_prs({})
+
+        assert sorted(seen) == [1, 2]  # both attempted
+        assert any("PR #1" in e for e in report.errors)
+        assert tracked[2].readiness_score == 1.0  # PR #2 still processed
