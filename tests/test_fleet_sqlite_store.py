@@ -123,9 +123,7 @@ async def test_recent_heartbeats_returns_oldest_first(tmp_path: Path) -> None:
     store = SQLiteFleetRegistryStore(tmp_path / "fleet.db")
     base = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(5):
-        await store.record_heartbeat(
-            _payload(run_at=(base + timedelta(minutes=i)).isoformat())
-        )
+        await store.record_heartbeat(_payload(run_at=(base + timedelta(minutes=i)).isoformat()))
     history = await store.recent_heartbeats("ianlintner/example")
     assert len(history) == 5
     run_ats = [h["run_at"] for h in history]
@@ -149,9 +147,7 @@ async def test_history_pruned_to_max_length(tmp_path: Path) -> None:
     store = SQLiteFleetRegistryStore(tmp_path / "fleet.db")
     base = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(40):
-        await store.record_heartbeat(
-            _payload(run_at=(base + timedelta(minutes=i)).isoformat())
-        )
+        await store.record_heartbeat(_payload(run_at=(base + timedelta(minutes=i)).isoformat()))
     history = await store.recent_heartbeats("ianlintner/example")
     assert len(history) == 32
     # Pruning keeps the most recent 32 entries (oldest 8 dropped)

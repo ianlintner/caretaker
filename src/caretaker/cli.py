@@ -1183,8 +1183,7 @@ def fleet_register_self(config_path: str, repo_override: str | None) -> None:
         raise SystemExit(2)
     if not registry.endpoint:
         click.echo(
-            "❌ fleet_registry.endpoint is missing. "
-            "Set it to the admin /api/fleet/heartbeat URL.",
+            "❌ fleet_registry.endpoint is missing. Set it to the admin /api/fleet/heartbeat URL.",
             err=True,
         )
         raise SystemExit(2)

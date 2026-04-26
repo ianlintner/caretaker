@@ -307,9 +307,7 @@ class SQLiteFleetRegistryStore:
         finally:
             conn.close()
 
-    def _recent_heartbeats_sync(
-        self, repo: str, limit: int | None
-    ) -> list[dict[str, Any]]:
+    def _recent_heartbeats_sync(self, repo: str, limit: int | None) -> list[dict[str, Any]]:
         conn = self._connect_sync()
         try:
             if limit is None or limit < 0:

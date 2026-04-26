@@ -63,11 +63,13 @@ async def doctor(
         if gh_token
         else "Neither GITHUB_TOKEN nor GITHUB_APP_ID is set"
     )
-    checks.append(DoctorCheck(
-        name="github_credentials",
-        status="ok" if gh_token else "error",
-        detail=gh_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="github_credentials",
+            status="ok" if gh_token else "error",
+            detail=gh_detail,
+        )
+    )
 
     # 2. OIDC config
     oidc_issuer = os.environ.get("OIDC_ISSUER") or os.environ.get("CARETAKER_OIDC_ISSUER")
@@ -76,11 +78,13 @@ async def doctor(
         if oidc_issuer
         else "No OIDC issuer configured (auth may be open)"
     )
-    checks.append(DoctorCheck(
-        name="oidc_config",
-        status="ok" if oidc_issuer else "warning",
-        detail=oidc_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="oidc_config",
+            status="ok" if oidc_issuer else "warning",
+            detail=oidc_detail,
+        )
+    )
 
     # 3. Admin data loaded
     admin_detail = (
@@ -88,11 +92,13 @@ async def doctor(
         if _admin_data is not None
         else "Admin data not configured — state polling may not be running"
     )
-    checks.append(DoctorCheck(
-        name="admin_data",
-        status="ok" if _admin_data is not None else "error",
-        detail=admin_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="admin_data",
+            status="ok" if _admin_data is not None else "error",
+            detail=admin_detail,
+        )
+    )
 
     # 4. Graph store (Neo4j)
     graph_detail = (
@@ -100,11 +106,13 @@ async def doctor(
         if _graph_store is not None
         else "GraphStore not configured — graph features disabled"
     )
-    checks.append(DoctorCheck(
-        name="graph_store",
-        status="ok" if _graph_store is not None else "warning",
-        detail=graph_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="graph_store",
+            status="ok" if _graph_store is not None else "warning",
+            detail=graph_detail,
+        )
+    )
 
     # 5. Fleet store
     fleet_detail = (
@@ -112,24 +120,26 @@ async def doctor(
         if _fleet_store is not None
         else "Fleet registry not configured"
     )
-    checks.append(DoctorCheck(
-        name="fleet_store",
-        status="ok" if _fleet_store is not None else "warning",
-        detail=fleet_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="fleet_store",
+            status="ok" if _fleet_store is not None else "warning",
+            detail=fleet_detail,
+        )
+    )
 
     # 6. NEO4J_URI env
     neo4j_uri = os.environ.get("NEO4J_URI") or os.environ.get("CARETAKER_NEO4J_URI")
     neo4j_detail = (
-        f"NEO4J_URI: {neo4j_uri}"
-        if neo4j_uri
-        else "NEO4J_URI not set — Neo4j features disabled"
+        f"NEO4J_URI: {neo4j_uri}" if neo4j_uri else "NEO4J_URI not set — Neo4j features disabled"
     )
-    checks.append(DoctorCheck(
-        name="neo4j_uri",
-        status="ok" if neo4j_uri else "warning",
-        detail=neo4j_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="neo4j_uri",
+            status="ok" if neo4j_uri else "warning",
+            detail=neo4j_detail,
+        )
+    )
 
     # 7. CARETAKER_FLEET_SECRET
     fleet_secret = os.environ.get("CARETAKER_FLEET_SECRET")
@@ -138,11 +148,13 @@ async def doctor(
         if fleet_secret
         else "CARETAKER_FLEET_SECRET not set — fleet heartbeats unauthenticated"
     )
-    checks.append(DoctorCheck(
-        name="fleet_secret",
-        status="ok" if fleet_secret else "warning",
-        detail=secret_detail,
-    ))
+    checks.append(
+        DoctorCheck(
+            name="fleet_secret",
+            status="ok" if fleet_secret else "warning",
+            detail=secret_detail,
+        )
+    )
 
     # Determine overall status
     statuses = {c.status for c in checks}
