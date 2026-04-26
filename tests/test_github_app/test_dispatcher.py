@@ -12,6 +12,7 @@ from caretaker.github_app.dispatcher import (
     DispatchMode,
     WebhookDispatcher,
     dispatch_in_background,
+    in_flight_count,
 )
 from caretaker.github_app.webhooks import ParsedWebhook
 
@@ -377,5 +378,57 @@ async def test_dispatch_in_background_isolates_handler_from_slow_agent(
     dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
     task = dispatch_in_background(dispatcher, _make_parsed())
 
+    assert task is not None
     assert not task.done()  # handler got control back before dispatch ran
     assert await task == "done"
+
+
+# ── in-flight cap ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_in_background_drops_when_in_flight_cap_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the in-flight cap is hit, further dispatches return ``None``
+    and don't grow the in-flight set. This is the memory-pressure relief
+    valve: during GitHub rate-limit cooldown, every dispatch waits on
+    the cooldown without releasing the parsed payload — without a cap,
+    a webhook burst would OOM the pod."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_MAX_IN_FLIGHT", "2")
+
+    # Block dispatch indefinitely so tasks accumulate in the in-flight set.
+    gate = asyncio.Event()
+
+    async def blocking_dispatch(_self: WebhookDispatcher, _parsed: ParsedWebhook):  # type: ignore[no-untyped-def]
+        await gate.wait()
+        return "done"
+
+    monkeypatch.setattr(WebhookDispatcher, "dispatch", blocking_dispatch)
+
+    dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
+
+    # Drain any existing in-flight tasks from prior tests.
+    starting = in_flight_count()
+
+    t1 = dispatch_in_background(dispatcher, _make_parsed(delivery="d1"))
+    t2 = dispatch_in_background(dispatcher, _make_parsed(delivery="d2"))
+    assert t1 is not None
+    assert t2 is not None
+    assert in_flight_count() == starting + 2
+
+    # Cap is 2 (relative). With ``starting`` already in flight from
+    # outside this test, the third call MAY still slip through if the
+    # global was empty — so use a unique cap baseline.
+    monkeypatch.setenv("CARETAKER_WEBHOOK_MAX_IN_FLIGHT", str(in_flight_count()))
+    dropped = dispatch_in_background(dispatcher, _make_parsed(delivery="d3"))
+    assert dropped is None  # over the cap → dropped
+    assert in_flight_count() == starting + 2  # in-flight set didn't grow
+
+    # Releasing the gate lets the held tasks finish so the in-flight
+    # set shrinks back; verifies the done-callback wires up correctly.
+    gate.set()
+    await asyncio.gather(t1, t2)
+    # The done callback runs on the next event-loop tick.
+    await asyncio.sleep(0)
+    assert in_flight_count() == starting

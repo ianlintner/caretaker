@@ -238,6 +238,48 @@ def test_webhook_security_event_routed(with_webhook_secret):
     assert "security" in body["agents"]
 
 
+def test_webhook_skips_dispatch_during_github_cooldown(
+    with_webhook_secret, monkeypatch: pytest.MonkeyPatch
+):
+    """When the shared GitHub rate-limit cooldown is active, the webhook
+    must still 200-ack but skip the in-process dispatch — otherwise every
+    delivery during the cooldown pins memory waiting on a doomed call."""
+    import time
+
+    from caretaker.github_client.rate_limit import get_cooldown, reset_for_tests
+
+    reset_for_tests()
+    try:
+        # Engage a 60s cooldown.
+        get_cooldown().mark_blocked(time.time() + 60.0, reason="test cooldown")
+
+        dispatched: list[str] = []
+
+        def _spy(_dispatcher, parsed):  # type: ignore[no-untyped-def]
+            dispatched.append(parsed.delivery_id)
+            return None
+
+        monkeypatch.setattr("caretaker.mcp_backend.main.dispatch_in_background", _spy)
+
+        payload = json.dumps(_pr_payload()).encode()
+        headers = _webhook_headers(
+            secret=WEBHOOK_SECRET,
+            body=payload,
+            event="pull_request",
+            delivery_id="delivery-cooldown-001",
+        )
+        resp = client.post("/webhooks/github", content=payload, headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "accepted"
+        assert body["dispatched"] is False
+        # Spy was not invoked — dispatch was skipped at the front door,
+        # not inside the dispatcher.
+        assert dispatched == []
+    finally:
+        reset_for_tests()
+
+
 def test_webhook_no_installation_id_when_absent(with_webhook_secret):
     """Payload without an installation key → installation_id is None."""
     payload = json.dumps(

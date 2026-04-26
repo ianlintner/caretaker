@@ -1,0 +1,19 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: caretaker-mcp
+  labels:
+    app: caretaker-mcp
+    app.kubernetes.io/name: caretaker-mcp
+    app.kubernetes.io/instance: caretaker-mcp
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: caretaker
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  # Pair with replicas: 2 in caretaker-mcp-deployment.yaml — voluntary
+  # disruptions (node drains, cluster autoscaler scale-down on spot) must
+  # leave at least one webhook receiver up so GitHub never sees a 5xx.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: caretaker-mcp
