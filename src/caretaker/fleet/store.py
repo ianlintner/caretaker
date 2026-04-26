@@ -1,15 +1,21 @@
-"""In-memory fleet-registry store.
+"""Fleet-registry store seam.
 
-A simple dict keyed by repo slug. Replaceable with a persistent
-backend later (SQLite, Mongo) without changing the API surface —
-``FleetRegistryStore`` is the one seam the endpoints and admin API
-depend on.
+The default :class:`FleetRegistryStore` implementation is an
+in-memory async-safe dict keyed by repo slug. The companion
+:mod:`caretaker.fleet.sqlite_store` module provides a durable
+SQLite-backed implementation with the same async API; selection is
+controlled by the ``CARETAKER_FLEET_DB_PATH`` environment variable
+through :func:`get_store`. Endpoints and the admin API only depend on
+the duck-typed async surface (``record_heartbeat``, ``recent_heartbeats``,
+``list_clients``, ``get_client``, ``remove_client``, ``size``,
+``stale_clients``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -167,14 +173,62 @@ class FleetRegistryStore:
 
 
 # Module-level singleton. Tests can monkey-patch this or call reset().
-_STORE = FleetRegistryStore()
+# Type is kept loose because the SQLite-backed implementation lives in a
+# sibling module and intentionally has the same async surface without a
+# shared base class.
+_STORE: Any = FleetRegistryStore()
+_STORE_INITIALISED = False
+
+_FLEET_DB_PATH_ENV = "CARETAKER_FLEET_DB_PATH"
 
 
-def get_store() -> FleetRegistryStore:
+def _build_store() -> Any:
+    """Construct the appropriate store from the environment.
+
+    When ``CARETAKER_FLEET_DB_PATH`` is set, returns a SQLite-backed store
+    rooted at that path (``:memory:`` is honoured for tests). Otherwise
+    falls back to the in-memory implementation, which preserves backwards
+    compatibility for unit tests and lightweight deployments.
+    """
+    db_path = os.environ.get(_FLEET_DB_PATH_ENV)
+    if db_path and db_path.strip():
+        try:
+            from .sqlite_store import SQLiteFleetRegistryStore  # local import to avoid cycle
+        except ImportError:  # pragma: no cover — sqlite is in stdlib
+            logger.warning("SQLite fleet store unavailable; falling back to in-memory")
+            return FleetRegistryStore()
+        try:
+            return SQLiteFleetRegistryStore(db_path.strip())
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to initialise SQLite fleet store at %s; falling back to in-memory",
+                db_path,
+            )
+            return FleetRegistryStore()
+    return FleetRegistryStore()
+
+
+def get_store() -> Any:
+    """Return the active fleet registry store.
+
+    The first call honours ``CARETAKER_FLEET_DB_PATH``. After that the
+    selected backend is cached for the process lifetime; tests can swap
+    it via :func:`reset_store_for_tests` (with optional explicit store).
+    """
+    global _STORE, _STORE_INITIALISED  # noqa: PLW0603
+    if not _STORE_INITIALISED:
+        _STORE = _build_store()
+        _STORE_INITIALISED = True
     return _STORE
 
 
-def reset_store_for_tests() -> None:
-    """Test helper — replace the module singleton with a fresh store."""
-    global _STORE  # noqa: PLW0603
-    _STORE = FleetRegistryStore()
+def reset_store_for_tests(store: Any | None = None) -> None:
+    """Test helper — replace the module singleton with a fresh store.
+
+    Pass ``store`` to inject a custom backend (e.g. an in-memory SQLite
+    store for persistence tests). When omitted, a fresh in-memory store
+    is used so legacy tests keep working without touching the env.
+    """
+    global _STORE, _STORE_INITIALISED  # noqa: PLW0603
+    _STORE = store if store is not None else FleetRegistryStore()
+    _STORE_INITIALISED = True

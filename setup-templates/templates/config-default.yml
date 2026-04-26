@@ -108,6 +108,35 @@ escalation:
   stale_days: 7
   labels: ["maintainer:escalated"]
 
+# Fleet registry — opt this repo into the central caretaker admin dashboard.
+#
+# When enabled, every orchestrator run posts a small JSON heartbeat (mode,
+# enabled agents, goal_health, error_count, agent counters, attribution) to
+# the configured endpoint. The dashboard at https://caretaker.cat-herding.net
+# uses these heartbeats to render the Fleet view, fire ghosted/health-regression
+# alerts, and promote globally-useful skills across repos.
+#
+# The heartbeat is fire-and-forget — failures NEVER fail the workflow run.
+# It carries no source code; only the public summary fields above.
+#
+# To opt in:
+#   1. Set fleet_registry.enabled: true below.
+#   2. Add a CARETAKER_FLEET_SECRET secret to this repo (matches the value
+#      configured on the central backend) and export it in the workflow env
+#      as CARETAKER_FLEET_SECRET.
+#   3. Push. The first scheduled run will register the repo with the dashboard.
+#
+# See docs/fleet-registry.md in the caretaker repo for protocol details.
+fleet_registry:
+  enabled: false
+  endpoint: https://caretaker.cat-herding.net/api/fleet/heartbeat
+  secret_env: CARETAKER_FLEET_SECRET
+  timeout_seconds: 5.0
+  # When true, the full RunSummary is sent (more debuggable on the central side
+  # but also leaks more about per-PR details). Default is false: only the
+  # 20-ish curated counter / health fields go up.
+  include_full_summary: false
+
 llm:
   claude_enabled: auto
   claude_features:

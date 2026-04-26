@@ -132,6 +132,34 @@ Always check these files when you receive a caretaker assignment.
 
 ---
 
+### 2.8 Fleet registry opt-in (recommended)
+
+Caretaker can roll up runs from every consumer repo into a central admin dashboard at
+`https://caretaker.cat-herding.net`. Each consumer opts in by enabling the
+`fleet_registry` block in `config.yml` and exporting a shared HMAC secret to the workflow.
+
+**To opt this repo into the fleet:**
+
+1. **Edit `.github/maintainer/config.yml`** — locate the `fleet_registry:` block (already
+   present in the template, opt-in disabled by default) and change `enabled: false` to
+   `enabled: true`. The default endpoint already points at the production receiver.
+2. **Add a repository secret** named `CARETAKER_FLEET_SECRET` in
+   *Settings → Secrets and variables → Actions*. Use the same value the caretaker fleet
+   admin distributed to other repos (HMAC shared secret). The workflow already reads this
+   secret into the `CARETAKER_FLEET_SECRET` environment variable for every job step.
+3. **Verify locally** (optional) — after the next caretaker run on the default branch,
+   the repo should appear at `/fleet` in the admin dashboard within a minute. You can
+   also run `caretaker fleet register-self --config .github/maintainer/config.yml` from a
+   checkout to send a one-shot heartbeat for verification.
+
+If the secret is unset, the heartbeat is sent unsigned. The receiver currently accepts
+unsigned heartbeats but production deployments should always set the secret.
+
+> **Note for repos that intentionally stay out of the fleet** (e.g. private demos):
+> leave `fleet_registry.enabled: false`. No secrets or workflow changes are required.
+
+---
+
 ## Step 3 — Open a pull request
 
 After creating all files, open a **single pull request** with:

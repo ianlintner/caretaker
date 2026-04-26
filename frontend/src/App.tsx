@@ -13,6 +13,8 @@ import Skills from '@/pages/Skills'
 import Agents from '@/pages/Agents'
 import Graph from '@/pages/Graph'
 import Fleet from '@/pages/Fleet'
+import FleetDetail from '@/pages/FleetDetail'
+import Alerts from '@/pages/Alerts'
 import Config from '@/pages/Config'
 
 export default function App() {
@@ -33,6 +35,8 @@ export default function App() {
               <Route path="/agents" element={<Agents />} />
               <Route path="/graph" element={<Graph />} />
               <Route path="/fleet" element={<Fleet />} />
+              <Route path="/fleet/:owner/:repo" element={<FleetDetail />} />
+              <Route path="/alerts" element={<Alerts />} />
               <Route path="/config" element={<Config />} />
             </Route>
           </Routes>

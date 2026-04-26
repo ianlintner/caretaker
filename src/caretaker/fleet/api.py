@@ -235,14 +235,40 @@ def set_fleet_alert_dependencies(
 async def get_fleet_client(
     owner: str,
     repo: str,
+    include_history: bool = False,
+    history_limit: int = 32,
     _user: Any = _REQUIRE_SESSION,
 ) -> dict[str, Any]:
-    """Detail view for a single repo."""
+    """Detail view for a single repo.
+
+    When ``include_history=true``, the response also includes the
+    most recent heartbeats for this repo (oldest-first), capped at
+    ``history_limit`` (default 32, the registry ring-buffer size).
+    """
     store = get_store()
-    record = await store.get_client(f"{owner}/{repo}")
+    slug = f"{owner}/{repo}"
+    record = await store.get_client(slug)
     if record is None:
         raise HTTPException(status_code=404, detail="repo not registered")
-    return record.to_dict()
+    payload: dict[str, Any] = record.to_dict()
+    if include_history:
+        # Coerce heartbeats to JSON-safe primitives. ``recent_heartbeats``
+        # may return datetime values for ``run_at`` depending on the
+        # backing store; FastAPI/JSON cannot serialise those by default.
+        history = await store.recent_heartbeats(slug, limit=max(1, history_limit))
+        payload["history"] = [_jsonable_heartbeat(item) for item in history]
+    return payload
+
+
+def _jsonable_heartbeat(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON-serialisable copy of a heartbeat snapshot."""
+    cleaned: dict[str, Any] = {}
+    for key, value in snapshot.items():
+        if hasattr(value, "isoformat"):
+            cleaned[key] = value.isoformat()
+        else:
+            cleaned[key] = value
+    return cleaned
 
 
 __all__ = [

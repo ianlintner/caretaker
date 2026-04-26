@@ -29,6 +29,13 @@ export type TrackedPR = {
   readiness_blockers: string[]
   readiness_summary: string
   fix_cycles: number
+  caretaker_touched?: boolean
+  caretaker_merged?: boolean
+  operator_intervened?: boolean
+  intervention_reasons?: string[]
+  last_caretaker_action_at?: string | null
+  released_at?: string | null
+  last_state_change_at?: string | null
 }
 
 export type TrackedIssue = {
@@ -38,6 +45,11 @@ export type TrackedIssue = {
   assigned_pr: number | null
   last_checked: string | null
   escalated: boolean
+  caretaker_touched?: boolean
+  caretaker_closed?: boolean
+  operator_intervened?: boolean
+  intervention_reasons?: string[]
+  last_caretaker_action_at?: string | null
 }
 
 export type RunSummary = {
@@ -157,4 +169,45 @@ export type CausalChainResult = {
 export type CausalDescendantsResult = {
   id: string
   events: CausalEvent[]
+}
+
+export type FleetClient = {
+  repo: string
+  caretaker_version: string
+  last_seen: string
+  first_seen: string
+  last_mode: string
+  enabled_agents: string[]
+  last_goal_health: number | null
+  last_error_count: number
+  last_counters: Record<string, number>
+  last_summary: Record<string, unknown> | null
+  heartbeats_seen: number
+}
+
+export type FleetClientDetail = FleetClient & {
+  history?: Array<Record<string, unknown>>
+}
+
+export type FleetAlertKind =
+  | 'goal_health_regression'
+  | 'error_spike'
+  | 'ghosted'
+  | 'scope_gap'
+
+export type FleetAlertSeverity = 'warning' | 'critical'
+
+export type FleetAlert = {
+  repo: string
+  kind: FleetAlertKind
+  severity: FleetAlertSeverity
+  summary: string
+  opened_at: string
+  resolved_at: string | null
+  details: Record<string, unknown>
+}
+
+export type FleetAlertList = {
+  items: FleetAlert[]
+  total: number
 }

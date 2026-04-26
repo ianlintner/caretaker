@@ -249,6 +249,42 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             except Exception:
                 logger.warning("Failed to initialise MCP memory adapter", exc_info=True)
 
+            # Health/doctor endpoint — surfaces aggregated bootstrap
+            # status (GitHub creds, OIDC, admin data, graph store, fleet
+            # store, Neo4j URI, fleet secret) at /health/doctor for the
+            # admin dashboard's "system health" panel.
+            try:
+                from caretaker.admin import health_api
+                from caretaker.fleet import get_store as _get_fleet_store
+
+                try:
+                    _graph_for_health = _graph_store_mod
+                except NameError:
+                    _graph_for_health = None
+
+                health_api.configure(
+                    admin_data=data,
+                    graph_store=_graph_for_health,
+                    fleet_store=_get_fleet_store(),
+                )
+                application.include_router(health_api.router)
+                logger.info("Admin health/doctor API enabled")
+            except Exception:
+                logger.warning("Failed to initialise admin health API", exc_info=True)
+
+            # Webhook delivery history — exposes the in-process ring
+            # buffer populated by the GitHub webhook handler so the
+            # admin dashboard can show recent deliveries (event, action,
+            # repo, installation, status). The webhook handler below
+            # calls ``register_delivery()`` after acking each request.
+            try:
+                from caretaker.admin import webhooks_api
+
+                application.include_router(webhooks_api.router)
+                logger.info("Admin webhook deliveries API enabled")
+            except Exception:
+                logger.warning("Failed to initialise admin webhooks API", exc_info=True)
+
             # Serve SPA static files
             if _ADMIN_STATIC_DIR.is_dir():
                 application.mount(
@@ -629,6 +665,27 @@ async def github_webhook(request: Request) -> WebhookAck:
         not is_new,
         agents,
     )
+
+    # Mirror the delivery into the admin dashboard's recent-deliveries
+    # ring buffer. Best-effort: import lazily so a missing/optional
+    # admin module never blocks the webhook ack path.
+    try:
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from caretaker.admin import webhooks_api as _webhooks_api
+
+        _webhooks_api.register_delivery(
+            event=parsed.event_type,
+            action=parsed.action,
+            installation_id=parsed.installation_id,
+            delivery_id=parsed.delivery_id,
+            received_at=_dt.now(UTC).isoformat(),
+            agents_fired=list(agents),
+            status="duplicate" if not is_new else "ok",
+        )
+    except Exception:
+        logger.debug("webhook delivery mirror skipped", exc_info=True)
 
     # Only dispatch fresh deliveries — GitHub retries with the same
     # delivery id on non-2xx, and we already acked once.

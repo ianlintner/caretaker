@@ -2,6 +2,90 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.6] - 2026-04-25
+
+Wires the **fleet registry** into the admin dashboard end-to-end so that
+production deployments at `https://caretaker.cat-herding.net` light up
+with real heartbeat, alert, webhook, and doctor data. Closes the gap
+where every child repo in `docs/fleet.yml` was effectively invisible to
+the admin UI even when it ran caretaker on schedule.
+
+### Added
+
+- **Persistent `SQLiteFleetRegistryStore`** (`src/caretaker/fleet/sqlite_store.py`)
+  — SQLite-backed implementation of the registry with the same async API
+  as the in-memory store. Keeps the most recent 32 heartbeats per repo
+  in a `fleet_heartbeats` ring buffer plus the latest snapshot in
+  `fleet_clients`. Activated by setting `CARETAKER_FLEET_DB_PATH`
+  (default location `~/.local/state/caretaker/fleet-registry.db`); the
+  legacy in-memory store remains the default to avoid surprising tests.
+  Survives backend restarts so dashboard data no longer evaporates on
+  every pod recycle.
+- **`fleet_registry` block in `setup-templates/templates/config-default.yml`**
+  — opt-in template (`enabled: false`) that points at the production
+  endpoint with HMAC and timeout pre-wired. Includes a 22-line comment
+  block explaining the contract.
+- **`CARETAKER_FLEET_SECRET` env wiring in `setup-templates/templates/workflows/maintainer.yml`**
+  — exported in all three `env:` blocks (bootstrap-check, run, and
+  self-heal-on-failure). Indentation across the workflow normalised to
+  2-space nesting at the same time.
+- **Step 2.8 in `setup-templates/SETUP_AGENT.md`** — guides Copilot
+  through enabling the fleet registry on each child repo (config edit
+  + secret + verification command).
+- **`docs/fleet-opt-in-runbook.md`** — operator-facing runbook
+  enumerating the 12 child repos in `docs/fleet.yml` with per-repo
+  caveats and a four-step opt-in checklist.
+- **`caretaker fleet status` CLI command** — local config inspector;
+  prints the resolved `fleet_registry` block and notes whether the
+  signing secret is populated.
+- **`caretaker fleet register-self` CLI command** — sends one
+  signed heartbeat to verify a repo's registration round-trip;
+  echoes the dashboard's HTTP response for fast diagnosis.
+- **Frontend `Alerts` page (`/alerts`)** — consumes
+  `/api/admin/fleet/alerts` with an "open only" toggle, severity
+  badges, and links back to per-repo detail. Closes the dead link
+  from `AlertsBanner.tsx`.
+- **Frontend `FleetDetail` page (`/fleet/:owner/:repo`)** — per-repo
+  drill-down with the last 32 heartbeats, enabled-agent pills, and
+  goal-health/error trends. Reachable from any row of the Fleet page.
+- **`FleetClient`, `FleetClientDetail`, `FleetAlert`,
+  `FleetAlertList` types** — added to `frontend/src/lib/types.ts` so
+  TypeScript builds no longer rely on an implicit `FleetAlert` import.
+
+### Changed
+
+- **`GET /api/admin/fleet/{owner}/{repo}`** — now accepts
+  `?include_history=true&history_limit=N` (max 32) and returns the
+  per-repo heartbeat ring buffer alongside the client snapshot. Used
+  by the new Fleet detail page.
+- **`fleet/store.py` `get_store()`** — picks SQLite backing when
+  `CARETAKER_FLEET_DB_PATH` is set; otherwise keeps the in-memory
+  default. `reset_store_for_tests(store=None)` accepts an explicit
+  store override for SQLite test fixtures.
+- **`fleet/__init__.py`** — re-exports `SQLiteFleetRegistryStore`,
+  `resolve_db_path`, and `DEFAULT_DB_PATH_ENV`.
+- **`docs/fleet-registry.md`** — example endpoint replaced with the
+  production URL `https://caretaker.cat-herding.net/api/fleet/heartbeat`;
+  persistence section rewritten to describe the new SQLite seam.
+
+### Fixed
+
+- **Dead admin routers wired into the FastAPI app**
+  (`src/caretaker/mcp_backend/main.py`):
+  - `caretaker.admin.health_api` — `GET /health/doctor` now reachable;
+    configured with the live `admin_data`, optional graph store, and
+    fleet store on lifespan.
+  - `caretaker.admin.webhooks_api` — `GET /api/admin/webhooks/deliveries`
+    now reachable, and the `github_webhook` handler calls
+    `register_delivery()` after each ack so the dashboard can show
+    delivery history.
+- **Frontend `/alerts` 404** — `AlertsBanner.tsx` linked to a route
+  that did not exist; the new `Alerts` page closes that gap.
+- **Workflow YAML indentation** — `setup-templates/templates/workflows/maintainer.yml`
+  had inconsistent 7/9-space indentation on three `- name:` step
+  headers and their `env:` maps. Normalised to 2-space nesting; YAML
+  now parses cleanly without GitHub Actions' lenient mode.
+
 ## [0.19.5] — 2026-04-25
 
 Teaches caretaker to recognise and manage **maintainer-bot PRs** — the `chore/releases-json-*` and `github-actions`-authored `chore/` PRs that the `update-releases-json.yml` workflow creates after each release. Previously these fell through to the `await_review` (human-PR) branch and were never merged automatically; now they receive full first-class treatment alongside caretaker and Copilot PRs.
