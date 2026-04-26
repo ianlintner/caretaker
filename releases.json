@@ -8,6 +8,13 @@
       "breaking": false
     },
     {
+      "version": "0.20.1",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.20.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.20.1 -->\n\n## What's Changed\n### Other Changes\n* fix(mcp): harden caretaker-mcp against OOM under webhook bursts + GitHub cooldown by @ianlintner in https://github.com/ianlintner/caretaker/pull/596\n* fix(doctor): drop legacy CARETAKER_FLEET_SECRET HMAC check by @ianlintner in https://github.com/ianlintner/caretaker/pull/597\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.20.0...v0.20.1"
+      "breaking": false
+    },
+    {
       "version": "0.19.6",
       "min_compatible": "0.19.3",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.6",
