@@ -173,6 +173,9 @@ class RunSummary(BaseModel):
     # DevOps agent metrics
     build_failures_detected: int = 0
     build_fix_issues_created: int = 0
+    # CI failures the DevOps agent routed onto an open PR (commenting at
+    # the reviewer / @copilot) instead of opening a parallel issue.
+    build_fix_pr_comments_posted: int = 0
     # Self-heal agent metrics
     self_heal_failures_analyzed: int = 0
     self_heal_local_issues: int = 0
