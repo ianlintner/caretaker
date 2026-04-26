@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.22.3",
+      "min_compatible": "0.22.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.3",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.22.3 -->\n\n## What's Changed\n### Other Changes\n* fix(pr-agent): wire MergeAuthorityConfig + neutral conclusion in advisory mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/604\n* docs(skills): add caretaker-qa-cycle skill + backfill releases.json v0.22.0\u2013v0.22.2 by @ianlintner in https://github.com/ianlintner/caretaker/pull/605\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.22.2...v0.22.3",
+      "breaking": false
+    },
+    {
       "version": "0.22.2",
       "min_compatible": "0.19.6",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.2",
