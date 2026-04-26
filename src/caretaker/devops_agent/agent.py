@@ -32,6 +32,7 @@ class DevOpsReport:
     failures_detected: int = 0
     issues_created: list[int] = field(default_factory=list)
     issues_skipped: int = 0  # duplicate detection
+    issues_closed_resolved: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     # Sigs actioned this run — used to update persisted state dedup
     actioned_sigs: list[str] = field(default_factory=list)
@@ -83,6 +84,16 @@ class DevOpsAgent:
 
         if not failing_jobs:
             logger.info("DevOps agent: no failing CI jobs on %s", self._default_branch)
+            # Sweep open build-failure issues — anything still open
+            # corresponds to a failure that no longer reproduces. Close
+            # them so `maintainer:action-required` clears without manual
+            # housekeeping.
+            try:
+                report.issues_closed_resolved = await self._close_resolved_failure_issues(
+                    active_sigs=set()
+                )
+            except Exception as e:
+                logger.warning("DevOps agent: resolved-failure close pass failed: %s", e)
             return report
 
         report.failures_detected = len(failing_jobs)
@@ -135,6 +146,17 @@ class DevOpsAgent:
             except Exception as e:
                 logger.error("DevOps agent: failed to create issue: %s", e)
                 report.errors.append(str(e))
+
+        # Close any open build-failure issues whose signature is no longer
+        # reproducing this run. Subset of failing_jobs may have been fixed
+        # in main while others remain — close the resolved ones.
+        active_sigs = {_failure_signature(s) for s in failing_jobs}
+        try:
+            report.issues_closed_resolved = await self._close_resolved_failure_issues(
+                active_sigs=active_sigs
+            )
+        except Exception as e:
+            logger.warning("DevOps agent: resolved-failure close pass failed: %s", e)
 
         report.updated_cooldowns = dict(self._issue_cooldowns)
         return report
@@ -266,6 +288,64 @@ class DevOpsAgent:
                 base_branch=self._default_branch,
             ),
         )
+
+    async def _close_resolved_failure_issues(self, *, active_sigs: set[str]) -> list[int]:
+        """Close open build-failure issues whose signature is no longer firing.
+
+        Surfaced live on caretaker-qa#51: an old transient
+        ``maintain (unknown)`` failure was tracked, the underlying
+        problem (broken bootstrap-check) was fixed via caretaker-qa#50
+        + #54, every subsequent run had ``no failing CI jobs on main``
+        — but the issue stayed ``OPEN`` with ``bug, devops:build-failure``
+        labels because devops_agent had no resolved-close path.
+
+        ``active_sigs`` is the set of failure signatures still firing on
+        the current run. Issues whose embedded ``sig:<hex>`` is NOT in
+        that set are considered resolved and closed (with a comment).
+
+        Returns the list of issue numbers closed.
+        """
+        try:
+            issues = await self._issues.list(state="open", labels=BUILD_FAILURE_LABEL)
+        except Exception as e:
+            logger.warning("Failed to list open build-failure issues: %s", e)
+            return []
+
+        closed: list[int] = []
+        for issue in issues:
+            if DEVOPS_AGENT_MARKER not in (issue.body or ""):
+                continue
+            sig: str | None = None
+            for line in (issue.body or "").splitlines():
+                if line.startswith(DEVOPS_AGENT_MARKER):
+                    match = re.search(r"\bsig:([0-9a-f]+)\b", line)
+                    if match:
+                        sig = match.group(1)
+                        break
+            if sig is None or sig in active_sigs:
+                continue
+            logger.info(
+                "Closing resolved build-failure issue #%d (sig %s no longer firing on %s)",
+                issue.number,
+                sig,
+                self._default_branch,
+            )
+            try:
+                await self._issues.comment(
+                    issue.number,
+                    f"Closed automatically: caretaker observed no failing CI jobs "
+                    f"on `{self._default_branch}` matching this signature on the "
+                    f"most recent run, so the build failure is considered "
+                    f"resolved. Caretaker will re-open a fresh issue if the "
+                    f"failure reappears.",
+                )
+                await self._issues.update(issue.number, state="closed")
+                closed.append(issue.number)
+            except Exception as e:
+                logger.warning(
+                    "Failed to close resolved build-failure issue #%d: %s", issue.number, e
+                )
+        return closed
 
     async def _ensure_label(self, name: str, color: str, description: str) -> None:
         """Create the label if it does not already exist (best-effort)."""

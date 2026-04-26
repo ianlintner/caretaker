@@ -26,6 +26,7 @@ class UpgradeAgentReport:
     upgrade_issue: int | None = None
     superseded_prs: list[int] = field(default_factory=list)
     readied_draft_prs: list[int] = field(default_factory=list)
+    closed_stale_upgrade_issues: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -84,6 +85,21 @@ class UpgradeAgent:
                 )
             else:
                 logger.info("Already on latest version %s", self._current_version)
+                # Even when no upgrade is needed, sweep stale upgrade
+                # issues whose targets the consumer has already moved past.
+                # Otherwise every "[Maintainer] Upgrade to vX.Y.Z" issue
+                # stays OPEN forever once the pin is bumped past it.
+                try:
+                    closed = await self._planner.close_stale_upgrade_issues(self._current_version)
+                    report.closed_stale_upgrade_issues = closed
+                    if closed:
+                        logger.info(
+                            "Closed %d stale upgrade issue(s): %s",
+                            len(closed),
+                            closed,
+                        )
+                except Exception as e:
+                    logger.warning("Stale upgrade issue cleanup failed: %s", e)
 
         except Exception as e:
             logger.error("Upgrade check failed: %s", e)

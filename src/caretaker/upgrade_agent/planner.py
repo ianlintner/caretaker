@@ -330,6 +330,70 @@ class UpgradePlanner:
         logger.info("Created upgrade issue #%d for v%s", issue.number, target.version)
         return issue.number
 
+    async def close_stale_upgrade_issues(self, current_version: str) -> list[int]:
+        """Close open upgrade issues whose target is at or below ``current_version``.
+
+        When a consumer repo upgrades past an issue's target (either via
+        the upgrade flow or a manual jump), the issue is stale — there's
+        nothing left to do. Without this cleanup, every prior ``[Maintainer]
+        Upgrade to vX.Y.Z`` issue stays ``OPEN`` forever even though
+        ``Already on latest version $current_version`` is true on every run.
+
+        Surfaced live on caretaker-qa#41 (``Upgrade to v0.19.6`` open
+        while the repo is on v0.22.3 — pin was fast-forwarded past v0.19.6
+        in caretaker-qa#50, but the upgrade issue never closed).
+
+        Returns the list of issue numbers closed.
+        """
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            current = Version(current_version)
+        except InvalidVersion:
+            logger.warning(
+                "close_stale_upgrade_issues: invalid current_version %r — skipping",
+                current_version,
+            )
+            return []
+
+        issues = await self._issues.list(state="open")
+        closed: list[int] = []
+        for issue in issues:
+            marker_match = _UPGRADE_MARKER_RE.search(issue.body or "")
+            if not marker_match:
+                continue
+            target_version_str = marker_match.group(1)
+            try:
+                target_version = Version(target_version_str)
+            except InvalidVersion:
+                continue
+            if target_version > current:
+                # Future upgrade target — leave it open.
+                continue
+            logger.info(
+                "Closing stale upgrade issue #%d (target v%s ≤ current v%s)",
+                issue.number,
+                target_version_str,
+                current_version,
+            )
+            try:
+                await self._issues.comment(
+                    issue.number,
+                    f"Closed automatically: caretaker is already on "
+                    f"`v{current_version}`, which is at or past the target "
+                    f"`v{target_version_str}`. Caretaker will re-open a "
+                    f"fresh upgrade issue when a newer release is available.",
+                )
+                await self._issues.update(issue.number, state="closed")
+                closed.append(issue.number)
+            except Exception as e:
+                logger.warning(
+                    "Failed to close stale upgrade issue #%d: %s",
+                    issue.number,
+                    e,
+                )
+        return closed
+
     async def close_superseded_upgrade_prs(self, version: str) -> list[int]:
         """Close older open upgrade PRs for the same target version.
 
