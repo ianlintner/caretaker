@@ -46,11 +46,14 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
