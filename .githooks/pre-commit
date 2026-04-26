@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Local pre-commit hook for caretaker.
+#
+# Mirrors the same lint/format/type checks that CI (.github/workflows/ci.yml)
+# enforces. Catches issues like the v0.20.0 ruff failure before push.
+#
+# Activate this hook (one-time, per clone):
+#     git config core.hooksPath .githooks
+#
+# Or, equivalently, use the upstream pre-commit framework:
+#     pip install pre-commit && pre-commit install
+#
+# To bypass in an emergency:  git commit --no-verify
+set -euo pipefail
+
+# Run only on staged Python files; skip if the commit touches no python.
+# (Avoid `mapfile` so this works on macOS's stock bash 3.x.)
+STAGED_PY_LIST="$(git diff --cached --name-only --diff-filter=ACMR \
+    | grep -E '\.(py|pyi)$' || true)"
+
+if [[ -z "$STAGED_PY_LIST" ]]; then
+    exit 0
+fi
+
+# Read into an array using newline separator (portable across bash 3/4).
+STAGED_PY=()
+while IFS= read -r line; do
+    STAGED_PY+=("$line")
+done <<< "$STAGED_PY_LIST"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Resolve tool binaries from .venv when available, falling back to PATH.
+RUFF=".venv/bin/ruff"
+MYPY=".venv/bin/mypy"
+[[ -x "$RUFF" ]] || RUFF="ruff"
+[[ -x "$MYPY" ]] || MYPY="mypy"
+
+echo "[pre-commit] ruff format --check"
+"$RUFF" format --check "${STAGED_PY[@]}"
+
+echo "[pre-commit] ruff check"
+"$RUFF" check "${STAGED_PY[@]}"
+
+# mypy is run on the whole src/caretaker package so cross-file type errors
+# are caught even if only one file changed.
+if printf '%s\n' "${STAGED_PY[@]}" | grep -q '^src/caretaker/'; then
+    echo "[pre-commit] mypy src/caretaker (strict)"
+    "$MYPY" src/caretaker
+fi
+
+echo "[pre-commit] OK"
