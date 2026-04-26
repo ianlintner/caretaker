@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from caretaker.causal import make_causal_marker
+from caretaker.causal import make_causal_marker, parent_from_body
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -168,7 +168,10 @@ class CharlieAgent:
             for issue in grouped_issues:
                 if issue.number == canonical.number:
                     continue
-                causal = make_causal_marker("charlie:close-duplicate-issue")
+                causal = make_causal_marker(
+                    "charlie:close-duplicate-issue",
+                    parent=parent_from_body(getattr(issue, "body", "") or ""),
+                )
                 await self._comment_and_close_issue(
                     issue.number,
                     (
@@ -206,7 +209,10 @@ class CharlieAgent:
             for pr in grouped_prs:
                 if pr.number == canonical.number:
                     continue
-                causal = make_causal_marker("charlie:close-duplicate-pr")
+                causal = make_causal_marker(
+                    "charlie:close-duplicate-pr",
+                    parent=parent_from_body(getattr(pr, "body", "") or ""),
+                )
                 await self._comment_and_close_pr(
                     pr.number,
                     (
@@ -241,7 +247,10 @@ class CharlieAgent:
             if age_days < self._stale_days:
                 continue
 
-            causal = make_causal_marker("charlie:close-stale-issue")
+            causal = make_causal_marker(
+                "charlie:close-stale-issue",
+                parent=parent_from_body(getattr(issue, "body", "") or ""),
+            )
             await self._comment_and_close_issue(
                 issue.number,
                 (
@@ -274,7 +283,10 @@ class CharlieAgent:
             if age_days < self._stale_days:
                 continue
 
-            causal = make_causal_marker("charlie:close-stale-pr")
+            causal = make_causal_marker(
+                "charlie:close-stale-pr",
+                parent=parent_from_body(getattr(pr, "body", "") or ""),
+            )
             await self._comment_and_close_pr(
                 pr.number,
                 (

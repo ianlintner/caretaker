@@ -124,6 +124,13 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
                 if not writer_started:
                     await writer.start()
                     writer_started = True
+                # Wire the persistent backend into the causal store so
+                # subsequent refreshes durably write events to Neo4j and
+                # warm the LRU cache from there. Idempotent.
+                try:
+                    data.causal_store.attach_graph_store(persistent_store)
+                except Exception:
+                    logger.debug("Causal store attach_graph_store failed", exc_info=True)
 
             counts = await GraphBuilder(persistent_store).full_sync(
                 state,

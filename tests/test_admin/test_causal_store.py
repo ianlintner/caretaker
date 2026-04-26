@@ -217,7 +217,12 @@ class TestRefreshFromGitHub:
         ]
 
     @pytest.mark.asyncio
-    async def test_clears_previous_events(self) -> None:
+    async def test_preserves_previous_events_across_refresh(self) -> None:
+        """Refresh must NOT clear the cache anymore — closed issues drop
+        out of ``state.tracked_*`` after a few cycles, and the previous
+        ``clear()``-on-refresh behaviour orphaned every event whose
+        parent lived on one of those bodies. The new contract is
+        incremental upsert: pre-existing events survive across ticks."""
         store = CausalEventStore()
         store.ingest(
             CausalEvent(id="stale", source="x", parent_id=None, ref=CausalEventRef(kind="issue"))
@@ -225,8 +230,8 @@ class TestRefreshFromGitHub:
         github = _FakeGitHubClient()
         state = OrchestratorState()
         count = await store.refresh_from_github(github, "o", "r", state)  # type: ignore[arg-type]
-        assert count == 0
-        assert store.get("stale") is None
+        assert count == 1
+        assert store.get("stale") is not None
 
     @pytest.mark.asyncio
     async def test_skips_non_tracking_issue_titles(self) -> None:

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from caretaker.causal import extract_causal
+from caretaker.causal import extract_all_causal, extract_causal
 from caretaker.observability import current_span_ids
 
 if TYPE_CHECKING:
@@ -77,6 +77,13 @@ def extract_from_body(
     """Extract the first causal marker from ``body`` → :class:`CausalEvent`.
 
     Returns ``None`` when the body has no marker.
+
+    .. deprecated::
+        Prefer :func:`extract_all_from_body` so multi-marker bodies (digest
+        comments, the orchestrator tracking issue, agent escalation comments
+        that quote upstream causal ids) do not silently drop the trailing
+        markers. Kept for backwards-compatibility with single-marker call
+        sites.
     """
     fields = extract_causal(body or "")
     if fields is None:
@@ -94,6 +101,43 @@ def extract_from_body(
         span_id=span_id,
         parent_span_id=parent_span_id,
     )
+
+
+def extract_all_from_body(
+    body: str,
+    *,
+    ref: CausalEventRef,
+    title: str = "",
+    observed_at: datetime | None = None,
+) -> list[CausalEvent]:
+    """Extract every causal marker in ``body`` as :class:`CausalEvent`.
+
+    Returns an empty list when no marker is present. The OTel span context
+    is captured once for the whole body — every event in the same body
+    shares the same span/parent_span pair, which matches the semantics of
+    "this comment was emitted under one workflow span".
+    """
+    fields_list = extract_all_causal(body or "")
+    if not fields_list:
+        return []
+    span_id, parent_span_id = current_span_ids()
+    out: list[CausalEvent] = []
+    for fields in fields_list:
+        cid = fields["id"]
+        out.append(
+            CausalEvent(
+                id=cid,
+                source=fields.get("source", ""),
+                parent_id=fields.get("parent"),
+                ref=ref,
+                run_id=parse_run_id(cid),
+                title=title,
+                observed_at=observed_at,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+            )
+        )
+    return out
 
 
 @dataclass
@@ -180,6 +224,7 @@ __all__ = [
     "CausalEventRef",
     "Chain",
     "descendants",
+    "extract_all_from_body",
     "extract_from_body",
     "parse_run_id",
     "walk_chain",

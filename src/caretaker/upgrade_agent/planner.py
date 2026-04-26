@@ -37,11 +37,13 @@ def _sync_target_marker(version: str) -> str:
 def build_upgrade_issue_body(
     current_version: str,
     target: Release,
+    *,
+    parent_id: str | None = None,
 ) -> str:
     """Build the body for an upgrade issue."""
     lines = [
         _upgrade_target_marker(target.version),
-        make_causal_marker("upgrade"),
+        make_causal_marker("upgrade", parent=parent_id),
         "",
         f"## [Maintainer] Upgrade to v{target.version}",
         "",

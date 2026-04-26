@@ -6,7 +6,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
-from caretaker.causal import make_causal_marker
+from caretaker.causal import extract_all_causal, make_causal_id, make_causal_marker
 from caretaker.github_client.api import RateLimitError
 from caretaker.graph.models import NodeType, RelType
 from caretaker.graph.writer import get_writer
@@ -79,6 +79,15 @@ class StateTracker:
         self._emitted_pr_outcomes: dict[int, set[str]] = {}
         self._emitted_issue_outcomes: dict[int, set[str]] = {}
         self._emitted_intervention_reasons: dict[tuple[str, int], set[str]] = {}
+        # Causal-chain threading. The state-tracker emits two markers per
+        # save (orchestrator-state + run-history). Without parent
+        # threading every save produces two root events and the Causal
+        # Chain UI shows ancestors=0/descendants=0. We thread the chain
+        # both *across* ticks (this tick's orchestrator-state parents the
+        # previous tick's id) and *within* a tick (this tick's
+        # run-history parents this tick's orchestrator-state).
+        self._last_state_causal_id: str | None = None
+        self._last_history_causal_id: str | None = None
 
     @property
     def state(self) -> OrchestratorState:
@@ -94,6 +103,22 @@ class StateTracker:
 
         self._tracking_issue_number = issue_number
         comments = await self._github.get_pr_comments(self._owner, self._repo, issue_number)
+
+        # Scrape the previous-tick causal ids out of the rolling state +
+        # run-history comments so the next save can chain ``parent=`` to
+        # them. This makes the Causal Chain dashboard surface a
+        # continuous thread of orchestrator activity instead of one
+        # root-only event per tick.
+        for comment in comments:
+            for marker in extract_all_causal(comment.body or ""):
+                src = marker.get("source", "")
+                cid = marker.get("id")
+                if not cid:
+                    continue
+                if src == "state-tracker:orchestrator-state":
+                    self._last_state_causal_id = cid
+                elif src == "state-tracker:run-history":
+                    self._last_history_causal_id = cid
 
         # Find the latest state comment (search from newest)
         for comment in reversed(comments):
@@ -472,11 +497,21 @@ class StateTracker:
             return None
         return body[start:end].strip()
 
-    @staticmethod
-    def _build_state_comment(state_json: str, summary: RunSummary | None = None) -> str:
+    def _build_state_comment(self, state_json: str, summary: RunSummary | None = None) -> str:
+        # Thread to the previous tick's orchestrator-state event so the
+        # state lineage forms a chain across save ticks. The ``causal_id``
+        # is minted up-front so we can stash it on the instance and use
+        # it as the parent for *this tick's* run-history marker.
+        cid = make_causal_id("state-tracker:orchestrator-state")
+        marker = make_causal_marker(
+            "state-tracker:orchestrator-state",
+            parent=self._last_state_causal_id,
+            causal_id=cid,
+        )
+        self._last_state_causal_id = cid
         lines = [
             STATE_COMMENT_MARKER,
-            make_causal_marker("state-tracker:orchestrator-state"),
+            marker,
             "",
             "## Orchestrator State Update\n",
         ]
@@ -495,12 +530,27 @@ class StateTracker:
         lines.append(f"{STATE_MARKER_OPEN}\n{state_json}\n{STATE_MARKER_CLOSE}")
         return "\n".join(lines)
 
-    @classmethod
-    def _build_history_comment(cls, runs: list[RunSummary]) -> str:
-        """Render a rolling history of recent runs as one upsertable body."""
+    def _build_history_comment(self, runs: list[RunSummary]) -> str:
+        """Render a rolling history of recent runs as one upsertable body.
+
+        Threads the ``state-tracker:run-history`` causal marker to *this
+        tick's* ``state-tracker:orchestrator-state`` id (stashed on the
+        instance by :meth:`_build_state_comment`) and then to the
+        *previous tick's* run-history id when no fresh state id is
+        available. The result is a connected causal chain instead of
+        two parallel root events per save.
+        """
+        cid = make_causal_id("state-tracker:run-history")
+        parent = self._last_state_causal_id or self._last_history_causal_id
+        marker = make_causal_marker(
+            "state-tracker:run-history",
+            parent=parent,
+            causal_id=cid,
+        )
+        self._last_history_causal_id = cid
         lines = [
             RUN_HISTORY_COMMENT_MARKER,
-            make_causal_marker("state-tracker:run-history"),
+            marker,
             "",
             f"## Maintainer Run History (last {len(runs)} runs)",
             "",
@@ -508,7 +558,7 @@ class StateTracker:
             "",
         ]
         for run in reversed(runs):  # newest first
-            lines.append(cls._format_summary(run))
+            lines.append(self._format_summary(run))
             lines.append("---")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"

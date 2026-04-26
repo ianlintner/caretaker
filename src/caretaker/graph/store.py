@@ -116,18 +116,24 @@ class GraphStore:
         *,
         where: str | None = None,
         params: dict[str, Any] | None = None,
+        order_by: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return raw property dicts for every ``label`` node matching ``where``.
 
         ``where`` is an optional cypher fragment that may reference the node
         alias ``n`` (e.g. ``"n.repo = $repo"``). ``params`` are passed
-        through to the driver. The returned list preserves insertion order
-        from Neo4j and each entry is the plain ``dict(n)`` representation
-        — callers that need degree or relationships should go through
-        ``get_neighbors`` instead.
+        through to the driver. ``order_by`` is an optional cypher fragment
+        (e.g. ``"n.observed_at DESC"``) and ``limit`` caps the row count
+        — both used by the LRU warm path on
+        :class:`~caretaker.admin.causal_store.CausalEventStore`. The
+        returned list preserves the cypher result order and each entry
+        is the plain ``dict(n)`` representation.
         """
         clause = f"WHERE {where} " if where else ""
-        query = f"MATCH (n:{label}) {clause}RETURN n"
+        order_clause = f"ORDER BY {order_by} " if order_by else ""
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
+        query = f"MATCH (n:{label}) {clause}RETURN n {order_clause}{limit_clause}".strip()
         rows: list[dict[str, Any]] = []
         async with self._driver.session(database=self._database) as session:
             result = await session.run(query, **(params or {}))
