@@ -83,6 +83,42 @@ class TestUpgradeAgent:
         assert report.upgrade_needed is False
         assert report.upgrade_issue is None
 
+    async def test_no_upgrade_path_sweeps_stale_upgrade_issues(self) -> None:
+        """Regression for caretaker-qa#41 — when no upgrade is needed, the
+        agent must still sweep open upgrade issues whose targets the repo
+        has already moved past."""
+        from caretaker.github_client.models import Issue, User
+
+        github = AsyncMock()
+
+        stale = Issue(
+            number=41,
+            title="[Maintainer] Upgrade to v0.19.6",
+            body="<!-- caretaker:upgrade target=0.19.6 -->",
+            state="open",
+            user=User(login="bot", id=1, type="Bot"),
+        )
+        github.list_issues.return_value = [stale]
+
+        agent = UpgradeAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=UpgradeAgentConfig(enabled=True),
+            current_version="0.22.3",
+        )
+        release = Release(
+            version="0.22.3",
+            min_compatible="0.22.0",
+            changelog_url="https://example.com/changelog",
+        )
+        releases_mock = AsyncMock(return_value=[release])
+        with patch("caretaker.upgrade_agent.agent.fetch_releases", new=releases_mock):
+            report = await agent.run()
+
+        assert report.upgrade_needed is False
+        assert report.closed_stale_upgrade_issues == [41]
+
     async def test_auto_ready_drafts_default_is_true(self) -> None:
         cfg = UpgradeAgentConfig()
         assert cfg.auto_ready_drafts is True

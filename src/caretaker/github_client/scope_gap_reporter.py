@@ -166,10 +166,61 @@ async def publish_scope_gap_issue(
     The function never raises — callers tend to invoke it from the
     orchestrator's tail cleanup where nothing upstream has a handle
     to recover, so any failure is logged at WARNING and swallowed.
+
+    When the tracker is empty AND a previous run filed an open
+    scope-gap issue, the issue is closed automatically. This closes
+    the loop with consumers who fixed the underlying ``permissions:``
+    block and lets ``maintainer:action-required`` clear without
+    manual housekeeping.
     """
     tracker = tracker or get_tracker()
     if tracker.is_empty():
-        return None
+        if dry_run:
+            return None
+        try:
+            existing = await _find_existing_issue(github, owner, repo)
+        except Exception as exc:
+            logger.warning(
+                "Unable to look up existing scope-gap issue in %s/%s during resolve-close: %s",
+                owner,
+                repo,
+                exc,
+            )
+            return None
+        if existing is None:
+            return None
+        try:
+            resolved_body = existing.body.rstrip() + (
+                "\n\n---\n\n_Closed automatically: caretaker observed no "
+                "scope-gap 403s on the most recent run, so this issue is "
+                "considered resolved. Caretaker will re-open a fresh "
+                "scope-gap issue if any GITHUB_TOKEN scope is missing on "
+                "a future run._"
+            )
+            await github.update_issue(
+                owner,
+                repo,
+                existing.number,
+                body=resolved_body,
+                state="closed",
+                state_reason="completed",
+            )
+            logger.info(
+                "Closed scope-gap issue #%d in %s/%s — gap resolved on this run",
+                existing.number,
+                owner,
+                repo,
+            )
+            return existing.number
+        except Exception as exc:  # pragma: no cover - defensive tail
+            logger.warning(
+                "Failed to close resolved scope-gap issue #%d in %s/%s: %s",
+                existing.number,
+                owner,
+                repo,
+                exc,
+            )
+            return None
 
     incidents = tracker.snapshot()
     body = render_issue_body(incidents, owner=owner, repo=repo)

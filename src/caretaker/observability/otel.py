@@ -62,13 +62,17 @@ _TracerProvider: Any
 _BatchSpanProcessor: Any
 
 try:  # pragma: no cover - exercised by the fallback path in tests
-    from opentelemetry import trace as _otel_trace  # type: ignore[no-redef]
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[no-redef]
+    from opentelemetry import trace as _otel_trace  # type: ignore[no-redef, unused-ignore]
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[no-redef, unused-ignore]
         OTLPSpanExporter as _OTLPSpanExporter,
     )
-    from opentelemetry.sdk.resources import Resource as _OTelResource  # type: ignore[no-redef]
-    from opentelemetry.sdk.trace import TracerProvider as _TracerProvider  # type: ignore[no-redef]
-    from opentelemetry.sdk.trace.export import (  # type: ignore[no-redef]
+    from opentelemetry.sdk.resources import (  # type: ignore[no-redef, unused-ignore]
+        Resource as _OTelResource,
+    )
+    from opentelemetry.sdk.trace import (  # type: ignore[no-redef, unused-ignore]
+        TracerProvider as _TracerProvider,
+    )
+    from opentelemetry.sdk.trace.export import (  # type: ignore[no-redef, unused-ignore]
         BatchSpanProcessor as _BatchSpanProcessor,
     )
 

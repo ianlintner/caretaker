@@ -404,3 +404,58 @@ async def test_publish_dry_run_skips_write() -> None:
     assert result is None
     assert gh.create_calls == []
     assert gh.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_publish_closes_existing_issue_when_gap_resolves() -> None:
+    """When the tracker is empty AND a prior run filed an open scope-gap
+    issue, the next run closes it automatically with a resolution note.
+    Surfaced live on caretaker-qa#53 — operator widened the workflow
+    perms but the issue stayed open across subsequent green runs."""
+    gh = FakeGitHub()
+    gh.existing_issues[SCOPE_GAP_LABEL] = [
+        _issue(
+            17,
+            f"{SCOPE_GAP_ISSUE_MARKER}\n\nold body about missing checks: write",
+            labels=[SCOPE_GAP_LABEL],
+        )
+    ]
+
+    # Tracker is empty (no 403s observed this run).
+    result = await publish_scope_gap_issue(gh, "o", "r")
+
+    assert result == 17
+    assert gh.create_calls == []
+    assert len(gh.update_calls) == 1
+    upd = gh.update_calls[0]
+    assert upd["number"] == 17
+    assert upd["state"] == "closed"
+    assert upd.get("state_reason") == "completed"
+    assert "Closed automatically" in upd["body"]
+    assert SCOPE_GAP_ISSUE_MARKER in upd["body"]
+
+
+@pytest.mark.asyncio
+async def test_publish_resolve_close_is_noop_when_no_existing_issue() -> None:
+    """Empty tracker + no prior issue → still a clean no-op."""
+    gh = FakeGitHub()
+    result = await publish_scope_gap_issue(gh, "o", "r")
+    assert result is None
+    assert gh.create_calls == []
+    assert gh.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_publish_resolve_close_respects_dry_run() -> None:
+    """Dry-run must never close the existing issue, even if the gap is gone."""
+    gh = FakeGitHub()
+    gh.existing_issues[SCOPE_GAP_LABEL] = [
+        _issue(
+            17,
+            f"{SCOPE_GAP_ISSUE_MARKER}\n\nbody",
+            labels=[SCOPE_GAP_LABEL],
+        )
+    ]
+    result = await publish_scope_gap_issue(gh, "o", "r", dry_run=True)
+    assert result is None
+    assert gh.update_calls == []

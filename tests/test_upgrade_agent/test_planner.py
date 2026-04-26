@@ -165,6 +165,85 @@ class TestUpgradePlanner:
         github.update_issue.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+class TestCloseStaleUpgradeIssues:
+    """Sweep open upgrade issues whose target ≤ current version.
+
+    Surfaced live on caretaker-qa#41 — pin was fast-forwarded from
+    v0.19.4 to v0.22.3 in caretaker-qa#50, but the v0.19.6 upgrade
+    issue stayed OPEN because the agent's "no upgrade needed" branch
+    didn't sweep stale issues."""
+
+    async def test_closes_issue_when_target_is_below_current(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.19.6", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.19.6 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == [41]
+        github.update_issue.assert_awaited_with("o", "r", 41, state="closed")
+        github.add_issue_comment.assert_awaited()
+
+    async def test_closes_issue_when_target_equals_current(self) -> None:
+        """target == current is also stale — there's nothing to upgrade to."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.22.3", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.22.3 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == [41]
+
+    async def test_keeps_issue_open_when_target_is_above_current(self) -> None:
+        """Future-target issues are NOT stale — leave them OPEN."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        future = make_issue(41, "Upgrade to v0.23.0", maintainer=True)
+        future.body = "<!-- caretaker:upgrade target=0.23.0 -->"
+        future.state = "open"
+        github.list_issues.return_value = [future]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+    async def test_skips_issues_without_marker(self) -> None:
+        """Issues that aren't upgrade-marked are out of scope."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        unrelated = make_issue(42, "Some unrelated issue", maintainer=False)
+        unrelated.body = "no caretaker marker here"
+        unrelated.state = "open"
+        github.list_issues.return_value = [unrelated]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+    async def test_skips_when_current_version_unparseable(self) -> None:
+        """Don't go around closing things with garbage version inputs."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.19.6", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.19.6 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("not-a-version")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+
 class TestBuildSyncIssueBody:
     def test_body_contains_version_and_marker(self) -> None:
         body = build_sync_issue_body("1.5.0")

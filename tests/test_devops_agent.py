@@ -29,6 +29,87 @@ def _issue_with_signature(number: int, sig: str) -> Issue:
     )
 
 
+class TestDevOpsAgentResolvedFailureClose:
+    """The resolved-failure auto-close path keeps stale `devops:build-failure`
+    issues from piling up after the underlying CI bug is fixed.
+
+    Surfaced live on caretaker-qa#51 — the bootstrap-check failure was
+    fixed via caretaker-qa#50 + #54, every subsequent run logged
+    `no failing CI jobs on main`, but #51 stayed OPEN because there was
+    no resolved-failure cleanup pass."""
+
+    @pytest.mark.asyncio
+    async def test_closes_open_issue_when_no_failures_this_run(self) -> None:
+        """Empty failing_jobs + open build-failure issue → close the issue."""
+        gh = AsyncMock()
+        # First list_issues call (resolved-close pass) returns the stale issue.
+        gh.list_issues.return_value = [_issue_with_signature(51, "deadbeefcafe")]
+
+        agent = DevOpsAgent(github=gh, owner="o", repo="r")
+        agent._discover_failing_jobs = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        report = await agent.run()
+
+        assert report.failures_detected == 0
+        assert report.issues_closed_resolved == [51]
+        # Confirm we actually patched + commented.
+        gh.update_issue.assert_awaited()
+        gh.add_issue_comment.assert_awaited()
+        update_call = gh.update_issue.await_args
+        assert update_call.kwargs.get("state") == "closed"
+
+    @pytest.mark.asyncio
+    async def test_keeps_issue_open_when_signature_still_firing(self) -> None:
+        """Issue's signature matches a current failing job → leave it OPEN."""
+        summary = FailureSummary(
+            job_name="lint",
+            conclusion="failure",
+            suspected_files=["src/caretaker/config.py"],
+            category="lint",
+        )
+        sig = _failure_signature(summary)
+
+        gh = AsyncMock()
+        gh.list_issues.return_value = [_issue_with_signature(51, sig)]
+        agent = DevOpsAgent(github=gh, owner="o", repo="r")
+        agent._discover_failing_jobs = AsyncMock(return_value=[summary])  # type: ignore[method-assign]
+        agent._create_fix_issue = AsyncMock()  # type: ignore[method-assign]
+
+        report = await agent.run()
+
+        # Sig is currently firing → we skipped creating (dedup) AND did not close.
+        assert report.issues_skipped == 1
+        assert report.issues_closed_resolved == []
+        # update_issue should not have been called with state=closed.
+        for call in gh.update_issue.await_args_list:
+            assert call.kwargs.get("state") != "closed"
+
+    @pytest.mark.asyncio
+    async def test_closes_subset_when_some_failures_resolve(self) -> None:
+        """Two open issues, only one signature still firing → close the other."""
+        active_summary = FailureSummary(
+            job_name="lint",
+            conclusion="failure",
+            suspected_files=["src/caretaker/config.py"],
+            category="lint",
+        )
+        active_sig = _failure_signature(active_summary)
+        stale_sig = "1111aaaa2222"
+
+        gh = AsyncMock()
+        gh.list_issues.return_value = [
+            _issue_with_signature(51, stale_sig),
+            _issue_with_signature(52, active_sig),
+        ]
+        agent = DevOpsAgent(github=gh, owner="o", repo="r")
+        agent._discover_failing_jobs = AsyncMock(return_value=[active_summary])  # type: ignore[method-assign]
+        agent._create_fix_issue = AsyncMock()  # type: ignore[method-assign]
+
+        report = await agent.run()
+
+        assert report.issues_closed_resolved == [51]
+
+
 class TestDevOpsAgentDuplicateSuppression:
     @pytest.mark.asyncio
     async def test_extracts_raw_signature_from_existing_issue_marker(self) -> None:
