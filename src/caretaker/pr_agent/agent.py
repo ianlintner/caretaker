@@ -36,8 +36,11 @@ from caretaker.pr_agent.readiness_llm import (
 )
 from caretaker.pr_agent.review import ReviewVerdict, analyze_reviews, assess_review_verdict
 from caretaker.pr_agent.states import (
+    CIEvaluation,
+    CIStatus,
     PRStateEvaluation,
     ReadinessEvaluation,
+    ReviewEvaluation,
     evaluate_pr,
 )
 from caretaker.pr_agent.stuck_pr_llm import (
@@ -212,8 +215,27 @@ class PRAgent:
             # This avoids a full list_pull_requests scan and the O(N) API calls
             # that come with it.
             pr = await self._github.get_pull_request(self._owner, self._repo, pr_number)
-            if pr is None or pr.state != PRState.OPEN:
-                # PR was closed/merged externally — nothing to do
+            if pr is None:
+                return report, tracked_prs
+            if pr.state != PRState.OPEN:
+                # PR is closed/merged. We still want to give the readiness
+                # check a chance to transition to a terminal state (otherwise
+                # the ``caretaker/pr-readiness`` status dangles in_progress
+                # forever, like it did on PR #609). One-shot finalization
+                # gated by ``readiness_check_finalized`` so we don't repost
+                # on every subsequent webhook for the same PR.
+                tracking = tracked_prs.get(pr.number)
+                if tracking is not None and not tracking.readiness_check_finalized:
+                    try:
+                        await self._finalize_readiness_check(pr, tracking)
+                    except Exception as exc:  # noqa: BLE001 — never fail the agent
+                        logger.warning(
+                            "PR #%d: terminal readiness finalization failed (%s: %s)",
+                            pr.number,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    tracked_prs[pr.number] = tracking
                 return report, tracked_prs
             open_prs = [pr]
         else:
@@ -461,6 +483,22 @@ class PRAgent:
         check_runs = await self._github.get_check_runs(self._owner, self._repo, pr.head_ref)
         reviews = await self._github.get_pr_reviews(self._owner, self._repo, pr.number)
 
+        # Issue comments power the bot-approval-marker channel of
+        # ``evaluate_reviews`` (e.g. a Claude reply that says "Approved" in
+        # plain text rather than a formal CheckRun). Fetch defensively —
+        # if the call fails we fall back to the CheckRun + Reviews channels.
+        issue_comments: list[Any] = []
+        try:
+            issue_comments = await self._github.get_pr_comments(self._owner, self._repo, pr.number)
+        except Exception as exc:  # noqa: BLE001 — defensive: never fail the agent
+            logger.debug(
+                "PR #%d: get_pr_comments failed (%s: %s); "
+                "proceeding without comment-based bot approval signal",
+                pr.number,
+                type(exc).__name__,
+                exc,
+            )
+
         # Evaluate PR state (shared by both the stuck-PR gate and the
         # main action ladder below).
         evaluation = evaluate_pr(
@@ -472,6 +510,10 @@ class PRAgent:
             auto_approve_workflows=self._config.ci.auto_approve_workflows,
             required_reviews=self._config.readiness.required_reviews,
             auto_merge=self._config.auto_merge,
+            issue_comments=issue_comments,
+            bot_check_names=self._config.readiness.bot_check_names,
+            bot_approval_markers=self._config.readiness.bot_approval_markers,
+            caretaker_workflow_jobs=self._config.readiness.caretaker_workflow_check_names,
         )
 
         # Phase 2 (2026-Q2 §3.1): shadow-mode migration of readiness. Off
@@ -1339,8 +1381,22 @@ class PRAgent:
         # because those modes explicitly opt in to using the check as a gate.
         conclusion = evaluation.readiness.conclusion
         check_status = "completed"
-        check_conclusion = None
-        if conclusion == "success":
+        check_conclusion: str | None = None
+        # Terminal-state override: once a PR is closed/merged, force the
+        # readiness check to a terminal conclusion regardless of any
+        # outstanding blockers in the in-progress evaluation. Without
+        # this, ``evaluate_readiness`` keeps emitting ``in_progress`` when
+        # any blocker is still present (e.g. ``ci_pending`` because a
+        # post-merge workflow is still queued), so the check dangles
+        # forever — which is exactly what happened on PR #609.
+        pr_state = getattr(pr.state, "value", pr.state)
+        is_merged = bool(getattr(pr, "merged", False)) or pr.merged_at is not None
+        is_closed = pr_state == "closed"
+        if is_merged:
+            check_conclusion = "success"
+        elif is_closed:
+            check_conclusion = "neutral"
+        elif conclusion == "success":
             check_conclusion = "success"
         elif conclusion == "failure":
             if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
@@ -1470,6 +1526,114 @@ class PRAgent:
                 e,
             )
 
+    async def _finalize_readiness_check(self, pr: PullRequest, tracking: TrackedPR) -> None:
+        """Publish the terminal ``caretaker/pr-readiness`` conclusion for a
+        closed/merged PR.
+
+        Called from the ``run()`` early-exit path that previously dropped
+        closed PRs entirely. Builds a minimal :class:`PRStateEvaluation` so
+        :meth:`_publish_readiness_check` can run its terminal-state branch
+        — we do NOT re-fetch reviews/checks because the conclusion is
+        determined by the PR's terminal state, not by re-evaluating
+        upstream signals.
+        """
+        if not self._config.readiness.enabled:
+            tracking.readiness_check_finalized = True
+            return
+        # Build a synthetic evaluation. The readiness body fields don't
+        # matter for the terminal branch — ``_publish_readiness_check``
+        # short-circuits to ``success`` (merged) or ``neutral`` (closed)
+        # regardless of conclusion/score. We still pass an in_progress
+        # placeholder so the function runs to completion.
+        pseudo_ci = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        pseudo_reviews = ReviewEvaluation(
+            approved=True,
+            changes_requested=False,
+            pending=False,
+            approving_reviews=[],
+            blocking_reviews=[],
+        )
+        pseudo_readiness = ReadinessEvaluation(
+            score=tracking.readiness_score,
+            blockers=list(tracking.readiness_blockers),
+            summary=tracking.readiness_summary or "PR closed",
+            conclusion="success" if pr.merged or pr.merged_at else "failure",
+        )
+        eval_obj = PRStateEvaluation(
+            pr=pr,
+            ci=pseudo_ci,
+            reviews=pseudo_reviews,
+            readiness=pseudo_readiness,
+            recommended_state=(
+                PRTrackingState.MERGED if (pr.merged or pr.merged_at) else PRTrackingState.CLOSED
+            ),
+            recommended_action="none",
+        )
+        await self._publish_readiness_check(pr, tracking, eval_obj)
+        tracking.readiness_check_finalized = True
+        logger.info(
+            "PR #%d: finalized %s check (terminal=%s)",
+            pr.number,
+            self._config.readiness.check_name,
+            "merged" if (pr.merged or pr.merged_at) else "closed",
+        )
+
+    async def resync_open_prs(
+        self, tracked_prs: dict[int, TrackedPR]
+    ) -> tuple[PRAgentReport, dict[int, TrackedPR]]:
+        """Re-evaluate every open PR and force the readiness comment + check
+        to reflect current GitHub state.
+
+        This is the polling fallback for when webhooks have dropped or
+        delivery is delayed. It calls the same ``_process_pr`` path that
+        webhooks take, so the resulting state is identical — the only
+        difference is that the cron / long-running loop guarantees a
+        re-evaluation cadence regardless of webhook reliability.
+
+        Returns the same ``(report, tracked_prs)`` tuple as :meth:`run` so
+        callers can treat it as a drop-in alternative. Failures on a single
+        PR are logged and the loop continues, matching :meth:`run`'s
+        per-PR error isolation.
+        """
+        report = PRAgentReport()
+        try:
+            open_prs = await self._github.list_pull_requests(self._owner, self._repo)
+        except Exception as exc:  # noqa: BLE001 — defensive: never crash the resync
+            logger.warning("resync_open_prs: list_pull_requests failed: %s", exc)
+            return report, tracked_prs
+
+        report.monitored = len(open_prs)
+        for pr in open_prs:
+            try:
+                tracking = tracked_prs.get(pr.number, TrackedPR(number=pr.number))
+                prior_score = tracking.readiness_score
+                prior_blockers = list(tracking.readiness_blockers)
+                tracking = await self._process_pr(pr, tracking, report)
+                tracking.last_checked = datetime.now(UTC)
+                tracked_prs[pr.number] = tracking
+                if (
+                    tracking.readiness_score != prior_score
+                    or list(tracking.readiness_blockers) != prior_blockers
+                ):
+                    logger.info(
+                        "PR #%d: resync updated readiness %.0f%%→%.0f%% (blockers: %s)",
+                        pr.number,
+                        prior_score * 100,
+                        tracking.readiness_score * 100,
+                        ",".join(tracking.readiness_blockers) or "none",
+                    )
+            except Exception as exc:  # noqa: BLE001 — match run()'s per-PR isolation
+                logger.error("resync_open_prs: PR #%d failed: %s", pr.number, exc)
+                report.errors.append(f"PR #{pr.number}: {exc}")
+        return report, tracked_prs
+
     async def _handle_ownership(
         self,
         pr: PullRequest,
@@ -1494,6 +1658,19 @@ class PRAgent:
         tracking.readiness_score = evaluation.readiness.score
         tracking.readiness_blockers = evaluation.readiness.blockers
         tracking.readiness_summary = evaluation.readiness.summary
+
+        # Capture bot-approver names so the status comment can render the
+        # ``(bot)`` label on the Reviews row. CheckRun-based approvals
+        # surface as the job name; comment-based approvals surface as the
+        # bot login.
+        bot_names: list[str] = []
+        bot_names.extend(cr.name for cr in evaluation.reviews.bot_check_approvals)
+        for entry in evaluation.reviews.bot_comment_approvals:
+            user = getattr(entry, "user", None)
+            login = getattr(user, "login", "") if user else ""
+            if login and login not in bot_names:
+                bot_names.append(login)
+        tracking.bot_approvers = bot_names
 
         # Handle ownership state transitions. Each branch that calls out
         # to GitHub counts as a write action for attribution telemetry.
