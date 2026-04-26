@@ -1101,7 +1101,8 @@ def fleet_status(config_path: str) -> None:
 
     Useful when verifying that a child repo is opted in: shows whether
     fleet_registry.enabled is true, the configured endpoint, and whether the
-    HMAC secret env var is populated. Performs no network I/O.
+    OAuth2 client_credentials env vars (OAUTH2_CLIENT_ID/SECRET/TOKEN_URL) are
+    populated. Performs no network I/O.
     """
     cfg_path = Path(config_path)
     if not cfg_path.is_file():
@@ -1115,8 +1116,17 @@ def fleet_status(config_path: str) -> None:
 
     registry = cfg.fleet_registry
     repo_slug = os.environ.get("GITHUB_REPOSITORY") or "<unset>"
-    secret_env = registry.secret_env or "CARETAKER_FLEET_SECRET"
-    secret_present = bool(os.environ.get(secret_env))
+    oauth_cfg = registry.oauth2
+    client_id_env = oauth_cfg.client_id_env if oauth_cfg else "OAUTH2_CLIENT_ID"
+    client_secret_env = oauth_cfg.client_secret_env if oauth_cfg else "OAUTH2_CLIENT_SECRET"
+    token_url_env = oauth_cfg.token_url_env if oauth_cfg else "OAUTH2_TOKEN_URL"
+    scope_env = oauth_cfg.scope_env if oauth_cfg else "OAUTH2_SCOPE"
+    client_id_present = bool(os.environ.get(client_id_env))
+    client_secret_present = bool(os.environ.get(client_secret_env))
+    token_url = os.environ.get(token_url_env, "").strip()
+    scope_value = os.environ.get(scope_env, "").strip() or (
+        oauth_cfg.default_scope if oauth_cfg else ""
+    )
 
     click.echo("Caretaker fleet — local status")
     click.echo("-" * 72)
@@ -1124,15 +1134,20 @@ def fleet_status(config_path: str) -> None:
     click.echo(f"Repo (GITHUB_REPOSITORY) : {repo_slug}")
     click.echo(f"fleet_registry.enabled   : {registry.enabled}")
     click.echo(f"fleet_registry.endpoint  : {registry.endpoint or '<unset>'}")
-    click.echo(f"fleet_registry.secret_env: {secret_env}")
-    secret_status = "yes" if secret_present else "no (unsigned heartbeats)"
-    click.echo(f"  secret env populated   : {secret_status}")
     click.echo(f"include_full_summary     : {registry.include_full_summary}")
     click.echo(f"timeout_seconds          : {registry.timeout_seconds}")
-    if registry.oauth2 and registry.oauth2.enabled:
-        click.echo("oauth2                   : enabled (will fetch bearer token)")
-    else:
-        click.echo("oauth2                   : disabled")
+    click.echo("oauth2 (canonical auth)  :")
+    click.echo(f"  {client_id_env:<22}: {'set' if client_id_present else 'NOT SET'}")
+    click.echo(
+        f"  {client_secret_env:<22}: {'set' if client_secret_present else 'NOT SET'}"
+    )
+    click.echo(f"  {token_url_env:<22}: {token_url or 'NOT SET'}")
+    click.echo(f"  scope                 : {scope_value or '<empty>'}")
+    oauth_ready = client_id_present and client_secret_present and bool(token_url)
+    if not oauth_ready:
+        click.echo(
+            "  ⚠ OAuth2 not fully wired — heartbeats will be rejected by backend (401)."
+        )
 
     if not registry.enabled:
         click.echo("\n⚠ fleet_registry is disabled — heartbeats will NOT be sent.")
@@ -1232,24 +1247,71 @@ def fleet_register_self(config_path: str, repo_override: str | None) -> None:
 def _post_heartbeat_manual(registry: Any, heartbeat: Any) -> bool:
     """POST a built FleetHeartbeat directly using httpx.
 
-    Mirrors the production wire format: JSON body, optional X-Caretaker-Signature
-    HMAC-SHA256 header derived from the configured secret env var. Used by the
-    register-self CLI so we don't need an event-loop wrapper.
+    Mirrors the production wire format: JSON body with an OAuth2
+    ``Authorization: Bearer <jwt>`` header obtained via client_credentials.
+    Used by the register-self CLI so we don't need an event-loop wrapper.
     """
-    import hashlib
-    import hmac
-
     import httpx
 
     body = heartbeat.model_dump_json().encode()
     headers = {"Content-Type": "application/json"}
-    secret_env = registry.secret_env or "CARETAKER_FLEET_SECRET"
-    secret = os.environ.get(secret_env, "").strip()
-    if secret:
-        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        headers["X-Caretaker-Signature"] = f"sha256={sig}"
-    else:
-        click.echo(f"  (no {secret_env} set — sending unsigned)")
+
+    oauth_cfg = registry.oauth2
+    client_id_env = oauth_cfg.client_id_env if oauth_cfg else "OAUTH2_CLIENT_ID"
+    client_secret_env = oauth_cfg.client_secret_env if oauth_cfg else "OAUTH2_CLIENT_SECRET"
+    token_url_env = oauth_cfg.token_url_env if oauth_cfg else "OAUTH2_TOKEN_URL"
+    scope_env = oauth_cfg.scope_env if oauth_cfg else "OAUTH2_SCOPE"
+    default_scope = oauth_cfg.default_scope if oauth_cfg else "fleet:heartbeat"
+    timeout_seconds = float(oauth_cfg.timeout_seconds) if oauth_cfg else 10.0
+
+    client_id = os.environ.get(client_id_env, "").strip()
+    client_secret = os.environ.get(client_secret_env, "").strip()
+    token_url = os.environ.get(token_url_env, "").strip()
+    scope_value = os.environ.get(scope_env, "").strip() or default_scope
+
+    if not (client_id and client_secret and token_url):
+        missing = [
+            name
+            for name, val in (
+                (client_id_env, client_id),
+                (client_secret_env, client_secret),
+                (token_url_env, token_url),
+            )
+            if not val
+        ]
+        click.echo(
+            f"  ⚠ OAuth2 not configured (missing {', '.join(missing)}) — "
+            "heartbeat will be rejected with 401",
+            err=True,
+        )
+        return False
+    try:
+        with httpx.Client(timeout=timeout_seconds) as token_client:
+            data = {"grant_type": "client_credentials"}
+            if scope_value:
+                data["scope"] = scope_value
+            token_resp = token_client.post(
+                token_url,
+                data=data,
+                auth=(client_id, client_secret),
+                headers={"Accept": "application/json"},
+            )
+        if token_resp.status_code != 200:
+            click.echo(
+                f"  ⚠ OAuth2 token fetch failed: HTTP {token_resp.status_code}: "
+                f"{token_resp.text[:200]}",
+                err=True,
+            )
+            return False
+        token_payload = token_resp.json()
+        access_token = token_payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            click.echo("  ⚠ OAuth2 token endpoint returned no access_token", err=True)
+            return False
+        headers["Authorization"] = f"Bearer {access_token}"
+    except Exception as exc:  # pragma: no cover - network errors
+        click.echo(f"  ⚠ OAuth2 token request failed: {exc}", err=True)
+        return False
     try:
         with httpx.Client(timeout=max(registry.timeout_seconds, 5.0)) as client:
             resp = client.post(str(registry.endpoint), content=body, headers=headers)

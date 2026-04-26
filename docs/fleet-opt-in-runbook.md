@@ -10,64 +10,94 @@ The fleet registry is **independent** of the static `caretaker fleet lag`
 audit driven by `docs/fleet.yml`. A repo can be in one without being in
 the other; for full visibility a repo should be in both.
 
+Authentication uses **OAuth2 client_credentials** against the shared
+identity provider at `https://roauth2.cat-herding.net`. Each repo gets
+its own dedicated client; heartbeats present a JWT bearer token with
+scope `fleet:heartbeat` that the backend validates against the IdP's
+JWKS. The legacy `CARETAKER_FLEET_SECRET` HMAC path was removed in
+v0.20 — backends will reject any unauthenticated heartbeat with HTTP
+401. Caretaker workflows fail-open at the emitter so a misconfigured
+repo simply logs a warning and never breaks the run.
+
 ## Prerequisites (one-time, on the central caretaker repo)
 
-1. Pick (or rotate) a shared HMAC secret. Any high-entropy string works:
-
-   ```sh
-   openssl rand -hex 32
-   ```
-
-2. Store it as the caretaker repo's secret named `CARETAKER_FLEET_SECRET`
-   (the dashboard backend already reads this env var to verify signatures).
-   See `docs/admin-dashboard-activation.md` for the deployment-side wiring.
-
-3. Hand the same secret out to every child repo as a GitHub Actions secret
-   (also named `CARETAKER_FLEET_SECRET`). The runbook below assumes you
-   have done this; if you skip it, heartbeats are still accepted but are
-   unsigned (best-effort and not recommended for production).
+Backend deployment must export `CARETAKER_OIDC_ISSUER_URL` (e.g.
+`https://roauth2.cat-herding.net`) so the public heartbeat endpoint
+loads the OIDC discovery document and JWKS at startup. Without it, the
+endpoint returns HTTP 503. See `docs/admin-dashboard-activation.md`.
 
 ## Per-repo opt-in (apply to each child repo)
 
 For each repo listed below:
 
-1. **Add the GitHub Actions secret.** Either via the GitHub UI
-   (`Settings → Secrets and variables → Actions → New repository secret`)
-   with name `CARETAKER_FLEET_SECRET`, or via the CLI:
+1. **Register a per-repo OAuth2 client** at the IdP. The registration
+   endpoint is open (no auth required) and returns a fresh
+   `client_id` + `client_secret` pair scoped to `fleet:heartbeat`:
 
    ```sh
-   gh secret set CARETAKER_FLEET_SECRET --repo ianlintner/<repo>
-   # paste the same secret used in step 1 of the prerequisites
+   curl -fsS -X POST https://roauth2.cat-herding.net/connect/register \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "client_name": "caretaker-fleet-<repo>",
+       "redirect_uris": ["https://github.com/ianlintner/<repo>"],
+       "grant_types": ["client_credentials"],
+       "scope": "fleet:heartbeat"
+     }'
    ```
 
-2. **Edit `.github/maintainer/config.yml`.** Locate the
+   Save the returned `client_id` and `client_secret` — the secret is
+   shown once and cannot be retrieved later.
+
+2. **Add the GitHub Actions secrets and variables** for the repo. The
+   workflow templates expect two secrets and two variables:
+
+   ```sh
+   gh secret set OAUTH2_CLIENT_ID -R ianlintner/<repo> --body '<client_id>'
+   gh secret set OAUTH2_CLIENT_SECRET -R ianlintner/<repo> --body '<client_secret>'
+   gh variable set OAUTH2_TOKEN_URL -R ianlintner/<repo> --body 'https://roauth2.cat-herding.net/oauth/token'
+   gh variable set OAUTH2_SCOPE -R ianlintner/<repo> --body 'fleet:heartbeat'
+   ```
+
+3. **Edit `.github/maintainer/config.yml`.** Locate the
    `# fleet_registry:` block and uncomment it. Set `enabled: true` and
-   confirm `endpoint:` points at production:
+   confirm the OAuth2 sub-block matches the env-var names used by the
+   workflow:
 
    ```yaml
    fleet_registry:
      enabled: true
      endpoint: https://caretaker.cat-herding.net/api/fleet/heartbeat
-     secret_env: CARETAKER_FLEET_SECRET
      timeout_seconds: 5.0
      include_full_summary: false
+     oauth2:
+       enabled: true
+       client_id_env: OAUTH2_CLIENT_ID
+       client_secret_env: OAUTH2_CLIENT_SECRET
+       token_url_env: OAUTH2_TOKEN_URL
+       scope_env: OAUTH2_SCOPE
+       default_scope: "fleet:heartbeat"
+       timeout_seconds: 10.0
    ```
 
-   New child repos bootstrapped after this session already ship with
-   this block (see `setup-templates/templates/config-default.yml`); you
-   only need to flip `enabled: false → true`.
+   New child repos bootstrapped after v0.20 already ship with this
+   block (see `setup-templates/templates/config-default.yml`); you only
+   need to flip `enabled: false → true`.
 
-3. **Confirm the workflow exports the secret.** The shipped
-   `.github/workflows/maintainer.yml` template already exports
-   `CARETAKER_FLEET_SECRET` in the bootstrap-check, run, and self-heal
-   `env:` blocks. Older copies (pre v0.19.x) may not — re-sync from
-   `setup-templates/templates/workflows/maintainer.yml` if needed.
+4. **Confirm the workflow exports the OAuth2 env.** The shipped
+   `.github/workflows/maintainer.yml` template exports the four OAuth2
+   variables in the bootstrap-check, run, and self-heal `env:` blocks.
+   Older copies (pre v0.20) export `CARETAKER_FLEET_SECRET` instead —
+   re-sync from `setup-templates/templates/workflows/maintainer.yml`
+   if needed.
 
-4. **Verify locally** (optional but recommended):
+5. **Verify locally** (optional but recommended):
 
    ```sh
    GITHUB_REPOSITORY=ianlintner/<repo> \
-     CARETAKER_FLEET_SECRET=<same-secret> \
+     OAUTH2_CLIENT_ID=<client_id> \
+     OAUTH2_CLIENT_SECRET=<client_secret> \
+     OAUTH2_TOKEN_URL=https://roauth2.cat-herding.net/oauth/token \
+     OAUTH2_SCOPE=fleet:heartbeat \
      caretaker fleet register-self --config .github/maintainer/config.yml
    ```
 
@@ -75,14 +105,14 @@ For each repo listed below:
    `"ok": true`. The repo will then appear on the admin dashboard's
    Fleet page within seconds.
 
-5. **Open a small PR** with the config diff and merge it. The next
+6. **Open a small PR** with the config diff and merge it. The next
    scheduled run will fire a real heartbeat; subsequent runs will
    continue to keep the registry warm.
 
 ## Repos to opt in
 
-The list below mirrors `docs/fleet.yml` (12 repos). Apply the four
-steps above to each. Repo-specific caveats are noted inline.
+The list below mirrors `docs/fleet.yml` (12 repos). Apply the steps
+above to each. Repo-specific caveats are noted inline.
 
 | # | Repo | Tier | Notes |
 |---|------|------|-------|
@@ -113,7 +143,8 @@ Once each repo has emitted at least one heartbeat:
    `scope_gap`, are listed with severity and a link back to the
    affected repo's detail page.
 4. Visit **Health** (`/api/admin/health/doctor` returns JSON) — the
-   `fleet_store` and `fleet_secret` checks should both report `ok`.
+   `fleet_store`, `fleet_oauth2`, and `fleet_backend_issuer` checks
+   should all report `ok`.
 
 ## Persistence
 
@@ -132,15 +163,28 @@ database.
 ## Rollback
 
 To opt a repo *out* of the fleet registry, set
-`fleet_registry.enabled: false` in its `config.yml` and remove the
-`CARETAKER_FLEET_SECRET` repository secret. The next dashboard refresh
-will mark the repo as `stale` (no recent heartbeats); after seven days
-without a heartbeat the `ghosted` alert kind opens.
+`fleet_registry.enabled: false` in its `config.yml`. You may also
+delete the GitHub Actions secrets/variables (`OAUTH2_CLIENT_ID`,
+`OAUTH2_CLIENT_SECRET`, `OAUTH2_TOKEN_URL`, `OAUTH2_SCOPE`) and revoke
+the OAuth2 client at the IdP. The next dashboard refresh will mark the
+repo as `stale` (no recent heartbeats); after seven days without a
+heartbeat the `ghosted` alert kind opens.
 
 ## Troubleshooting
 
-- **HTTP 401/403 from heartbeat endpoint.** The secret on the dashboard
-  side does not match the secret on the child repo. Rotate both.
+- **HTTP 401 from heartbeat endpoint, `WWW-Authenticate: Bearer`.**
+  The bearer token failed signature/issuer/expiry validation, or the
+  Authorization header was missing. Confirm `OAUTH2_TOKEN_URL` points
+  at `https://roauth2.cat-herding.net/oauth/token` and the
+  `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET` pair was issued by the
+  same IdP.
+- **HTTP 403 from heartbeat endpoint, `error="insufficient_scope"`.**
+  The token was issued without `fleet:heartbeat` scope. Re-register
+  the client (step 1 above) with the correct `scope` field, then
+  rotate the secrets.
+- **HTTP 503 from heartbeat endpoint.** The backend has not been
+  configured with `CARETAKER_OIDC_ISSUER_URL` and refuses to verify
+  tokens. Fix the deployment env, do not change child-repo config.
 - **HTTP 422 from heartbeat endpoint.** Heartbeat payload failed
   validation. Run `caretaker fleet register-self --config <path>`
   locally to capture the raw error body.

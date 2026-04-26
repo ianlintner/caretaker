@@ -88,11 +88,51 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     except Exception:
         logger.warning("Prometheus metrics init failed", exc_info=True)
 
-    # Unconditionally register the unauthenticated fleet-heartbeat
-    # receiver so consumer caretaker runs can register themselves
-    # regardless of whether the full admin dashboard is enabled on
-    # this backend instance. The corresponding *admin* list endpoints
-    # are mounted inside the admin branch below.
+    # Configure shared OAuth2 bearer-token auth used by the fleet
+    # heartbeat endpoint (and any future authenticated public
+    # resources). All caretaker clients authenticate via OAuth2
+    # client_credentials against the configured OIDC issuer, so a
+    # single ``CARETAKER_OIDC_ISSUER_URL`` env var configures both the
+    # fleet heartbeat verifier and any other Bearer-authenticated
+    # endpoints. We fall back to ``CARETAKER_ADMIN_OIDC_ISSUER_URL``
+    # (the historical admin-only env var) for deployments that already
+    # set it; in greenfield deployments only the unified env name is
+    # required.
+    try:
+        from caretaker.auth import bearer as fleet_bearer
+
+        issuer_url = os.environ.get("CARETAKER_OIDC_ISSUER_URL", "").strip() or os.environ.get(
+            "CARETAKER_ADMIN_OIDC_ISSUER_URL", ""
+        ).strip()
+        if issuer_url:
+            try:
+                await fleet_bearer.configure(
+                    issuer_url=issuer_url,
+                    required_scopes=("fleet:heartbeat",),
+                )
+                logger.info(
+                    "Fleet bearer auth configured (issuer=%s, required_scope=fleet:heartbeat)",
+                    issuer_url,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to configure fleet bearer auth against issuer %s; "
+                    "fleet heartbeat endpoint will reject all requests with 503",
+                    issuer_url,
+                )
+        else:
+            logger.warning(
+                "CARETAKER_OIDC_ISSUER_URL (and CARETAKER_ADMIN_OIDC_ISSUER_URL) not set — "
+                "fleet bearer auth not configured; heartbeats will be rejected with 503"
+            )
+    except Exception:
+        logger.exception("Failed to import fleet bearer auth module")
+
+    # Register the OAuth2-protected fleet-heartbeat receiver so
+    # opted-in caretaker runs can register themselves regardless of
+    # whether the full admin dashboard is enabled on this backend
+    # instance. The corresponding *admin* list endpoints are mounted
+    # inside the admin branch below.
     try:
         from caretaker.fleet import public_router as fleet_public_router
 

@@ -8,31 +8,32 @@ cross-org GitHub crawl.
 
 ```
 consumer repo                                central caretaker backend
-┌──────────────────────┐        heartbeat    ┌────────────────────────────┐
-│ caretaker run        │  ──── POST /api/── ▶│ /api/fleet/heartbeat       │
-│  …end of run loop…   │   fleet/heartbeat   │   (unauthenticated,        │
-│ emit_heartbeat()     │                     │    HMAC-verified if        │
-└──────────────────────┘                     │    CARETAKER_FLEET_SECRET  │
-                                             │    is set)                 │
-                                             │                            │
-                                             │ in-memory FleetRegistry    │
-                                             │ ▲                          │
-                                             │ │                          │
-                                             │ │ read (OIDC-authed)       │
-                                             │ │                          │
-                                             │ /api/admin/fleet           │
-                                             │ /api/admin/fleet/summary   │
-                                             │ /api/admin/fleet/{repo}    │
-                                             └────────────────────────────┘
-                                                       ▲
-                                                       │
-                                                  admin dashboard
-                                                    /fleet route
+┌──────────────────────┐                     ┌────────────────────────────┐
+│ caretaker run        │   client_credentials│ /oauth/token (IdP)         │
+│  …end of run loop…   │ ──────────────────▶ │  → JWT, scope=fleet:heartbeat
+│ emit_heartbeat()     │                     │                            │
+│  • OAuth2 token      │                     │                            │
+│  • Bearer-signed POST│   POST /api/fleet/  │ /api/fleet/heartbeat       │
+│                      │ ──────────────────▶ │   (Bearer JWT validated    │
+└──────────────────────┘   heartbeat         │    via JWKS)               │
+                                              │ in-memory FleetRegistry    │
+                                              │ ▲                          │
+                                              │ │                          │
+                                              │ │ read (OIDC session-      │
+                                              │ │ authed)                  │
+                                              │ /api/admin/fleet           │
+                                              │ /api/admin/fleet/summary   │
+                                              │ /api/admin/fleet/{repo}    │
+                                              └────────────────────────────┘
+                                                        ▲
+                                                        │
+                                                   admin dashboard
+                                                     /fleet route
 ```
 
 The feature is **off by default**. Caretaker never phones home unless
 the consumer sets both `fleet_registry.enabled: true` and a concrete
-`fleet_registry.endpoint` URL.
+`fleet_registry.endpoint` URL, and provisions OAuth2 client credentials.
 
 ## Configuring a consumer
 
@@ -42,27 +43,35 @@ Add to your repo's `.github/maintainer/config.yml`:
 fleet_registry:
   enabled: true
   endpoint: https://caretaker.cat-herding.net/api/fleet/heartbeat
-  # Optional. When set the emitter signs the payload with HMAC-SHA256
-  # and forwards the digest in X-Caretaker-Signature. The backend
-  # verifies before recording.
-  secret_env: CARETAKER_FLEET_SECRET
   # Optional. Default False. When True the heartbeat body includes
   # the full RunSummary dump (every counter, goal metric, and error
   # list). Keep the default for public OSS fleets; enable only when
   # you control both sides.
   include_full_summary: false
   timeout_seconds: 5.0
+  oauth2:
+    enabled: true
+    client_id_env: OAUTH2_CLIENT_ID
+    client_secret_env: OAUTH2_CLIENT_SECRET
+    token_url_env: OAUTH2_TOKEN_URL
+    scope_env: OAUTH2_SCOPE
+    default_scope: "fleet:heartbeat"
+    timeout_seconds: 10.0
 ```
 
-If `CARETAKER_FLEET_SECRET` is exported in the workflow environment,
-every heartbeat is signed:
+Provision the OAuth2 secrets/variables in the GitHub repo (see
+`docs/fleet-opt-in-runbook.md`). The workflow then exports them to the
+caretaker process:
 
 ```yaml
 # .github/workflows/maintainer.yml
 - name: Run caretaker
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    CARETAKER_FLEET_SECRET: ${{ secrets.CARETAKER_FLEET_SECRET }}
+    OAUTH2_CLIENT_ID: ${{ secrets.OAUTH2_CLIENT_ID }}
+    OAUTH2_CLIENT_SECRET: ${{ secrets.OAUTH2_CLIENT_SECRET }}
+    OAUTH2_TOKEN_URL: ${{ vars.OAUTH2_TOKEN_URL }}
+    OAUTH2_SCOPE: ${{ vars.OAUTH2_SCOPE }}
     # …
   run: caretaker run --config .github/maintainer/config.yml
 ```
@@ -73,15 +82,18 @@ The heartbeat receiver is part of the same FastAPI app as the admin
 dashboard. It's always mounted, regardless of `CARETAKER_ADMIN_ENABLED`,
 so consumers can register even against a headless MCP deployment.
 
-Set the shared secret on the backend environment to enforce HMAC:
+Set the OIDC issuer URL on the backend environment so the receiver
+loads JWKS at startup and validates incoming bearer tokens:
 
 ```bash
-export CARETAKER_FLEET_SECRET="…a-strong-shared-secret…"
+export CARETAKER_OIDC_ISSUER_URL="https://roauth2.cat-herding.net"
 ```
 
-Without a backend-side secret, the receiver accepts unsigned requests
-(useful for private-network deployments and bootstrapping, *not* for
-public internet-facing backends).
+If the issuer URL is missing the public heartbeat endpoint returns
+HTTP 503 — fail-closed by design. Tokens must be signed by the
+issuer, not expired, and carry the `fleet:heartbeat` scope; otherwise
+the response is HTTP 401 (`WWW-Authenticate: Bearer`) or HTTP 403
+(`error="insufficient_scope"`).
 
 ## Payload shape
 
@@ -104,8 +116,11 @@ public internet-facing backends).
 }
 ```
 
-Unknown fields are accepted — the backend tolerates forward-compatible
-additions to keep old backends working against newer emitters.
+The receiver also stamps the validated `client_id` from the bearer
+token onto each stored heartbeat (`authenticated_client_id`) for
+audit. Unknown fields are accepted — the backend tolerates
+forward-compatible additions to keep old backends working against
+newer emitters.
 
 ## Dashboard
 
@@ -122,10 +137,15 @@ down a silent consumer.
 
 ## Design notes
 
-- **Opt-in, off by default.** No heartbeat without explicit config.
-- **Fail-open.** Network, auth, or serialization errors are logged at
-  `WARNING` and swallowed. A fleet-registry problem can never fail the
-  orchestrator run loop.
+- **Opt-in, off by default.** No heartbeat without explicit config and
+  OAuth2 credentials.
+- **Fail-open at the emitter.** Network, auth, or serialization errors
+  on the consumer side are logged at `WARNING` and swallowed. A
+  fleet-registry problem can never fail the orchestrator run loop.
+- **Fail-closed at the receiver.** Without `CARETAKER_OIDC_ISSUER_URL`
+  or with an invalid token, the heartbeat endpoint refuses the
+  request. Operators should monitor 401/503 rates as a signal of
+  misconfigured consumers.
 - **Pluggable persistence.** The default in-memory store keeps the
   registry for the lifetime of the backend process — useful for
   ephemeral test deployments. Set `CARETAKER_FLEET_DB_PATH` to a

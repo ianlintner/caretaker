@@ -141,18 +141,56 @@ async def doctor(
         )
     )
 
-    # 7. CARETAKER_FLEET_SECRET
-    fleet_secret = os.environ.get("CARETAKER_FLEET_SECRET")
-    secret_detail = (
-        "Fleet HMAC secret configured"
-        if fleet_secret
-        else "CARETAKER_FLEET_SECRET not set — fleet heartbeats unauthenticated"
-    )
+    # 7. OAuth2 wiring for fleet heartbeat (canonical auth path)
+    oauth_id = os.environ.get("OAUTH2_CLIENT_ID")
+    oauth_secret = os.environ.get("OAUTH2_CLIENT_SECRET")
+    oauth_token_url = os.environ.get("OAUTH2_TOKEN_URL")
+    oauth_present = bool(oauth_id and oauth_secret and oauth_token_url)
+    if oauth_present:
+        oauth_detail = (
+            f"OAuth2 client_credentials configured (token_url={oauth_token_url})"
+        )
+        oauth_status: CheckStatus = "ok"
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("OAUTH2_CLIENT_ID", oauth_id),
+                ("OAUTH2_CLIENT_SECRET", oauth_secret),
+                ("OAUTH2_TOKEN_URL", oauth_token_url),
+            )
+            if not value
+        ]
+        oauth_detail = (
+            f"OAuth2 not wired — missing {', '.join(missing)}; "
+            "fleet heartbeats will be rejected by backend (401)"
+        )
+        oauth_status = "warning"
     checks.append(
         DoctorCheck(
-            name="fleet_secret",
-            status="ok" if fleet_secret else "warning",
-            detail=secret_detail,
+            name="fleet_oauth2",
+            status=oauth_status,
+            detail=oauth_detail,
+        )
+    )
+
+    # 8. Backend bearer-auth issuer (for self-hosted backend deployments)
+    backend_issuer = os.environ.get("CARETAKER_OIDC_ISSUER_URL") or os.environ.get(
+        "CARETAKER_ADMIN_OIDC_ISSUER_URL"
+    )
+    if backend_issuer:
+        backend_detail = f"Backend bearer-auth issuer: {backend_issuer}"
+        backend_status: CheckStatus = "ok"
+    else:
+        backend_detail = (
+            "CARETAKER_OIDC_ISSUER_URL not set — backend will reject heartbeats with 503"
+        )
+        backend_status = "warning"
+    checks.append(
+        DoctorCheck(
+            name="fleet_backend_issuer",
+            status=backend_status,
+            detail=backend_detail,
         )
     )
 

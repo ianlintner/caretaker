@@ -301,6 +301,8 @@ async def test_upsert_fleet_alerts_writes_fleet_alert_nodes() -> None:
 @pytest.fixture
 def fleet_alerts_client(monkeypatch):  # type: ignore[no-untyped-def]
     from caretaker.admin import auth as admin_auth
+    from caretaker.auth.bearer import BearerPrincipal
+    from caretaker.fleet import api as fleet_api
 
     reset_store_for_tests()
     reset_alert_store_for_tests()
@@ -321,7 +323,15 @@ def fleet_alerts_client(monkeypatch):  # type: ignore[no-untyped-def]
     async def _fake_user():  # noqa: ANN202
         return admin_auth.UserInfo(sub="test", email="test@example.com", name="Test", picture=None)
 
+    async def _fake_principal():  # noqa: ANN202
+        return BearerPrincipal(
+            client_id="test-client",
+            scopes=frozenset({"fleet:heartbeat"}),
+            raw_claims={"client_id": "test-client", "scope": "fleet:heartbeat"},
+        )
+
     app.dependency_overrides[admin_auth.require_session] = _fake_user
+    app.dependency_overrides[fleet_api._REQUIRE_FLEET_TOKEN.dependency] = _fake_principal
     yield TestClient(app)
     set_fleet_alert_dependencies(maintainer_config=None, graph_store=None)
 
@@ -421,6 +431,8 @@ def test_admin_alerts_endpoint_disabled_returns_stored_state_only(  # type: igno
     re-evaluate — it just returns whatever the alert store already has.
     This is the default posture for the feature."""
     from caretaker.admin import auth as admin_auth
+    from caretaker.auth.bearer import BearerPrincipal
+    from caretaker.fleet import api as fleet_api
 
     reset_store_for_tests()
     reset_alert_store_for_tests()
@@ -436,7 +448,15 @@ def test_admin_alerts_endpoint_disabled_returns_stored_state_only(  # type: igno
     async def _fake_user():  # noqa: ANN202
         return admin_auth.UserInfo(sub="test", email="test@example.com", name="Test", picture=None)
 
+    async def _fake_principal():  # noqa: ANN202
+        return BearerPrincipal(
+            client_id="test-client",
+            scopes=frozenset({"fleet:heartbeat"}),
+            raw_claims={"client_id": "test-client", "scope": "fleet:heartbeat"},
+        )
+
     app.dependency_overrides[admin_auth.require_session] = _fake_user
+    app.dependency_overrides[fleet_api._REQUIRE_FLEET_TOKEN.dependency] = _fake_principal
     with TestClient(app) as client:
         for i, score in enumerate([0.3, 0.4, 0.5]):
             _post_heartbeat(

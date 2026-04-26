@@ -869,15 +869,21 @@ class TelemetryConfig(StrictBaseModel):
 class OAuth2ClientConfig(StrictBaseModel):
     """OAuth2 ``client_credentials`` settings for service-to-service auth.
 
-    Opt-in: when ``enabled`` is ``True`` AND all three env vars named by
-    ``client_id_env`` / ``client_secret_env`` / ``token_url_env`` are
-    populated, consumers like :class:`FleetRegistryConfig` will attach a
-    bearer token to outbound requests instead of (or alongside) HMAC.
+    This is the **canonical** authentication mode for caretaker
+    service-to-service calls (fleet heartbeat, MCP backend access, and
+    any future authenticated endpoints). When ``enabled`` is ``True``
+    AND all three env vars named by ``client_id_env`` /
+    ``client_secret_env`` / ``token_url_env`` are populated, consumers
+    like :class:`FleetRegistryConfig` will attach a bearer token to
+    outbound requests.
 
     The default names match the conventional ``OAUTH2_CLIENT_ID`` /
     ``OAUTH2_CLIENT_SECRET`` / ``OAUTH2_TOKEN_URL`` triple that caretaker
     writes into consumer repos when an operator provisions client
-    credentials against a shared authorization server.
+    credentials against a shared authorization server. ``default_scope``
+    defaults to ``fleet:heartbeat`` because the fleet heartbeat is the
+    only currently-authenticated endpoint; per-resource configs may
+    override.
     """
 
     enabled: bool = False
@@ -885,9 +891,11 @@ class OAuth2ClientConfig(StrictBaseModel):
     client_secret_env: str = "OAUTH2_CLIENT_SECRET"
     token_url_env: str = "OAUTH2_TOKEN_URL"
     scope_env: str = "OAUTH2_SCOPE"
-    # Requested scope if ``scope_env`` is not populated. Empty string means
-    # "use the server-side default scope set for this client".
-    default_scope: str = ""
+    # Requested scope if ``scope_env`` is not populated. ``fleet:heartbeat``
+    # is the default because that is the only authenticated public endpoint
+    # caretaker currently exposes; override per-config when other resources
+    # need different scopes.
+    default_scope: str = "fleet:heartbeat"
     timeout_seconds: float = 10.0
 
 
@@ -903,22 +911,22 @@ class FleetRegistryConfig(StrictBaseModel):
     intentionally not given a default — caretaker never phones home
     unless the consumer explicitly configures a destination.
 
-    ``secret_env`` names an environment variable whose value is used as
-    an HMAC-SHA256 shared secret. When set, the emitter signs the POST
-    body and forwards the hex digest in ``X-Caretaker-Signature``; the
-    backend verifies before recording. When unset, heartbeats are
-    delivered without authentication (suitable for private networks /
-    trusted origins only).
+    Authentication is **OAuth2 client_credentials only**. When the
+    nested ``oauth2`` block is enabled and its env vars are populated,
+    the emitter fetches a bearer token via the OAuth2
+    ``client_credentials`` grant and sends it in the ``Authorization``
+    header. The backend rejects unauthenticated heartbeats.
 
-    ``oauth2`` is an alternative (or additional) auth mode: when its
-    ``enabled`` flag is True and its env vars are populated, the emitter
-    fetches a bearer token via the OAuth2 ``client_credentials`` grant
-    and sends it in the ``Authorization`` header. HMAC + OAuth2 may be
-    used together; the backend can require either or both.
+    ``secret_env`` is **deprecated** and retained only for backwards
+    compatibility with older configs; it is no longer consulted by the
+    emitter or backend.
     """
 
     enabled: bool = False
     endpoint: str | None = None
+    # Deprecated: HMAC heartbeat signing has been removed in favour of
+    # OAuth2 client_credentials. This field is retained so older
+    # config-default.yml files still validate; its value is ignored.
     secret_env: str = "CARETAKER_FLEET_SECRET"
     timeout_seconds: float = 5.0
     # When ``True`` the heartbeat body includes the full ``RunSummary``

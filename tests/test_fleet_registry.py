@@ -3,17 +3,13 @@
 Covers:
 * Config defaults are safe (feature disabled unless explicitly enabled).
 * Emitter fails open on unreachable endpoints / network errors.
-* HMAC signing produces a deterministic hex digest the backend can
-  verify with ``hmac.compare_digest``.
+* OAuth2 client_credentials bearer-token auth on POST /api/fleet/heartbeat.
 * ``POST /api/fleet/heartbeat`` records clients into the singleton
   store; ``GET /api/admin/fleet`` (when configured) reads them back.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
 from datetime import UTC, datetime
 
 import httpx
@@ -30,7 +26,6 @@ from caretaker.fleet import (
     get_store,
     public_router,
     reset_store_for_tests,
-    sign_payload,
 )
 from caretaker.state.models import RunSummary
 
@@ -96,16 +91,6 @@ def test_build_heartbeat_full_summary_opt_in(monkeypatch) -> None:
     hb = build_heartbeat(cfg, _summary_fixture())
     assert hb.summary is not None
     assert hb.summary["prs_monitored"] == 3
-
-
-# ── HMAC signing ──────────────────────────────────────────────────────────
-
-
-def test_sign_payload_matches_stdlib_hmac() -> None:
-    body = b'{"repo":"a/b"}'
-    secret = "s3cret"
-    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    assert sign_payload(body, secret) == expected
 
 
 # ── Emitter fail-open behaviour ───────────────────────────────────────────
@@ -266,38 +251,6 @@ async def test_emitter_oauth_caches_are_per_instance(monkeypatch) -> None:
     assert seen_basic_auths[0] != seen_basic_auths[1]
 
 
-@pytest.mark.asyncio
-async def test_emitter_posts_signed_request(monkeypatch) -> None:
-    monkeypatch.setenv("GITHUB_REPOSITORY", "ianlintner/demo")
-    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
-    cfg = MaintainerConfig(
-        fleet_registry=FleetRegistryConfig(
-            enabled=True,
-            endpoint="https://fleet.example/heartbeat",
-        )
-    )
-
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["headers"] = dict(request.headers)
-        captured["body"] = request.content
-        return httpx.Response(202, json={"ok": True})
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport) as client:
-        ok = await emit_heartbeat(cfg, _summary_fixture(), client=client)
-    assert ok is True
-    assert captured["url"] == "https://fleet.example/heartbeat"
-    body = captured["body"]
-    assert isinstance(body, (bytes, bytearray))
-    sig = captured["headers"]["x-caretaker-signature"]  # httpx lowercases
-    assert sig.startswith("sha256=")
-    expected = hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
-    assert sig.split("=", 1)[1] == expected
-
-
 # ── Backend endpoints ─────────────────────────────────────────────────────
 
 
@@ -307,7 +260,9 @@ def fleet_client(monkeypatch):  # type: ignore[no-untyped-def]
     the full MCP lifespan (which pulls in OIDC config). Admin endpoints
     are exercised with the dependency override shortcut."""
     from caretaker.admin import auth as admin_auth
+    from caretaker.auth.bearer import BearerPrincipal
     from caretaker.fleet import admin_router
+    from caretaker.fleet import api as fleet_api
 
     reset_store_for_tests()
     monkeypatch.delenv("CARETAKER_FLEET_SECRET", raising=False)
@@ -322,7 +277,18 @@ def fleet_client(monkeypatch):  # type: ignore[no-untyped-def]
     async def _fake_user():  # noqa: ANN202
         return admin_auth.UserInfo(sub="test", email="test@example.com", name="Test", picture=None)
 
+    # Bypass OAuth2 bearer-token verification on the public heartbeat
+    # endpoint. ``_REQUIRE_FLEET_TOKEN`` is the Depends() instance; the
+    # actual callable FastAPI registers is ``.dependency``.
+    async def _fake_principal():  # noqa: ANN202
+        return BearerPrincipal(
+            client_id="test-client",
+            scopes=frozenset({"fleet:heartbeat"}),
+            raw_claims={"client_id": "test-client", "scope": "fleet:heartbeat"},
+        )
+
     app.dependency_overrides[admin_auth.require_session] = _fake_user
+    app.dependency_overrides[fleet_api._REQUIRE_FLEET_TOKEN.dependency] = _fake_principal
     return TestClient(app)
 
 
@@ -354,42 +320,6 @@ def test_heartbeat_roundtrip_no_secret(fleet_client) -> None:  # type: ignore[no
     s = summary.json()
     assert s["total_clients"] == 1
     assert s["version_distribution"] == {"0.11.0": 1}
-
-
-def test_heartbeat_rejects_missing_signature_when_secret_configured(  # type: ignore[no-untyped-def]
-    fleet_client, monkeypatch
-) -> None:
-    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
-    resp = fleet_client.post(
-        "/api/fleet/heartbeat", json={"repo": "a/b", "caretaker_version": "0.11.0"}
-    )
-    assert resp.status_code == 401
-
-
-def test_heartbeat_accepts_valid_signature(fleet_client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
-    body = json.dumps({"repo": "a/b", "caretaker_version": "0.11.0"}).encode()
-    sig = "sha256=" + hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
-    resp = fleet_client.post(
-        "/api/fleet/heartbeat",
-        content=body,
-        headers={"Content-Type": "application/json", "X-Caretaker-Signature": sig},
-    )
-    assert resp.status_code == 200
-
-
-def test_heartbeat_rejects_invalid_signature(fleet_client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("CARETAKER_FLEET_SECRET", "s3cret")
-    body = json.dumps({"repo": "a/b", "caretaker_version": "0.11.0"}).encode()
-    resp = fleet_client.post(
-        "/api/fleet/heartbeat",
-        content=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-Caretaker-Signature": "sha256=deadbeef",
-        },
-    )
-    assert resp.status_code == 401
 
 
 def test_heartbeat_rejects_empty_body(fleet_client) -> None:  # type: ignore[no-untyped-def]

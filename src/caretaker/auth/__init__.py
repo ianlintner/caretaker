@@ -1,9 +1,15 @@
-"""OAuth2 client helpers for caretaker service-to-service auth.
+"""OAuth2 client and bearer-token helpers for caretaker service-to-service auth.
 
 Separate from :mod:`caretaker.admin.auth`, which handles the interactive
-OIDC login flow for the admin dashboard. This package contains the
-service-side client used by caretaker when it calls out to OAuth2-protected
-backends (fleet registry, remote MCP servers, etc.) from CI runs.
+OIDC login flow for the admin dashboard. This package contains:
+
+* :mod:`caretaker.auth.oauth_client` — outbound OAuth2 client_credentials
+  client used when caretaker calls remote OAuth2-protected endpoints from CI.
+* :mod:`caretaker.auth.bearer` — inbound JWT bearer-token verifier used by
+  caretaker backend resources (fleet heartbeat, MCP, future endpoints).
+
+Both share a single OAuth2 issuer for the deployment, providing one unified
+auth path across MCP, heartbeat, and any other authenticated resource.
 """
 
 from caretaker.auth.oauth_client import (

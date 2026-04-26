@@ -2,40 +2,33 @@
 
 Two routers:
 
-* ``public_router`` — the unauthenticated ``POST /api/fleet/heartbeat``
-  endpoint that consumer caretaker runs POST to. HMAC verification is
-  optional and controlled by the ``CARETAKER_FLEET_SECRET`` environment
-  variable on the backend. When set, requests must carry a matching
-  ``X-Caretaker-Signature`` header.
+* ``public_router`` — the ``POST /api/fleet/heartbeat`` endpoint that
+  consumer caretaker runs POST to. Authentication is enforced via OAuth2
+  bearer tokens (JWTs) issued by the configured OIDC provider; tokens
+  must carry the ``fleet:heartbeat`` scope. Configured at app startup via
+  :func:`caretaker.auth.bearer.configure`.
 * ``admin_router`` — authenticated list/summary endpoints consumed by
   the admin dashboard. Mounted under the ``/api/admin/fleet`` prefix.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from caretaker.auth.bearer import BearerPrincipal, require_bearer_token
 from caretaker.fleet.alerts import (
     FleetAlertStore,
     evaluate_fleet_alerts,
     get_alert_store,
     upsert_fleet_alerts,
 )
-from caretaker.fleet.emitter import sign_payload
 from caretaker.fleet.store import FleetRegistryStore, get_store
 
 logger = logging.getLogger(__name__)
-
-
-SECRET_ENV = "CARETAKER_FLEET_SECRET"
-SIGNATURE_HEADER = "X-Caretaker-Signature"
 
 
 # Module-level shims for the admin fleet-alerts endpoint's optional
@@ -51,40 +44,36 @@ public_router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 admin_router = APIRouter(prefix="/api/admin/fleet", tags=["fleet"])
 
 
-def _verify_signature_if_required(body: bytes, header: str | None) -> None:
-    """Enforce HMAC only when a secret is configured on the backend.
-
-    When the backend has no ``CARETAKER_FLEET_SECRET`` set we accept
-    unsigned requests (convenient for trusted-network deployments and
-    for bootstrapping). When the secret is set, the header becomes
-    mandatory and must verify.
-    """
-    secret = os.environ.get(SECRET_ENV, "").strip()
-    if not secret:
-        return
-    if not header:
-        raise HTTPException(status_code=401, detail="missing signature header")
-    provided = header.strip()
-    if provided.startswith("sha256="):
-        provided = provided[len("sha256=") :]
-    expected = sign_payload(body, secret)
-    if not hmac.compare_digest(provided.lower(), expected.lower()):
-        raise HTTPException(status_code=401, detail="invalid signature")
+# Bearer dependency for fleet heartbeats. Resolved at import time; verifies
+# the JWT signature/issuer/expiry and requires the ``fleet:heartbeat`` scope.
+# When :func:`caretaker.auth.bearer.configure` has not been called the
+# dependency raises HTTP 503 — fail-closed.
+_REQUIRE_FLEET_TOKEN = Depends(require_bearer_token("fleet:heartbeat"))
 
 
 @public_router.post("/heartbeat")
-async def receive_heartbeat(request: Request) -> dict[str, Any]:
-    """Record a heartbeat from a consumer caretaker run."""
+async def receive_heartbeat(
+    request: Request,
+    principal: BearerPrincipal = _REQUIRE_FLEET_TOKEN,
+) -> dict[str, Any]:
+    """Record a heartbeat from a consumer caretaker run.
+
+    Authentication: ``Authorization: Bearer <jwt>`` issued by the configured
+    OIDC provider with scope ``fleet:heartbeat``.
+    """
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
-    _verify_signature_if_required(body, request.headers.get(SIGNATURE_HEADER))
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    # Stamp the verified caller onto the heartbeat for audit.  The store
+    # ignores unknown fields, so this is safe to add unconditionally.
+    payload.setdefault("authenticated_client_id", principal.client_id)
 
     store: FleetRegistryStore = get_store()
     try:
@@ -275,11 +264,3 @@ __all__ = [
     "admin_router",
     "public_router",
 ]
-
-
-# Safety: ensure sign_payload is importable for the HMAC check above
-# without creating a cycle on module-load (emitter imports from
-# caretaker.config which is already loaded by the time this module is
-# imported from FastAPI startup).
-assert callable(sign_payload)
-assert callable(hashlib.sha256)

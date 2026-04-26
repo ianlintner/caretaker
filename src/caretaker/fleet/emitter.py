@@ -10,8 +10,6 @@ configuration surface.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import importlib.metadata
 import json
 import logging
@@ -315,11 +313,6 @@ def build_heartbeat(
     )
 
 
-def sign_payload(body: bytes, secret: str) -> str:
-    """Compute the hex HMAC-SHA256 signature forwarded in the header."""
-    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-
-
 async def emit_heartbeat(
     config: MaintainerConfig,
     summary: RunSummary,
@@ -355,9 +348,6 @@ async def emit_heartbeat(
 
     body = heartbeat.model_dump_json().encode("utf-8")
     headers = {"Content-Type": "application/json"}
-    secret = os.environ.get(fleet.secret_env, "").strip()
-    if secret:
-        headers["X-Caretaker-Signature"] = "sha256=" + sign_payload(body, secret)
 
     cache = oauth_cache if oauth_cache is not None else _default_cache
     owns_client = client is None
@@ -367,8 +357,14 @@ async def emit_heartbeat(
         assert client is not None  # narrow for type-checkers
         try:
             oauth_headers = await _oauth_bearer_headers(fleet, client=client, cache=cache)
-            if oauth_headers:
-                headers.update(oauth_headers)
+            if not oauth_headers:
+                logger.warning(
+                    "fleet heartbeat: no OAuth2 bearer token available; "
+                    "backend will reject this heartbeat. Verify "
+                    "OAUTH2_CLIENT_ID, OAUTH2_CLIENT_SECRET, and "
+                    "OAUTH2_TOKEN_URL are set in the runner environment."
+                )
+            headers.update(oauth_headers)
             resp = await client.post(endpoint, content=body, headers=headers)
         finally:
             if owns_client:

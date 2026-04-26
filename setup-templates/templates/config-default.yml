@@ -119,23 +119,35 @@ escalation:
 # The heartbeat is fire-and-forget — failures NEVER fail the workflow run.
 # It carries no source code; only the public summary fields above.
 #
+# Authentication: OAuth2 client_credentials only. The backend validates the
+# `Authorization: Bearer <jwt>` header against the configured OIDC issuer
+# (roauth2.cat-herding.net) and requires scope `fleet:heartbeat`.
+#
 # To opt in:
 #   1. Set fleet_registry.enabled: true below.
-#   2. Add a CARETAKER_FLEET_SECRET secret to this repo (matches the value
-#      configured on the central backend) and export it in the workflow env
-#      as CARETAKER_FLEET_SECRET.
-#   3. Push. The first scheduled run will register the repo with the dashboard.
+#   2. Provision a per-repo OAuth2 client (see docs/fleet-opt-in-runbook.md).
+#   3. Add OAUTH2_CLIENT_ID + OAUTH2_CLIENT_SECRET as repo SECRETS, and
+#      OAUTH2_TOKEN_URL + OAUTH2_SCOPE as repo VARIABLES. The maintainer
+#      workflow already wires them into the run env.
+#   4. Push. The first scheduled run will register the repo with the dashboard.
 #
 # See docs/fleet-registry.md in the caretaker repo for protocol details.
 fleet_registry:
   enabled: false
   endpoint: https://caretaker.cat-herding.net/api/fleet/heartbeat
-  secret_env: CARETAKER_FLEET_SECRET
   timeout_seconds: 5.0
   # When true, the full RunSummary is sent (more debuggable on the central side
   # but also leaks more about per-PR details). Default is false: only the
   # 20-ish curated counter / health fields go up.
   include_full_summary: false
+  oauth2:
+    enabled: true
+    client_id_env: OAUTH2_CLIENT_ID
+    client_secret_env: OAUTH2_CLIENT_SECRET
+    token_url_env: OAUTH2_TOKEN_URL
+    scope_env: OAUTH2_SCOPE
+    default_scope: "fleet:heartbeat"
+    timeout_seconds: 10.0
 
 llm:
   claude_enabled: auto
