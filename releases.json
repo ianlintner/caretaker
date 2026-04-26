@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.19.6",
+      "min_compatible": "0.19.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.6",
+      "upgrade_notes": "\nWires the **fleet registry** into the admin dashboard end-to-end so that\nproduction deployments at `https://caretaker.cat-herding.net` light up\nwith real heartbeat, alert, webhook, and doctor data. Closes the gap\nwhere every child repo in `docs/fleet.yml` was effectively invisible to\nthe admin UI even when it ran caretaker on schedule.\n\n### Added\n\n- **Persistent `SQLiteFleetRegistryStore`** (`src/caretaker/fleet/sqlite_store.py`)\n  \u2014 SQLite-backed implementation of the registry with the same async API\n  as the in-memory store. Keeps the most recent 32 heartbeats per repo\n  in a `fleet_heartbeats` ring buffer plus the latest snapshot in\n  `fleet_clients`. Activated by setting `CARETAKER_FLEET_DB_PATH`\n  (default location `~/.local/state/caretaker/fleet-registry.db`); the\n  legacy in-memory store remains the default to avoid surprising tests.\n  Survives backend restarts so dashboard data no longer evaporates on\n  every pod recycle.\n- **`fleet_registry` block in `setup-templates/templates/config-default.yml`**\n  \u2014 opt-in template (`enabled: false`) that points at the production\n  endpoint with HMAC and timeout pre-wired. Includes a 22-line comment\n  block explaining the contract.\n- **`CARETAKER_FLEET_SECRET` env wiring in `setup-templates/templates/workflows/maintainer.yml`**\n  \u2014 exported in all three `env:` blocks (bootstrap-check, run, and\n  self-heal-on-failure). Indentation across the workflow normalised to\n  2-space nesting at the same time.\n- **Step 2.8 in `setup-templates/SETUP_AGENT.md`** \u2014 guides Copilot\n  through enabling the fleet registry on each child repo (config edit\n  + secret + verification command).\n- **`docs/fleet-opt-in-runbook.md`** \u2014 operator-facing runbook\n  enumerating the 12 child repos in `docs/fleet.yml` with per-repo\n  caveats and a four-step opt-in checklist.\n- **`caretaker fleet status` CLI command** \u2014 local config inspector;\n  prints the resolved `fleet_registry` block and notes whether the\n  signing secret is populated.\n- **`caretaker f",
+      "breaking": false
+    },
+    {
       "version": "0.19.3",
       "min_compatible": "0.19.2",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.3",
