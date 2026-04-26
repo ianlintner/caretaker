@@ -88,7 +88,7 @@ class LiteLLMEmbedder:
         self._timeout = timeout
         self._aembedding: Any = None
         try:
-            from litellm import aembedding  # type: ignore[import-not-found]
+            from litellm import aembedding
 
             self._aembedding = aembedding
         except ImportError as exc:  # pragma: no cover - optional dep path

@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 # back to :class:`_NullSpan` so call sites can use ``with agent_span(...)``
 # unconditionally.
 
+# OTel symbols are typed as ``Any`` so the module imports cleanly even
+# when the optional ``otel`` extra isn't installed and so call sites that
+# stamp ad-hoc attributes (e.g. our hex ``trace_id``) onto the live span
+# don't fight strict mypy.
+_otel_trace: Any
+_OTLPSpanExporter: Any
+_OTelResource: Any
+_TracerProvider: Any
+_BatchSpanProcessor: Any
+
 try:  # pragma: no cover - exercised by the fallback path in tests
     from opentelemetry import trace as _otel_trace
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (

@@ -273,7 +273,7 @@ class LiteLLMProvider:
         self._import_error: Exception | None = None
 
         try:
-            from litellm import acompletion  # type: ignore[import-not-found]
+            from litellm import acompletion
 
             self._acompletion = acompletion
         except ImportError as exc:

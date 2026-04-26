@@ -53,7 +53,7 @@ import jwt
 from fastapi import HTTPException, Request, status
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -122,9 +122,7 @@ async def configure(
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):  # pragma: no cover - defensive
-            raise RuntimeError(
-                f"OIDC discovery at {discovery_url} returned non-object"
-            )
+            raise RuntimeError(f"OIDC discovery at {discovery_url} returned non-object")
         return data
 
     if http_client is None:
@@ -143,9 +141,7 @@ async def configure(
 
     jwks_uri = metadata.get("jwks_uri")
     if not isinstance(jwks_uri, str) or not jwks_uri:
-        raise RuntimeError(
-            f"OIDC discovery at {discovery_url} missing 'jwks_uri'"
-        )
+        raise RuntimeError(f"OIDC discovery at {discovery_url} missing 'jwks_uri'")
 
     jwk_client = jwt.PyJWKClient(jwks_uri, cache_keys=True, lifespan=600)
     required = frozenset(s for s in required_scopes if s)
@@ -273,12 +269,7 @@ def _verify_token(state: _BearerAuthState, token: str) -> BearerPrincipal:
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         ) from exc
 
-    client_id = (
-        claims.get("client_id")
-        or claims.get("azp")
-        or claims.get("sub")
-        or ""
-    )
+    client_id = claims.get("client_id") or claims.get("azp") or claims.get("sub") or ""
     scopes = _scopes_from_claims(claims)
     return BearerPrincipal(client_id=str(client_id), scopes=scopes, raw_claims=claims)
 
@@ -291,14 +282,15 @@ def _enforce_scopes(principal: BearerPrincipal, scopes: Iterable[str]) -> None:
             detail=f"Token missing required scope(s): {', '.join(sorted(missing))}",
             headers={
                 "WWW-Authenticate": (
-                    'Bearer error="insufficient_scope", '
-                    f'scope="{" ".join(sorted(missing))}"'
+                    f'Bearer error="insufficient_scope", scope="{" ".join(sorted(missing))}"'
                 )
             },
         )
 
 
-def require_bearer_token(*scopes: str):
+def require_bearer_token(
+    *scopes: str,
+) -> Callable[[Request], Awaitable[BearerPrincipal]]:
     """FastAPI dependency factory: returns a Depends-able callable.
 
     The returned callable validates the request's bearer token and ensures the
