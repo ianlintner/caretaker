@@ -184,6 +184,10 @@ ignore_missing_imports = true
 module = ["kubernetes", "kubernetes.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["redis", "redis.*"]
+ignore_missing_imports = true
+
 [tool.uv]
 # Security: override litellm's python-dotenv==1.0.1 pin with the patched version
 # that fixes CVE-2025-14974 (symlink following in set_key/unset_key).

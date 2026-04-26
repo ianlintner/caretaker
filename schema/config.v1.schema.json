@@ -71,6 +71,17 @@
               "enum": ["low", "high"]
             }
           }
+        },
+        "merge_authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["advisory", "gate_only", "gate_and_merge"],
+              "description": "advisory (default): readiness check publishes neutral, never blocks branch protection. gate_only / gate_and_merge: publishes failure to actively gate merges."
+            }
+          }
         }
       }
     },
