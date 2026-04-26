@@ -45,6 +45,13 @@ Skills are specialized knowledge modules that provide:
    - Plan migration
    - Execute upgrade
 
+6. **[caretaker-qa-cycle](./caretaker-qa-cycle.md)** - Run a live-fire QA cycle against caretaker-qa
+   - Decide whether a release warrants a live-fire QA cycle
+   - Author scenario issues that exercise specific behaviors
+   - Fast-forward the testbed pin to the release under test
+   - Watch a scheduled run and assert against documented invariants
+   - Triage findings and ship the fix
+
 ## How to Use Skills
 
 ### For Human Developers
