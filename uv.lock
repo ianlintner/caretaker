@@ -262,7 +262,7 @@ wheels = [
 
 [[package]]
 name = "caretaker-github"
-version = "0.19.2"
+version = "0.20.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

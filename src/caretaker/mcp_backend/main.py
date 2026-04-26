@@ -40,6 +40,8 @@ from caretaker.github_app import (
     parse_webhook,
     verify_signature,
 )
+from caretaker.github_client.rate_limit import get_cooldown
+from caretaker.observability.metrics import record_webhook_event
 from caretaker.state.dedup import LocalDedup, RedisDedup, build_dedup
 from caretaker.state.token_broker import build_token_broker
 
@@ -101,9 +103,10 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     try:
         from caretaker.auth import bearer as fleet_bearer
 
-        issuer_url = os.environ.get("CARETAKER_OIDC_ISSUER_URL", "").strip() or os.environ.get(
-            "CARETAKER_ADMIN_OIDC_ISSUER_URL", ""
-        ).strip()
+        issuer_url = (
+            os.environ.get("CARETAKER_OIDC_ISSUER_URL", "").strip()
+            or os.environ.get("CARETAKER_ADMIN_OIDC_ISSUER_URL", "").strip()
+        )
         if issuer_url:
             try:
                 await fleet_bearer.configure(
@@ -516,6 +519,11 @@ class WebhookAck(BaseModel):
     duplicate: bool
     agents: list[str]
     installation_id: int | None
+    # ``True`` when the dispatcher was scheduled, ``False`` when the
+    # delivery was 200-acked but agent dispatch was deliberately skipped
+    # (e.g. GitHub rate-limit cooldown). Default keeps the field
+    # backwards-compatible with older clients reading the schema.
+    dispatched: bool = True
 
 
 # ── MCP endpoints ------------------------------------------------------
@@ -694,9 +702,21 @@ async def github_webhook(request: Request) -> WebhookAck:
     is_new = await _remember_delivery(parsed.delivery_id)
     agents = agents_for_event(parsed.event_type)
 
+    # If the GitHub client is in a rate-limit cooldown, skip agent
+    # dispatch entirely. Every dispatched task during a cooldown would
+    # block on the GitHub API only to short-circuit on RateLimitError,
+    # while still pinning the parsed payload + agent context in memory —
+    # which is how this pod started OOMKilling under webhook bursts. The
+    # webhook is still 200-acked (GitHub considers the delivery
+    # successful and won't redeliver), and the missed work is recoverable
+    # via the next reconcile loop / manual rerun once the cooldown clears.
+    cooldown = get_cooldown()
+    cooldown_blocked = is_new and cooldown.is_blocked()
+    cooldown_seconds = cooldown.seconds_remaining() if cooldown_blocked else 0.0
+
     logger.info(
         "webhook accepted event=%s delivery=%s action=%s installation=%s "
-        "repository=%s duplicate=%s agents=%s",
+        "repository=%s duplicate=%s agents=%s cooldown_skip=%s",
         parsed.event_type,
         parsed.delivery_id,
         parsed.action,
@@ -704,6 +724,7 @@ async def github_webhook(request: Request) -> WebhookAck:
         parsed.repository_full_name,
         not is_new,
         agents,
+        cooldown_blocked,
     )
 
     # Mirror the delivery into the admin dashboard's recent-deliveries
@@ -715,24 +736,47 @@ async def github_webhook(request: Request) -> WebhookAck:
 
         from caretaker.admin import webhooks_api as _webhooks_api
 
+        if not is_new:
+            mirror_status = "duplicate"
+        elif cooldown_blocked:
+            mirror_status = "deferred_cooldown"
+        else:
+            mirror_status = "ok"
+
         _webhooks_api.register_delivery(
             event=parsed.event_type,
             action=parsed.action,
             installation_id=parsed.installation_id,
             delivery_id=parsed.delivery_id,
             received_at=_dt.now(UTC).isoformat(),
-            agents_fired=list(agents),
-            status="duplicate" if not is_new else "ok",
+            agents_fired=[] if cooldown_blocked else list(agents),
+            status=mirror_status,
         )
     except Exception:
         logger.debug("webhook delivery mirror skipped", exc_info=True)
 
+    dispatched = False
     # Only dispatch fresh deliveries — GitHub retries with the same
     # delivery id on non-2xx, and we already acked once.
-    if is_new:
+    if is_new and not cooldown_blocked:
         dispatcher = _get_dispatcher()
         if dispatcher.mode is not DispatchMode.OFF:
-            dispatch_in_background(dispatcher, parsed)
+            task = dispatch_in_background(dispatcher, parsed)
+            dispatched = task is not None
+    elif cooldown_blocked:
+        logger.warning(
+            "webhook dispatch deferred: GitHub rate-limit cooldown active "
+            "(%.0fs remaining) event=%s delivery=%s",
+            cooldown_seconds,
+            parsed.event_type,
+            parsed.delivery_id,
+        )
+        dispatcher = _get_dispatcher()
+        record_webhook_event(
+            event=parsed.event_type,
+            mode=dispatcher.mode.value,
+            outcome="deferred_cooldown",
+        )
 
     return WebhookAck(
         status="accepted",
@@ -741,6 +785,7 @@ async def github_webhook(request: Request) -> WebhookAck:
         duplicate=not is_new,
         agents=agents,
         installation_id=parsed.installation_id,
+        dispatched=dispatched,
     )
 
 

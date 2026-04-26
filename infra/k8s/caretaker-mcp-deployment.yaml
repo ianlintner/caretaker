@@ -10,7 +10,15 @@ metadata:
     app.kubernetes.io/part-of: caretaker
     app.kubernetes.io/managed-by: kubectl
 spec:
-  replicas: 1
+  # Two replicas + a PodDisruptionBudget (see caretaker-mcp-pdb.yaml) keeps
+  # the webhook ack path available across single-pod OOMs and rolling
+  # restarts. The webhook payload is idempotent (deduped on delivery_id).
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: caretaker-mcp
@@ -144,10 +152,14 @@ spec:
           resources:
             requests:
               cpu: "10m"
-              memory: "64Mi"
+              memory: "128Mi"
             limits:
               cpu: "250m"
-              memory: "256Mi"
+              # Bumped from 256Mi → 512Mi after observed OOMKills under
+              # webhook bursts coinciding with GitHub rate-limit cooldown.
+              # The bounded in-flight cap in github_app/dispatcher.py keeps
+              # this from masking a real leak.
+              memory: "512Mi"
           livenessProbe:
             httpGet:
               path: /health

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -52,6 +53,7 @@ from caretaker.observability.metrics import (
     record_error,
     record_webhook_event,
     record_worker_job,
+    set_worker_queue_depth,
 )
 
 if TYPE_CHECKING:
@@ -383,23 +385,83 @@ class WebhookDispatcher:
         )
 
 
+def _max_in_flight() -> int:
+    """Bound on concurrent in-flight dispatch tasks.
+
+    Resolved per-call (not cached) so tests and operators can tune via
+    ``CARETAKER_WEBHOOK_MAX_IN_FLIGHT`` without restarting the process.
+    A non-positive / unparseable value falls back to the default.
+    """
+    raw = os.environ.get("CARETAKER_WEBHOOK_MAX_IN_FLIGHT", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_IN_FLIGHT
+    return value if value > 0 else _DEFAULT_MAX_IN_FLIGHT
+
+
+_DEFAULT_MAX_IN_FLIGHT: int = 64
+_in_flight: set[asyncio.Task[DispatchResult]] = set()
+
+
+def in_flight_count() -> int:
+    """Return the number of dispatch tasks currently in flight (test/observability hook)."""
+    return len(_in_flight)
+
+
 def dispatch_in_background(
     dispatcher: WebhookDispatcher,
     parsed: ParsedWebhook,
-) -> asyncio.Task[DispatchResult]:
+) -> asyncio.Task[DispatchResult] | None:
     """Schedule :meth:`WebhookDispatcher.dispatch` as a background task.
 
-    Returned so callers can ``await`` it in tests. Production callers
-    (the webhook endpoint) drop the task on the event loop so the
+    Returns the task so callers can ``await`` it in tests; production
+    callers (the webhook endpoint) drop it on the event loop so the
     webhook handler returns immediately.
 
-    The task holds a reference via the default loop; callers do not
-    need to store it themselves unless they want to await.
+    To prevent unbounded memory growth when GitHub is in rate-limit
+    cooldown — every dispatch waits on the cooldown without releasing
+    the parsed payload + agent context — concurrent in-flight tasks are
+    capped by ``CARETAKER_WEBHOOK_MAX_IN_FLIGHT`` (default 64). When the
+    cap is reached the call returns ``None`` and the delivery is dropped
+    on the floor with a counted ``webhook_dispatch_dropped`` error. The
+    webhook itself was already 200-acked, and GitHub won't redeliver
+    successful acks — operators rely on the ``caretaker_errors_total``
+    counter + the ``worker_queue_depth{queue="webhook_dispatch"}`` gauge
+    to notice and either scale up replicas or raise the cap.
     """
-    return asyncio.create_task(
+    cap = _max_in_flight()
+    if len(_in_flight) >= cap:
+        logger.warning(
+            "webhook dispatch dropped (in-flight cap reached) "
+            "in_flight=%d cap=%d event=%s delivery=%s",
+            len(_in_flight),
+            cap,
+            parsed.event_type,
+            parsed.delivery_id,
+        )
+        record_error(kind="webhook_dispatch_dropped")
+        record_webhook_event(
+            event=parsed.event_type,
+            mode=dispatcher.mode.value,
+            outcome="dropped_overload",
+        )
+        set_worker_queue_depth("webhook_dispatch", len(_in_flight))
+        return None
+
+    task = asyncio.create_task(
         dispatcher.dispatch(parsed),
         name=f"webhook-dispatch:{parsed.delivery_id}",
     )
+    _in_flight.add(task)
+    set_worker_queue_depth("webhook_dispatch", len(_in_flight))
+
+    def _on_done(t: asyncio.Task[DispatchResult]) -> None:
+        _in_flight.discard(t)
+        set_worker_queue_depth("webhook_dispatch", len(_in_flight))
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 __all__ = [
@@ -409,4 +471,5 @@ __all__ = [
     "DispatchResult",
     "WebhookDispatcher",
     "dispatch_in_background",
+    "in_flight_count",
 ]

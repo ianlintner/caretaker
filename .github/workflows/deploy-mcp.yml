@@ -111,6 +111,7 @@ jobs:
           kubectl apply \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
             -f infra/k8s/caretaker-mcp-service.yaml \
+            -f infra/k8s/caretaker-mcp-pdb.yaml \
             -f infra/k8s/redis-statefulset.yaml \
             -f infra/k8s/neo4j-statefulset.yaml
 
