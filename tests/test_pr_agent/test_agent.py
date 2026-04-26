@@ -1978,8 +1978,7 @@ class TestAdvisoryModeNeutralConclusion:
         await agent._publish_readiness_check(pr, tracking, evaluation)
 
         github.create_check_run.assert_awaited_once()
-        call_kwargs = github.create_check_run.call_args
-        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        conclusion_arg = github.create_check_run.call_args.kwargs["conclusion"]
         assert conclusion_arg == "neutral", (
             f"advisory mode must publish 'neutral', got '{conclusion_arg}'"
         )
@@ -1999,8 +1998,7 @@ class TestAdvisoryModeNeutralConclusion:
         await agent._publish_readiness_check(pr, tracking, evaluation)
 
         github.create_check_run.assert_awaited_once()
-        call_kwargs = github.create_check_run.call_args
-        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        conclusion_arg = github.create_check_run.call_args.kwargs["conclusion"]
         assert conclusion_arg == "failure", (
             f"gate_only mode must publish 'failure', got '{conclusion_arg}'"
         )
@@ -2020,8 +2018,7 @@ class TestAdvisoryModeNeutralConclusion:
         await agent._publish_readiness_check(pr, tracking, evaluation)
 
         github.create_check_run.assert_awaited_once()
-        call_kwargs = github.create_check_run.call_args
-        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        conclusion_arg = github.create_check_run.call_args.kwargs["conclusion"]
         assert conclusion_arg == "failure", (
             f"gate_and_merge mode must publish 'failure', got '{conclusion_arg}'"
         )
@@ -2073,6 +2070,5 @@ class TestAdvisoryModeNeutralConclusion:
         await agent._publish_readiness_check(pr, tracking, evaluation)
 
         github.create_check_run.assert_awaited_once()
-        call_kwargs = github.create_check_run.call_args
-        conclusion_arg = call_kwargs.kwargs.get("conclusion") or call_kwargs.args[4]
+        conclusion_arg = github.create_check_run.call_args.kwargs["conclusion"]
         assert conclusion_arg == "success"
