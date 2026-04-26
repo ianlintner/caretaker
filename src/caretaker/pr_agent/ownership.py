@@ -388,6 +388,15 @@ def build_status_comment(
     ci_points = 0 if {"ci_pending", "ci_failing"} & blockers else 40
     total_pct = int(tracking.readiness_score * 100)
 
+    # When the review-points came solely from a bot approval (CheckRun or
+    # comment marker), annotate the row so a human reader can tell the
+    # green check came from a bot, not a person. Empty list → no bot
+    # approvals counted → render the row exactly as before.
+    review_label = "Reviews approved"
+    if tracking.bot_approvers and review_points > 0:
+        approvers = ", ".join(tracking.bot_approvers)
+        review_label = f"Reviews approved (bot: {approvers})"
+
     blockers_section = _render_blockers_section(tracking, readiness_verdict)
 
     ownership_lines = [f"- **Owner:** {tracking.owned_by}"]
@@ -418,7 +427,7 @@ def build_status_comment(
 |-----------|-------|
 | Mergeable & non-draft | {mergeability_points}% |
 | Automated feedback | {automated_points}% |
-| Reviews approved | {review_points}% |
+| {review_label} | {review_points}% |
 | CI passing | {ci_points}% |
 | **Total** | **{total_pct}%** |
 

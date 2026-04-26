@@ -85,6 +85,22 @@ class TrackedPR(BaseModel):
     # caretaker:status comment.
     legacy_comments_compacted: bool = False
 
+    # One-shot terminal-state finalization for the ``caretaker/pr-readiness``
+    # check. Once a PR is merged or closed, caretaker publishes a final
+    # ``success`` / ``neutral`` conclusion so the check stops dangling
+    # ``in_progress`` (PR #609 was the motivating incident — its readiness
+    # check stayed in_progress for hours after merge). The flag prevents
+    # republishing on every subsequent webhook for the same closed PR.
+    readiness_check_finalized: bool = False
+
+    # Names of bot reviewers (CheckRun jobs or comment authors) whose
+    # approval was counted toward the "Required reviews satisfied" gate.
+    # Populated from :class:`ReviewEvaluation`. Drives the ``(bot)`` label
+    # rendered in the status-comment Reviews row so a human reader can
+    # tell at a glance whether the green checkmark came from a bot or a
+    # person.
+    bot_approvers: list[str] = Field(default_factory=list)
+
     # ── Attribution telemetry (R&D workstream A2) ────────────────────────
     # Answer "did caretaker actually save human toil on this PR?" — a
     # per-PR audit trail that the weekly rollup aggregates into

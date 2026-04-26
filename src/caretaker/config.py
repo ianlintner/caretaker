@@ -47,6 +47,34 @@ class ReadinessConfig(StrictBaseModel):
     required_reviews: int = 1
     require_all_checks_passed: bool = True
     require_review_resolution: bool = True
+    # Names of CheckRun jobs whose ``conclusion=success`` count as a bot
+    # approval for the "Required reviews satisfied" gate. The default lists
+    # caretaker's own ``claude-review`` job — which posts its review as a
+    # CheckRun, not a formal Reviews API submission, so without this gate
+    # the readiness comment would forever read "required_review_missing"
+    # even after the bot signed off (PR #609 was the motivating incident).
+    bot_check_names: list[str] = Field(default_factory=lambda: ["claude-review"])
+    # Substrings (case-insensitive) that, when found in a bot-authored review
+    # body or PR issue-comment body, count the comment as an explicit approval.
+    # Used in addition to ``bot_check_names`` so a Claude reply that says
+    # "Approved" or "LGTM" in plain English also satisfies the review gate.
+    bot_approval_markers: list[str] = Field(
+        default_factory=lambda: ["**approved**", "lgtm", "✅ approved", "approved by"]
+    )
+    # CheckRun names produced by caretaker's own supervisor workflow
+    # (``maintainer.yml`` jobs) that should be excluded from the upstream-CI
+    # rollup. Including them would make caretaker self-gate: when caretaker
+    # itself is the running CI, "ci_pending" stays true forever. Always
+    # ignored regardless of ``ci.ignore_jobs``.
+    caretaker_workflow_check_names: list[str] = Field(
+        default_factory=lambda: ["dispatch-guard", "doctor", "maintain", "self-heal-on-failure"]
+    )
+    # Polling cadence used by the long-running ``resync_open_prs`` loop in
+    # the GitHub App webhook server (and any future agent-worker loop). The
+    # GitHub Actions cron path is independent and lives in the workflow
+    # file. Set to 0 to disable in-process polling and rely solely on
+    # webhooks + cron.
+    resync_interval_seconds: int = 60
 
 
 class MergeAuthorityMode(StrEnum):
