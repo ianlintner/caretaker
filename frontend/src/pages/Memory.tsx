@@ -1,9 +1,16 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { useNavigate, useParams } from 'react-router-dom'
 import PageHeader from '@/components/PageHeader'
-import { DataTable, type Column } from '@/components/DataTable'
+import {
+  DataTable,
+  type Column,
+  type SortState,
+} from '@/components/DataTable'
+import { sortRows } from '@/lib/tableSort'
 import Pagination from '@/components/Pagination'
+import SearchInput from '@/components/SearchInput'
+import { FilterBar } from '@/components/FilterBar'
 import { cn } from '@/lib/cn'
 import type { MemoryEntry, MemoryNamespace, Paginated, Skill, SubGraph, GraphNode } from '@/lib/types'
 
@@ -333,37 +340,72 @@ function SkillBrowser() {
 function NamespaceList() {
   const navigate = useNavigate()
   const { data, isLoading } = useSWR<MemoryNamespace[]>('/api/admin/memory')
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<SortState>({
+    key: 'count',
+    dir: 'desc',
+  })
 
   const columns: Column<MemoryNamespace>[] = [
     {
       key: 'namespace',
       header: 'Namespace',
+      sortable: true,
+      sortValue: (r) => r.namespace,
       render: (r) => <span className="font-mono text-xs">{r.namespace}</span>,
     },
     {
       key: 'count',
       header: 'Keys',
+      sortable: true,
+      sortValue: (r) => r.key_count,
       render: (r) => <span className="tabular-nums">{r.key_count}</span>,
     },
   ]
+
+  const visible = useMemo(() => {
+    const all = data ?? []
+    const q = search.trim().toLowerCase()
+    const filtered = q
+      ? all.filter((r) => r.namespace.toLowerCase().includes(q))
+      : all
+    return sortRows(filtered, columns, sort)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, search, sort])
 
   if (isLoading) {
     return <p className="text-sm text-[var(--color-muted-foreground)]">Loading…</p>
   }
 
   return (
-    <DataTable
-      columns={columns}
-      rows={data ?? []}
-      empty="No memory namespaces."
-      onRowClick={(r) => navigate(`/memory/${encodeURIComponent(r.namespace)}`)}
-    />
+    <div className="space-y-4">
+      <FilterBar>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search namespace…"
+        />
+        <span className="text-xs text-[var(--color-muted-foreground)] ml-auto">
+          {visible.length} of {data?.length ?? 0}
+        </span>
+      </FilterBar>
+      <DataTable
+        columns={columns}
+        rows={visible}
+        sort={sort}
+        onSortChange={setSort}
+        empty={search ? 'No namespaces match.' : 'No memory namespaces.'}
+        onRowClick={(r) => navigate(`/memory/${encodeURIComponent(r.namespace)}`)}
+      />
+    </div>
   )
 }
 
 function EntryList({ namespace }: { namespace: string }) {
   const navigate = useNavigate()
   const [offset, setOffset] = useState(0)
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<SortState>(null)
   const limit = 50
   const qs = new URLSearchParams({ offset: String(offset), limit: String(limit) })
   const { data, isLoading } = useSWR<Paginated<MemoryEntry>>(
@@ -374,6 +416,8 @@ function EntryList({ namespace }: { namespace: string }) {
     {
       key: 'key',
       header: 'Key',
+      sortable: true,
+      sortValue: (r) => r.key,
       render: (r) => <span className="font-mono text-xs break-all">{r.key}</span>,
     },
     {
@@ -389,6 +433,9 @@ function EntryList({ namespace }: { namespace: string }) {
       key: 'updated',
       header: 'Updated',
       width: '180px',
+      sortable: true,
+      sortValue: (r) =>
+        r.updated_at ? new Date(r.updated_at).getTime() : null,
       render: (r) => (
         <span className="text-xs text-[var(--color-muted-foreground)]">
           {r.updated_at ? new Date(r.updated_at).toLocaleString() : '—'}
@@ -396,6 +443,20 @@ function EntryList({ namespace }: { namespace: string }) {
       ),
     },
   ]
+
+  const visible = useMemo(() => {
+    const items = data?.items ?? []
+    const q = search.trim().toLowerCase()
+    const filtered = q
+      ? items.filter(
+          (r) =>
+            r.key.toLowerCase().includes(q) ||
+            r.value.toLowerCase().includes(q),
+        )
+      : items
+    return sortRows(filtered, columns, sort)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.items, search, sort])
 
   return (
     <>
@@ -408,8 +469,25 @@ function EntryList({ namespace }: { namespace: string }) {
       {isLoading ? (
         <p className="text-sm text-[var(--color-muted-foreground)]">Loading…</p>
       ) : (
-        <>
-          <DataTable columns={columns} rows={data?.items ?? []} empty="No entries." />
+        <div className="space-y-4">
+          <FilterBar>
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search key or value…"
+              width="20rem"
+            />
+            <span className="text-xs text-[var(--color-muted-foreground)] ml-auto">
+              {visible.length} of {data?.total ?? 0}
+            </span>
+          </FilterBar>
+          <DataTable
+            columns={columns}
+            rows={visible}
+            sort={sort}
+            onSortChange={setSort}
+            empty={search ? 'No entries match.' : 'No entries.'}
+          />
           {data && (
             <Pagination
               offset={data.offset}
@@ -418,7 +496,7 @@ function EntryList({ namespace }: { namespace: string }) {
               onChange={setOffset}
             />
           )}
-        </>
+        </div>
       )}
     </>
   )
