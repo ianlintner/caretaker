@@ -92,11 +92,19 @@ class TestCollectEnvReferences:
         names = {r.env_name for r in refs}
         assert "MONGODB_URL" in names
         assert "REDIS_URL" in names
-        assert "CARETAKER_FLEET_SECRET" in names
         assert "CARETAKER_GITHUB_APP_PRIVATE_KEY" in names
         assert "CARETAKER_ADMIN_OIDC_CLIENT_ID" in names
         assert "NEO4J_URL" in names
         assert "NEO4J_AUTH" in names
+        # CARETAKER_FLEET_SECRET (legacy HMAC) was removed in v0.20.1;
+        # OAuth2 is the only supported heartbeat auth mode.
+        assert "CARETAKER_FLEET_SECRET" not in names
+
+    def test_fleet_registry_oauth2_envs_referenced_when_enabled(self) -> None:
+        config = _load_config({"fleet_registry": {"enabled": True, "oauth2": {"enabled": True}}})
+        refs = collect_env_references(config)
+        names = {r.env_name for r in refs if r.owner_enabled}
+        assert {"OAUTH2_CLIENT_ID", "OAUTH2_CLIENT_SECRET", "OAUTH2_TOKEN_URL"} <= names
 
     def test_owner_enabled_tracks_block_state(self) -> None:
         config = _load_config({"mongo": {"enabled": True}})
@@ -764,8 +772,9 @@ class TestBootstrapCheckCLI:
         pin.write_text("0.12.0\n")
         monkeypatch.setenv("GITHUB_TOKEN", "x")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
-        # Deliberately do NOT set CARETAKER_FLEET_SECRET / OAUTH2_* — the
-        # enabled block demands them, bootstrap-check should FAIL.
+        # Deliberately do NOT set OAUTH2_CLIENT_ID / OAUTH2_CLIENT_SECRET /
+        # OAUTH2_TOKEN_URL — the enabled OAuth2 block demands them, so
+        # bootstrap-check must FAIL.
         runner = CliRunner()
         result = runner.invoke(
             cli_main,
@@ -779,3 +788,41 @@ class TestBootstrapCheckCLI:
             ],
         )
         assert result.exit_code == 1
+
+    def test_bootstrap_check_oauth2_only_passes_without_hmac_secret(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reproduces the space-tycoon v0.20.x failure mode: fleet_registry
+        # is OAuth2-only and CARETAKER_FLEET_SECRET is intentionally unset
+        # (HMAC was removed in v0.20.0). Bootstrap-check must NOT FAIL on
+        # the absent legacy HMAC secret.
+        cfg = _write_config(
+            tmp_path / "config.yml",
+            {
+                "fleet_registry": {
+                    "enabled": True,
+                    "oauth2": {"enabled": True},
+                }
+            },
+        )
+        pin = tmp_path / ".version"
+        pin.write_text("0.20.1\n")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+        monkeypatch.setenv("OAUTH2_CLIENT_ID", "id")
+        monkeypatch.setenv("OAUTH2_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("OAUTH2_TOKEN_URL", "https://oidc.example/token")
+        # CARETAKER_FLEET_SECRET deliberately unset.
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "doctor",
+                "--config",
+                str(cfg),
+                "--bootstrap-check",
+                "--pin-path",
+                str(pin),
+            ],
+        )
+        assert result.exit_code == 0, result.output

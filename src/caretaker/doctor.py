@@ -177,17 +177,11 @@ def collect_env_references(config: MaintainerConfig) -> list[EnvReference]:
         )
     )
 
-    # Fleet registry HMAC secret (used by the outbound heartbeat emitter).
-    refs.append(
-        EnvReference(
-            env_name=config.fleet_registry.secret_env,
-            config_path="fleet_registry.secret_env",
-            owner_enabled=config.fleet_registry.enabled,
-            purpose="Fleet registry HMAC shared secret",
-        )
-    )
-
-    # Fleet registry optional OAuth2 client creds.
+    # Fleet registry OAuth2 client creds. The legacy HMAC ``secret_env``
+    # check was removed in v0.20.1 — v0.20.0 dropped HMAC heartbeat auth
+    # entirely (emitter no longer signs, receiver no longer verifies), so
+    # demanding ``CARETAKER_FLEET_SECRET`` here would FAIL bootstrap-check
+    # for every consumer that correctly migrated to OAuth2.
     fleet_oauth = config.fleet_registry.oauth2
     fleet_oauth_enabled = config.fleet_registry.enabled and fleet_oauth.enabled
     for env_name, sub in (
