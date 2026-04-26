@@ -286,10 +286,15 @@ def _failure_signature(summary: FailureSummary) -> str:
 
 
 def _build_issue_body(
-    summary: FailureSummary, sig: str, branch: str, *, run_id: int | None = None
+    summary: FailureSummary,
+    sig: str,
+    branch: str,
+    *,
+    run_id: int | None = None,
+    parent_id: str | None = None,
 ) -> str:
     run_id_fragment = f" run_id:{run_id}" if run_id else ""
-    causal = make_causal_marker("devops", run_id=run_id)
+    causal = make_causal_marker("devops", run_id=run_id, parent=parent_id)
     return f"""{DEVOPS_AGENT_MARKER} sig:{sig}{run_id_fragment} -->
 {causal}
 

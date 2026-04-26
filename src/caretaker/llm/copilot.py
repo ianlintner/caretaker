@@ -56,6 +56,7 @@ class CopilotTask:
     max_attempts: int
     priority: str = "medium"
     context: str = ""
+    parent_causal_id: str | None = None
     _skill_hints: str = field(default="", init=False, repr=False)
 
     def enrich_with_skills(self, skills: list[Skill]) -> None:
@@ -74,7 +75,7 @@ class CopilotTask:
         lines = [
             "@copilot",
             "",
-            make_causal_marker("pr-agent-task"),
+            make_causal_marker("pr-agent-task", parent=self.parent_causal_id),
             TASK_OPEN,
             f"TASK: Fix {self.task_type.value.replace('_', ' ').lower()}",
             f"TYPE: {self.task_type.value}",
@@ -165,6 +166,18 @@ class CopilotProtocol:
         self._repo = repo
 
     async def post_task(self, pr_number: int, task: CopilotTask) -> Comment:
+        # Best-effort: thread this task to the most recent causal marker on
+        # the PR body (typically the issue-agent dispatch event that opened
+        # the PR), so the resulting comment-CausalEvent has a parent.
+        if task.parent_causal_id is None:
+            try:
+                from caretaker.causal import parent_from_body
+
+                pr = await self._github.get_pull_request(self._owner, self._repo, pr_number)
+                pr_body = getattr(pr, "body", "") or ""
+                task.parent_causal_id = parent_from_body(pr_body)
+            except Exception:
+                pass
         body = task.to_comment()
         logger.info(
             "Posting task to PR #%d: %s (attempt %d/%d)",

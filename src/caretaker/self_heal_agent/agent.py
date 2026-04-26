@@ -914,6 +914,7 @@ def _build_fix_issue_body(
     *,
     run_id: int | None = None,
     ladder_escalation: str | None = None,
+    parent_id: str | None = None,
 ) -> str:
     kind_label = {
         FailureKind.CONFIG_ERROR: "⚙️ Config error",
@@ -922,7 +923,7 @@ def _build_fix_issue_body(
     }.get(kind, "🩺 Error")
 
     run_id_fragment = f" run_id:{run_id}" if run_id else ""
-    causal = make_causal_marker("self-heal", run_id=run_id)
+    causal = make_causal_marker("self-heal", run_id=run_id, parent=parent_id)
     # Wave A3: when the fix ladder escalated (or produced a partial
     # fix that still needs follow-up), surface its verdict in the
     # issue body so the Copilot assignee sees what the deterministic

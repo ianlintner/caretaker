@@ -91,8 +91,52 @@ def extract_causal(body: str) -> dict[str, str] | None:
     return out
 
 
+def extract_all_causal(body: str) -> list[dict[str, str]]:
+    """Return every causal marker found in ``body``.
+
+    A single comment / issue body can carry more than one marker — for
+    example the orchestrator tracking issue stamps both
+    ``state-tracker:orchestrator-state`` and ``state-tracker:run-history``
+    each tick, and digest comments aggregate prior markers as evidence.
+    Earlier code only returned the first match (``extract_causal``) which
+    silently dropped the rest. This helper preserves all markers so
+    chain reconstruction does not lose links.
+    """
+    out: list[dict[str, str]] = []
+    for m in _CAUSAL_MARKER_RE.finditer(body or ""):
+        item: dict[str, str] = {"id": m.group("id"), "source": m.group("source") or ""}
+        parent = m.group("parent")
+        if parent:
+            item["parent"] = parent
+        out.append(item)
+    return out
+
+
+def parent_from_body(body: str | None) -> str | None:
+    """Return the most useful causal id to thread as ``parent=``.
+
+    A GitHub issue/PR body can carry multiple causal markers (each
+    bot-authored comment adds its own; the orchestrator stamps state +
+    run-history on the tracking-issue body). When an agent reacts to an
+    object it should chain to the *most recent* marker so the new event
+    extends the chain instead of starting a fresh root.
+
+    The marker regex preserves source order on a single body, so the
+    last match is the most recently appended event. Returns ``None``
+    when no marker is present (or the body is empty / ``None``).
+    """
+    if not body:
+        return None
+    markers = extract_all_causal(body)
+    if not markers:
+        return None
+    return markers[-1].get("id") or None
+
+
 __all__ = [
+    "extract_all_causal",
     "extract_causal",
     "make_causal_id",
     "make_causal_marker",
+    "parent_from_body",
 ]

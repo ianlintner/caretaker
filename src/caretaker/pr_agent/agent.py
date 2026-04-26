@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from caretaker.causal import make_causal_marker
+from caretaker.causal import make_causal_marker, parent_from_body
 from caretaker.evolution.shadow import shadow_decision
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
@@ -1186,7 +1186,10 @@ class PRAgent:
             payload["debug"] = debug_data
 
         marker = "<!-- caretaker:escalation -->"
-        causal = make_causal_marker("pr-agent:escalation")
+        causal = make_causal_marker(
+            "pr-agent:escalation",
+            parent=parent_from_body(getattr(pr, "body", "") or ""),
+        )
         body = (
             f"{marker}\n"
             f"{causal}\n\n"

@@ -82,7 +82,10 @@ class EscalationAgent:
             await self._close_resolved_digest()
             return report
 
-        body = self._build_digest_body(buckets)
+        # Thread weekly digests so each new digest's CausalEvent links back
+        # to the previous one (forming a long-running escalation chain).
+        prior_parent = await self._latest_digest_causal_id()
+        body = self._build_digest_body(buckets, parent_id=prior_parent)
 
         try:
             issue_number = await self._upsert_digest(body)
@@ -135,7 +138,26 @@ class EscalationAgent:
         except Exception as e:
             logger.warning("Escalation agent: could not close digest: %s", e)
 
-    def _build_digest_body(self, buckets: dict[str, list[Any]]) -> str:
+    async def _latest_digest_causal_id(self) -> str | None:
+        """Return the most recent digest CausalEvent id (for parent threading)."""
+        from caretaker.causal import parent_from_body
+
+        try:
+            existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
+        except Exception:
+            return None
+        for issue in existing:
+            body = getattr(issue, "body", "") or ""
+            if ESCALATION_AGENT_MARKER in body:
+                return parent_from_body(body)
+        return None
+
+    def _build_digest_body(
+        self,
+        buckets: dict[str, list[Any]],
+        *,
+        parent_id: str | None = None,
+    ) -> str:
         week = datetime.now(UTC).strftime("%Y-W%V")
         date = datetime.now(UTC).strftime("%Y-%m-%d")
         lines = [
@@ -173,7 +195,7 @@ class EscalationAgent:
         lines.append(render_debug_dump(debug_payload, title="Digest debug dump"))
 
         lines.append(f"\n---\n{ESCALATION_AGENT_MARKER} week:{week} -->")
-        lines.append(make_causal_marker("escalation-agent:digest"))
+        lines.append(make_causal_marker("escalation-agent:digest", parent=parent_id))
         return "\n".join(lines)
 
 
