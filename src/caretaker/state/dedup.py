@@ -55,10 +55,10 @@ class RedisDedup:
         self._redis_url = redis_url
         self._ttl_seconds = ttl_seconds
         self._key_prefix = key_prefix
-        self._client: redis.asyncio.Redis | None = None  # type: ignore[type-arg]
+        self._client: redis.asyncio.Redis[str] | None = None
         self._lock = asyncio.Lock()
 
-    async def _get_client(self) -> redis.asyncio.Redis:  # type: ignore[type-arg]
+    async def _get_client(self) -> redis.asyncio.Redis[str]:
         """Return a lazily-initialised Redis client."""
         if self._client is None:
             async with self._lock:

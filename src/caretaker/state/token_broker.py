@@ -58,10 +58,10 @@ class RedisTokenCache(InstallationTokenCache):
         self._redis_url = redis_url
         self._ttl_seconds = ttl_seconds
         self._key_prefix = key_prefix
-        self._redis: redis.asyncio.Redis | None = None  # type: ignore[type-arg]
+        self._redis: redis.asyncio.Redis[str] | None = None
         self._init_lock = asyncio.Lock()
 
-    async def _client(self) -> redis.asyncio.Redis:  # type: ignore[type-arg]
+    async def _client(self) -> redis.asyncio.Redis[str]:
         if self._redis is None:
             async with self._init_lock:
                 if self._redis is None:
