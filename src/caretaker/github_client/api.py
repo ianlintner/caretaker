@@ -350,6 +350,25 @@ class GitHubClient:
             return None
         return self._parse_pr(data)
 
+    async def find_open_pull_requests_for_sha(
+        self, owner: str, repo: str, sha: str
+    ) -> list[PullRequest]:
+        """Return open PRs that include or are headed at ``sha``.
+
+        Backed by ``GET /repos/{owner}/{repo}/commits/{sha}/pulls``, which
+        lists every PR whose head, merge, or branch contains the commit.
+        Used by the DevOps agent to route a CI failure on default-branch
+        HEAD back onto the PR that produced it (commenting at the PR
+        reviewer) rather than spawning a parallel build-failure issue.
+        """
+        if not sha:
+            return []
+        data = await self._get(f"/repos/{owner}/{repo}/commits/{sha}/pulls")
+        if not data:
+            return []
+        prs = [self._parse_pr(pr) for pr in data]
+        return [pr for pr in prs if pr.state == "open"]
+
     async def get_issue(self, owner: str, repo: str, number: int) -> Issue | None:
         """Fetch a single issue by number. Returns ``None`` when missing."""
         data = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
