@@ -60,7 +60,7 @@ def _config_from_env(
     backend = os.environ.get("CARETAKER_BACKEND_URL", "").rstrip("/")
     if not backend:
         raise RuntimeError("CARETAKER_BACKEND_URL is required (e.g. https://caretaker.example.com)")
-    audience = os.environ.get("CARETAKER_OIDC_AUDIENCE", _DEFAULT_AUDIENCE)
+    audience = os.environ.get("CARETAKER_OIDC_AUDIENCE") or _DEFAULT_AUDIENCE
     return StreamConfig(
         backend_url=backend,
         audience=audience,
