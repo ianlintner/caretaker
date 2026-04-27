@@ -4,7 +4,13 @@
       "version": "0.24.0",
       "min_compatible": "0.22.3",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.24.0",
-      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.24.0 -->\n\n## What's Changed\n### Other Changes\n* feat(pr-reviewer): harvest hand-off agent reviews into the Reviews tab by @ianlintner in https://github.com/ianlintner/caretaker/pull/617\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.23.0...v0.24.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.24.0 -->\n\n## What's Changed\n### Other Changes\n* feat(pr-reviewer): harvest hand-off agent reviews into the Reviews tab by @ianlintner in https://github.com/ianlintner/caretaker/pull/617\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.23.0...v0.24.0"
+    },
+    {
+      "version": "0.23.0",
+      "min_compatible": "0.22.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.23.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.23.0 -->\n\n## What's Changed\n### Other Changes\n* fix(devops,upgrade): auto-close stale issues when underlying condition resolves by @ianlintner in https://github.com/ianlintner/caretaker/pull/608\n* fix(scope-gap): auto-close resolved issues when tracker is empty by @ianlintner in https://github.com/ianlintner/caretaker/pull/607\n* chore: add v0.22.3 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/606\n* feat(admin-ui): sortable grids + repo/version/severity/kind filters across dashboards by @ianlintner in https://github.com/ianlintner/caretaker/pull/609\n* fix(pr-agent): unblock readiness gate \u2014 bot approvals, terminal state, polling fallback by @ianlintner in https://github.com/ianlintner/caretaker/pull/610\n* feat(byoca): pluggable coding-agent registry + opencode hand-off by @ianlintner in https://github.com/ianlintner/caretaker/pull/613\n* feat(runs): streaming workflow \u2192 backend with GitHub OIDC + SSE by @ianlintner in https://github.com/ianlintner/caretaker/pull/615\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.22.3...v0.23.0",
       "breaking": false
     },
     {

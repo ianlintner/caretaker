@@ -778,7 +778,56 @@ class Orchestrator:
                     logger.warning("Failed to disconnect MCP client: %s", e)
 
         # Persist state (save also appends summary to history)
-        await self._state_tracker.save(summary)
+        try:
+            await self._state_tracker.save(summary)
+        except Exception as e:
+            logger.warning("Failed to save state: %s", e)
+
+        # Surface any token-scope gaps accrued during the run as a single
+        # tracking issue in the consumer repo. Deliberately runs *before*
+        # the fleet heartbeat so a failure here can't cascade and the
+        # issue writer can itself observe the cooldown state.
+        try:
+            from caretaker.github_client.scope_gap_reporter import (
+                publish_scope_gap_issue,
+            )
+
+            await publish_scope_gap_issue(
+                self._github,
+                self._owner,
+                self._repo,
+                dry_run=mode == "dry-run" or self._config.orchestrator.dry_run,
+            )
+        except Exception as e:  # pragma: no cover - defensive tail
+            logger.warning("Scope-gap issue writer failed: %s", e)
+
+        # Opt-in fleet-registry heartbeat. Fail-open: the emitter logs
+        # and swallows any error so a missing / misconfigured endpoint
+        # can never fail the orchestrator run.
+        if self._config.fleet_registry.enabled:
+            try:
+                from caretaker.fleet import emit_heartbeat
+
+                await emit_heartbeat(
+                    self._config,
+                    summary,
+                    oauth_cache=self._fleet_oauth_cache,
+                    state=self._state_tracker.state,
+                )
+            except Exception as e:
+                logger.warning("Fleet heartbeat failed: %s", e)
+
+        # Save memory store snapshot (for artifact upload / rollback)
+        if self._memory is not None:
+            self._memory.prune_expired()
+            snapshot_path = self._config.memory_store.snapshot_path
+            if snapshot_path:
+                try:
+                    with open(snapshot_path, "w", encoding="utf-8") as fh:
+                        fh.write(self._memory.snapshot_json())
+                    logger.info("Memory store snapshot written to %s", snapshot_path)
+                except Exception as e:
+                    logger.warning("Failed to write memory store snapshot: %s", e)
 
         # Surface any token-scope gaps accrued during the run as a single
         # tracking issue in the consumer repo. Deliberately runs *before*
