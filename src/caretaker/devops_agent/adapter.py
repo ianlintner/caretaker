@@ -53,9 +53,13 @@ class DevOpsAgentAdapter(BaseAgent):
         return AgentResult(
             processed=report.failures_detected,
             errors=report.errors,
-            extra={"issues_created": report.issues_created},
+            extra={
+                "issues_created": report.issues_created,
+                "pr_comments_posted": report.pr_comments_posted,
+            },
         )
 
     def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         summary.build_failures_detected = result.processed
         summary.build_fix_issues_created = len(result.extra.get("issues_created", []))
+        summary.build_fix_pr_comments_posted = len(result.extra.get("pr_comments_posted", []))

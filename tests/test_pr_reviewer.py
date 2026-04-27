@@ -487,3 +487,96 @@ async def test_execute_processes_opened_action() -> None:
     )
 
     assert result.processed >= 0  # dispatched or error — either way no crash
+
+
+# ── agent integration — handoff-review harvest short-circuit ──────────────
+
+
+@pytest.mark.asyncio
+async def test_execute_harvests_agent_review_and_skips_dispatch() -> None:
+    """When an agent has already replied with a structured review payload,
+    ``execute()`` should harvest it (post a formal Reviews-tab review +
+    apply the ``caretaker:reviewed`` label) and return WITHOUT running
+    the inline path or posting a new hand-off comment."""
+    from datetime import UTC, datetime
+
+    from caretaker.github_client.models import Comment as _Comment
+    from caretaker.github_client.models import User as _User
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.pr_reviewer.handoff_reviewer import REVIEW_RESULT_MARKER
+    from caretaker.state.models import OrchestratorState
+
+    agent_reply_body = (
+        "I reviewed the PR. Looks good.\n\n"
+        f"{REVIEW_RESULT_MARKER}\n"
+        "```caretaker-review\n"
+        '{"verdict": "COMMENT", "summary": "Solid.", "comments": []}\n'
+        "```\n"
+    )
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        trigger_actions=["opened", "synchronize"],
+        skip_draft=False,
+        skip_labels=["caretaker:reviewed"],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=True,
+        review_event="AUTO",
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+
+    mock_ctx.github = MagicMock()
+    mock_ctx.github.get_pr_comments = AsyncMock(
+        return_value=[
+            _Comment(
+                id=99,
+                user=_User(login="claude[bot]", id=1, type="Bot"),
+                body=agent_reply_body,
+                created_at=datetime(2026, 4, 26, tzinfo=UTC),
+            )
+        ]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+    # These should NOT be called once we short-circuit on harvest.
+    mock_ctx.github.list_pull_request_files = AsyncMock(return_value=[])
+    mock_ctx.github.upsert_issue_comment = AsyncMock()
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+    result = await agent.execute(
+        state=state,
+        event_payload={
+            "action": "synchronize",
+            "pull_request": {
+                "number": 99,
+                "title": "Test PR",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "abc123"},
+                "labels": [],
+            },
+        },
+    )
+
+    # Formal review posted (Reviews tab attribution).
+    mock_ctx.github.create_review.assert_awaited_once()
+    # ``caretaker:reviewed`` label applied so future cycles skip.
+    mock_ctx.github.add_labels.assert_awaited_once()
+    label_args = mock_ctx.github.add_labels.await_args.args
+    assert "caretaker:reviewed" in label_args[3]
+    # No second hand-off invitation posted on top.
+    mock_ctx.github.upsert_issue_comment.assert_not_awaited()
+    # No file fetch — harvest path short-circuits before routing.
+    mock_ctx.github.list_pull_request_files.assert_not_awaited()
+    # Tracking persisted with the consumed comment ID.
+    assert state.tracked_prs[99].consumed_handoff_review_comment_ids == [99]
+    # Agent result reports the harvest.
+    assert result.extra["harvested"] == [99]
+    assert result.processed == 1
