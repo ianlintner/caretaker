@@ -216,6 +216,28 @@ async def _handle_webhook(*, parsed: ParsedWebhook, dispatcher: WebhookDispatche
         mode=dispatcher.mode.value,
         outcome=f"bus_{result.outcome}",
     )
+
+    # Server-side fleet touch — keeps /api/admin/fleet live now that the
+    # v0.25.0 thin streaming workflow no longer runs ``caretaker run`` in
+    # consumer CI (so consumer-side ``emit_heartbeat`` never fires for any
+    # fleet repo anymore). Best-effort; failures never propagate.
+    if parsed.repository_full_name and result.outcome != "off":
+        try:
+            from caretaker.fleet import record_dispatch_activity
+
+            await record_dispatch_activity(
+                repo=parsed.repository_full_name,
+                event_type=parsed.event_type,
+                agents_fired=list(result.agents),
+                outcome=result.outcome,
+            )
+        except Exception:
+            logger.debug(
+                "fleet record_dispatch_activity failed for %s",
+                parsed.repository_full_name,
+                exc_info=True,
+            )
+
     if result.outcome == "error":
         raise RuntimeError(f"dispatch error: {result.detail or 'unknown'}")
 
