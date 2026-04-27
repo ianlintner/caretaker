@@ -313,6 +313,71 @@ def build_heartbeat(
     )
 
 
+async def record_dispatch_activity(
+    *,
+    repo: str,
+    event_type: str,
+    agents_fired: list[str] | None = None,
+    outcome: str = "success",
+) -> bool:
+    """Server-side fleet "touch" — write a minimal heartbeat to the local fleet store.
+
+    Bypasses the HTTP / OAuth2 emit-to-self loop that the consumer-side
+    ``emit_heartbeat`` uses; talks directly to the in-process
+    :func:`caretaker.fleet.store.get_store`. This is what keeps
+    ``/api/admin/fleet`` live now that the v0.25.0 thin streaming workflow
+    no longer runs ``caretaker run`` in consumer CI (so the legacy
+    consumer-side heartbeat never fires anymore).
+
+    Records a tiny payload — repo + caretaker version + event type +
+    agents fired + outcome — so the admin SPA's "last seen" / "active
+    fleet" view stays fresh without the heavyweight RunSummary block.
+    Each successful dispatch upserts the FleetClient row and appends one
+    bounded entry to the heartbeat history ring buffer (32 per repo).
+
+    Returns ``True`` on a successful write, ``False`` if the store
+    rejected the payload or raised. Fail-open by design: never raises
+    into the dispatcher.
+    """
+    if not repo or "/" not in repo:
+        return False
+
+    from caretaker.fleet.store import get_store
+
+    payload: dict[str, Any] = {
+        "repo": repo,
+        "caretaker_version": _caretaker_version(),
+        "run_at": datetime.now(UTC).isoformat(),
+        # ``mode`` field is part of the FleetHeartbeat schema; encode the
+        # webhook event there so the admin dashboard's "last activity"
+        # column carries useful context (e.g. ``webhook:pull_request``).
+        "mode": f"webhook:{event_type}" if event_type else "webhook",
+        "enabled_agents": list(agents_fired or []),
+        "goal_health": None,
+        # The dispatcher returns bounded outcome labels: "active",
+        # "active_partial", "shadow", "off", "no_agents", "error", and
+        # the "deferred_cooldown" / "dropped_overload" variants. Only
+        # "error" reflects a true dispatch failure. Match the bounded
+        # set explicitly rather than negating "success" (which the
+        # dispatcher never emits).
+        "error_count": 1 if outcome in {"error", "active_partial"} else 0,
+        "counters": {},
+        "summary": {"event_type": event_type, "outcome": outcome},
+    }
+    try:
+        store = get_store()
+        await store.record_heartbeat(payload)
+        return True
+    except Exception:
+        logger.warning(
+            "record_dispatch_activity failed for repo=%s event=%s",
+            repo,
+            event_type,
+            exc_info=True,
+        )
+        return False
+
+
 async def emit_heartbeat(
     config: MaintainerConfig,
     summary: RunSummary,

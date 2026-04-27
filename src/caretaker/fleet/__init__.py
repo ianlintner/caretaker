@@ -19,6 +19,7 @@ from caretaker.fleet.emitter import (
     FleetOAuthClientCache,
     build_heartbeat,
     emit_heartbeat,
+    record_dispatch_activity,
 )
 from caretaker.fleet.graph import (
     GraphBackedGlobalSkillReader,
@@ -79,6 +80,7 @@ __all__ = [
     "get_store",
     "promote_global_skills",
     "public_router",
+    "record_dispatch_activity",
     "reset_alert_store_for_tests",
     "reset_store_for_tests",
     "resolve_db_path",
