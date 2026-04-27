@@ -7,7 +7,7 @@ following the merge of PR [#621](https://github.com/ianlintner/caretaker/pull/62
 reconciliation scheduler) and PR [#620](https://github.com/ianlintner/caretaker/pull/620)
 (pr-reviewer two consumer bugs).
 
-Cycle followed [`.github/skills/caretaker-qa-cycle.md`](../.github/skills/caretaker-qa-cycle.md).
+Cycle followed [`.github/skills/caretaker-qa-cycle.md`](https://github.com/ianlintner/caretaker/blob/main/.github/skills/caretaker-qa-cycle.md).
 
 ## Release surface
 
@@ -69,7 +69,7 @@ Once a fleet repo is migrated to the thin streaming workflow (no `caretaker run`
 
 ### F-2. The `qa-cycle` skill's monitor recipe under-matches the GraphQL response shape — **MINOR DOC FIX**
 
-The example `gh api graphql … --jq` filter for `match("<!-- caretaker:…")` in [`.github/skills/caretaker-qa-cycle.md`](../.github/skills/caretaker-qa-cycle.md) is reliable when run against the REST `comments` endpoint but flaky against the GraphQL `pullRequest.comments.nodes[].body` field — the marker landed inside a fenced code block that contained another `<!--` literal in the issue body, and the regex needs `?:` around the trailing class to avoid an early bail. Affects only the example, not behavior.
+The example `gh api graphql … --jq` filter for `match("<!-- caretaker:…")` in [`.github/skills/caretaker-qa-cycle.md`](https://github.com/ianlintner/caretaker/blob/main/.github/skills/caretaker-qa-cycle.md) is reliable when run against the REST `comments` endpoint but flaky against the GraphQL `pullRequest.comments.nodes[].body` field — the marker landed inside a fenced code block that contained another `<!--` literal in the issue body, and the regex needs `?:` around the trailing class to avoid an early bail. Affects only the example, not behavior.
 
 **Recommendation:** prefer `gh pr view "$PR" --json comments --jq '.comments[].body'` in the documented snippet rather than the GraphQL form. Will land as a small follow-up to the skill.
 
