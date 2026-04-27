@@ -771,7 +771,7 @@ class MongoConfig(StrictBaseModel):
 
     Set the connection URL via the env var named in ``mongodb_url_env``.
 
-    Example .caretaker.yml::
+    Example ``.github/maintainer/config.yml``::
 
         mongo:
           enabled: true
@@ -803,7 +803,7 @@ class RedisConfig(StrictBaseModel):
     Upstash free tier: 10 K commands/day, 256 MB — plenty for webhook dedup
     and installation-token caching at hobby / small-team scale.
 
-    Example .caretaker.yml::
+    Example ``.github/maintainer/config.yml``::
 
         redis:
           enabled: true

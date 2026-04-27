@@ -1,11 +1,32 @@
 # .github/maintainer/config.yml
-# Dogfood — this repo uses caretaker on itself
+# Dogfood — this repo uses caretaker on itself.
+#
+# After PR #621 the active server-side dispatcher loads ONLY this file
+# (caretaker.github_app.context_factory._CONFIG_PATH). The previous
+# .caretaker.yml at the repo root is gone — its memory/mongo and
+# autonomy keys are inlined below. Single source of truth.
 version: v1
 
 orchestrator:
   schedule: hourly
   summary_issue: true
   dry_run: false
+
+# Persistent agent memory — Cosmos DB for MongoDB via the MONGODB_URL
+# secret in GitHub Actions / the backend deployment. Without these
+# blocks the active dispatcher would fall back to in-memory state and
+# every cross-run insight (causal-event chain, dedupe, intervention
+# detection) would reset on each pod restart.
+memory_store:
+  enabled: true
+  backend: mongo
+
+mongo:
+  enabled: true
+  mongodb_url_env: MONGODB_URL
+  database_name: caretaker
+  memory_collection: agent_memory
+  audit_collection: audit_log
 
 pr_agent:
   enabled: true
@@ -30,7 +51,22 @@ pr_agent:
     # When the repo-wide PR CI backlog guard trips, close caretaker-managed PRs
     # instead of asking Copilot to "fix" queue pressure.
     close_managed_prs_on_backlog: true
+  # Autonomous self-merge loop for caretaker-authored PRs.
+  # - gate_and_merge: caretaker/pr-readiness is a required check AND caretaker
+  #   merges directly when the PR turns green.
+  # - auto_approve_caretaker_prs: caretaker submits an APPROVE review on its own
+  #   PRs once CI is clean and no blocker findings exist, satisfying the
+  #   required-review gate without a human in the loop.
+  #
+  # These keys used to live in the now-removed .caretaker.yml at the repo
+  # root. The active server-side dispatcher loads only
+  # .github/maintainer/config.yml (see context_factory._CONFIG_PATH), so
+  # autonomy regressed silently after PR #621. Inlined here as the single
+  # source of truth.
+  merge_authority:
+    mode: gate_and_merge
   review:
+    auto_approve_caretaker_prs: true
     auto_approve_copilot: false
     nitpick_threshold: low
 
