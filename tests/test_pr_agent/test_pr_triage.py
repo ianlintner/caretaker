@@ -102,15 +102,57 @@ async def test_close_duplicate_fix_prs_by_cve() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_duplicate_fix_prs_package_bump() -> None:
-    # Survivor policy: oldest wins.
+async def test_close_duplicate_fix_prs_package_bump_prefers_higher_target() -> None:
+    """For pkg:* groups (upgrade PRs), the survivor is the one targeting the
+    higher version, not the older PR. F-6 regression — pre-fix this would have
+    closed #21 (target 9.0.3) in favor of #20 (target 9.0.2), stalling the
+    upgrade chain."""
     a = make_pr(number=20, created_at=datetime(2026, 1, 1, tzinfo=UTC))
     a.title = "Bump pytest from 8 to 9.0.2"
     b = make_pr(number=21, created_at=datetime(2026, 1, 2, tzinfo=UTC))
     b.title = "Bump pytest from 8 to 9.0.3"
     gh = _FakeGH()
     closed = await close_duplicate_fix_prs(gh, "o", "r", [a, b])
-    assert closed == [21]
+    assert closed == [20]
+    # Close comment references the survivor (the higher-target PR).
+    assert any("#21" in body for (_, body) in gh.comments)
+
+
+@pytest.mark.asyncio
+async def test_close_duplicate_fix_prs_upgrade_chain_f6_regression() -> None:
+    """F-6 from the 2026-04-27 QA cycle: a stale 2-day-old upgrade PR
+    targeting v0.19.4 silently closed every newer v0.25.0 bump caretaker
+    auto-opened. Pre-fix, oldest-wins-by-created_at made the stale PR the
+    survivor; post-fix, the highest-target survives even when older."""
+    stale = make_pr(number=39, created_at=datetime(2026, 4, 25, 22, tzinfo=UTC))
+    stale.title = "chore: upgrade caretaker pin from v0.19.3 to v0.19.4"
+    fresh = make_pr(number=70, created_at=datetime(2026, 4, 27, 15, tzinfo=UTC))
+    fresh.title = "chore: bump caretaker pin from v0.24.0 to v0.25.0"
+    gh = _FakeGH()
+    closed = await close_duplicate_fix_prs(gh, "o", "r", [stale, fresh])
+    # The stale v0.19.4 PR is closed; the fresh v0.25.0 PR survives.
+    assert closed == [39]
+    assert any("#70" in body for (_, body) in gh.comments)
+
+
+@pytest.mark.asyncio
+async def test_close_duplicate_fix_prs_pkg_dedup_is_input_order_stable() -> None:
+    """Reversing input order must not change the survivor for pkg:* groups
+    (same property as the CVE oldest-wins variant — different selector,
+    same invariant)."""
+    older = make_pr(number=100, created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    older.title = "chore: upgrade caretaker pin from v1.0.0 to v1.1.0"
+    middle = make_pr(number=101, created_at=datetime(2026, 1, 5, tzinfo=UTC))
+    middle.title = "chore: upgrade caretaker pin from v1.1.0 to v1.2.0"
+    newest = make_pr(number=102, created_at=datetime(2026, 1, 10, tzinfo=UTC))
+    newest.title = "chore: upgrade caretaker pin from v1.2.0 to v1.3.0"
+
+    for ordering in ([older, middle, newest], [newest, older, middle]):
+        gh = _FakeGH()
+        closed = await close_duplicate_fix_prs(gh, "o", "r", ordering)
+        # #102 has the highest target (v1.3.0) and survives in every input order.
+        assert sorted(closed) == [100, 101]
+        assert all("#102" in body for (_, body) in gh.comments)
 
 
 @pytest.mark.asyncio
