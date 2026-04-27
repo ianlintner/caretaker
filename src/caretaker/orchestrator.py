@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from caretaker import __version__
 from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
-from caretaker.config import MaintainerConfig
+from caretaker.config import ExecutorConfig, MaintainerConfig
 from caretaker.evolution.backends.factory import build_evolution_store
 from caretaker.evolution.crystallizer import SkillCrystallizer
 from caretaker.evolution.mutator import StrategyMutator
@@ -42,6 +42,7 @@ from caretaker.state.models import (
 from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
+    from caretaker.coding_agents.registry import CodingAgentRegistry
     from caretaker.evolution.insight_store import InsightStore
     from caretaker.goals.models import GoalEvaluation
     from caretaker.llm.claude import ClaudeClient
@@ -385,6 +386,8 @@ class Orchestrator:
             executor_cfg.provider == "copilot"
             and not executor_cfg.foundry.enabled
             and not executor_cfg.claude_code.enabled
+            and not executor_cfg.opencode.enabled
+            and not any(a.enabled for a in executor_cfg.agents.values())
         ):
             return None
 
@@ -423,28 +426,115 @@ class Orchestrator:
                     executor_cfg.foundry.allowed_task_types,
                 )
 
-        claude_code_executor = None
-        if executor_cfg.claude_code.enabled:
-            from caretaker.claude_code_executor import ClaudeCodeExecutor
-
-            claude_code_executor = ClaudeCodeExecutor(
-                github=github,
-                owner=owner,
-                repo=repo,
-                config=executor_cfg.claude_code,
-            )
-            logger.info(
-                "ClaudeCodeExecutor ready: trigger_label=%s mention=%s",
-                executor_cfg.claude_code.trigger_label,
-                executor_cfg.claude_code.mention,
-            )
+        registry = self._build_coding_agent_registry(
+            github=github, owner=owner, repo=repo, executor_cfg=executor_cfg
+        )
 
         return ExecutorDispatcher(
             config=executor_cfg,
             foundry_executor=foundry_executor,
             copilot_protocol=copilot_protocol,
-            claude_code_executor=claude_code_executor,
+            registry=registry,
         )
+
+    @staticmethod
+    def _build_coding_agent_registry(
+        *,
+        github: GitHubClient,
+        owner: str,
+        repo: str,
+        executor_cfg: ExecutorConfig,
+    ) -> CodingAgentRegistry:
+        """Construct the BYOCA registry from ``executor_cfg``.
+
+        Built-in hand-off agents (claude_code, opencode) are always
+        registered when their config block has ``enabled=True``. Extra
+        agents declared in ``executor_cfg.agents`` are registered as
+        ``HandoffAgent`` instances; non-handoff modes are reserved for
+        Phase 2/3 and a warning is logged today.
+        """
+        from caretaker.coding_agents import (
+            ClaudeCodeAgent,
+            CodingAgentRegistry,
+            HandoffAgent,
+            OpenCodeAgent,
+        )
+
+        registry = CodingAgentRegistry()
+        if executor_cfg.claude_code.enabled:
+            registry.register(
+                ClaudeCodeAgent(
+                    github=github, owner=owner, repo=repo, config=executor_cfg.claude_code
+                )
+            )
+            logger.info(
+                "ClaudeCodeAgent ready: trigger_label=%s mention=%s",
+                executor_cfg.claude_code.trigger_label,
+                executor_cfg.claude_code.mention,
+            )
+        if executor_cfg.opencode.enabled:
+            registry.register(
+                OpenCodeAgent(github=github, owner=owner, repo=repo, config=executor_cfg.opencode)
+            )
+            logger.info(
+                "OpenCodeAgent ready: trigger_label=%s mention=%s",
+                executor_cfg.opencode.trigger_label,
+                executor_cfg.opencode.mention,
+            )
+        # Extra registered agents (codex, gemini, hermes, …). These all
+        # share the generic HandoffAgent surface today; Phase 2 adds
+        # InlineSubprocessAgent and Phase 3 adds K8sJobAgent.
+        #
+        # Names are interpolated into HTML-comment markers
+        # (``<!-- caretaker:<name>-handoff -->``) and into the
+        # ``agent:<name>`` PR label. Anything outside the kebab/snake
+        # alphabet would either produce malformed markers (breaking the
+        # attempt-count detection) or labels GitHub rejects, so we
+        # validate up-front rather than register a broken agent.
+        import re
+
+        agent_name_pattern = re.compile(r"^[a-z][a-z0-9_-]*$")
+        for name, agent_cfg in executor_cfg.agents.items():
+            if not agent_cfg.enabled:
+                continue
+            if registry.has(name):
+                # The typed claude_code / opencode blocks already
+                # registered this name. Operator pasted the same name
+                # into ``agents`` — log once and keep the typed entry.
+                logger.warning(
+                    "executor.agents[%r] duplicates a typed config block; typed block wins",
+                    name,
+                )
+                continue
+            if not agent_name_pattern.match(name):
+                logger.warning(
+                    "executor.agents[%r] is not a valid agent name "
+                    "(must match ^[a-z][a-z0-9_-]*$); skipping registration",
+                    name,
+                )
+                continue
+            if agent_cfg.mode != "handoff":
+                logger.warning(
+                    "executor.agents[%r] mode=%r is not yet supported "
+                    "(only 'handoff' ships in Phase 1); skipping registration",
+                    name,
+                    agent_cfg.mode,
+                )
+                continue
+            extra = type(
+                f"_Custom{name.title().replace('_', '')}Agent",
+                (HandoffAgent,),
+                {
+                    "name": name,
+                    "marker": f"<!-- caretaker:{name}-handoff -->",
+                    "upstream_action_name": name,
+                    "default_trigger_label": name,
+                    "default_mention": f"@{name}",
+                },
+            )
+            registry.register(extra(github=github, owner=owner, repo=repo, config=agent_cfg))
+            logger.info("Registered custom hand-off agent: %s", name)
+        return registry
 
     @classmethod
     def from_config_path(cls, path: str) -> Orchestrator:

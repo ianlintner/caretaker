@@ -1,54 +1,26 @@
-"""Claude Code reviewer — slow path for complex PRs.
+"""Backward-compat shim — the generic dispatcher lives in ``handoff_reviewer``.
 
-Instead of running a review inline, this applies the configured trigger label
-and posts a structured ``@claude`` hand-off comment requesting a full code review.
-The ``anthropics/claude-code-action`` workflow picks that up asynchronously.
-
-This is intentionally thin: we delegate the hard work to the action so caretaker
-doesn't need to manage execution context or tool-loop budget for large diffs.
+Existing call sites that use ``await claude_code_reviewer.dispatch(...)``
+keep working through one deprecation window. New code should call
+:func:`caretaker.pr_reviewer.handoff_reviewer.dispatch` directly with an
+explicit ``backend`` argument so the same path serves Claude Code,
+opencode, and any future hand-off reviewer.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
+
+from caretaker.pr_reviewer.handoff_reviewer import (
+    CLAUDE_CODE_REVIEW_MARKER as _HANDOFF_MARKER,
+)
+from caretaker.pr_reviewer.handoff_reviewer import (
+    dispatch as _generic_dispatch,
+)
 
 if TYPE_CHECKING:
     from caretaker.config import PRReviewerConfig
     from caretaker.github_client.api import GitHubClient
-
-logger = logging.getLogger(__name__)
-
-_HANDOFF_MARKER = "<!-- caretaker:pr-reviewer-handoff -->"
-
-
-def _build_handoff_comment(
-    *,
-    mention: str,
-    pr_number: int,
-    owner: str,
-    repo: str,
-    routing_reason: str,
-) -> str:
-    lines = [
-        _HANDOFF_MARKER,
-        f"{mention} caretaker is requesting a full code review for this PR.",
-        "",
-        f"**Repo:** `{owner}/{repo}` · **PR:** #{pr_number}",
-        f"**Routing reason:** {routing_reason}",
-        "",
-        "Please review this pull request for:",
-        "- Correctness and logic errors",
-        "- Security vulnerabilities or unsafe patterns",
-        "- API contract and backward-compatibility concerns",
-        "- Test coverage gaps",
-        "- Any blocking issues before merge",
-        "",
-        "Post a review comment summary and inline comments where applicable.",
-        "",
-        "_Delegated by caretaker's PRReviewerAgent via ClaudeCodeExecutor hand-off._",
-    ]
-    return "\n".join(lines)
 
 
 async def dispatch(
@@ -60,56 +32,16 @@ async def dispatch(
     config: PRReviewerConfig,
     routing_reason: str,
 ) -> bool:
-    """Apply trigger label + post hand-off comment. Returns True on success."""
-    label = config.claude_code_label
-    mention = config.claude_code_mention
-
-    try:
-        await github.ensure_label(
-            owner, repo, label, color="7057ff", description="claude-code-action trigger"
-        )
-        await github.add_labels(owner, repo, pr_number, [label])
-    except Exception as exc:
-        logger.warning(
-            "pr-reviewer: failed to apply trigger label %r to %s/%s#%d: %s",
-            label,
-            owner,
-            repo,
-            pr_number,
-            exc,
-        )
-        return False
-
-    comment_body = _build_handoff_comment(
-        mention=mention,
-        pr_number=pr_number,
+    """Pin to the ``claude_code`` backend; preserved for legacy callers."""
+    return await _generic_dispatch(
+        backend="claude_code",
+        github=github,
         owner=owner,
         repo=repo,
+        pr_number=pr_number,
+        config=config,
         routing_reason=routing_reason,
     )
-    try:
-        await github.upsert_issue_comment(
-            owner,
-            repo,
-            pr_number,
-            marker=_HANDOFF_MARKER,
-            body=comment_body,
-        )
-    except Exception as exc:
-        logger.warning(
-            "pr-reviewer: failed to post hand-off comment on %s/%s#%d: %s",
-            owner,
-            repo,
-            pr_number,
-            exc,
-        )
-        return False
 
-    logger.info(
-        "pr-reviewer: claude-code hand-off dispatched for %s/%s#%d (%s)",
-        owner,
-        repo,
-        pr_number,
-        routing_reason,
-    )
-    return True
+
+__all__ = ["_HANDOFF_MARKER", "dispatch"]

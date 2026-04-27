@@ -33,9 +33,10 @@ from caretaker.evolution.executor_routing import (
     route_from_pr_reviewer_legacy,
 )
 from caretaker.evolution.shadow import shadow_decision
-from caretaker.pr_reviewer import claude_code_reviewer, inline_reviewer
+from caretaker.pr_reviewer import handoff_review_consumer, handoff_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
+from caretaker.state.models import TrackedPR
 
 if TYPE_CHECKING:
     from caretaker.state.models import OrchestratorState, RunSummary
@@ -64,6 +65,13 @@ class _PRReviewReport:
     dispatched: list[int] = field(default_factory=list)
     skipped: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # PR numbers where caretaker harvested a hand-off agent's structured
+    # review payload and re-posted it as a formal GitHub review (Reviews
+    # tab attribution). Distinct from ``reviewed`` (caretaker's own
+    # inline LLM review) and ``dispatched`` (initial hand-off comment
+    # posted) so the run summary can tell which channel produced the
+    # review.
+    harvested: list[int] = field(default_factory=list)
 
 
 class PRReviewerAgent(BaseAgent):
@@ -128,18 +136,19 @@ class PRReviewerAgent(BaseAgent):
             if not pr_number:
                 continue
             try:
-                await self._handle_pr(pr, report)
+                await self._handle_pr(pr, report, state=state)
             except Exception as exc:
                 err = f"pr-reviewer: unhandled error on #{pr_number}: {exc}"
                 logger.exception(err)
                 report.errors.append(err)
 
         return AgentResult(
-            processed=len(report.reviewed) + len(report.dispatched),
+            processed=len(report.reviewed) + len(report.dispatched) + len(report.harvested),
             errors=report.errors,
             extra={
                 "reviewed": report.reviewed,
                 "dispatched": report.dispatched,
+                "harvested": report.harvested,
                 "skipped": report.skipped,
             },
         )
@@ -148,6 +157,8 @@ class PRReviewerAgent(BaseAgent):
         self,
         pr: dict[str, Any],
         report: _PRReviewReport,
+        *,
+        state: OrchestratorState,
     ) -> None:
         cfg = self._ctx.config.pr_reviewer
         pr_number = int(pr.get("number", 0))
@@ -168,6 +179,52 @@ class PRReviewerAgent(BaseAgent):
             report.skipped.append(pr_number)
             return
 
+        # Harvest pass — if a hand-off agent (Claude Code, opencode)
+        # has replied with a ``caretaker-review`` JSON payload, re-post
+        # it as a formal PR review so it appears in the Reviews tab
+        # under caretaker's bot identity. Runs *before* the routing
+        # decision so a freshly-harvested review short-circuits both
+        # the inline LLM path and a duplicate hand-off dispatch.
+        commit_sha = (pr.get("head") or {}).get("sha", "")
+        if commit_sha:
+            tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
+            posted = await handoff_review_consumer.consume_handoff_reviews(
+                github=self._ctx.github,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                head_sha=commit_sha,
+                tracking=tracking,
+            )
+            # Persist tracking back so the consumed-IDs survive the run.
+            # This may be the first time pr_reviewer touches this PR's
+            # tracking; that's fine — pr_agent and pr_reviewer share the
+            # same dict.
+            state.tracked_prs[pr_number] = tracking
+            if posted > 0:
+                report.harvested.append(pr_number)
+                # Mark reviewed so future cycles skip both inline and
+                # hand-off paths. Best-effort — label-apply failure
+                # logs and continues so the harvest itself isn't lost.
+                try:
+                    reviewed_label = "caretaker:reviewed"
+                    await self._ctx.github.ensure_label(
+                        owner,
+                        repo,
+                        reviewed_label,
+                        color="0075ca",
+                        description="Reviewed by caretaker",
+                    )
+                    await self._ctx.github.add_labels(owner, repo, pr_number, [reviewed_label])
+                except Exception as exc:  # noqa: BLE001 — defensive
+                    logger.warning(
+                        "pr-reviewer: harvested review on #%d but "
+                        "failed to apply reviewed label: %s",
+                        pr_number,
+                        exc,
+                    )
+                return
+
         # Fetch file metadata for routing
         try:
             files = await self._ctx.github.list_pull_request_files(owner, repo, pr_number)
@@ -186,6 +243,7 @@ class PRReviewerAgent(BaseAgent):
             file_paths=file_paths,
             pr_labels=pr_labels,
             threshold=cfg.routing_threshold,
+            backend=cfg.complex_reviewer,
         )
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
 
@@ -270,8 +328,21 @@ class PRReviewerAgent(BaseAgent):
                     report.reviewed.append(pr_number)
                     return
 
-        # Claude-code hand-off path
-        success = await claude_code_reviewer.dispatch(
+        # Hand-off path — backend chosen by ``complex_reviewer`` (Claude
+        # Code, opencode, …). Falls back to claude_code if the configured
+        # backend isn't recognized so misconfiguration doesn't silently
+        # skip review entirely.
+        backend = decision.backend or cfg.complex_reviewer or "claude_code"
+        if backend not in handoff_reviewer.known_backends():
+            logger.warning(
+                "pr-reviewer: complex_reviewer=%r is not a known hand-off backend "
+                "(known: %s); falling back to claude_code",
+                backend,
+                ", ".join(handoff_reviewer.known_backends()),
+            )
+            backend = "claude_code"
+        success = await handoff_reviewer.dispatch(
+            backend=backend,
             github=self._ctx.github,
             owner=owner,
             repo=repo,
@@ -282,7 +353,7 @@ class PRReviewerAgent(BaseAgent):
         if success:
             report.dispatched.append(pr_number)
         else:
-            report.errors.append(f"claude-code dispatch failed for #{pr_number}")
+            report.errors.append(f"{backend} dispatch failed for #{pr_number}")
 
     async def _route_via_shadow(
         self,

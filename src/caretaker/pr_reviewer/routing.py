@@ -1,4 +1,4 @@
-"""Routing decider — score-based selection between inline LLM and claude-code hand-off.
+"""Routing decider — score-based selection between inline LLM and a hand-off reviewer.
 
 Score breakdown (0-100):
   - LOC bucket:        0-30 pts  (additions + deletions)
@@ -7,8 +7,12 @@ Score breakdown (0-100):
   - Architecture:      0-15 pts  (config changes, many packages touched)
   - Label signals:     0-10 pts  (operator-applied labels)
 
-Score >= threshold (default 40) → ClaudeCode hand-off (complex review).
+Score >= threshold (default 40) → hand-off backend (complex review).
 Score <  threshold              → inline LLM review  (fast path).
+
+The hand-off backend (``claude_code``, ``opencode``, …) is picked by the
+caller from :class:`PRReviewerConfig.complex_reviewer`; this module
+returns the ``inline``/``handoff`` decision and the chosen backend name.
 """
 
 from __future__ import annotations
@@ -40,6 +44,11 @@ class RoutingDecision:
     score: int
     use_inline: bool
     reason: str
+    # Hand-off backend to dispatch to when ``use_inline`` is False.
+    # Empty string means "the caller decides" — preserved for the inline
+    # path (where backend is irrelevant) and for backwards compatibility
+    # with existing test fixtures that don't care about the field.
+    backend: str = ""
 
 
 def decide(
@@ -50,6 +59,7 @@ def decide(
     file_paths: list[str],
     pr_labels: list[str],
     threshold: int = 40,
+    backend: str = "claude_code",
 ) -> RoutingDecision:
     """Return a routing decision for a PR."""
     score = 0
@@ -123,8 +133,10 @@ def decide(
     score = min(100, max(0, score))
     use_inline = score < threshold
     path_str = ", ".join(reasons) if reasons else "low-complexity"
+    chosen = "inline" if use_inline else backend
     return RoutingDecision(
         score=score,
         use_inline=use_inline,
-        reason=f"score={score} [{path_str}] → {'inline' if use_inline else 'claude-code'}",
+        reason=f"score={score} [{path_str}] → {chosen}",
+        backend="" if use_inline else backend,
     )
