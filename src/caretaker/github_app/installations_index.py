@@ -76,6 +76,11 @@ class InstallationsIndex:
         self._cache: list[FleetRepo] | None = None
         self._cache_expires_at: float = 0.0
         self._lock = asyncio.Lock()
+        # Single-flight: concurrent callers that race past the cache
+        # miss share one in-progress fetch task instead of all calling
+        # ``/app/installations`` independently. Cleared in the finally
+        # of the spawning fetch.
+        self._inflight: asyncio.Task[list[FleetRepo]] | None = None
 
     async def __aenter__(self) -> InstallationsIndex:
         if self._http_client is None:
@@ -90,16 +95,45 @@ class InstallationsIndex:
 
     async def list_repos(self, *, force_refresh: bool = False) -> list[FleetRepo]:
         now = time.monotonic()
+        # Acquire the lock for the cache check + single-flight handoff.
+        # We do NOT hold the lock across the actual fetch — that would
+        # serialise all callers unnecessarily. Instead we publish the
+        # in-flight fetch task and let waiters await it under no lock.
         async with self._lock:
             if not force_refresh and self._cache is not None and self._cache_expires_at > now:
                 return list(self._cache)
 
-        repos = await self._fetch_all()
+            if self._inflight is not None and not self._inflight.done():
+                inflight = self._inflight
+            else:
+                inflight = asyncio.create_task(self._do_fetch())
+                self._inflight = inflight
 
-        async with self._lock:
-            self._cache = list(repos)
-            self._cache_expires_at = time.monotonic() + self._ttl
-        return repos
+        try:
+            return await inflight
+        except Exception:
+            # Failed fetches are visible to every concurrent waiter so
+            # they all see the same error rather than a half-populated
+            # cache.
+            raise
+
+    async def _do_fetch(self) -> list[FleetRepo]:
+        """Run one fetch + cache update; clears the in-flight slot on exit."""
+        try:
+            repos = await self._fetch_all()
+            async with self._lock:
+                self._cache = list(repos)
+                self._cache_expires_at = time.monotonic() + self._ttl
+            return list(repos)
+        finally:
+            async with self._lock:
+                # Clear the slot so the next miss spawns a fresh fetch.
+                # Done check guards against a race where another caller
+                # already replaced the slot (shouldn't happen — only the
+                # spawning caller writes here under the lock — but the
+                # check makes that invariant explicit).
+                if self._inflight is not None and self._inflight.done():
+                    self._inflight = None
 
     async def _fetch_all(self) -> list[FleetRepo]:
         installations = await self._list_installations()

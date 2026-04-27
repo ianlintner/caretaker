@@ -1516,21 +1516,50 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Create a PR plus best-effort label / assignee attachment.
+
+        Label and assignee attachment are wrapped in their own
+        ``try/except``: the PR has already been created at that point
+        and we don't want a missing label (e.g. the consumer repo doesn't
+        have ``caretaker:bootstrap`` defined) or an invalid assignee to
+        bubble up as if PR creation itself had failed. Failures are
+        logged so the operator can investigate.
+        """
         data = await self._post(
             f"/repos/{owner}/{repo}/pulls",
             json={"title": title, "body": body, "head": head, "base": base},
         )
         pr_number = data["number"]
         if labels:
-            await self._post(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
-                json={"labels": labels},
-            )
+            try:
+                await self._post(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    json={"labels": labels},
+                )
+            except Exception:
+                logger.warning(
+                    "create_pull_request: failed to attach labels %s to %s/%s#%s",
+                    labels,
+                    owner,
+                    repo,
+                    pr_number,
+                    exc_info=True,
+                )
         if assignees:
-            await self._post(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
-                json={"assignees": assignees},
-            )
+            try:
+                await self._post(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
+                    json={"assignees": assignees},
+                )
+            except Exception:
+                logger.warning(
+                    "create_pull_request: failed to assign %s to %s/%s#%s",
+                    assignees,
+                    owner,
+                    repo,
+                    pr_number,
+                    exc_info=True,
+                )
         return cast("dict[str, Any]", data)
 
     async def delete_branch(self, owner: str, repo: str, branch: str) -> None:

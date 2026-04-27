@@ -12,7 +12,7 @@ from caretaker.eventbus.consumer import (
     start_webhook_consumer,
     webhook_event_payload,
 )
-from caretaker.eventbus.factory import build_event_bus
+from caretaker.eventbus.factory import build_event_bus, reset_event_bus, set_event_bus
 from caretaker.eventbus.local import LocalEventBus
 from caretaker.eventbus.redis_streams import RedisStreamsEventBus
 
@@ -26,7 +26,9 @@ __all__ = [
     "LocalEventBus",
     "RedisStreamsEventBus",
     "build_event_bus",
+    "reset_event_bus",
     "run_trigger_event_payload",
+    "set_event_bus",
     "start_webhook_consumer",
     "webhook_event_payload",
 ]

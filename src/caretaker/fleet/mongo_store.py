@@ -171,12 +171,33 @@ class MongoFleetRegistryStore:
     ) -> list[dict[str, Any]]:
         await self._ensure_indexes()
         db = await self._db()
-        cursor = db[_COL_HEARTBEATS].find({"repo": repo}).sort("_id", 1)
-        items: list[dict[str, Any]] = []
-        async for doc in cursor:
-            items.append(_strip_id(doc))
-        if limit is not None and limit >= 0:
-            items = items[-limit:]
+        # Push the limit + sort into MongoDB so we never read more than the
+        # caller asked for. Long-lived repos accumulate heartbeats faster
+        # than the trim job runs (especially during incident bursts), so a
+        # naive ``find(...).sort(asc)`` would OOM the backend pod under
+        # adversarial conditions. We sort descending + limit, then reverse
+        # the small in-memory list to preserve the legacy oldest-first
+        # contract callers depend on.
+        if limit is not None and limit > 0:
+            cursor = db[_COL_HEARTBEATS].find({"repo": repo}).sort("_id", -1).limit(limit)
+            items: list[dict[str, Any]] = []
+            async for doc in cursor:
+                items.append(_strip_id(doc))
+            items.reverse()
+            return items
+
+        # Unbounded mode — kept for parity with the in-memory store, which
+        # returns the full ring buffer. Hard-cap at ``_HEARTBEAT_HISTORY_MAXLEN``
+        # so a misuse can't OOM the receiver: by construction we never
+        # persist more than that per repo anyway.
+        cursor = (
+            db[_COL_HEARTBEATS]
+            .find({"repo": repo})
+            .sort("_id", -1)
+            .limit(_HEARTBEAT_HISTORY_MAXLEN)
+        )
+        items = [_strip_id(doc) async for doc in cursor]
+        items.reverse()
         return items
 
     async def list_clients(self) -> list[FleetClient]:
@@ -204,6 +225,19 @@ class MongoFleetRegistryStore:
         return await db[_COL_CLIENTS].count_documents({})
 
     async def stale_clients(self, *, threshold: timedelta) -> list[FleetClient]:
+        """Return clients whose last heartbeat is older than ``threshold``.
+
+        ``last_seen`` is persisted as an ISO-8601 UTC string (matching
+        the rest of caretaker's Mongo schema for cross-collection
+        readability via Compass / mongoexport). String comparison is
+        correct here because every writer goes through
+        :func:`_client_to_doc`, which always emits the canonical
+        ``YYYY-MM-DDTHH:MM:SS+00:00`` form. The downside is that this
+        query cannot leverage a datetime index — fleet size at our
+        scale (tens of repos) makes that fine, but if the fleet grows
+        past low thousands we should revisit storing ``last_seen`` as
+        a native BSON ``Date`` and add a sparse index on it.
+        """
         await self._ensure_indexes()
         cutoff = datetime.now(UTC) - threshold
         db = await self._db()

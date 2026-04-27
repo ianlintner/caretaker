@@ -174,7 +174,7 @@ def start_webhook_consumer(
         )
 
         if kind == _PAYLOAD_KIND_RUN_TRIGGER:
-            await _handle_run_trigger(event=event, parsed=parsed, dispatcher=dispatcher)
+            await _handle_run_trigger(event=event, parsed=parsed, dispatcher=dispatcher, bus=bus)
         else:
             await _handle_webhook(parsed=parsed, dispatcher=dispatcher)
 
@@ -225,11 +225,15 @@ async def _handle_run_trigger(
     event: Event,
     parsed: ParsedWebhook,
     dispatcher: WebhookDispatcher,
+    bus: EventBus,
 ) -> None:
     """Run-trigger flavour: same dispatch, plus run-scoped log streaming + terminal status.
 
     Imports the runs subsystem lazily so the consumer remains importable
     in non-runs contexts (tests, slim deployments).
+
+    ``bus`` is reused (not rebuilt) for the failure-path self-heal
+    publish to avoid leaking a fresh Redis connection pool per failure.
     """
     from caretaker.runs.dispatch import _current_run_id, _current_seq
     from caretaker.runs.models import RunStatus
@@ -277,16 +281,17 @@ async def _handle_run_trigger(
             logger.warning(
                 "run_trigger failed-status persistence failed run_id=%s", run_id, exc_info=True
             )
-        # Fire a self-heal trigger via the bus so the self-heal agent
-        # picks up the failure through the standard dispatcher path.
+        # Fire a self-heal trigger via the same bus instance so the
+        # self-heal agent picks up the failure through the standard
+        # dispatcher path. Reusing the bus avoids leaking a fresh Redis
+        # connection pool per failed run.
         try:
-            from caretaker.eventbus.factory import build_event_bus
             from caretaker.runs.self_heal_trigger import publish_self_heal_trigger
 
             terminal = await store.get_run(run_id)
             if terminal is not None:
                 await publish_self_heal_trigger(
-                    bus=build_event_bus(),
+                    bus=bus,
                     record=terminal,
                     exit_code=1,
                     summary={"error": str(exc)[:500]},
@@ -314,22 +319,15 @@ async def _handle_run_trigger(
 async def _emit_run_terminal(*, store: Any, run_id: str, status: str, exit_code: int) -> None:
     """Append a system-level terminal log line for the run.
 
-    Mirrors :func:`caretaker.runs.dispatch._emit_terminal` so the SSE
-    consumer always sees the same closing marker regardless of which
-    code path drove the run.
+    Delegates to :func:`caretaker.runs.dispatch._emit_terminal` so the
+    bus path and the legacy in-process fallback both emit the exact
+    same wire-level event (``LogStream.SYSTEM`` + ``status`` /
+    ``exit_code`` tags). SSE consumers see one shape for the closing
+    marker regardless of which code path drove the run.
     """
-    from caretaker.runs.models import LogEntry, LogStream
+    from caretaker.runs.dispatch import _emit_terminal
 
-    rec = await store.get_run(run_id)
-    next_seq = (rec.last_seq if rec else 0) + 1
-    entry = LogEntry(
-        seq=next_seq,
-        ts=datetime.now(UTC),
-        stream=LogStream.STDERR if exit_code else LogStream.STDOUT,
-        data=f"backend dispatch finished status={status} exit_code={exit_code}",
-        tags={"system": "true", "kind": "terminal"},
-    )
-    await store.append_log(run_id, entry)
+    await _emit_terminal(store, run_id, status, exit_code)
 
 
 async def _reaper_loop(

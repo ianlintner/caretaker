@@ -471,6 +471,10 @@ async def finish_run(
     # picks up the failure via the same dispatcher path as a real
     # GitHub workflow_run webhook. Best-effort; bus failure does not
     # affect the finish response. Skipped on success.
+    #
+    # ``build_event_bus()`` returns a process-wide singleton, so this
+    # reuses the same Redis connection pool the lifespan-spawned
+    # consumer task is already using — no per-call pool creation.
     if new_status is RunStatus.FAILED:
         try:
             from caretaker.eventbus import build_event_bus

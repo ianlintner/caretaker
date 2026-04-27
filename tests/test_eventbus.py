@@ -13,9 +13,22 @@ import contextlib
 
 import pytest
 
-from caretaker.eventbus import LocalEventBus, build_event_bus, webhook_event_payload
+from caretaker.eventbus import (
+    LocalEventBus,
+    build_event_bus,
+    reset_event_bus,
+    webhook_event_payload,
+)
 from caretaker.eventbus.local import LocalEventBus as _LocalEventBus
 from caretaker.github_app.webhooks import ParsedWebhook
+
+
+@pytest.fixture(autouse=True)
+def _clear_event_bus_singleton() -> None:
+    """Drop the module-level event-bus singleton between tests."""
+    reset_event_bus()
+    yield
+    reset_event_bus()
 
 
 @pytest.mark.asyncio

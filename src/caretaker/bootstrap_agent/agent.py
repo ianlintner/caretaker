@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -43,29 +44,75 @@ _BACKEND_URL_VAR = "CARETAKER_BACKEND_URL"
 _OIDC_AUDIENCE_VAR = "CARETAKER_OIDC_AUDIENCE"
 
 
+class TemplateNotFoundError(RuntimeError):
+    """Raised when a bootstrap template file cannot be located.
+
+    Distinct from a generic ``RuntimeError`` so callers can distinguish
+    "template missing" (a deployment-shape problem — e.g. installed
+    non-editable in a Docker image where ``setup-templates/`` is not
+    bundled) from a transient I/O failure.
+    """
+
+
+def _candidate_template_roots() -> list[Path]:
+    """Return possible locations for the in-tree ``setup-templates/templates`` dir.
+
+    1. ``parents[3]`` — editable / source-checkout install
+       (``src/caretaker/bootstrap_agent/agent.py`` → repo root).
+    2. ``parents[2]`` — when the package is installed at
+       ``site-packages/caretaker/bootstrap_agent/agent.py``, ``parents[2]``
+       is ``site-packages/`` itself; in that layout we expect the
+       templates to be installed alongside via ``package_data``. The
+       ``pyproject.toml`` MANIFEST should ship them as
+       ``caretaker/_setup_templates/`` (not yet wired — fail loud below
+       so the gap is visible rather than silent-blank-file in production).
+    3. ``CARETAKER_BOOTSTRAP_TEMPLATES_DIR`` env override for operators
+       who want to point the agent at a vendored template dir.
+    """
+    here = Path(__file__).resolve()
+    roots: list[Path] = []
+    env_override = os.environ.get("CARETAKER_BOOTSTRAP_TEMPLATES_DIR", "").strip()
+    if env_override:
+        roots.append(Path(env_override))
+    # Source checkout: caretaker/.../agent.py → parents[3] is repo root
+    roots.append(here.parents[3] / "setup-templates" / "templates")
+    # Installed alongside the package (future-proofing for package_data shipping)
+    roots.append(here.parents[1] / "_setup_templates")
+    return roots
+
+
+_TEMPLATE_PATHS = {
+    ".github/workflows/maintainer.yml": ("workflows", "maintainer.yml"),
+    ".github/maintainer/config.yml": ("config-default.yml",),
+    ".github/agents/maintainer-pr.md": ("agents", "maintainer-pr.md"),
+    ".github/agents/maintainer-issue.md": ("agents", "maintainer-issue.md"),
+    ".github/agents/maintainer-upgrade.md": ("agents", "maintainer-upgrade.md"),
+}
+
+
 def _file_template(path: str) -> str:
     """Return the canonical contents the bootstrap PR commits at ``path``.
 
-    The file content is loaded lazily from the in-tree
-    ``setup-templates/templates/`` tree so a single source of truth
-    serves both the human-readable docs and the auto-bootstrap flow.
+    Raises :class:`TemplateNotFoundError` when the template cannot be
+    located in any candidate directory. We deliberately do *not* fall
+    back to an empty string: a bootstrap PR with blank workflow YAML is
+    worse than no PR at all — operators can't tell the bootstrap
+    failed if the PR appears to succeed with empty files.
     """
-    from pathlib import Path
-
-    # ``setup-templates/`` is a sibling of ``src/`` at the repo root.
-    repo_root = Path(__file__).resolve().parents[3]
-    template_root = repo_root / "setup-templates" / "templates"
-    candidates = {
-        ".github/workflows/maintainer.yml": template_root / "workflows" / "maintainer.yml",
-        ".github/maintainer/config.yml": template_root / "config-default.yml",
-        ".github/agents/maintainer-pr.md": template_root / "agents" / "maintainer-pr.md",
-        ".github/agents/maintainer-issue.md": template_root / "agents" / "maintainer-issue.md",
-        ".github/agents/maintainer-upgrade.md": template_root / "agents" / "maintainer-upgrade.md",
-    }
-    src = candidates.get(path)
-    if src is None or not src.is_file():
-        return ""
-    return src.read_text()
+    rel_parts = _TEMPLATE_PATHS.get(path)
+    if rel_parts is None:
+        raise TemplateNotFoundError(f"unknown bootstrap template: {path!r}")
+    tried: list[str] = []
+    for root in _candidate_template_roots():
+        candidate = root.joinpath(*rel_parts)
+        tried.append(str(candidate))
+        if candidate.is_file():
+            return candidate.read_text()
+    raise TemplateNotFoundError(
+        f"bootstrap template not found for {path!r}; looked at: {tried}. "
+        "Set CARETAKER_BOOTSTRAP_TEMPLATES_DIR to an explicit path if running "
+        "from a non-source install."
+    )
 
 
 def _copilot_instructions_append() -> str:
@@ -237,6 +284,15 @@ class BootstrapAgent:
             logger.info("bootstrap dry-run: would scaffold %s/%s", owner, repo)
             return outcome
 
+        # Resolve all templates BEFORE we touch the consumer repo. A
+        # missing template should fail loud and leave no half-bootstrapped
+        # state behind (no orphan branch, no PR with blank workflow YAML).
+        try:
+            files_to_commit = self._files_to_commit()
+        except TemplateNotFoundError:
+            logger.exception("bootstrap aborted for %s/%s: template lookup failed", owner, repo)
+            raise
+
         # Resolve default branch + head SHA.
         default_branch = await self._default_branch(owner, repo)
         head_sha = await self._github.get_default_branch_sha(owner, repo, default_branch)
@@ -251,8 +307,7 @@ class BootstrapAgent:
                 logger.warning("bootstrap branch create failed %s/%s: %s", owner, repo, exc)
 
         # Commit the bootstrap files. Each call commits a single file.
-        files = self._files_to_commit()
-        for path, content in files:
+        for path, content in files_to_commit:
             await self._github.create_or_update_file(
                 owner=owner,
                 repo=repo,
@@ -283,19 +338,20 @@ class BootstrapAgent:
         return getattr(info, "default_branch", "main") or "main"
 
     def _files_to_commit(self) -> list[tuple[str, str]]:
-        wf = ".github/workflows/maintainer.yml"
-        cfg = ".github/maintainer/config.yml"
-        agent_pr = ".github/agents/maintainer-pr.md"
-        agent_issue = ".github/agents/maintainer-issue.md"
-        agent_up = ".github/agents/maintainer-upgrade.md"
-        return [
+        """Resolve every template the bootstrap PR will commit.
+
+        Raises :class:`TemplateNotFoundError` if any template is missing
+        — we'd rather fail the bootstrap loudly than open a PR with
+        blank workflow files. A failure here surfaces in the run log /
+        admin SPA via the agent's error envelope.
+        """
+        templated_paths = list(_TEMPLATE_PATHS.keys())
+        files: list[tuple[str, str]] = [
             (".github/maintainer/.version", f"{self._version}\n"),
-            (wf, _file_template(wf)),
-            (cfg, _file_template(cfg)),
-            (agent_pr, _file_template(agent_pr)),
-            (agent_issue, _file_template(agent_issue)),
-            (agent_up, _file_template(agent_up)),
         ]
+        for path in templated_paths:
+            files.append((path, _file_template(path)))
+        return files
 
     async def _upsert_copilot_instructions(self, owner: str, repo: str) -> None:
         path = ".github/copilot-instructions.md"

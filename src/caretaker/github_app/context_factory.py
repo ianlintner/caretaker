@@ -54,10 +54,11 @@ _DEFAULT_LRU_CAPACITY = 256  # in-process fallback
 class _ConfigCache:
     """Two-tier cache: Redis-shared with in-process LRU fallback.
 
-    The two tiers are deliberately not stacked (no read-through). On a
-    miss, the loader is invoked exactly once thanks to a per-key
-    ``asyncio.Lock`` so concurrent webhooks for the same repo collapse
-    to a single Contents API call.
+    The two tiers are deliberately not stacked (no read-through). Concurrent
+    webhooks for the same ``(owner, repo)`` collapse to a single Contents
+    API call via :meth:`acquire_key_lock`, which the factory's
+    ``_load_config`` holds across the cache miss → fetch → cache set
+    transition.
     """
 
     def __init__(
@@ -75,7 +76,11 @@ class _ConfigCache:
         self._key_prefix = key_prefix
         self._client: redis.asyncio.Redis[str] | None = None
         self._connect_lock = asyncio.Lock()
-        self._key_locks: dict[str, asyncio.Lock] = {}
+        # Bounded per-key locks to collapse concurrent fetches for the
+        # same repo onto a single API call. Capped at ``lru_capacity`` so
+        # the dict cannot grow unboundedly under adversarial traffic.
+        self._key_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+        self._key_locks_meta_lock = asyncio.Lock()
 
     async def _redis(self) -> redis.asyncio.Redis[str] | None:
         if not self._redis_url:
@@ -104,11 +109,36 @@ class _ConfigCache:
     def _key(self, owner: str, repo: str) -> str:
         return f"{self._key_prefix}{owner}/{repo}"
 
-    def _key_lock(self, key: str) -> asyncio.Lock:
-        lock = self._key_locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._key_locks[key] = lock
+    async def acquire_key_lock(self, owner: str, repo: str) -> asyncio.Lock:
+        """Return the per-(owner, repo) lock, creating it if absent.
+
+        Caller is expected to ``async with`` the returned lock. The dict
+        is bounded at ``lru_capacity`` entries; the oldest unlocked entry
+        is evicted when the cap is hit. Currently-held locks are never
+        evicted, which means evictions that would have to break a held
+        lock are skipped — operational implication: if every slot is
+        held the dict grows briefly above the cap until contention clears.
+        That is preferable to the alternative (deadlock or losing the
+        single-flight guarantee).
+        """
+        key = self._key(owner, repo)
+        async with self._key_locks_meta_lock:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._key_locks[key] = lock
+            # Touch + evict oldest unlocked.
+            self._key_locks.move_to_end(key)
+            while len(self._key_locks) > self._lru_capacity:
+                # Find the first unlocked entry from the front and pop it.
+                for old_key, old_lock in list(self._key_locks.items()):
+                    if old_key == key:
+                        continue
+                    if not old_lock.locked():
+                        self._key_locks.pop(old_key, None)
+                        break
+                else:
+                    break
         return lock
 
     async def get(self, owner: str, repo: str) -> dict[str, Any] | None:
@@ -262,41 +292,57 @@ class GitHubAppContextFactory:
         :class:`MaintainerConfig`, so schema migrations do not require a
         cache flush — every read re-validates against the current Pydantic
         model.
+
+        Concurrent webhooks for the same ``(owner, repo)`` collapse onto
+        a single Contents API call via the per-key lock. The lock is
+        held across miss → fetch → cache-set so a second waiter wakes
+        up to a populated cache rather than racing into its own fetch.
         """
+        # Fast path: cache hit, no lock needed.
         cached = await self._cache.get(owner, repo)
         if cached is not None:
             try:
                 return MaintainerConfig.model_validate(cached)
             except Exception:
-                # Schema drift between cached and current config model.
-                # Drop the entry and re-fetch.
                 logger.info("config cache: validation failed for %s/%s; invalidating", owner, repo)
                 await self._cache.invalidate(owner, repo)
 
-        try:
-            raw = await client.get_file_contents(owner, repo, _CONFIG_PATH)
-            if raw is None:
-                logger.debug(
-                    "no maintainer config at %s in %s/%s; using defaults",
-                    _CONFIG_PATH,
+        # Miss path: serialise concurrent fetchers behind the per-key lock.
+        key_lock = await self._cache.acquire_key_lock(owner, repo)
+        async with key_lock:
+            # Re-check under the lock — a sibling fetcher may have populated
+            # while we were queued.
+            cached = await self._cache.get(owner, repo)
+            if cached is not None:
+                try:
+                    return MaintainerConfig.model_validate(cached)
+                except Exception:
+                    await self._cache.invalidate(owner, repo)
+
+            try:
+                raw = await client.get_file_contents(owner, repo, _CONFIG_PATH)
+                if raw is None:
+                    logger.debug(
+                        "no maintainer config at %s in %s/%s; using defaults",
+                        _CONFIG_PATH,
+                        owner,
+                        repo,
+                    )
+                    return self._default_config
+
+                content_b64: str = raw.get("content", "")
+                content_bytes = base64.b64decode(content_b64.replace("\n", ""))
+                data = yaml.safe_load(content_bytes.decode()) or {}
+                config = MaintainerConfig.model_validate(data)
+                await self._cache.set(owner, repo, data)
+                return config
+            except Exception:
+                logger.warning(
+                    "failed to load maintainer config from %s/%s; using defaults",
                     owner,
                     repo,
+                    exc_info=True,
                 )
-                return self._default_config
-
-            content_b64: str = raw.get("content", "")
-            content_bytes = base64.b64decode(content_b64.replace("\n", ""))
-            data = yaml.safe_load(content_bytes.decode()) or {}
-            config = MaintainerConfig.model_validate(data)
-            await self._cache.set(owner, repo, data)
-            return config
-        except Exception:
-            logger.warning(
-                "failed to load maintainer config from %s/%s; using defaults",
-                owner,
-                repo,
-                exc_info=True,
-            )
             return self._default_config
 
 
