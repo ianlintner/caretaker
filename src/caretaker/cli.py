@@ -1323,5 +1323,97 @@ def _post_heartbeat_manual(registry: Any, heartbeat: Any) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# `caretaker stream` — thin GitHub Actions shipper.
+#
+# Mints an OIDC JWT, registers a run on the backend, asks the backend to
+# execute caretaker, and tails the resulting log stream so the Actions log
+# shows live output. No PAT, no LLM keys, no checkout required on the
+# runner — the backend (which has the GitHub App installation token and
+# the LLM credentials) does everything.
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--mode",
+    type=click.Choice([m.value for m in RunMode]),
+    default=RunMode.FULL.value,
+    show_default=True,
+    help="Run mode the backend should execute on this run",
+)
+@click.option(
+    "--event-type",
+    default=None,
+    help="GitHub event type (pull_request, issues, schedule, …)",
+)
+@click.option(
+    "--event-payload-file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to a JSON file containing the GitHub event payload (e.g. $GITHUB_EVENT_PATH)",
+)
+@click.option(
+    "--no-tail",
+    is_flag=True,
+    default=False,
+    help="Trigger the backend run and exit without tailing logs",
+)
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable DEBUG logging on the shipper itself (does not affect backend logs).",
+)
+def stream(
+    mode: str,
+    event_type: str | None,
+    event_payload_file: str | None,
+    no_tail: bool,
+    debug: bool,
+) -> None:
+    """Stream a backend-executed caretaker run to this GitHub Actions log.
+
+    Reads CARETAKER_BACKEND_URL from the environment and authenticates via
+    the runner's GitHub Actions OIDC token. Requires
+    ``permissions: id-token: write`` on the calling workflow job.
+    """
+    _configure_logging(log_file=None, debug=debug)
+
+    from caretaker.runs import shipper as runs_shipper
+
+    payload: dict[str, Any] = {}
+    if event_payload_file:
+        try:
+            payload = json.loads(Path(event_payload_file).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            click.echo(f"failed to read --event-payload-file: {exc}", err=True)
+            sys.exit(2)
+
+    # Auto-discover the GitHub event payload from $GITHUB_EVENT_PATH when the
+    # caller did not pass --event-payload-file. This lets the workflow YAML
+    # stay free of explicit payload wiring.
+    if not payload:
+        env_payload = os.environ.get("GITHUB_EVENT_PATH", "").strip()
+        if env_payload and Path(env_payload).is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                payload = json.loads(Path(env_payload).read_text())
+
+    if event_type is None:
+        env_event = os.environ.get("GITHUB_EVENT_NAME", "").strip()
+        if env_event:
+            event_type = env_event
+
+    exit_code = asyncio.run(
+        runs_shipper.run(
+            mode=mode,
+            tail=not no_tail,
+            event_type=event_type,
+            event_payload=payload,
+        )
+    )
+    sys.exit(exit_code)
+
+
 if __name__ == "__main__":
     main()

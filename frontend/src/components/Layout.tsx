@@ -24,6 +24,7 @@ const NAV = [
   { to: '/prs', label: 'Pull Requests', icon: GitPullRequest },
   { to: '/issues', label: 'Issues', icon: CircleDot },
   { to: '/runs', label: 'Runs', icon: History },
+  { to: '/streams', label: 'Live Streams', icon: Activity },
   { to: '/memory', label: 'Memory', icon: Brain },
   { to: '/skills', label: 'Skills', icon: Sparkles },
   { to: '/agents', label: 'Agents', icon: Users },
