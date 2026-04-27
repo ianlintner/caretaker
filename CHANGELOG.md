@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`caretaker/pr-readiness` no longer dangles in `in_progress` after
+  caretaker escalates a PR.** The check now transitions to a terminal
+  conclusion as soon as the PR enters the escalated state — `neutral`
+  in advisory mode (the default; informational only) or `failure` in
+  gate modes (still blocks branch protection). `conclusion == "success"`
+  still wins so a human approval after escalation correctly flips the
+  check back to success rather than locking it at terminal-neutral.
+  Motivating incident: PR #613, where caretaker scored the PR at 30%
+  immediately after open (before CI had started), escalated within
+  45s, and the check stayed `in_progress` indefinitely even after CI
+  passed and a Claude review posted.
+
 BYOCA — Bring Your Own Coding Agent. Generalises the existing Claude Code
 hand-off path into a pluggable registry so opencode (and future agents
 like codex, gemini, hermes) can coexist with Claude Code as first-class
