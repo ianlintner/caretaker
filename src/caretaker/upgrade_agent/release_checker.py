@@ -1,17 +1,23 @@
-"""Release checker — polls the central releases manifest."""
+"""Release checker — polls GitHub Releases API for the latest caretaker release."""
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-RELEASES_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/releases.json"
-DEFAULT_OWNER = "caretaker"
+GITHUB_RELEASES_API = "https://api.github.com/repos/{owner}/{repo}/releases"
+DEFAULT_OWNER = "ianlintner"
 DEFAULT_REPO = "caretaker"
+
+# Detect breaking-change markers in release body text.
+_BREAKING_RE = re.compile(r"\bbreaking\b", re.IGNORECASE)
+# Parse optional "min-compatible: x.y.z" annotation from release body.
+_MIN_COMPAT_RE = re.compile(r"min[_-]compatible:\s*([\d.]+)", re.IGNORECASE)
 
 
 @dataclass
@@ -27,33 +33,48 @@ async def fetch_releases(
     owner: str = DEFAULT_OWNER,
     repo: str = DEFAULT_REPO,
 ) -> list[Release]:
-    """Fetch the releases manifest from the central repo."""
-    url = RELEASES_URL.format(owner=owner, repo=repo)
+    """Fetch releases from the GitHub Releases API.
+
+    Draft and pre-release entries are skipped.
+    """
+    url = GITHUB_RELEASES_API.format(owner=owner, repo=repo)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            resp = await client.get(url)
+            resp = await client.get(
+                url,
+                headers={"Accept": "application/vnd.github+json"},
+            )
             resp.raise_for_status()
-            data = resp.json()
+            data: list[dict[str, object]] = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("Failed to fetch releases from %s: %s", url, exc)
+            logger.warning("Failed to fetch GitHub releases from %s: %s", url, exc)
             return []
 
-    releases = []
-    for entry in data.get("releases", []):
+    releases: list[Release] = []
+    for entry in data:
+        if entry.get("draft") or entry.get("prerelease"):
+            continue
+        tag = str(entry.get("tag_name", ""))
+        version = tag.lstrip("v")
+        if not version:
+            continue
+        body = str(entry.get("body") or "")
+        min_compat_match = _MIN_COMPAT_RE.search(body)
+        min_compatible = min_compat_match.group(1) if min_compat_match else version
         releases.append(
             Release(
-                version=entry["version"],
-                min_compatible=entry.get("min_compatible", entry["version"]),
-                changelog_url=entry.get("changelog_url", ""),
-                upgrade_notes=entry.get("upgrade_notes"),
-                breaking=entry.get("breaking", False),
+                version=version,
+                min_compatible=min_compatible,
+                changelog_url=str(entry.get("html_url", "")),
+                upgrade_notes=body if body else None,
+                breaking=bool(_BREAKING_RE.search(body)),
             )
         )
     return releases
 
 
 def needs_upgrade(current_version: str, latest: Release) -> bool:
-    """Check if the current version is behind the latest release."""
+    """Return ``True`` if *current_version* is older than *latest*."""
     from packaging.version import InvalidVersion, Version
 
     try:

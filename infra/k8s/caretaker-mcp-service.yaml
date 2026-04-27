@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: caretaker-mcp
+  labels:
+    app: caretaker-mcp
+    app.kubernetes.io/name: caretaker-mcp
+    app.kubernetes.io/instance: caretaker-mcp
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: caretaker
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    # Prometheus scrape config (paved-path SKILL §1). Prom's
+    # kubernetes_sd_configs pod/endpoint scraper keys off these
+    # annotations; keep them on the Service so the metrics port is
+    # discovered regardless of Deployment rollout churn.
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  - port: 9090
+    targetPort: 9090
+    protocol: TCP
+    name: metrics
+  selector:
+    app: caretaker-mcp

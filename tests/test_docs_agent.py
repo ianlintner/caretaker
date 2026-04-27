@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,8 +13,11 @@ from caretaker.docs_agent.agent import (
     DOCS_AGENT_MARKER,
     DocsAgent,
     _build_changelog_entry,
+    _build_copilot_review_comment,
     _clean_title,
+    _prepend_changelog_entry,
 )
+from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PullRequest, User
 
 
@@ -73,6 +78,38 @@ class TestCleanTitle:
         assert _clean_title("chore: bump version") == "bump version"
 
 
+class TestPrependChangelogEntry:
+    def test_first_entry_into_empty_file_ends_in_single_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(1, "feat: x")])
+        result = _prepend_changelog_entry("", entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+
+    def test_first_entry_after_h1_ends_in_single_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(1, "feat: x")])
+        result = _prepend_changelog_entry("# Changelog\n", entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+        assert result.startswith("# Changelog\n\n")
+
+    def test_subsequent_entry_keeps_single_trailing_newline(self) -> None:
+        entry = _build_changelog_entry([_pr(2, "fix: y")])
+        existing = "# Changelog\n\n## [2026-W16] — 2026-04-18\n\n- old (#0)\n"
+        result = _prepend_changelog_entry(existing, entry)
+        assert result.endswith("\n")
+        assert not result.endswith("\n\n")
+        assert "## [2026-W16]" in result
+
+    def test_subsequent_entry_appears_before_prior_section(self) -> None:
+        entry = _build_changelog_entry([_pr(2, "fix: unique-marker-y")])
+        existing = "# Changelog\n\n## [2026-W16] — 2026-04-18\n\n- old (#0)\n"
+        result = _prepend_changelog_entry(existing, entry)
+        # _clean_title strips "fix: " prefix, so search for the cleaned text
+        new_pos = result.index("unique-marker-y")
+        old_pos = result.index("## [2026-W16]")
+        assert new_pos < old_pos
+
+
 class TestBuildChangelogEntry:
     def test_produces_markdown_with_pr_links(self) -> None:
         prs = [
@@ -129,6 +166,26 @@ class TestDocsAgentRun:
         assert "copilot" in call_kwargs.get("assignees", [])
 
     @pytest.mark.asyncio
+    async def test_posts_follow_up_copilot_comment_with_pat_identity(self) -> None:
+        merged = [_pr(10, "fix: something", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            await agent.run()
+
+        gh.add_issue_comment.assert_awaited_once_with(
+            "o",
+            "r",
+            77,
+            _build_copilot_review_comment(),
+            use_copilot_token=True,
+        )
+
+    @pytest.mark.asyncio
     async def test_skips_when_no_merged_prs(self) -> None:
         gh = make_github()
         agent = DocsAgent(github=gh, owner="o", repo="r")
@@ -155,3 +212,125 @@ class TestDocsAgentRun:
         # should return the existing PR number, not create a new one
         assert report.doc_pr_opened == 55
         gh.create_pull_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_changelog_already_has_week_entry(self) -> None:
+        """If CHANGELOG.md already contains this week's ## heading, no new PR is opened."""
+        week_str = datetime.now(UTC).strftime("%Y-W%V")
+        changelog_with_entry = f"# Changelog\n\n## [{week_str}] — 2026-01-01\n- some entry\n"
+
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        # Simulate the CHANGELOG already containing the week heading
+        gh.get_file_contents.return_value = {
+            "content": base64.b64encode(changelog_with_entry.encode()).decode(),
+            "sha": "existingsha",
+        }
+        agent = DocsAgent(github=gh, owner="o", repo="r")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        assert report.doc_pr_opened is None
+        assert report.changelog_updated is False
+        gh.create_pull_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_error_when_actions_not_permitted_to_create_prs(self) -> None:
+        """A 403 'not permitted to create PRs' should warn, not fail."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_pull_request.side_effect = GitHubAPIError(
+            403,
+            (
+                '{"message":"GitHub Actions is not permitted to create or approve pull requests.",'
+                '"documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request",'
+                '"status":"403"}'
+            ),
+        )
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        # Should NOT add the 403 permission error to report.errors
+        assert report.errors == []
+        assert report.doc_pr_opened is None
+
+    @pytest.mark.asyncio
+    async def test_error_reported_for_other_403(self) -> None:
+        """A 403 with a different message should still be recorded as an error."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_pull_request.side_effect = GitHubAPIError(
+            403,
+            '{"message":"Resource not accessible by integration","status":"403"}',
+        )
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        assert len(report.errors) == 1
+        assert "403" in report.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_reuses_existing_branch_when_422(self) -> None:
+        """If the branch already exists (422), the agent reuses it and still opens the PR."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        # Simulate branch already existing
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+        ):
+            report = await agent.run()
+
+        # No error reported — branch reuse is transparent
+        assert report.errors == []
+        assert report.doc_pr_opened == 77
+        # The file should still be committed and the PR created
+        gh.create_or_update_file.assert_awaited_once()
+        gh.create_pull_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_file_write_when_branch_already_has_content(self) -> None:
+        """If the existing branch already has the changelog entry, the file write is skipped
+        and the agent proceeds directly to PR creation (avoids 409 SHA-mismatch errors)."""
+        merged = [_pr(10, "feat: cool feature", merged_at="2024-01-10T12:00:00+00:00")]
+        gh = make_github()
+        gh.create_branch.side_effect = GitHubAPIError(422, '{"message":"Reference already exists"}')
+        agent = DocsAgent(github=gh, owner="o", repo="r", default_branch="main")
+
+        # Compute what new_content will be (same logic as the agent uses internally)
+        changelog_entry = _build_changelog_entry(merged)
+        expected_new_content = _prepend_changelog_entry("", changelog_entry)
+
+        # First _get_file call: main branch (empty content, no sha)
+        # Second _get_file call: branch already has the exact content we'd write
+        get_file_mock = AsyncMock(side_effect=[("", None), (expected_new_content, "branchsha123")])
+
+        with (
+            patch.object(agent, "_get_recently_merged_prs", return_value=merged),
+            patch.object(agent, "_find_open_docs_prs", return_value=[]),
+            patch.object(agent, "_get_file", get_file_mock),
+        ):
+            report = await agent.run()
+
+        # No error — content already on branch, write skipped, PR still created
+        assert report.errors == []
+        assert report.doc_pr_opened == 77
+        gh.create_or_update_file.assert_not_awaited()
+        gh.create_pull_request.assert_awaited_once()

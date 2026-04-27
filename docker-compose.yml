@@ -1,0 +1,42 @@
+# Local development environment: MongoDB + Redis
+#
+# Usage:
+#   docker compose up -d
+#
+# Set these environment variables in your shell or .env file to use them:
+#   MONGODB_URL=mongodb://localhost:27017/caretaker
+#   REDIS_URL=redis://localhost:6379
+#
+# For SaaS equivalents (free tiers) see docs/azure-backend-adoption-roadmap.md:
+#   - MongoDB: Azure Cosmos DB for MongoDB (https://azure.microsoft.com/free)
+#              MongoDB Atlas M0 (https://www.mongodb.com/atlas)
+#   - Redis:   Upstash (https://upstash.com) or Redis Cloud free tier
+#
+# All accept standard connection URL formats — no code changes needed when
+# switching between local Docker and SaaS.
+
+services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mongo_data:

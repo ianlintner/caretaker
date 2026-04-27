@@ -3,35 +3,82 @@
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any, cast
+import time
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
 
 import httpx
 
+from caretaker.guardrails import filter_output
 from caretaker.tools.github import CopilotAgentAssignment
+from caretaker.util.text import ensure_trailing_newline
 
+if TYPE_CHECKING:
+    from caretaker.tools.github import GitHubRepositoryTools
+
+from .credentials import EnvCredentialsProvider, GitHubCredentialsProvider
 from .models import (
     CheckRun,
     Comment,
     Issue,
     Label,
+    MergeStateStatus,
     PullRequest,
     Repository,
     Review,
     User,
     is_copilot_login,
 )
+from .rate_limit import (
+    get_cooldown,
+    record_rate_limit_response,
+    record_response_headers,
+)
+from .scope_gap import (
+    get_tracker as _scope_tracker,
+)
+from .scope_gap import (
+    is_scope_gap_message,
+    record_scope_gap_metric,
+)
 
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.github.com"
 COPILOT_ASSIGNEE_LOGIN = "copilot-swe-agent[bot]"
+COPILOT_COMMENT_MARKERS = (
+    "@copilot",
+    "<!-- caretaker:task -->",
+)
 
 
 class GitHubAPIError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         self.status_code = status_code
+        self.message = message
         super().__init__(f"GitHub API error {status_code}: {message}")
+
+
+class RateLimitError(GitHubAPIError):
+    """Raised when GitHub refuses a request due to primary or secondary
+    rate limiting, or when the process is short-circuiting because a
+    prior rate-limit response is still in its cooldown window.
+
+    Carries ``retry_after_seconds`` (may be ``None`` if the server
+    didn't send a hint). Callers that can defer the work should catch
+    this specifically; callers that must make the call are free to
+    let it propagate.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(status_code, message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class GitHubClient:
@@ -41,24 +88,29 @@ class GitHubClient:
         self,
         token: str | None = None,
         copilot_token: str | None = None,
+        credentials_provider: GitHubCredentialsProvider | None = None,
+        comment_cap_per_issue: int = 25,
     ) -> None:
-        self._token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("COPILOT_PAT", "")
-        if not self._token:
-            raise ValueError("GITHUB_TOKEN or COPILOT_PAT is required")
-        self._copilot_token = copilot_token or os.environ.get("COPILOT_PAT") or self._token
-        self._client = self._build_client(self._token)
-        self._copilot_client = (
-            self._client
-            if self._copilot_token == self._token
-            else self._build_client(self._copilot_token)
-        )
+        if credentials_provider is not None:
+            self._creds: GitHubCredentialsProvider = credentials_provider
+        else:
+            # Backward-compat: wrap string tokens or fall back to env vars.
+            self._creds = EnvCredentialsProvider(default_token=token, copilot_token=copilot_token)
+        self._client = self._build_client()
+        # In-process read cache: avoids redundant GET calls within a single run.
+        # Keys are "path?param=value&..." strings; values are parsed JSON responses.
+        self._read_cache: dict[str, Any] = {}
+        # Defensive belt: refuse to post a *new* caretaker-marker comment to an
+        # issue that already has this many caretaker-marker comments. Catches
+        # future regressions of the duplicate-comment-storm pattern. Set to 0
+        # to disable. Upserts and edits are unaffected.
+        self._comment_cap_per_issue = max(0, comment_cap_per_issue)
 
     @staticmethod
-    def _build_client(token: str) -> httpx.AsyncClient:
+    def _build_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=API_BASE,
             headers={
-                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
@@ -66,9 +118,16 @@ class GitHubClient:
         )
 
     async def close(self) -> None:
-        if self._copilot_client is not self._client:
-            await self._copilot_client.aclose()
         await self._client.aclose()
+
+    async def get_default_token(self, *, installation_id: int | None = None) -> str:
+        """Return the write-capable installation/env token used for API calls.
+
+        Exposed for callers that must hand the token to subprocesses (e.g. the
+        Foundry executor's ``git push`` path) without reaching into
+        ``self._creds`` directly.
+        """
+        return await self._creds.default_token(installation_id=installation_id)
 
     async def __aenter__(self) -> GitHubClient:
         return self
@@ -83,20 +142,108 @@ class GitHubClient:
         path: str,
         **kwargs: Any,
     ) -> Any:
-        resp = await client.request(method, path, **kwargs)
+        # Short-circuit if a prior response told us to back off. Every
+        # GitHubClient in the process shares this cooldown, so one agent
+        # hitting a rate limit pauses the rest of the run instead of
+        # burning more budget fire-and-forget.
+        cooldown = get_cooldown()
+        if cooldown.is_blocked():
+            remaining = cooldown.seconds_remaining()
+            snap = cooldown.snapshot()
+            # Short-circuited call still counts as a ratelimit error
+            # event for error-budget dashboards.
+            try:
+                from caretaker.observability.metrics import record_error
+
+                record_error("ratelimit")
+            except Exception:  # pragma: no cover - observability must never cascade
+                pass
+            raise RateLimitError(
+                429,
+                f"Short-circuit: GitHub rate-limit cooldown still active "
+                f"({remaining:.0f}s remaining, reason={snap.get('reason')!r}).",
+                retry_after_seconds=remaining,
+            )
+
+        # Time the call for http_client_* metrics. The start timestamp
+        # is captured outside the try/except so network-level failures
+        # still produce a latency sample with status_code=0.
+        import time as _time
+
+        _start = _time.perf_counter()
+        status_code = 0
+        try:
+            resp = await client.request(method, path, **kwargs)
+            status_code = resp.status_code
+        except Exception:
+            try:
+                from caretaker.observability.metrics import record_error, record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=0,
+                    duration=_time.perf_counter() - _start,
+                )
+                record_error("upstream")
+            except Exception:  # pragma: no cover
+                pass
+            raise
+        else:
+            try:
+                from caretaker.observability.metrics import record_http_client
+
+                record_http_client(
+                    peer_service="github",
+                    method=method,
+                    status_code=status_code,
+                    duration=_time.perf_counter() - _start,
+                )
+            except Exception:  # pragma: no cover
+                pass
+
+        # Always sample rate-limit headers — lets us soft-throttle before
+        # the bucket hits zero.
+        record_response_headers(resp)
+
         if resp.status_code == 404:
             return None
         if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After", "60")
-            raise GitHubAPIError(429, f"Rate limited. Retry after {retry_after}s")
+            until = record_rate_limit_response(resp, status_code=429)
+            retry_after = max(0.0, until - time.time())
+            raise RateLimitError(
+                429,
+                f"Rate limited. Retry after {retry_after:.0f}s.",
+                retry_after_seconds=retry_after,
+            )
         if resp.status_code == 403:
-            # GitHub App installation tokens return 403 (not 429) for rate-limit errors
+            # GitHub returns 403 (not 429) for installation/secondary rate limits.
             try:
                 body = resp.json()
-                if "rate limit" in body.get("message", "").lower():
-                    raise GitHubAPIError(403, f"Rate limited: {body['message']}")
-            except (ValueError, KeyError):
-                pass
+                message = body.get("message", "")
+            except Exception:
+                message = resp.text
+            if "rate limit" in message.lower():
+                until = record_rate_limit_response(resp, status_code=403)
+                retry_after = max(0.0, until - time.time())
+                raise RateLimitError(
+                    403,
+                    f"Rate limited. Retry after {retry_after:.0f}s.",
+                    retry_after_seconds=retry_after,
+                )
+            # Token-scope gap: GitHub's "Resource not accessible by integration"
+            # response means the workflow token is missing a required scope.
+            # Aggregate to a single per-run issue instead of five silent warnings.
+            if is_scope_gap_message(message):
+                incident = _scope_tracker().record(method, path)
+                record_scope_gap_metric(incident.scope_hint)
+                logger.warning(
+                    "GitHub 403 scope-gap: %s %s needs %s (count=%d in this run)",
+                    method,
+                    path,
+                    incident.scope_hint,
+                    incident.count,
+                )
             raise GitHubAPIError(resp.status_code, resp.text)
         if resp.status_code >= 400:
             raise GitHubAPIError(resp.status_code, resp.text)
@@ -105,13 +252,51 @@ class GitHubClient:
         return resp.json()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._client, method, path, **kwargs)
+        token = await self._creds.default_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(
+            self._client, method, path, headers=headers, **kwargs
+        )
 
     async def _copilot_request(self, method: str, path: str, **kwargs: Any) -> Any:
-        return await self._request_with_client(self._copilot_client, method, path, **kwargs)
+        token = await self._creds.copilot_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        return await self._request_with_client(
+            self._client, method, path, headers=headers, **kwargs
+        )
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
-        return await self._request("GET", path, **kwargs)
+        cache_key = self._make_cache_key(path, kwargs)
+        if cache_key in self._read_cache:
+            logger.debug("read-cache hit: %s", cache_key)
+            return self._read_cache[cache_key]
+        result = await self._request("GET", path, **kwargs)
+        if result is not None:
+            self._read_cache[cache_key] = result
+        return result
+
+    @staticmethod
+    def _make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
+        """Build a deterministic cache key from a path and optional request kwargs.
+
+        Only the ``params`` query-string values influence the key because all
+        ``_get`` calls in this client share the same auth headers (set at
+        build time) and never pass a request body.
+        """
+        params: dict[str, Any] | None = kwargs.get("params")
+        if not params:
+            return path
+        return f"{path}?{urlencode(sorted(params.items()))}"
+
+    def clear_read_cache(self) -> None:
+        """Discard all cached GET responses.
+
+        Call this after a write operation when the next read must reflect the
+        mutation (e.g. after merging a PR or creating an issue).
+        """
+        self._read_cache.clear()
 
     async def _post(self, path: str, **kwargs: Any) -> Any:
         return await self._request("POST", path, **kwargs)
@@ -124,6 +309,11 @@ class GitHubClient:
 
     async def _copilot_post(self, path: str, **kwargs: Any) -> Any:
         return await self._copilot_request("POST", path, **kwargs)
+
+    @staticmethod
+    def _should_use_copilot_comment_client(body: str) -> bool:
+        body_casefolded = body.casefold()
+        return any(marker in body_casefolded for marker in COPILOT_COMMENT_MARKERS)
 
     def for_repo(self, owner: str, repo: str) -> GitHubRepositoryTools:
         """Return a repo-bound toolset for issue and pull-request operations."""
@@ -160,6 +350,324 @@ class GitHubClient:
             return None
         return self._parse_pr(data)
 
+    async def find_open_pull_requests_for_sha(
+        self, owner: str, repo: str, sha: str
+    ) -> list[PullRequest]:
+        """Return open PRs that include or are headed at ``sha``.
+
+        Backed by ``GET /repos/{owner}/{repo}/commits/{sha}/pulls``, which
+        lists every PR whose head, merge, or branch contains the commit.
+        Used by the DevOps agent to route a CI failure on default-branch
+        HEAD back onto the PR that produced it (commenting at the PR
+        reviewer) rather than spawning a parallel build-failure issue.
+        """
+        if not sha:
+            return []
+        data = await self._get(f"/repos/{owner}/{repo}/commits/{sha}/pulls")
+        if not data:
+            return []
+        prs = [self._parse_pr(pr) for pr in data]
+        return [pr for pr in prs if pr.state == "open"]
+
+    async def get_issue(self, owner: str, repo: str, number: int) -> Issue | None:
+        """Fetch a single issue by number. Returns ``None`` when missing."""
+        data = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
+        if data is None:
+            return None
+        return self._parse_issue(data)
+
+    async def list_pull_request_files(
+        self, owner: str, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        """Return the list of files changed in a pull request.
+
+        Each entry carries at minimum ``path``, ``additions``, ``deletions``,
+        and ``status``. Used by dedupe logic to fingerprint PRs by their
+        primary touched file.
+        """
+        data = await self._get(
+            f"/repos/{owner}/{repo}/pulls/{number}/files",
+            params={"per_page": 100},
+        )
+        if not data:
+            return []
+        return [
+            {
+                "path": f.get("filename", ""),
+                "additions": int(f.get("additions", 0)),
+                "deletions": int(f.get("deletions", 0)),
+                "status": f.get("status", ""),
+            }
+            for f in data
+        ]
+
+    async def get_closing_issue_numbers(self, owner: str, repo: str, number: int) -> list[int]:
+        """Return issue numbers this PR will close when merged.
+
+        Uses the GraphQL ``closingIssuesReferences`` connection which reflects
+        both body-text ``Fixes #N`` references and the "Development" sidebar
+        links that Copilot-authored PRs rely on (body text is often absent).
+        Returns an empty list if the query fails or no issues are linked.
+        """
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            " repository(owner:$owner,name:$name){"
+            "  pullRequest(number:$number){"
+            "   closingIssuesReferences(first:20){nodes{number}}"
+            "  }"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={
+                    "query": query,
+                    "variables": {"owner": owner, "name": repo, "number": number},
+                },
+            )
+        except Exception as e:
+            logger.warning("GraphQL closingIssuesReferences for PR #%d failed: %s", number, e)
+            return []
+        if not result:
+            return []
+        try:
+            nodes = result["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+        except (KeyError, TypeError):
+            return []
+        return [int(n["number"]) for n in nodes if n and "number" in n]
+
+    async def mark_pull_request_ready(self, pr_node_id: str) -> bool:
+        """Flip a draft PR to ready-for-review via GraphQL mutation.
+
+        Uses the ``markPullRequestReadyForReview`` mutation which requires
+        the global node ID (``PR.node_id``, not the integer number).
+        Returns ``True`` on success, ``False`` if the mutation reports errors
+        or the request fails.
+        """
+        mutation = (
+            "mutation($id:ID!){"
+            " markPullRequestReadyForReview(input:{pullRequestId:$id}){"
+            "  pullRequest{isDraft}"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={"query": mutation, "variables": {"id": pr_node_id}},
+            )
+        except Exception as exc:
+            logger.warning("markPullRequestReadyForReview failed for %s: %s", pr_node_id, exc)
+            return False
+        if result and result.get("errors"):
+            logger.warning(
+                "markPullRequestReadyForReview errors for %s: %s",
+                pr_node_id,
+                result["errors"],
+            )
+            return False
+        try:
+            is_draft = result["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"]
+            return not is_draft
+        except (KeyError, TypeError):
+            return result is not None and "errors" not in result
+
+    async def get_pr_merge_state_status(
+        self, owner: str, repo: str, number: int
+    ) -> MergeStateStatus | None:
+        """Fetch GraphQL ``mergeStateStatus`` for a single PR.
+
+        Returns ``None`` on lookup failure so callers can treat the value as
+        "unknown, skip shepherd routing" rather than having to distinguish
+        transport errors from legitimate ``UNKNOWN`` states. GitHub returns
+        the enum value ``UNKNOWN`` while the mergeability computation is
+        pending on its side; that is reported as ``MergeStateStatus.UNKNOWN``
+        so the caller can decide whether to retry or defer.
+
+        Used by the shepherd orchestration to distinguish:
+        * BEHIND  → call :meth:`update_pull_request_branch`
+        * DIRTY   → send to mechanical fixer or stale reaper
+        * BLOCKED → wait on CI / reviewers
+        * CLEAN   → forward to merge-chain phase
+        """
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            " repository(owner:$owner,name:$name){"
+            "  pullRequest(number:$number){mergeStateStatus}"
+            " }"
+            "}"
+        )
+        try:
+            result = await self._post(
+                "/graphql",
+                json={
+                    "query": query,
+                    "variables": {"owner": owner, "name": repo, "number": number},
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "get_pr_merge_state_status: GraphQL failed for %s/%s#%d: %s",
+                owner,
+                repo,
+                number,
+                exc,
+            )
+            return None
+        if not result or result.get("errors"):
+            if result and result.get("errors"):
+                logger.warning(
+                    "get_pr_merge_state_status errors for %s/%s#%d: %s",
+                    owner,
+                    repo,
+                    number,
+                    result["errors"],
+                )
+            return None
+        try:
+            raw = result["data"]["repository"]["pullRequest"]["mergeStateStatus"]
+        except (KeyError, TypeError):
+            return None
+        if not raw:
+            return None
+        try:
+            return MergeStateStatus(raw)
+        except ValueError:
+            logger.info(
+                "get_pr_merge_state_status: unmapped status %r for %s/%s#%d",
+                raw,
+                owner,
+                repo,
+                number,
+            )
+            return MergeStateStatus.UNKNOWN
+
+    async def enrich_merge_state_status(
+        self, owner: str, repo: str, prs: list[PullRequest]
+    ) -> list[PullRequest]:
+        """Populate ``merge_state_status`` on a batch of PRs via one GraphQL call.
+
+        Mutates the passed ``PullRequest`` instances in-place and returns the
+        same list for chaining. Falls back to per-PR sequential lookups when
+        the batched query fails (e.g. one PR was deleted between list and
+        enrich), so callers never get a partial result silently.
+
+        Rationale for batching: the shepherd typically inspects 5-50 open
+        PRs per run; one ``mergeStateStatus`` call apiece would burn budget
+        against GitHub's secondary rate limits. A single aliased GraphQL
+        query returns all values in one request.
+        """
+        if not prs:
+            return prs
+
+        # Build an aliased query: pr0: pullRequest(number:1){...}, pr1: ...
+        fields: list[str] = []
+        variables: dict[str, Any] = {"owner": owner, "name": repo}
+        for idx, pr in enumerate(prs):
+            var = f"n{idx}"
+            variables[var] = pr.number
+            fields.append(f"pr{idx}: pullRequest(number:${var}){{number mergeStateStatus}}")
+        var_decls = "$owner:String!,$name:String!," + ",".join(
+            f"$n{i}:Int!" for i in range(len(prs))
+        )
+        query = (
+            f"query({var_decls}){{ repository(owner:$owner,name:$name){{ {' '.join(fields)} }}}}"
+        )
+
+        try:
+            result = await self._post(
+                "/graphql",
+                json={"query": query, "variables": variables},
+            )
+        except Exception as exc:
+            logger.warning(
+                "enrich_merge_state_status batch failed for %s/%s (%d PRs): %s — "
+                "falling back to sequential lookups",
+                owner,
+                repo,
+                len(prs),
+                exc,
+            )
+            result = None
+
+        if result and not result.get("errors"):
+            repo_data = (result.get("data") or {}).get("repository") or {}
+            for idx, pr in enumerate(prs):
+                node = repo_data.get(f"pr{idx}")
+                if not node:
+                    continue
+                raw = node.get("mergeStateStatus")
+                if not raw:
+                    continue
+                try:
+                    pr.merge_state_status = MergeStateStatus(raw)
+                except ValueError:
+                    pr.merge_state_status = MergeStateStatus.UNKNOWN
+            # Any PR still without a status gets a per-PR retry below.
+            missing = [p for p in prs if p.merge_state_status is None]
+            if not missing:
+                return prs
+            prs_to_retry = missing
+        else:
+            if result and result.get("errors"):
+                logger.warning(
+                    "enrich_merge_state_status errors for %s/%s: %s",
+                    owner,
+                    repo,
+                    result["errors"],
+                )
+            prs_to_retry = list(prs)
+
+        # Fallback: sequential lookups for whatever is missing.
+        for pr in prs_to_retry:
+            status = await self.get_pr_merge_state_status(owner, repo, pr.number)
+            if status is not None:
+                pr.merge_state_status = status
+        return prs
+
+    async def update_pull_request_branch(
+        self, owner: str, repo: str, number: int, expected_head_sha: str | None = None
+    ) -> bool:
+        """Merge the base branch into the PR's head branch (``update-branch``).
+
+        This is the shepherd's cascade-handling primitive: when PR #542 merges
+        and pushes PR #539 into ``BEHIND``, the shepherd calls this to re-align
+        #539 without asking Copilot to do it. Mirrors the ``gh pr update-branch``
+        behaviour and the GitHub REST endpoint
+        ``PUT /repos/{owner}/{repo}/pulls/{number}/update-branch``.
+
+        ``expected_head_sha`` is passed through when known so GitHub rejects
+        the call if another push raced the shepherd. Returns ``True`` when
+        GitHub responds with 202 Accepted (the update is queued
+        asynchronously; the branch may still be ``BEHIND`` for a few seconds
+        while GitHub processes the merge).
+        """
+        body: dict[str, Any] = {}
+        if expected_head_sha:
+            body["expected_head_sha"] = expected_head_sha
+        try:
+            result = await self._put(
+                f"/repos/{owner}/{repo}/pulls/{number}/update-branch",
+                json=body or None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "update_pull_request_branch: %s/%s#%d failed: %s",
+                owner,
+                repo,
+                number,
+                exc,
+            )
+            return False
+        # Endpoint returns 202 + {"message": "...", "url": "..."} on success.
+        if result is None:
+            return False
+        # Some code paths treat non-dict responses as success (202 no body).
+        if isinstance(result, dict) and "url" in result:
+            return True
+        return bool(result)
+
     async def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = "squash"
     ) -> bool:
@@ -186,6 +694,67 @@ class GitHubClient:
         data = await self._get(f"/repos/{owner}/{repo}/issues/{number}/comments")
         return [self._parse_comment(c) for c in (data or [])]
 
+    async def get_pull_diff(self, owner: str, repo: str, number: int) -> str:
+        """Return the unified diff for a pull request as a string."""
+        token = await self._creds.default_token()
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.diff",
+            },
+        )
+        if resp.status_code == 404:
+            return ""
+        if resp.status_code >= 400:
+            raise GitHubAPIError(resp.status_code, resp.text)
+        return resp.text
+
+    async def create_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_sha: str,
+        body: str,
+        event: str = "COMMENT",
+        comments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Submit a pull request review.
+
+        Args:
+            event: One of ``APPROVE``, ``REQUEST_CHANGES``, ``COMMENT``.
+            comments: Optional list of inline comments — each dict should
+                carry ``path``, ``line``, ``body`` and optionally ``side``.
+        """
+        payload: dict[str, Any] = {
+            "commit_id": commit_sha,
+            "body": body,
+            "event": event,
+        }
+        if comments:
+            payload["comments"] = comments
+        data = await self._post(f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", json=payload)
+        return data if data else {}
+
+    async def request_reviewers(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        reviewers: list[str],
+        team_reviewers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Request specific reviewers for a pull request."""
+        payload: dict[str, Any] = {"reviewers": reviewers}
+        if team_reviewers:
+            payload["team_reviewers"] = team_reviewers
+        data = await self._post(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
+            json=payload,
+        )
+        return data if data else {}
+
     # ── Check Runs (CI) ────────────────────────────────────────
 
     async def get_check_runs(self, owner: str, repo: str, ref: str) -> list[CheckRun]:
@@ -203,6 +772,10 @@ class GitHubClient:
                 html_url=cr.get("html_url", ""),
                 output_title=cr.get("output", {}).get("title"),
                 output_summary=cr.get("output", {}).get("summary"),
+                # Extract the GitHub App id that created this check run so
+                # callers can detect cross-App ownership conflicts proactively
+                # without waiting for a 403 "Invalid app_id" error.
+                app_id=cr.get("app", {}).get("id"),
             )
             for cr in data.get("check_runs", [])
         ]
@@ -213,6 +786,118 @@ class GitHubClient:
         if not data:
             return "pending"
         return str(data.get("state", "pending"))
+
+    async def create_check_run(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+        head_sha: str,
+        status: str = "in_progress",
+        conclusion: str | None = None,
+        output_title: str | None = None,
+        output_summary: str | None = None,
+        started_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a check run (status check) on a commit.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            name: Check run name (e.g. 'caretaker/pr-readiness')
+            head_sha: The SHA of the commit to check
+            status: 'queued', 'in_progress', 'completed'
+            conclusion: 'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                       'timed_out', 'action_required', 'neutral', 'stale'
+            output_title: Title for the check output
+            output_summary: Summary text for the check output
+            started_at: ISO 8601 timestamp when the check started
+            completed_at: ISO 8601 timestamp when the check completed
+
+        Returns:
+            The created check run dict from the GitHub API
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": status,
+        }
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if output_title or output_summary:
+            payload["output"] = {
+                "title": output_title or name,
+                "summary": output_summary or "",
+            }
+        if started_at:
+            payload["started_at"] = started_at
+        if completed_at:
+            payload["completed_at"] = completed_at
+
+        data = await self._post(f"/repos/{owner}/{repo}/check-runs", json=payload)
+        return data if data else {}
+
+    async def update_check_run(
+        self,
+        owner: str,
+        repo: str,
+        check_run_id: int,
+        status: str = "completed",
+        conclusion: str | None = None,
+        output_title: str | None = None,
+        output_summary: str | None = None,
+        completed_at: str | None = None,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing check run.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            check_run_id: The ID of the check run to update
+            status: 'queued', 'in_progress', 'completed'
+            conclusion: 'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                       'timed_out', 'action_required', 'neutral', 'stale'
+            output_title: Title for the check output
+            output_summary: Summary text for the check output
+            completed_at: ISO 8601 timestamp when the check completed
+            actions: Optional list of action buttons to add to the check
+
+        Returns:
+            The updated check run dict from the GitHub API
+        """
+        payload: dict[str, Any] = {
+            "status": status,
+        }
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if output_title or output_summary:
+            payload["output"] = {
+                "title": output_title or "",
+                "summary": output_summary or "",
+            }
+        if completed_at:
+            payload["completed_at"] = completed_at
+        if actions:
+            payload["actions"] = actions
+
+        data = await self._patch(
+            f"/repos/{owner}/{repo}/check-runs/{check_run_id}",
+            json=payload,
+        )
+        return data if data else {}
+
+    async def find_check_run(self, owner: str, repo: str, ref: str, name: str) -> CheckRun | None:
+        """Find an existing check run by name on a given ref (branch/SHA).
+
+        Returns the most recent check run with the matching name, or None if not found.
+        """
+        check_runs = await self.get_check_runs(owner, repo, ref)
+        for cr in check_runs:
+            if cr.name == name:
+                return cr
+        return None
 
     # ── Issues ──────────────────────────────────────────────────
 
@@ -235,26 +920,44 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
         copilot_assignment: CopilotAgentAssignment | None = None,
+        milestone: int | None = None,
     ) -> Issue:
         # Copilot assignment requires the dedicated issue-assignees flow with a user token.
         assign_copilot = any(is_copilot_login(assignee) for assignee in (assignees or []))
         real_assignees = [a for a in (assignees or []) if not is_copilot_login(a)]
+
+        # Guardrail (Agentic Design Patterns Ch. 18 Output Filtering):
+        # scrub the issue body for ANSI escapes, hidden-link attacks,
+        # and injection-sigil echoes before POSTing. Title is short
+        # and non-renderable; body carries the attack surface.
+        body = filter_output("github_issue_body", body).content
 
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
         if real_assignees:
             payload["assignees"] = real_assignees
+        if milestone is not None:
+            payload["milestone"] = milestone
         data = await self._post(f"/repos/{owner}/{repo}/issues", json=payload)
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(
-                owner,
-                repo,
-                issue.number,
-                assignment=copilot_assignment,
-            )
+            try:
+                await self.assign_copilot_to_issue(
+                    owner,
+                    repo,
+                    issue.number,
+                    assignment=copilot_assignment,
+                )
+            except GitHubAPIError as exc:
+                logger.warning(
+                    "Copilot assignment failed for issue #%d in %s/%s (non-fatal): %s",
+                    issue.number,
+                    owner,
+                    repo,
+                    exc,
+                )
 
         return issue
 
@@ -304,21 +1007,281 @@ class GitHubClient:
         issue = self._parse_issue(data)
 
         if assign_copilot:
-            await self.assign_copilot_to_issue(
-                owner,
-                repo,
-                number,
-                assignment=copilot_assignment,
-            )
+            try:
+                await self.assign_copilot_to_issue(
+                    owner,
+                    repo,
+                    number,
+                    assignment=copilot_assignment,
+                )
+            except GitHubAPIError as exc:
+                logger.warning(
+                    "Copilot assignment failed for issue #%d in %s/%s (non-fatal): %s",
+                    number,
+                    owner,
+                    repo,
+                    exc,
+                )
 
         return issue
 
-    async def add_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Comment:
-        data = await self._post(
+    async def create_milestone(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a repository milestone. Returns the raw milestone JSON."""
+        payload: dict[str, Any] = {"title": title}
+        if description is not None:
+            payload["description"] = description
+        if due_on is not None:
+            payload["due_on"] = due_on
+        data = await self._post(f"/repos/{owner}/{repo}/milestones", json=payload)
+        return data or {}
+
+    async def update_milestone(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        state: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a milestone (e.g. ``state='closed'``)."""
+        payload: dict[str, Any] = {}
+        if state is not None:
+            payload["state"] = state
+        if title is not None:
+            payload["title"] = title
+        if description is not None:
+            payload["description"] = description
+        if not payload:
+            data = await self._get(f"/repos/{owner}/{repo}/milestones/{number}")
+        else:
+            data = await self._patch(f"/repos/{owner}/{repo}/milestones/{number}", json=payload)
+        return data or {}
+
+    async def get_milestone_issues(
+        self,
+        owner: str,
+        repo: str,
+        milestone_number: int,
+        state: str = "all",
+    ) -> list[Issue]:
+        """List issues associated with a milestone."""
+        params: dict[str, Any] = {
+            "milestone": milestone_number,
+            "state": state,
+            "per_page": 100,
+        }
+        data = await self._get(f"/repos/{owner}/{repo}/issues", params=params)
+        return [self._parse_issue(i) for i in (data or []) if "pull_request" not in i]
+
+    async def add_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        """Add an issue or PR comment.
+
+        When ``use_copilot_token`` is left as ``None``, comments that summon
+        ``@copilot`` (or carry a maintainer task marker) are routed through the
+        PAT-backed client so GitHub attributes them to the configured write-capable
+        identity instead of the default workflow bot.
+
+        Defensive cap: if ``body`` carries a ``caretaker:`` marker AND the
+        target issue already has at least ``comment_cap_per_issue`` such
+        marker comments, the post is refused with a ``GitHubAPIError``
+        (status 0). This is a belt-and-suspenders safeguard against future
+        duplicate-comment-storm regressions; the normal path uses
+        ``upsert_issue_comment`` which never trips the cap.
+        """
+        if self._comment_cap_per_issue > 0 and "caretaker:" in body:
+            try:
+                existing = await self.get_pr_comments(owner, repo, number)
+            except Exception:
+                existing = []  # if we can't read, don't block writes
+            caretaker_count = sum(1 for c in existing if c.body and "caretaker:" in c.body)
+            if caretaker_count >= self._comment_cap_per_issue:
+                msg = (
+                    f"Refusing to add caretaker comment to {owner}/{repo}#{number}: "
+                    f"cap {self._comment_cap_per_issue} caretaker-marker comments "
+                    "already present. Likely a duplicate-comment-storm bug."
+                )
+                logger.warning(msg)
+                raise GitHubAPIError(0, msg)
+
+        # Guardrail (Agentic Design Patterns Ch. 18 Output Filtering):
+        # scrub LLM-authored content for ANSI escapes, hidden-link
+        # attacks, and injection-sigil echoes before it hits GitHub.
+        # The filter leaves legitimate ``<!-- caretaker:… -->`` markers
+        # produced by caretaker itself untouched because the filter's
+        # marker-detection runs on the ``body`` string caretaker already
+        # authored with care; this is the defensive perimeter for
+        # content that flowed through an LLM boundary.
+        filtered = filter_output("github_comment", body)
+        body = filtered.content
+
+        post = self._post
+        if use_copilot_token is True or (
+            use_copilot_token is None and self._should_use_copilot_comment_client(body)
+        ):
+            post = self._copilot_post
+
+        data = await post(
             f"/repos/{owner}/{repo}/issues/{number}/comments",
             json={"body": body},
         )
         return self._parse_comment(data)
+
+    async def edit_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        body: str,
+    ) -> Comment:
+        """Edit an existing issue/PR comment by id via PATCH."""
+        data = await self._patch(
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            json={"body": body},
+        )
+        return self._parse_comment(data)
+
+    async def delete_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> None:
+        """Delete an existing issue/PR comment by id via DELETE."""
+        await self._request(
+            "DELETE",
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
+        )
+
+    async def upsert_issue_comment(
+        self,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        marker: str,
+        body: str,
+        *,
+        legacy_markers: tuple[str, ...] = (),
+        min_seconds_between_updates: int = 0,
+        max_duplicates_to_retain: int = 2,
+    ) -> Comment:
+        """Post or edit a single issue/PR comment identified by ``marker``.
+
+        ``marker`` MUST be a unique HTML-comment substring (e.g.
+        ``"<!-- caretaker:orchestrator-state -->"``) and MUST appear in
+        ``body``. If multiple comments carry the marker (a prior broken
+        run double-posted, or a legacy marker migration left behind a
+        duplicate), the newest-by-``id`` wins: the newest is edited in
+        place, and older duplicates beyond ``max_duplicates_to_retain``
+        are deleted. Idempotent: a no-op if the newest existing matching
+        comment already has the same body AND the retained-duplicate
+        bound is satisfied.
+
+        ``legacy_markers`` lets callers migrate from older marker spellings
+        without leaving stale duplicates behind.
+
+        ``min_seconds_between_updates`` enforces a per-marker cooldown: when
+        > 0, an existing matching comment whose ``updated_at`` (or
+        ``created_at`` if never edited) is more recent than that many seconds
+        ago is left untouched (cooldown active). New posts and edits beyond
+        the cooldown are unaffected. This guards against rapid retrigger
+        loops independent of the per-issue count cap on
+        :meth:`add_issue_comment`.
+
+        ``max_duplicates_to_retain`` caps how many older marker-matching
+        comments we leave behind when we find >1. Defaults to 2 so we
+        don't aggressively delete historical data; set to 0 to garbage
+        collect every duplicate. This guards against the
+        ``caretaker:orchestrator-state`` drift observed on python_dsa #23
+        (146 bot comments) where a stale duplicate caused later runs to
+        append instead of edit in place.
+        """
+        if marker not in body:
+            raise ValueError(f"upsert body missing marker {marker!r}")
+
+        all_markers = (marker, *legacy_markers)
+        comments = await self.get_pr_comments(owner, repo, issue_number)
+
+        # Collect ALL matching comments, newest by id first. Pre-fix only
+        # the first match was kept, so an older duplicate silently took
+        # over the edit path on repos where the bot had double-posted.
+        matching: list[Comment] = [
+            c for c in comments if (c.body or "") and any(m in c.body for m in all_markers)
+        ]
+        matching.sort(key=lambda c: c.id, reverse=True)
+
+        existing: Comment | None = matching[0] if matching else None
+
+        # Prune older duplicates beyond the retention bound. We delete
+        # best-effort — a failed delete must not break the upsert path.
+        if len(matching) > 1 + max(0, max_duplicates_to_retain):
+            to_delete = matching[1 + max(0, max_duplicates_to_retain) :]
+            for dup in to_delete:
+                try:
+                    await self.delete_issue_comment(owner, repo, dup.id)
+                    logger.info(
+                        "upsert dedupe: deleted duplicate comment %d on %s/%s#%d (marker=%s)",
+                        dup.id,
+                        owner,
+                        repo,
+                        issue_number,
+                        marker,
+                    )
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.warning(
+                        "upsert dedupe: failed to delete duplicate comment %d on %s/%s#%d: %s",
+                        dup.id,
+                        owner,
+                        repo,
+                        issue_number,
+                        exc,
+                    )
+
+        if existing is None:
+            return await self.add_issue_comment(owner, repo, issue_number, body)
+
+        if (existing.body or "").strip() == body.strip():
+            return existing
+
+        if min_seconds_between_updates > 0:
+            from datetime import UTC
+            from datetime import datetime as _dt
+
+            ref = existing.updated_at or existing.created_at
+            if ref is not None:
+                if ref.tzinfo is None:
+                    ref = ref.replace(tzinfo=UTC)
+                age = (_dt.now(UTC) - ref).total_seconds()
+                if age < min_seconds_between_updates:
+                    logger.info(
+                        "upsert cooldown active on %s/%s#%d marker=%s "
+                        "(age=%.0fs < cooldown=%ds) — skipping update",
+                        owner,
+                        repo,
+                        issue_number,
+                        marker,
+                        age,
+                        min_seconds_between_updates,
+                    )
+                    return existing
+
+        return await self.edit_issue_comment(owner, repo, existing.id, body)
 
     async def add_labels(
         self, owner: str, repo: str, number: int, labels: list[str]
@@ -334,6 +1297,72 @@ class GitHubClient:
     async def re_run_workflow(self, owner: str, repo: str, run_id: int) -> bool:
         result = await self._post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
         return result is None  # 204 = success
+
+    async def list_workflow_runs(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        status: str | None = None,
+        event: str | None = None,
+        actor: str | None = None,
+        per_page: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List repository workflow runs with optional filters.
+
+        Used by ``pr_ci_approver`` to enumerate runs blocked on
+        ``action_required`` for whitelisted bot actors. Returns the raw
+        API payload (one dict per run) so the agent can read ``actor``,
+        ``triggering_actor``, ``conclusion``, ``event``, ``head_branch``,
+        etc. without defining a pydantic model for a transient inspection.
+
+        See: https://docs.github.com/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
+        """
+        params: dict[str, Any] = {"per_page": per_page}
+        if status is not None:
+            params["status"] = status
+        if event is not None:
+            params["event"] = event
+        if actor is not None:
+            params["actor"] = actor
+        data = await self._get(
+            f"/repos/{owner}/{repo}/actions/runs",
+            params=params,
+        )
+        if not isinstance(data, dict):
+            return []
+        runs = data.get("workflow_runs", [])
+        return list(runs) if isinstance(runs, list) else []
+
+    async def approve_workflow_run(self, owner: str, repo: str, run_id: int) -> bool:
+        """Approve a workflow run for a fork pull request."""
+        token = await self._creds.default_token()
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if response.status_code == 404:
+            return False
+        if response.status_code == 204:
+            return True
+        if response.is_success:
+            if response.content:
+                data = response.json()
+                return bool(isinstance(data, dict) and data.get("id"))
+            return True
+        message = response.text
+        if not message:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                message = str(payload.get("message", payload))
+            elif payload is not None:
+                message = str(payload)
+            else:
+                message = "Request failed"
+        raise GitHubAPIError(response.status_code, message)
 
     # ── Labels ──────────────────────────────────────────────────
 
@@ -454,12 +1483,21 @@ class GitHubClient:
         branch: str,
         sha: str | None = None,
     ) -> dict[str, Any]:
-        """Create or update a file via the contents API. *content* is raw UTF-8 text."""
+        """Create or update a file via the contents API. *content* is raw UTF-8 text.
+
+        The content is passed through :func:`ensure_trailing_newline` before
+        being base64-encoded so the resulting blob ends with a single ``\\n``.
+        This keeps consumer-side pre-commit ``end-of-file-fixer`` hooks happy
+        on files caretaker writes (CHANGELOG.md, workflow YAMLs, etc.) — see
+        PR python_dsa#42 / kubernetes-apply-vscode#17 for the failure mode
+        this prevents.
+        """
         import base64
 
+        normalised = ensure_trailing_newline(content)
         payload: dict[str, Any] = {
             "message": message,
-            "content": base64.b64encode(content.encode()).decode(),
+            "content": base64.b64encode(normalised.encode()).decode(),
             "branch": branch,
         }
         if sha:
@@ -502,23 +1540,46 @@ class GitHubClient:
 
     @staticmethod
     def _parse_pr(data: dict[str, Any]) -> PullRequest:
+        head = data.get("head") or {}
+        base = data.get("base") or {}
+        head_repo = (head.get("repo") or {}).get("full_name", "") or ""
+        base_repo = (base.get("repo") or {}).get("full_name", "") or ""
+        # ``mergeable_state`` on the REST API is a string mirror of the
+        # GraphQL ``mergeStateStatus`` (lowercase on REST, uppercase on GQL).
+        # We normalise here so callers can rely on ``merge_state_status`` on
+        # PRs fetched by ``get_pull_request`` even without an explicit
+        # ``enrich_merge_state_status`` call. List endpoints do NOT populate
+        # it; only single-PR reads do.
+        merge_state_raw = data.get("mergeable_state")
+        parsed_merge_state: MergeStateStatus | None = None
+        if merge_state_raw:
+            try:
+                parsed_merge_state = MergeStateStatus(str(merge_state_raw).upper())
+            except ValueError:
+                parsed_merge_state = MergeStateStatus.UNKNOWN
         return PullRequest(
             number=data["number"],
             title=data["title"],
             body=data.get("body") or "",
             state=data["state"],
             user=User(login=data["user"]["login"], id=data["user"]["id"]),
-            head_ref=data.get("head", {}).get("ref", ""),
-            base_ref=data.get("base", {}).get("ref", ""),
+            head_ref=head.get("ref", ""),
+            head_sha=head.get("sha", ""),
+            base_ref=base.get("ref", ""),
+            head_repo_full_name=head_repo,
+            base_repo_full_name=base_repo,
             mergeable=data.get("mergeable"),
+            merge_state_status=parsed_merge_state,
             merged=data.get("merged", False),
             draft=data.get("draft", False),
+            node_id=data.get("node_id", ""),
             labels=[
                 Label(name=lbl["name"], color=lbl.get("color", ""))
                 for lbl in data.get("labels", [])
             ],
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            merged_at=data.get("merged_at"),
             html_url=data.get("html_url", ""),
         )
 

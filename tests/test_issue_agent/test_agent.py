@@ -38,7 +38,7 @@ def make_pr(number: int, title: str, body: str) -> PullRequest:
         title=title,
         body=body,
         state=PRState.OPEN,
-        user=User(login="copilot[bot]", id=1, type="Bot"),
+        user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"),
     )
 
 
@@ -91,7 +91,7 @@ class TestIssueAgent:
             4,
             "Fix the bug",
             "there is a bug",
-            assignees=[User(login="copilot", id=22, type="Bot")],
+            assignees=[User(login="copilot-swe-agent[bot]", id=22, type="Bot")],
         )
         github.list_issues.return_value = [issue]
         github.list_pull_requests.return_value = []
@@ -150,7 +150,7 @@ class TestIssueAgent:
             3,
             "Feature request",
             "please add a small feature",
-            assignees=[User(login="copilot", id=22, type="Bot")],
+            assignees=[User(login="copilot-swe-agent[bot]", id=22, type="Bot")],
         )
         github.list_issues.return_value = [issue]
         github.list_pull_requests.return_value = [
@@ -172,3 +172,29 @@ class TestIssueAgent:
 
         assert tracked[3].state == IssueTrackingState.PR_OPENED
         assert tracked[3].assigned_pr == 77
+
+    async def test_infra_escalation_comment_includes_debug_dump(self) -> None:
+        github = AsyncMock()
+        issue = make_issue(8, "Deploy pipeline issue", "workflow token missing in deploy step")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(auto_assign_features=False),
+        )
+
+        report, tracked = await agent.run({})
+
+        assert 8 in report.escalated
+        assert tracked[8].state == IssueTrackingState.ESCALATED
+        # Escalation comments are upserted by marker (Sprint 2 A3) — body is
+        # the 5th positional arg (owner, repo, number, marker, body).
+        github.upsert_issue_comment.assert_awaited()
+        comment_body = github.upsert_issue_comment.await_args.args[4]
+        assert "Escalation debug dump" in comment_body
+        assert '"type": "issue_escalation"' in comment_body
+        assert '"classification": "INFRA_OR_CONFIG"' in comment_body
+        assert "<!-- caretaker:escalation -->" in comment_body

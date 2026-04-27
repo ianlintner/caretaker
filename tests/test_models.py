@@ -12,6 +12,14 @@ from tests.conftest import make_comment, make_pr
 
 class TestPullRequest:
     def test_is_copilot_pr(self) -> None:
+        pr = make_pr(user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"))
+        assert pr.is_copilot_pr is True
+
+    def test_case_variant_copilot_login_is_recognized(self) -> None:
+        pr = make_pr(user=User(login="Copilot", id=1, type="Bot"))
+        assert pr.is_copilot_pr is True
+
+    def test_legacy_copilot_login_is_still_recognized(self) -> None:
         pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
         assert pr.is_copilot_pr is True
 
@@ -22,6 +30,50 @@ class TestPullRequest:
     def test_is_dependabot_pr(self) -> None:
         pr = make_pr(user=User(login="dependabot[bot]", id=2, type="Bot"))
         assert pr.is_dependabot_pr is True
+
+    def test_is_caretaker_pr_claude_prefix(self) -> None:
+        pr = make_pr(head_ref="claude/fix-something")
+        assert pr.is_caretaker_pr is True
+
+    def test_is_caretaker_pr_caretaker_prefix(self) -> None:
+        pr = make_pr(head_ref="caretaker/upgrade-deps")
+        assert pr.is_caretaker_pr is True
+
+    def test_is_not_caretaker_pr(self) -> None:
+        pr = make_pr(head_ref="feature/my-feature")
+        assert pr.is_caretaker_pr is False
+
+    def test_is_maintainer_bot_pr_releases_json_prefix(self) -> None:
+        pr = make_pr(head_ref="chore/releases-json-v0.19.4")
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_maintainer_bot_pr_github_actions_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="chore/update-releases",
+        )
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_maintainer_bot_pr_github_actions_bare_login(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions", id=1, type="Bot"),
+            head_ref="chore/bump-version",
+        )
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_not_maintainer_bot_pr_human_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="dev-user", id=3, type="User"),
+            head_ref="chore/update-deps",
+        )
+        assert pr.is_maintainer_bot_pr is False
+
+    def test_is_not_maintainer_bot_pr_github_actions_non_chore(self) -> None:
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="feature/something",
+        )
+        assert pr.is_maintainer_bot_pr is False
 
     def test_is_maintainer_pr(self) -> None:
         pr = make_pr(labels=[Label(name="maintainer:internal")])
@@ -57,7 +109,6 @@ class TestComment:
 
 class TestIssue:
     def test_is_maintainer_issue_by_title(self) -> None:
-
         issue = Issue(
             number=1,
             title="[Maintainer] Fix lint errors",
@@ -74,6 +125,59 @@ class TestIssue:
         )
         assert issue.is_maintainer_issue is True
 
+    def test_is_maintainer_issue_by_assigned_label(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            user=User(login="user", id=1, type="User"),
+            labels=[Label(name="maintainer:assigned")],
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_assignment_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            body="<!-- caretaker:assignment -->\nTYPE: BUG_SIMPLE",
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_state_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Regular issue",
+            body='<!-- maintainer-state:{"tracked_issues":{}}:maintainer-state -->',
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_caretaker_title(self) -> None:
+        issue = Issue(
+            number=1,
+            title="[Caretaker] Human action required — 2026-W16",
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_escalation_digest_label(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Some issue",
+            user=User(login="user", id=1, type="User"),
+            labels=[Label(name="maintainer:escalation-digest")],
+        )
+        assert issue.is_maintainer_issue is True
+
+    def test_is_maintainer_issue_by_escalation_digest_marker(self) -> None:
+        issue = Issue(
+            number=1,
+            title="Some issue",
+            body="## CI failures\n\n<!-- caretaker:escalation-digest week:2026-W16 -->",
+            user=User(login="user", id=1, type="User"),
+        )
+        assert issue.is_maintainer_issue is True
+
     def test_not_maintainer_issue(self) -> None:
         issue = Issue(
             number=1,
@@ -81,3 +185,30 @@ class TestIssue:
             user=User(login="user", id=1, type="User"),
         )
         assert issue.is_maintainer_issue is False
+
+    def test_is_copilot_assigned(self) -> None:
+        issue = Issue(
+            number=2,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="copilot-swe-agent[bot]", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True
+
+    def test_legacy_copilot_assignment_is_still_recognized(self) -> None:
+        issue = Issue(
+            number=3,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="copilot", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True
+
+    def test_case_variant_copilot_assignment_is_recognized(self) -> None:
+        issue = Issue(
+            number=4,
+            title="Bug report",
+            user=User(login="user", id=1, type="User"),
+            assignees=[User(login="Copilot", id=7, type="Bot")],
+        )
+        assert issue.is_copilot_assigned is True

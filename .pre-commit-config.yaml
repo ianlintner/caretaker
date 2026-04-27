@@ -1,0 +1,58 @@
+# Pre-commit hooks for caretaker.
+#
+# Install once with:    pre-commit install
+# Run manually:         pre-commit run --all-files
+#
+# Hooks mirror the CI lint/test gates (.github/workflows/ci.yml) so failures
+# are caught locally before they hit GitHub Actions.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: check-toml
+
+  # Ruff: lint + format. Mirrors `ruff check` and `ruff format` from CI.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+        types_or: [python, pyi]
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  # mypy: strict type-check. Slow but catches the same errors CI would.
+  # Limited to src/caretaker so we don't waste time on tests/scripts.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict, src/caretaker)
+        entry: .venv/bin/mypy
+        language: system
+        types: [python]
+        files: ^src/caretaker/
+        pass_filenames: false
+        args: ["src/caretaker"]
+
+      - id: pytest-fast
+        name: pytest (fleet/auth/doctor smoke set)
+        entry: .venv/bin/pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+        args:
+          - "-x"
+          - "-q"
+          - "tests/test_fleet_registry.py"
+          - "tests/test_fleet_alerts.py"
+          - "tests/test_doctor.py"
+          - "tests/test_oauth_client.py"

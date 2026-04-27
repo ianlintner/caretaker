@@ -6,8 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from caretaker.github_client.models import Issue, User
-from caretaker.upgrade_agent.planner import UpgradePlanner, build_upgrade_issue_body
+from caretaker.github_client.models import Issue, PRState, PullRequest, User
+from caretaker.upgrade_agent.planner import (
+    SYNC_FILES,
+    UpgradePlanner,
+    build_sync_issue_body,
+    build_upgrade_issue_body,
+)
 from caretaker.upgrade_agent.release_checker import Release
 
 
@@ -36,6 +41,8 @@ class TestBuildUpgradeIssueBody:
         assert "Upgrade to v1.5.0" in body
         assert "BREAKING: False" in body
         assert "@copilot" in body
+        assert "caretaker:causal" in body
+        assert "source=upgrade" in body
 
     def test_breaking_body_marks_warning(self) -> None:
         release = Release(
@@ -68,6 +75,35 @@ class TestUpgradePlanner:
         assert number == 10
         github.create_issue.assert_not_called()
 
+    async def test_does_not_recreate_issue_when_previous_is_closed(self) -> None:
+        """A closed upgrade issue for this version must prevent a new one being opened.
+
+        This is the root cause of the duplicate-Copilot-PR problem: when an
+        upgrade issue was closed (e.g. the PR failed) caretaker previously
+        ignored it and created a fresh issue, causing @copilot to open yet
+        another PR.  With state="all" in the issues query the closed issue is
+        found and re-used instead.
+        """
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="1.5.0",
+            min_compatible="1.0.0",
+            changelog_url="https://example.com/changelog",
+        )
+        closed_issue = make_issue(10, "Upgrade to v1.5.0", maintainer=True)
+        closed_issue.state = "closed"
+        github.list_issues.return_value = [closed_issue]
+
+        number = await planner.create_upgrade_issue("1.4.0", target)
+
+        assert number == 10
+        github.create_issue.assert_not_called()
+        # Confirm the query was made with state="all"
+        github.list_issues.assert_awaited_once()
+        call_kwargs = github.list_issues.call_args.kwargs
+        assert call_kwargs.get("state") == "all"
+
     async def test_creates_new_issue_for_upgrade(self) -> None:
         github = AsyncMock()
         planner = UpgradePlanner(github=github, owner="o", repo="r")
@@ -84,3 +120,361 @@ class TestUpgradePlanner:
 
         assert number == 42
         github.create_issue.assert_awaited_once()
+
+    async def test_closes_older_open_upgrade_issue_when_newer_version_arrives(self) -> None:
+        """Regression for #510: open v0.15.0 issue must be closed when v0.16.0 is released."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.16.0",
+            min_compatible="0.15.0",
+            changelog_url="https://example.com/changelog",
+        )
+        older_issue = make_issue(10, "Upgrade to v0.15.0", maintainer=True)
+        older_issue.body = "<!-- caretaker:upgrade target=0.15.0 -->"
+        older_issue.state = "open"
+        github.list_issues.return_value = [older_issue]
+        github.create_issue.return_value = make_issue(11, "Upgrade to v0.16.0")
+
+        number = await planner.create_upgrade_issue("0.15.0", target)
+
+        # Older open issue was closed
+        github.update_issue.assert_awaited_once_with("o", "r", 10, state="closed")
+        # New issue was created for the new version
+        assert number == 11
+        github.create_issue.assert_awaited_once()
+
+    async def test_does_not_close_already_closed_older_issue(self) -> None:
+        """Closed older issues must not be touched — only open ones."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.16.0",
+            min_compatible="0.15.0",
+            changelog_url="https://example.com/changelog",
+        )
+        closed_older = make_issue(10, "Upgrade to v0.15.0", maintainer=True)
+        closed_older.body = "<!-- caretaker:upgrade target=0.15.0 -->"
+        closed_older.state = "closed"
+        github.list_issues.return_value = [closed_older]
+        github.create_issue.return_value = make_issue(11, "Upgrade to v0.16.0")
+
+        await planner.create_upgrade_issue("0.15.0", target)
+
+        # The closed issue must not receive a state update
+        github.update_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestCloseStaleUpgradeIssues:
+    """Sweep open upgrade issues whose target ≤ current version.
+
+    Surfaced live on caretaker-qa#41 — pin was fast-forwarded from
+    v0.19.4 to v0.22.3 in caretaker-qa#50, but the v0.19.6 upgrade
+    issue stayed OPEN because the agent's "no upgrade needed" branch
+    didn't sweep stale issues."""
+
+    async def test_closes_issue_when_target_is_below_current(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.19.6", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.19.6 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == [41]
+        github.update_issue.assert_awaited_with("o", "r", 41, state="closed")
+        github.add_issue_comment.assert_awaited()
+
+    async def test_closes_issue_when_target_equals_current(self) -> None:
+        """target == current is also stale — there's nothing to upgrade to."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.22.3", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.22.3 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == [41]
+
+    async def test_keeps_issue_open_when_target_is_above_current(self) -> None:
+        """Future-target issues are NOT stale — leave them OPEN."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        future = make_issue(41, "Upgrade to v0.23.0", maintainer=True)
+        future.body = "<!-- caretaker:upgrade target=0.23.0 -->"
+        future.state = "open"
+        github.list_issues.return_value = [future]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+    async def test_skips_issues_without_marker(self) -> None:
+        """Issues that aren't upgrade-marked are out of scope."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        unrelated = make_issue(42, "Some unrelated issue", maintainer=False)
+        unrelated.body = "no caretaker marker here"
+        unrelated.state = "open"
+        github.list_issues.return_value = [unrelated]
+
+        closed = await planner.close_stale_upgrade_issues("0.22.3")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+    async def test_skips_when_current_version_unparseable(self) -> None:
+        """Don't go around closing things with garbage version inputs."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        stale = make_issue(41, "Upgrade to v0.19.6", maintainer=True)
+        stale.body = "<!-- caretaker:upgrade target=0.19.6 -->"
+        stale.state = "open"
+        github.list_issues.return_value = [stale]
+
+        closed = await planner.close_stale_upgrade_issues("not-a-version")
+
+        assert closed == []
+        github.update_issue.assert_not_awaited()
+
+
+class TestBuildSyncIssueBody:
+    def test_body_contains_version_and_marker(self) -> None:
+        body = build_sync_issue_body("1.5.0")
+        assert "Sync installation files to v1.5.0" in body
+        assert "VERSION: 1.5.0" in body
+        assert "<!-- caretaker:sync -->" in body
+        assert "<!-- /caretaker:sync -->" in body
+
+    def test_body_lists_all_sync_files(self) -> None:
+        body = build_sync_issue_body("1.5.0")
+        for local_path, _template_path in SYNC_FILES:
+            assert local_path in body
+
+    def test_body_contains_template_urls_with_tag(self) -> None:
+        body = build_sync_issue_body("2.0.0")
+        assert "v2.0.0" in body
+        for _local_path, template_path in SYNC_FILES:
+            assert template_path in body
+
+    def test_body_contains_copilot_mention(self) -> None:
+        body = build_sync_issue_body("1.0.0")
+        assert "@copilot" in body
+
+    def test_body_contains_acceptance_criteria(self) -> None:
+        body = build_sync_issue_body("1.0.0")
+        assert "Acceptance criteria" in body
+        assert "All tests pass" in body
+
+
+@pytest.mark.asyncio
+class TestUpgradePlannerSync:
+    async def test_reuses_existing_sync_issue(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_issues.return_value = [
+            make_issue(20, "Sync installation files to v1.5.0", maintainer=True),
+        ]
+
+        number = await planner.create_sync_issue("1.5.0")
+
+        assert number == 20
+        github.create_issue.assert_not_called()
+
+    async def test_creates_new_sync_issue(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_issues.return_value = []
+        github.create_issue.return_value = make_issue(55, "Sync installation files to v1.5.0")
+
+        number = await planner.create_sync_issue("1.5.0")
+
+        assert number == 55
+        github.create_issue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+class TestUpgradeIssueMarkerDedupe:
+    """Closes the rust-oauth2-server #118/#121/#126/#129/#153 dupe pattern.
+
+    Title-substring dedupe failed when two upgrades targeted similar versions
+    (e.g. v0.5.0 and v0.5.2 both substring-match each other in some lookups).
+    The new behavior is marker-first, title-second with backfill.
+    """
+
+    async def test_dedupes_by_body_marker_when_title_differs(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.5.0",
+            min_compatible="0.1.0",
+            changelog_url="https://example.com/changelog",
+        )
+
+        existing = make_issue(101, "Some custom title that doesn't mention version")
+        existing.body = "preamble\n\n<!-- caretaker:upgrade target=0.5.0 -->\n"
+        github.list_issues.return_value = [existing]
+
+        number = await planner.create_upgrade_issue("0.4.0", target)
+
+        assert number == 101
+        github.create_issue.assert_not_called()
+
+    async def test_new_issue_body_carries_marker(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.10.0",
+            min_compatible="0.10.0",
+            changelog_url="https://example.com/changelog",
+        )
+        github.list_issues.return_value = []
+        github.create_issue.return_value = make_issue(77, "Upgrade to v0.10.0")
+
+        await planner.create_upgrade_issue("0.9.0", target)
+
+        body = github.create_issue.call_args.kwargs["body"]
+        assert "<!-- caretaker:upgrade target=0.10.0 -->" in body
+
+    async def test_legacy_title_match_backfills_marker(self) -> None:
+        """Issues created before the marker existed get the marker added.
+
+        Prevents the next dedupe lookup from missing the older issue when
+        title text rotates (which is what allowed multiple v0.5.0 issues
+        to be opened against rust-oauth2-server).
+        """
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.5.0",
+            min_compatible="0.1.0",
+            changelog_url="https://example.com/changelog",
+        )
+
+        legacy_issue = make_issue(33, "Upgrade to v0.5.0", maintainer=True)
+        legacy_issue.body = "old body without marker"
+        github.list_issues.return_value = [legacy_issue]
+
+        number = await planner.create_upgrade_issue("0.4.0", target)
+
+        assert number == 33
+        github.create_issue.assert_not_called()
+        # The legacy issue's body should be updated to carry the marker
+        github.update_issue.assert_awaited_once()
+        update_kwargs = github.update_issue.call_args.kwargs
+        assert "<!-- caretaker:upgrade target=0.5.0 -->" in update_kwargs.get("body", "")
+
+    async def test_marker_takes_precedence_over_title_match(self) -> None:
+        """When both markers exist, the marker-keyed issue wins (precise match)."""
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        target = Release(
+            version="0.5.2",
+            min_compatible="0.1.0",
+            changelog_url="https://example.com/changelog",
+        )
+
+        # Title match for 0.5.2, but marker is for 0.5.0 — should NOT dedupe
+        title_only = make_issue(40, "Upgrade to v0.5.2", maintainer=True)
+        title_only.body = "<!-- caretaker:upgrade target=0.5.0 -->"
+        github.list_issues.return_value = [title_only]
+        github.create_issue.return_value = make_issue(50, "Upgrade to v0.5.2")
+
+        number = await planner.create_upgrade_issue("0.5.0", target)
+
+        # New issue must be created — the existing one targets a different version
+        # despite the misleading title.
+        assert number == 50
+        github.create_issue.assert_awaited_once()
+
+
+def make_pr(number: int, title: str) -> PullRequest:
+    return PullRequest(
+        number=number,
+        title=title,
+        state=PRState.OPEN,
+        user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"),
+    )
+
+
+@pytest.mark.asyncio
+class TestCloseSupersededUpgradePRs:
+    """Portfolio #144/#146 and rust-oauth2-server pattern: two Copilot PRs
+    targeting the same upgrade version racing each other. Keep newest, close older.
+    """
+
+    async def test_no_prs_returns_empty(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = []
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
+
+    async def test_single_pr_not_closed(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [make_pr(50, "Upgrade to v0.10.0")]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
+
+    async def test_closes_older_prs_keeps_newest(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [
+            make_pr(10, "Upgrade to v0.10.0"),
+            make_pr(20, "Upgrade to v0.10.0"),
+            make_pr(30, "Upgrade to v0.10.0"),
+        ]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == [10, 20]
+        assert github.update_issue.await_count == 2
+        closed_numbers = [call.args[2] for call in github.update_issue.await_args_list]
+        assert set(closed_numbers) == {10, 20}
+        for call in github.update_issue.await_args_list:
+            assert call.kwargs == {"state": "closed"}
+        # Superseded comment references the keeper.
+        assert github.add_issue_comment.await_count == 2
+        for call in github.add_issue_comment.await_args_list:
+            assert "#30" in call.args[3]
+
+    async def test_ignores_prs_for_different_version(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        github.list_pull_requests.return_value = [
+            make_pr(10, "Upgrade to v0.9.0"),
+            make_pr(20, "Upgrade to v0.10.0"),
+        ]
+
+        closed = await planner.close_superseded_upgrade_prs("0.10.0")
+
+        assert closed == []
+        github.update_issue.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestSyncIssueMarkerDedupe:
+    async def test_dedupes_by_marker(self) -> None:
+        github = AsyncMock()
+        planner = UpgradePlanner(github=github, owner="o", repo="r")
+        existing = make_issue(99, "Some other title")
+        existing.body = "<!-- caretaker:sync target=1.5.0 -->"
+        github.list_issues.return_value = [existing]
+
+        number = await planner.create_sync_issue("1.5.0")
+
+        assert number == 99
+        github.create_issue.assert_not_called()

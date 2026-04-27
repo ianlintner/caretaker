@@ -1,0 +1,274 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+   Design tokens — Grafana-inspired 2026.
+   Dark is the primary canvas; light is a well-tuned invert.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Surfaces */
+  --color-background: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-card: #ffffff;
+  --color-card-elevated: #ffffff;
+  --color-panel: #ffffff;
+  --color-overlay: rgba(15, 18, 28, 0.4);
+
+  /* Text */
+  --color-foreground: #0f1420;
+  --color-card-foreground: #0f1420;
+  --color-muted: #eef0f4;
+  --color-muted-foreground: #5b6478;
+  --color-subtle: #8a94aa;
+
+  /* Borders / hairlines */
+  --color-border: #e3e6ec;
+  --color-border-strong: #c9cfda;
+  --color-ring: rgba(139, 92, 246, 0.45);
+
+  /* Brand / accents (Grafana-flavored: purple / cyan / green) */
+  --color-primary: #6d28d9;
+  --color-primary-foreground: #ffffff;
+  --color-primary-soft: rgba(109, 40, 217, 0.12);
+  --color-secondary: #eef0f4;
+  --color-secondary-foreground: #0f1420;
+  --color-accent: #0891b2;
+  --color-accent-foreground: #ffffff;
+
+  /* Semantic */
+  --color-success: #0d9f6e;
+  --color-success-soft: rgba(13, 159, 110, 0.14);
+  --color-warning: #b45309;
+  --color-warning-soft: rgba(180, 83, 9, 0.14);
+  --color-destructive: #dc2626;
+  --color-destructive-soft: rgba(220, 38, 38, 0.14);
+  --color-info: #0e7490;
+  --color-info-soft: rgba(14, 116, 144, 0.14);
+  --color-neutral-soft: rgba(99, 107, 126, 0.14);
+
+  /* Chart palette (shared light/dark; tuned for contrast both ways) */
+  --chart-1: #7c3aed;
+  --chart-2: #06b6d4;
+  --chart-3: #10b981;
+  --chart-4: #f59e0b;
+  --chart-5: #ec4899;
+  --chart-6: #3b82f6;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(15, 20, 32, 0.06);
+  --shadow-md: 0 8px 24px -12px rgba(15, 20, 32, 0.18);
+  --shadow-lg: 0 24px 48px -24px rgba(15, 20, 32, 0.28);
+  --shadow-glow: 0 0 0 1px var(--color-ring), 0 8px 24px -8px rgba(139, 92, 246, 0.35);
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 280ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Typography */
+  --font-sans: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+}
+
+.dark {
+  /* Grafana-like layered darks */
+  --color-background: #0b0d12;
+  --color-surface: #111420;
+  --color-card: #141826;
+  --color-card-elevated: #1a1f30;
+  --color-panel: #141826;
+  --color-overlay: rgba(5, 7, 12, 0.6);
+
+  --color-foreground: #e6e9f2;
+  --color-card-foreground: #e6e9f2;
+  --color-muted: #1c2030;
+  --color-muted-foreground: #8b93a7;
+  --color-subtle: #5b6478;
+
+  --color-border: #1f2436;
+  --color-border-strong: #2a3047;
+  --color-ring: rgba(167, 139, 250, 0.55);
+
+  --color-primary: #a78bfa;
+  --color-primary-foreground: #0b0d12;
+  --color-primary-soft: rgba(167, 139, 250, 0.16);
+  --color-secondary: #1c2030;
+  --color-secondary-foreground: #e6e9f2;
+  --color-accent: #22d3ee;
+  --color-accent-foreground: #0b0d12;
+
+  --color-success: #34d399;
+  --color-success-soft: rgba(52, 211, 153, 0.14);
+  --color-warning: #fbbf24;
+  --color-warning-soft: rgba(251, 191, 36, 0.14);
+  --color-destructive: #fb7185;
+  --color-destructive-soft: rgba(251, 113, 133, 0.16);
+  --color-info: #38bdf8;
+  --color-info-soft: rgba(56, 189, 248, 0.16);
+  --color-neutral-soft: rgba(139, 147, 167, 0.14);
+
+  --chart-1: #a78bfa;
+  --chart-2: #22d3ee;
+  --chart-3: #34d399;
+  --chart-4: #fbbf24;
+  --chart-5: #f472b6;
+  --chart-6: #60a5fa;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 24px 48px -24px rgba(0, 0, 0, 0.85);
+  --shadow-glow: 0 0 0 1px var(--color-ring), 0 8px 24px -8px rgba(167, 139, 250, 0.45);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  transition:
+    background-color var(--motion-base) var(--ease-out),
+    color var(--motion-base) var(--ease-out);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Tabular numbers — Grafana-style metric readability */
+.tnum,
+table,
+.stat-value {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hairline border helper — sharper than default 1px on hi-dpi */
+.hairline {
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+/* Panel — canonical Grafana stat/chart container */
+.panel {
+  background-color: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out),
+    transform var(--motion-base) var(--ease-out);
+}
+
+.panel:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.panel-interactive {
+  cursor: pointer;
+}
+
+.panel-interactive:hover {
+  transform: translateY(-1px);
+}
+
+/* Glass surface — used by sidebar + top bar for 2026 feel */
+.glass {
+  background: color-mix(in srgb, var(--color-panel) 80%, transparent);
+  backdrop-filter: saturate(140%) blur(10px);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
+  border-color: var(--color-border);
+}
+
+/* Focus ring — a11y */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* Scrollbars (WebKit) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-subtle);
+  background-clip: padding-box;
+}
+
+/* Ambient aurora accent in dark mode — subtle, Grafana-like */
+.dark body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(
+      60rem 40rem at 10% -10%,
+      rgba(167, 139, 250, 0.08),
+      transparent 60%
+    ),
+    radial-gradient(
+      40rem 30rem at 100% 0%,
+      rgba(34, 211, 238, 0.06),
+      transparent 60%
+    );
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  html,
+  body,
+  .panel,
+  .panel-interactive {
+    transition: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

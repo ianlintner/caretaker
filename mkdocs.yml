@@ -32,7 +32,10 @@ nav:
   - Getting started: getting-started.md
   - Configuration: configuration.md
   - Agents: agents.md
+  - Goals: goals.md
   - Architecture: architecture.md
+  - PR Ownership: pr-ownership.md
+  - Causal chains: causal-chains.md
   - Development: development.md
   - Release notes: release-notes.md
 
@@ -48,3 +51,6 @@ markdown_extensions:
       permalink: true
 
 strict: true
+
+exclude_docs: |
+  *-plan.md

@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from caretaker.github_client.api import GitHubAPIError
+from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import PullRequest
@@ -38,7 +41,8 @@ class DocsAgent:
     1. Finds merged PRs since the last docs-agent run.
     2. Generates a CHANGELOG entry for the current week from the PR titles/bodies.
     3. Opens a pull request updating CHANGELOG.md (and optionally README.md).
-    4. Assigns the PR to @copilot for final review / merge.
+    4. Posts a follow-up PR comment via the PAT-backed identity so @copilot can
+       review / merge from a write-capable user mention.
     """
 
     def __init__(
@@ -58,6 +62,8 @@ class DocsAgent:
         self._lookback_days = lookback_days
         self._changelog_path = changelog_path
         self._update_readme = update_readme
+        self._issues = GitHubIssueTools(github, owner, repo)
+        self._pull_requests = GitHubPullRequestTools(github, owner, repo)
 
     async def run(self) -> DocsReport:
         report = DocsReport()
@@ -93,6 +99,7 @@ class DocsAgent:
             return report
 
         # Build changelog entry
+        week_str = datetime.now(UTC).strftime("%Y-W%V")
         changelog_entry = _build_changelog_entry(merged_prs)
 
         # Get current CHANGELOG.md contents
@@ -103,52 +110,114 @@ class DocsAgent:
             current_content = ""
             current_sha = None
 
+        # Guard: if this week's heading is already committed, nothing to do.
+        if f"## [{week_str}]" in current_content:
+            logger.info("Docs agent: CHANGELOG already has entry for %s — skipping", week_str)
+            return report
+
         new_content = _prepend_changelog_entry(current_content, changelog_entry)
         if new_content == current_content:
             logger.info("Docs agent: changelog already up to date")
             return report
 
         # Create a branch and commit the update
-        week_str = datetime.now(UTC).strftime("%Y-W%V")
         branch_name = f"docs/changelog-{week_str}"
 
+        skip_file_write = False
         try:
             # Get the SHA of the default branch tip
             base_sha = await self._get_branch_sha(self._default_branch)
-            await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
-            await self._github.create_or_update_file(
-                owner=self._owner,
-                repo=self._repo,
-                path=self._changelog_path,
-                message=f"docs: update CHANGELOG for {week_str}",
-                content=new_content,
-                branch=branch_name,
-                sha=current_sha,
-            )
+            try:
+                await self._github.create_branch(self._owner, self._repo, branch_name, base_sha)
+            except GitHubAPIError as branch_err:
+                if branch_err.status_code != 422:
+                    raise
+                # Branch already exists from a previous (possibly incomplete) run — reuse it.
+                logger.warning("Docs agent: branch %r already exists — reusing it", branch_name)
+                # Re-read both the content AND SHA from the existing branch so we can
+                # detect whether the desired update was already committed and avoid a
+                # SHA-mismatch 409 on the subsequent file write.
+                try:
+                    branch_content, current_sha = await self._get_file(
+                        self._changelog_path, ref=branch_name
+                    )
+                    if branch_content == new_content:
+                        logger.info(
+                            "Docs agent: branch %r already has the changelog update — "
+                            "skipping file write",
+                            branch_name,
+                        )
+                        skip_file_write = True
+                except Exception as read_err:
+                    logger.warning(
+                        "Docs agent: could not read %s from branch %r (using default SHA): %s",
+                        self._changelog_path,
+                        branch_name,
+                        read_err,
+                    )
+            if not skip_file_write:
+                try:
+                    await self._github.create_or_update_file(
+                        owner=self._owner,
+                        repo=self._repo,
+                        path=self._changelog_path,
+                        message=f"docs: update CHANGELOG for {week_str}",
+                        content=new_content,
+                        branch=branch_name,
+                        sha=current_sha,
+                    )
+                except GitHubAPIError as file_err:
+                    if file_err.status_code == 409:
+                        logger.warning(
+                            "Docs agent: concurrent update on CHANGELOG (409): %s",
+                            file_err,
+                        )
+                        # Handled by another agent
+                    else:
+                        raise
 
-            await self._github.ensure_label(
-                self._owner,
-                self._repo,
+            await self._issues.ensure_label(
                 DOCS_LABEL,
                 color="0075ca",
                 description="Documentation updates",
             )
 
             pr_body = _build_pr_body(merged_prs, changelog_entry)
-            pr = await self._github.create_pull_request(
-                owner=self._owner,
-                repo=self._repo,
-                title=f"docs: reconcile CHANGELOG — {week_str}",
-                body=pr_body,
-                head=branch_name,
-                base=self._default_branch,
-                labels=[DOCS_LABEL],
-                assignees=["copilot"],
-            )
-            pr_number = pr["number"] if isinstance(pr, dict) else pr.number
-            report.doc_pr_opened = pr_number
-            report.changelog_updated = True
-            logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+            try:
+                pr = await self._pull_requests.create(
+                    title=f"docs: reconcile CHANGELOG — {week_str}",
+                    body=pr_body,
+                    head=branch_name,
+                    base=self._default_branch,
+                    labels=[DOCS_LABEL],
+                    assignees=["copilot"],
+                )
+                pr_number = pr["number"] if isinstance(pr, dict) else pr.number
+                await self._pull_requests.comment(
+                    pr_number,
+                    _build_copilot_review_comment(),
+                    use_copilot_token=True,
+                )
+                report.doc_pr_opened = pr_number
+                report.changelog_updated = True
+                logger.info("Docs agent: opened docs-update PR #%d", pr_number)
+            except GitHubAPIError as pr_err:
+                if pr_err.status_code == 422 and "already exists" in str(pr_err.message):
+                    logger.warning("Docs agent: PR already exists for %s", branch_name)
+                else:
+                    raise
+        except GitHubAPIError as e:
+            not_permitted_msg = "not permitted to create or approve pull requests"
+            if e.status_code == 403 and not_permitted_msg in e.message:
+                logger.warning(
+                    "Docs agent: skipping PR creation — GitHub Actions does not have "
+                    "permission to create pull requests (enable it in repo Settings → "
+                    "Actions → General → 'Allow GitHub Actions to create and approve "
+                    "pull requests')"
+                )
+            else:
+                logger.error("Docs agent: failed to create docs PR: %s", e)
+                report.errors.append(str(e))
         except Exception as e:
             logger.error("Docs agent: failed to create docs PR: %s", e)
             report.errors.append(str(e))
@@ -173,11 +242,11 @@ class DocsAgent:
         return merged
 
     async def _find_open_docs_prs(self) -> list[int]:
-        prs = await self._github.list_pull_requests(self._owner, self._repo, state="open")
+        prs = await self._pull_requests.list(state="open")
         return [pr.number for pr in prs if (pr.body or "").find(DOCS_AGENT_MARKER) != -1]
 
-    async def _get_file(self, path: str) -> tuple[str, str | None]:
-        data = await self._github.get_file_contents(self._owner, self._repo, path)
+    async def _get_file(self, path: str, ref: str | None = None) -> tuple[str, str | None]:
+        data = await self._github.get_file_contents(self._owner, self._repo, path, ref=ref)
         if not data:
             return "", None
         content = base64.b64decode(data.get("content", "")).decode("utf-8")
@@ -208,15 +277,18 @@ def _clean_title(title: str) -> str:
 
 
 def _prepend_changelog_entry(current: str, entry: str) -> str:
-    """Insert the new entry after the top-level # heading (if any), otherwise prepend."""
+    """Insert the new entry after the top-level # heading (if any), otherwise prepend.
+
+    Invariant: returned content ends in exactly one '\\n'.
+    ``entry`` is guaranteed to end in '\\n' by ``_build_changelog_entry``.
+    """
     if "\n## " in current:
         pos = current.index("\n## ")
-        return current[:pos] + "\n" + entry + "\n" + current[pos + 1 :]
-    # First entry ever
+        return current[: pos + 1] + entry + "\n" + current[pos + 1 :]
     if current.startswith("# "):
         newline_pos = current.index("\n")
-        return current[: newline_pos + 1] + "\n" + entry + "\n" + current[newline_pos + 1 :]
-    return entry + "\n" + current
+        return current[: newline_pos + 1] + "\n" + entry + current[newline_pos + 1 :]
+    return entry + current if current else entry
 
 
 def _build_pr_body(prs: list[Any], changelog_entry: str) -> str:
@@ -233,8 +305,12 @@ This PR updates `CHANGELOG.md` to capture the following merged pull requests:
 {changelog_entry}
 ```
 
-@copilot — please review the generated entry for accuracy,
-expand any cryptic titles, and merge when ready.
-
 ---
 {DOCS_AGENT_MARKER} -->"""
+
+
+def _build_copilot_review_comment() -> str:
+    return """@copilot Please review this generated documentation update for accuracy,
+expand any cryptic titles if needed, and merge when ready.
+
+<!-- caretaker:docs-review -->"""

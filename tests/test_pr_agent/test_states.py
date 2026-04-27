@@ -87,11 +87,64 @@ class TestEvaluateCI:
         assert result.status == CIStatus.FAILING
         assert len(result.failed_runs) == 1
 
+    def test_action_required_is_pending(self) -> None:
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert len(result.action_required_runs) == 1
+        assert result.all_completed is True
+
     def test_queued_is_pending(self) -> None:
         runs = [
             make_check_run(
                 name="test",
                 status=CheckStatus.QUEUED,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+
+    def test_waiting_is_pending(self) -> None:
+        """GitHub 'waiting' status (e.g. environment gates) must be treated as pending."""
+        runs = [
+            make_check_run(
+                name="deploy",
+                status=CheckStatus.WAITING,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+        assert len(result.pending_runs) == 1
+
+    def test_requested_is_pending(self) -> None:
+        """GitHub 'requested' status must be treated as pending CI."""
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.REQUESTED,
+                conclusion=None,
+            ),
+        ]
+        result = evaluate_ci(runs)
+        assert result.status == CIStatus.PENDING
+        assert result.all_completed is False
+
+    def test_pending_status_is_pending(self) -> None:
+        """GitHub 'pending' status must be treated as pending CI."""
+        runs = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.PENDING,
                 conclusion=None,
             ),
         ]
@@ -182,6 +235,55 @@ class TestEvaluatePR:
         pr = make_pr()
         checks = [
             make_check_run(name="test", status=CheckStatus.IN_PROGRESS, conclusion=None),
+        ]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_action_required_approve_workflows(self) -> None:
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "approve_workflows"
+
+    def test_ci_action_required_untrusted_pr_waits(self) -> None:
+        """Untrusted human PRs with action_required runs should wait, not auto-approve."""
+        pr = make_pr()  # default is human user
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
+        ]
+        result = evaluate_pr(
+            pr, checks, [], PRTrackingState.DISCOVERED, auto_approve_workflows=True
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+
+    def test_ci_action_required_flag_off_waits(self) -> None:
+        """When auto_approve_workflows is False, always wait even for trusted PRs."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(user=User(login="copilot[bot]", id=1, type="Bot"))
+        checks = [
+            make_check_run(
+                name="test",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.ACTION_REQUIRED,
+            ),
         ]
         result = evaluate_pr(pr, checks, [], PRTrackingState.DISCOVERED)
         assert result.recommended_state == PRTrackingState.CI_PENDING
@@ -325,3 +427,479 @@ class TestEvaluatePRReviewGuards:
         # Should fall through to merge — bot comments already addressed
         assert result.recommended_action in ("merge", "await_review")
         assert result.recommended_action != "request_review_fix"
+
+
+class TestReadinessRequiredReviews:
+    """Readiness scoring respects the required_reviews config knob.
+
+    Regression for rust-oauth2-server PR #172 where the score stayed stuck at
+    20% on a solo-dev repo because `required_review_missing` was unconditionally
+    added whenever no reviewer had approved.
+    """
+
+    def test_required_reviews_zero_grants_review_points_without_approval(self) -> None:
+        """When required_reviews=0, a PR with no reviews still scores the 30% review component."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]  # passing
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no reviews at all
+            PRTrackingState.CI_PASSING,
+            required_reviews=0,
+        )
+        assert result.readiness is not None
+        assert "required_review_missing" not in result.readiness.blockers
+        # 10 (mergeable) + 20 (no automated feedback) + 30 (reviews waived) + 40 (CI) = 100
+        assert result.readiness.score == 1.0
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+    def test_required_reviews_zero_still_blocks_on_changes_requested(self) -> None:
+        """Even with required_reviews=0, an explicit changes-requested review blocks."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        reviews = [make_review(state=ReviewState.CHANGES_REQUESTED, body="nope")]
+        result = evaluate_pr(
+            pr,
+            checks,
+            reviews,
+            PRTrackingState.CI_PASSING,
+            required_reviews=0,
+        )
+        assert result.readiness is not None
+        assert "changes_requested" in result.readiness.blockers
+        assert "required_review_missing" not in result.readiness.blockers
+
+    def test_required_reviews_default_one_still_adds_blocker(self) -> None:
+        """Default behavior (required_reviews=1) is unchanged — missing review blocks."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)  # default=1
+        assert result.readiness is not None
+        assert "required_review_missing" in result.readiness.blockers
+        assert result.readiness.score < 1.0
+
+
+class TestEvaluatePRAutoMergeGate:
+    """Regression for T-S3: MERGE_READY must respect auto_merge policy.
+
+    ``merge.evaluate_merge`` already refuses to merge PR families with
+    ``auto_merge.<profile>=false``, but the state machine upstream still
+    returned ``MERGE_READY`` — which made the status comment say "ready for
+    merge" while caretaker silently refused to act. Thread the policy into
+    ``evaluate_pr`` and cap the recommendation at ``CI_PASSING / await_review``.
+    """
+
+    def test_human_pr_auto_merge_disabled_does_not_return_merge_ready(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        human = User(login="human-dev", id=7, type="User")
+        pr = make_pr(user=human)
+        checks = [make_check_run(name="test")]  # passing
+        auto_merge = AutoMergeConfig(human_prs=False)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no reviewers assigned → reviews.pending=True
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state != PRTrackingState.MERGE_READY
+        assert result.recommended_state == PRTrackingState.CI_PASSING
+        assert result.recommended_action == "await_review"
+
+    def test_human_pr_auto_merge_enabled_returns_merge_ready(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        human = User(login="human-dev", id=7, type="User")
+        pr = make_pr(user=human)
+        checks = [make_check_run(name="test")]
+        auto_merge = AutoMergeConfig(human_prs=True)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+        assert result.recommended_action == "merge"
+
+    def test_copilot_pr_auto_merge_disabled_caps_at_ci_passing(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import User
+
+        copilot = User(login="copilot[bot]", id=8, type="Bot")
+        pr = make_pr(user=copilot)
+        checks = [make_check_run(name="test")]
+        auto_merge = AutoMergeConfig(copilot_prs=False)
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],
+            PRTrackingState.CI_PASSING,
+            auto_merge=auto_merge,
+        )
+        assert result.recommended_state != PRTrackingState.MERGE_READY
+
+    def test_no_auto_merge_config_preserves_legacy_behavior(self) -> None:
+        """When auto_merge is None, the gate is disabled — MERGE_READY returns."""
+        pr = make_pr()
+        checks = [make_check_run(name="test")]
+        result = evaluate_pr(pr, checks, [], PRTrackingState.CI_PASSING)
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+
+# ── Fix 3: Copilot PR awaiting workflow approval ─────────────────────
+
+
+class TestCopilotActionRequired:
+    """Fix 3: Copilot PRs with action_required runs must surface action_required_runs
+    so the stuck-PR guard in agent.py can suppress escalation."""
+
+    def test_copilot_pr_action_required_surfaced(self) -> None:
+        """action_required_runs is populated for Copilot PRs — agent guard can fire."""
+        from caretaker.github_client.models import User
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(user=copilot_user)
+        assert pr.is_copilot_pr
+
+        action_req_run = make_check_run(
+            name="CI / test",
+            status=CheckStatus.COMPLETED,
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        result = evaluate_pr(
+            pr,
+            [action_req_run],
+            [],
+            PRTrackingState.CI_PENDING,
+            auto_approve_workflows=False,
+        )
+        assert result.recommended_state == PRTrackingState.CI_PENDING
+        assert result.recommended_action == "wait"
+        assert len(result.ci.action_required_runs) == 1
+
+    def test_copilot_awaiting_approval_guard_condition(self) -> None:
+        """Verify the guard condition: is_copilot_pr AND action_required_runs non-empty."""
+        from caretaker.github_client.models import User
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        copilot_pr = make_pr(user=copilot_user)
+        human_pr = make_pr()
+
+        action_req_run = make_check_run(
+            name="CI / test",
+            conclusion=CheckConclusion.ACTION_REQUIRED,
+        )
+        ci_eval = evaluate_ci([action_req_run])
+
+        # Copilot PR with action_required → guard suppresses stuck escalation
+        assert copilot_pr.is_copilot_pr and bool(ci_eval.action_required_runs)
+
+        # Human PR with action_required → guard does NOT suppress (human-owned stalls are real)
+        assert not (human_pr.is_copilot_pr and bool(ci_eval.action_required_runs))
+
+
+# ── request_review_approve — caretaker PR auto-approval ──────────────
+
+
+class TestRequestReviewApprove:
+    """State machine routes caretaker PRs to auto-approval when eligible."""
+
+    def _passing_run(self) -> object:
+        return make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+
+    def test_caretaker_pr_ci_green_no_review_routes_to_approve(self) -> None:
+        """CI green, no reviews → request_review_approve."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_caretaker_pr_already_approved_does_not_re_approve(self) -> None:
+        """If already approved, fall through to MERGE_READY — no re-approval."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        approval = make_review(state=ReviewState.APPROVED)
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [approval],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+        assert result.recommended_state == PRTrackingState.MERGE_READY
+
+    def test_caretaker_pr_changes_requested_does_not_approve(self) -> None:
+        """CHANGES_REQUESTED blocks auto-approval — must go through fix path."""
+        pr = make_pr()
+        pr.head_ref = "claude/fix-something"
+        blocker = make_review(state=ReviewState.CHANGES_REQUESTED, body="Must fix the auth check")
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [blocker],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+        assert result.recommended_action == "request_review_fix"
+
+    def test_caretaker_pr_fix_in_flight_does_not_approve(self) -> None:
+        """When a fix is already in-flight (FIX_REQUESTED), skip auto-approval."""
+        pr = make_pr()
+        pr.head_ref = "caretaker/bump-deps"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.FIX_REQUESTED,
+        )
+        assert result.recommended_action != "request_review_approve"
+
+    def test_human_pr_does_not_get_auto_approved(self) -> None:
+        """Non-caretaker PRs must not be auto-approved."""
+        pr = make_pr()
+        pr.head_ref = "feature/my-cool-thing"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_approve"
+
+    def test_caretaker_prefix_caretaker_slash_also_routed(self) -> None:
+        """caretaker/ branch prefix is also eligible for auto-approval."""
+        pr = make_pr()
+        pr.head_ref = "caretaker/upgrade-something"
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_releases_json_gets_auto_approved(self) -> None:
+        """chore/releases-json-* PRs must be eligible for auto-approval."""
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_github_actions_chore_gets_auto_approved(self) -> None:
+        """github-actions[bot] chore/ PRs must be eligible for auto-approval."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(
+            user=User(login="github-actions[bot]", id=1, type="Bot"),
+            head_ref="chore/bump-version",
+        )
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_maintainer_bot_pr_auto_merge_allowed(self) -> None:
+        """_auto_merge_allows returns True for maintainer bot PRs by default."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        assert _auto_merge_allows(pr, AutoMergeConfig()) is True
+
+    def test_maintainer_bot_pr_auto_merge_disabled_when_flag_off(self) -> None:
+        """_auto_merge_allows returns False when maintainer_bot_prs=False."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="chore/releases-json-v0.19.5")
+        assert _auto_merge_allows(pr, AutoMergeConfig(maintainer_bot_prs=False)) is False
+
+
+# ── Bot CheckRun + comment-marker approvals (PR #609 regression) ─────
+
+
+class TestBotApprovalChannels:
+    """Bot reviewers signal approval through three channels — all should
+    satisfy the readiness review-gate. See PR #609 incident: claude-review
+    posted a SUCCESS CheckRun, but the comment forever read
+    "required_review_missing" because only formal Reviews counted.
+    """
+
+    def test_bot_check_run_counts_as_approval(self) -> None:
+        """A configured bot CheckRun (e.g. claude-review) success satisfies the gate."""
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        checks = [
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            )
+        ]
+        result = evaluate_reviews([], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is True
+        assert len(result.bot_check_approvals) == 1
+        assert result.has_bot_approval is True
+
+    def test_bot_check_run_pending_does_not_approve(self) -> None:
+        """An in-progress bot CheckRun does not pre-approve the PR."""
+        from caretaker.github_client.models import CheckStatus
+
+        checks = [
+            make_check_run(name="claude-review", status=CheckStatus.IN_PROGRESS, conclusion=None)
+        ]
+        result = evaluate_reviews([], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is False
+        assert len(result.bot_check_approvals) == 0
+
+    def test_bot_review_with_marker_counts_as_approval(self) -> None:
+        """A bot COMMENTED review whose body matches an approval marker satisfies the gate."""
+        from caretaker.github_client.models import User
+
+        bot = User(login="claude[bot]", id=99, type="Bot")
+        rev = make_review(user=bot, state=ReviewState.COMMENTED, body="**Approved** — looks good!")
+        result = evaluate_reviews([rev], bot_approval_markers=["**approved**", "lgtm"])
+        assert result.approved is True
+        assert len(result.bot_comment_approvals) == 1
+
+    def test_bot_review_without_marker_stays_automated_feedback(self) -> None:
+        """A bot COMMENTED review without a marker remains feedback, not approval."""
+        from caretaker.github_client.models import User
+
+        bot = User(login="copilot-pull-request-reviewer[bot]", id=99, type="Bot")
+        rev = make_review(user=bot, state=ReviewState.COMMENTED, body="Consider X")
+        result = evaluate_reviews([rev], bot_approval_markers=["**approved**"])
+        assert result.approved is False
+        assert len(result.automated_review_comments) == 1
+        assert len(result.bot_comment_approvals) == 0
+        assert result.has_automated_comments is True
+
+    def test_bot_issue_comment_with_marker_counts_as_approval(self) -> None:
+        """A bot-authored issue comment with 'LGTM' satisfies the gate even without a Review."""
+        from caretaker.github_client.models import User
+        from tests.conftest import make_comment
+
+        ic = make_comment(body="LGTM!", user=User(login="claude[bot]", id=99, type="Bot"))
+        result = evaluate_reviews([], issue_comments=[ic], bot_approval_markers=["lgtm"])
+        assert result.approved is True
+
+    def test_changes_requested_overrides_bot_approval(self) -> None:
+        """Human CHANGES_REQUESTED still blocks even when a bot CheckRun signed off."""
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        rev_block = make_review(state=ReviewState.CHANGES_REQUESTED, body="Nope")
+        checks = [
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            )
+        ]
+        result = evaluate_reviews([rev_block], check_runs=checks, bot_check_names=["claude-review"])
+        assert result.approved is False
+        assert result.changes_requested is True
+
+
+class TestCaretakerWorkflowExclusion:
+    """Caretaker's own supervisor workflow jobs (dispatch-guard, doctor, etc.)
+    must not gate the readiness CI rollup — including them would create the
+    same self-deadlock that ``caretaker/pr-readiness`` already avoids.
+    """
+
+    def test_pending_caretaker_workflow_job_does_not_block_ci(self) -> None:
+        """An in-progress dispatch-guard does not flag ci_pending."""
+        from caretaker.github_client.models import CheckStatus
+
+        runs = [
+            make_check_run(name="lint"),  # SUCCESS
+            make_check_run(name="dispatch-guard", status=CheckStatus.IN_PROGRESS, conclusion=None),
+        ]
+        ci = evaluate_ci(
+            runs,
+            caretaker_workflow_jobs=[
+                "dispatch-guard",
+                "doctor",
+                "maintain",
+                "self-heal-on-failure",
+            ],
+        )
+        assert ci.status == CIStatus.PASSING
+        assert ci.all_completed is True
+        assert len(ci.pending_runs) == 0
+
+    def test_failing_caretaker_workflow_job_does_not_fail_ci(self) -> None:
+        """A failing maintain job does not flag ci_failing — it's caretaker's own job."""
+        runs = [
+            make_check_run(name="test"),  # SUCCESS
+            make_check_run(name="maintain", conclusion=CheckConclusion.FAILURE),
+        ]
+        ci = evaluate_ci(runs, caretaker_workflow_jobs=["maintain"])
+        assert ci.status == CIStatus.PASSING
+        assert len(ci.failed_runs) == 0
+
+
+class TestPR609Regression:
+    """End-to-end regression for PR #609: human PR, claude-review CheckRun
+    SUCCESS, all real CI green, caretaker workflow jobs running, no formal
+    Reviews API submission. Old behavior gave 70% with required_review_missing.
+    New behavior gives 100% ready.
+    """
+
+    def test_pr609_scenario_reaches_100_percent(self) -> None:
+        from caretaker.github_client.models import CheckConclusion, CheckStatus
+
+        pr = make_pr()
+        checks = [
+            make_check_run(name="lint"),
+            make_check_run(name="test"),
+            make_check_run(
+                name="claude-review",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.SUCCESS,
+            ),
+            # caretaker workflow jobs that should be ignored
+            make_check_run(name="dispatch-guard"),
+            make_check_run(name="doctor"),
+            make_check_run(name="maintain"),
+            # caretaker's own readiness check (already in _ALWAYS_IGNORED)
+            make_check_run(
+                name="caretaker/pr-readiness", status=CheckStatus.IN_PROGRESS, conclusion=None
+            ),
+        ]
+        result = evaluate_pr(
+            pr,
+            checks,
+            [],  # no formal reviews
+            PRTrackingState.DISCOVERED,
+            required_reviews=1,
+            bot_check_names=["claude-review"],
+            caretaker_workflow_jobs=[
+                "dispatch-guard",
+                "doctor",
+                "maintain",
+                "self-heal-on-failure",
+            ],
+        )
+        assert result.readiness is not None
+        assert result.readiness.score == 1.0
+        assert result.readiness.conclusion == "success"
+        assert result.readiness.blockers == []
+        assert result.reviews.has_bot_approval is True

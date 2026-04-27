@@ -8,10 +8,6 @@ __pycache__/
 dist/
 build/
 .eggs/
-# But track the setup templates and agent distribution files
-!dist/SETUP_AGENT.md
-!dist/templates/
-!dist/templates/**
 
 # Virtual environments
 .venv/
@@ -38,3 +34,27 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# MkDocs build output — deployed via GitHub Actions, not committed to git
+site/
+.gitignore
+.caretaker-memory.db*
+*.pem
+/*.txt
+/*.json
+!releases.json
+src/caretaker/evolution/backends/mongo_backend.py
+*-evolution.db*
+*.log
+
+# Claude Code local state
+.claude/
+.caretaker-memory*.db
+
+# Frontend (node_modules is large; restored via npm install)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Hive memory store (local)
+.hive/

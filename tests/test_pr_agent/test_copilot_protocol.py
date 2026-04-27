@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
 from caretaker.llm.copilot import (
     RESULT_CLOSE,
     RESULT_OPEN,
     TASK_CLOSE,
     TASK_OPEN,
+    CopilotProtocol,
     CopilotResult,
     CopilotTask,
     ResultStatus,
     TaskType,
 )
+from caretaker.pr_agent.ci_triage import FailureType
+from caretaker.pr_agent.copilot import _FAILURE_TYPE_TO_TASK_TYPE
 
 
 class TestCopilotTask:
@@ -35,6 +43,8 @@ class TestCopilotTask:
         assert "ATTEMPT: 1 of 2" in body
         assert "PRIORITY: high" in body
         assert "AssertionError in test_foo" in body
+        assert "caretaker:causal" in body
+        assert "source=pr-agent-task" in body
 
     def test_to_comment_with_context(self) -> None:
         task = CopilotTask(
@@ -120,3 +130,50 @@ CHANGES: Fixed 2 of 3 issues
         assert result is not None
         assert result.status == ResultStatus.PARTIAL
         assert result.changes == "Fixed 2 of 3 issues"
+
+
+class TestFailureTypeToTaskTypeMapping:
+    """Ensure every FailureType maps to a valid TaskType without raising ValueError."""
+
+    @pytest.mark.parametrize(
+        "failure_type,expected_task_type",
+        [
+            (FailureType.TEST_FAILURE, TaskType.TEST_FAILURE),
+            (FailureType.LINT_FAILURE, TaskType.LINT_FAILURE),
+            (FailureType.BUILD_FAILURE, TaskType.BUILD_FAILURE),
+            (FailureType.TYPE_ERROR, TaskType.BUILD_FAILURE),
+            (FailureType.TIMEOUT, TaskType.CI_FAILURE),
+            (FailureType.BACKLOG, TaskType.CI_FAILURE),
+            (FailureType.UNKNOWN, TaskType.CI_FAILURE),
+        ],
+    )
+    def test_all_failure_types_map_to_valid_task_type(
+        self, failure_type: FailureType, expected_task_type: TaskType
+    ) -> None:
+        result = _FAILURE_TYPE_TO_TASK_TYPE.get(failure_type, TaskType.CI_FAILURE)
+        assert result == expected_task_type
+
+    def test_all_failure_types_are_covered(self) -> None:
+        """Every FailureType must have an entry in the mapping."""
+        for ft in FailureType:
+            assert ft in _FAILURE_TYPE_TO_TASK_TYPE, f"FailureType.{ft.name} missing from mapping"
+
+
+@pytest.mark.asyncio
+async def test_post_task_uses_copilot_token_for_pr_comment() -> None:
+    github = AsyncMock()
+    github.add_issue_comment.return_value = SimpleNamespace(id=99)
+    protocol = CopilotProtocol(github, "o", "r")
+    task = CopilotTask(
+        task_type=TaskType.CI_FAILURE,
+        job_name="ci",
+        error_output="boom",
+        instructions="fix it",
+        attempt=1,
+        max_attempts=2,
+    )
+
+    await protocol.post_task(42, task)
+
+    github.add_issue_comment.assert_awaited_once()
+    assert github.add_issue_comment.call_args.kwargs["use_copilot_token"] is True

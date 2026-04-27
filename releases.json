@@ -1,10 +1,213 @@
 {
   "releases": [
     {
-      "version": "0.1.0",
-      "min_compatible": "0.1.0",
-      "changelog_url": "",
-      "upgrade_notes": "Initial release. No upgrade required.",
+      "version": "0.22.3",
+      "min_compatible": "0.22.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.3",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.22.3 -->\n\n## What's Changed\n### Other Changes\n* fix(pr-agent): wire MergeAuthorityConfig + neutral conclusion in advisory mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/604\n* docs(skills): add caretaker-qa-cycle skill + backfill releases.json v0.22.0\u2013v0.22.2 by @ianlintner in https://github.com/ianlintner/caretaker/pull/605\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.22.2...v0.22.3",
+      "breaking": false
+    },
+    {
+      "version": "0.22.2",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.2",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.22.2 -->\n\n## What's Changed\n### Other Changes\n* fix(pr-agent): wire MergeAuthorityConfig + neutral conclusion in advisory mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/604\n* fix(graph): persist CausalEvent.parent_id on Neo4j node so SPA + warm-from-graph see it by @ianlintner\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.22.1...v0.22.2",
+      "breaking": false
+    },
+    {
+      "version": "0.22.1",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.22.1 -->\n\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.22.0...v0.22.1",
+      "breaking": false
+    },
+    {
+      "version": "0.22.0",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.22.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.22.0 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.21.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/600\n* chore: add v0.20.1 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/599\n* feat(causal): persistent CausalEventStore + parent threading across agents by @ianlintner in https://github.com/ianlintner/caretaker/pull/601\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.21.0...v0.22.0",
+      "breaking": false
+    },
+    {
+      "version": "0.21.0",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.21.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.21.0 -->\n\n## What's Changed\n### Other Changes\n* feat(graph): wire hierarchical edges so the knowledge graph actually links by @ianlintner in https://github.com/ianlintner/caretaker/pull/598\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.20.1...v0.21.0",
+      "breaking": false
+    },
+    {
+      "version": "0.20.1",
+      "min_compatible": "0.19.6",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.20.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.20.1 -->\n\n## What's Changed\n### Other Changes\n* fix(mcp): harden caretaker-mcp against OOM under webhook bursts + GitHub cooldown by @ianlintner in https://github.com/ianlintner/caretaker/pull/596\n* fix(doctor): drop legacy CARETAKER_FLEET_SECRET HMAC check by @ianlintner in https://github.com/ianlintner/caretaker/pull/597\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.20.0...v0.20.1",
+      "breaking": false
+    },
+    {
+      "version": "0.19.6",
+      "min_compatible": "0.19.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.6",
+      "upgrade_notes": "\nWires the **fleet registry** into the admin dashboard end-to-end so that\nproduction deployments at `https://caretaker.cat-herding.net` light up\nwith real heartbeat, alert, webhook, and doctor data. Closes the gap\nwhere every child repo in `docs/fleet.yml` was effectively invisible to\nthe admin UI even when it ran caretaker on schedule.\n\n### Added\n\n- **Persistent `SQLiteFleetRegistryStore`** (`src/caretaker/fleet/sqlite_store.py`)\n  \u2014 SQLite-backed implementation of the registry with the same async API\n  as the in-memory store. Keeps the most recent 32 heartbeats per repo\n  in a `fleet_heartbeats` ring buffer plus the latest snapshot in\n  `fleet_clients`. Activated by setting `CARETAKER_FLEET_DB_PATH`\n  (default location `~/.local/state/caretaker/fleet-registry.db`); the\n  legacy in-memory store remains the default to avoid surprising tests.\n  Survives backend restarts so dashboard data no longer evaporates on\n  every pod recycle.\n- **`fleet_registry` block in `setup-templates/templates/config-default.yml`**\n  \u2014 opt-in template (`enabled: false`) that points at the production\n  endpoint with HMAC and timeout pre-wired. Includes a 22-line comment\n  block explaining the contract.\n- **`CARETAKER_FLEET_SECRET` env wiring in `setup-templates/templates/workflows/maintainer.yml`**\n  \u2014 exported in all three `env:` blocks (bootstrap-check, run, and\n  self-heal-on-failure). Indentation across the workflow normalised to\n  2-space nesting at the same time.\n- **Step 2.8 in `setup-templates/SETUP_AGENT.md`** \u2014 guides Copilot\n  through enabling the fleet registry on each child repo (config edit\n  + secret + verification command).\n- **`docs/fleet-opt-in-runbook.md`** \u2014 operator-facing runbook\n  enumerating the 12 child repos in `docs/fleet.yml` with per-repo\n  caveats and a four-step opt-in checklist.\n- **`caretaker fleet status` CLI command** \u2014 local config inspector;\n  prints the resolved `fleet_registry` block and notes whether the\n  signing secret is populated.\n- **`caretaker f",
+      "breaking": false
+    },
+    {
+      "version": "0.19.3",
+      "min_compatible": "0.19.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.3",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.3 -->\n\n## What's Changed\n### Maintenance\n* chore(deps): bump litellm from 1.83.0 to 1.83.7 in the uv group across 1 directory by @dependabot[bot] in https://github.com/ianlintner/caretaker/pull/548\n### Other Changes\n* chore: add v0.19.2 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/546\n* fix(doctor): treat rate-limit 403s as WARN instead of FAIL by @Copilot in https://github.com/ianlintner/caretaker/pull/542\n* fix(workflow): make caretaker:reviewed label creation idempotent in update-releases-json by @Copilot in https://github.com/ianlintner/caretaker/pull/539\n* security: bump litellm minimum to 1.83.7 (SSTI fix) by @Copilot in https://github.com/ianlintner/caretaker/pull/550\n* feat(github-app): Phase 2 webhook dispatcher (shadow-first) by @ianlintner in https://github.com/ianlintner/caretaker/pull/551\n* feat(shepherd): codify manual PR cleanup into a gated shepherd mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/547\n* fix(shepherd): validate ShepherdConfig numeric bounds by @ianlintner in https://github.com/ianlintner/caretaker/pull/552\n* feat(github-app): wire active-mode dispatcher plumbing by @ianlintner in https://github.com/ianlintner/caretaker/pull/553\n* feat(github-app): wire concrete AgentContextFactory and AgentRunner for active dispatch by @ianlintner in https://github.com/ianlintner/caretaker/pull/554\n* feat(github-app): rollout runbook + dispatch mode in /health by @ianlintner in https://github.com/ianlintner/caretaker/pull/555\n* feat(deploy): flip webhook dispatcher to active mode by @ianlintner in https://github.com/ianlintner/caretaker/pull/556\n* fix(frontend): repair Graph2DView.tsx build break by @ianlintner in https://github.com/ianlintner/caretaker/pull/557\n* fix: CHANGELOG double-newline and draft promoter Checks API gating by @ianlintner in https://github.com/ianlintner/caretaker/pull/560\n* security: upgrade pyt",
+      "breaking": false
+    },
+    {
+      "version": "0.19.2",
+      "min_compatible": "0.19.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.2",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.2 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.19.1 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/544\n* feat(phase5): fleet lag regression harness \u2014 fleet.yml, weekly cron, caretaker fleet lag CLI by @ianlintner in https://github.com/ianlintner/caretaker/pull/545\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.19.1...v0.19.2",
+      "breaking": false
+    },
+    {
+      "version": "0.19.1",
+      "min_compatible": "0.19.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.1 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.19.0 to releases.json by @ianlintner in https://github.com/ianlintner/caretaker/pull/534\n* fix(release): ensure caretaker:reviewed label exists before gh pr create by @ianlintner in https://github.com/ianlintner/caretaker/pull/540\n* feat: fleet-wide upgrade defaults \u2014 auto_approve + auto_ready_drafts (v0.19.1) by @ianlintner in https://github.com/ianlintner/caretaker/pull/543\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.19.0...v0.19.1",
+      "breaking": false
+    },
+    {
+      "version": "0.19.0",
+      "min_compatible": "0.18.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.19.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.19.0 -->\n\n## What's Changed\n### Other Changes\n* feat: QA follow-ups \u2014 issues #522\u2013#525 (security probe auto-detect, releases.json automation, init-workflow CLI, regression tests) by @ianlintner in https://github.com/ianlintner/caretaker/pull/533\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.18.0...v0.19.0",
+      "breaking": false
+    },
+    {
+      "version": "0.18.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.18.0",
+      "upgrade_notes": "Reduces stuck PRs/issues from caretaker-qa QA findings. (1) LLMConfig field claude_enabled renamed to llm_enabled (legacy alias preserved) with clearer docstring and a WARN log when disabled despite credentials \u2014 setting this to 'false' kills the entire LLM router, not just the Claude probe. (2) pr_reviewer defaults flipped: webhook_only now defaults to False and trigger_actions expanded to ['opened','synchronize','reopened','ready_for_review'] so polling-only deployments and draft-to-ready transitions get reviewed. (3) New pr_ci_approver agent surfaces (or, when auto_approve is set, approves) action_required workflow runs queued by trusted bot actors (Copilot, github-actions[bot], dependabot[bot], etc.), closing the owner-approval gap for automated-review loops. Also lazy-loads fastapi in caretaker.fleet to fix Orchestrator startup when fastapi extras aren't installed.",
+      "breaking": false
+    },
+    {
+      "version": "0.17.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.17.0",
+      "upgrade_notes": "QA gap trio fix. (1) Issues containing the caretaker:qa-scenario HTML marker are now suppressed from all triage passes and the issue-agent classify/dispatch loop \u2014 these are synthetic test fixtures that must not be acted on. (2) close_empty_body_prs() added to PR triage \u2014 standalone PRs with empty or boilerplate bodies are closed with a description-request comment regardless of diff content. (3) Copilot-authored draft PRs whose CI shows action_required runs are no longer escalated as stuck \u2014 they are awaiting owner workflow approval, which is expected.",
+      "breaking": false
+    },
+    {
+      "version": "0.16.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.16.0",
+      "upgrade_notes": "Wave A of the 2026-Q2 R&D plan. Adds deterministic-first fix ladder + memory embedding backfill in self-heal agent, Braintrust nightly eval harness, sanitize_input and filter_output guardrails, GitHub App JWT self-minting for caretaker process tokens, and --llm-probe online endpoint preflight in caretaker doctor.",
+      "breaking": false
+    },
+    {
+      "version": "0.15.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.15.0",
+      "upgrade_notes": "Phase 3 of the 2026-Q2 agentic migration plan. Cross-run memory retrieval wired into decision sites, fleet-graph read-paths for upgrade and security agents, and a first-cut Dependabot-group bisector that pins a single package at a time to localise breakage.",
+      "breaking": false
+    },
+    {
+      "version": "0.14.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.14.0",
+      "upgrade_notes": "Phase 2 of the 2026-Q2 agentic migration plan. Twelve decision-site migrations behind per-domain agentic.<name>.mode feature flags (default off). Includes agentic PR evaluation, issue classification, stale detection, security triage, and docs summarisation. No runtime change until operators opt in per repo.",
+      "breaking": false
+    },
+    {
+      "version": "0.13.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.13.0",
+      "upgrade_notes": "Phase 1 of the 2026-Q2 agentic migration plan. Adds Anthropic prompt caching across both providers, LiteLLM provider with Azure AI Foundry routing, cache-token Prometheus metrics, and foundational agentic scaffolding. All additive; no breaking changes.",
+      "breaking": false
+    },
+    {
+      "version": "0.12.1",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.12.1",
+      "upgrade_notes": "Bug-fix release. Fixes FleetOAuthClientCache module-level globals, corrects OAuth2 token expiry handling, resolves fleet-registry heartbeat race, and patches JWT audience validation. No breaking changes.",
+      "breaking": false
+    },
+    {
+      "version": "0.12.0",
+      "min_compatible": "0.11.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.12.0",
+      "upgrade_notes": "Opt-in OAuth2 client_credentials client for service-to-service auth. Caretaker can now attach a bearer JWT to outbound fleet-registry heartbeats alongside or instead of the existing HMAC signature path. Configure via fleet.oauth2 in config.yml.",
+      "breaking": false
+    },
+    {
+      "version": "0.11.0",
+      "min_compatible": "0.10.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.11.0",
+      "upgrade_notes": "Unified triage subsystem. New TriageAgent adapter runs after PR/issue agents and performs: PR triage (close empty/duplicate/binary-conflicted PRs, ready valid Copilot drafts), issue triage (close empty/duplicate/stale/already-resolved issues), and cross-entity cascade cleanup (close linked issues when a PR merges, unlink issues when a PR closes unmerged, redirect or close PRs when their target issue is closed as a duplicate). Opt out via triage.enabled=false; dry-run via triage.dry_run=true.",
+      "breaking": false
+    },
+    {
+      "version": "0.10.0",
+      "min_compatible": "0.10.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.10.0",
+      "upgrade_notes": "PR-workflow noise reduction. Single caretaker status comment migration with one-shot legacy compaction; tightened dispatch-guard against self-trigger loops; refused unclassifiable CI failures; upgrade-issue marker dedupe; upsert_issue_comment helper with cooldown; comment cap; orchestrator-state and run-history upserts; self-heal storm cap (5/hour, 20/day); per-event-class workflow concurrency; stuck-PR age gate; retry_window_hours wired.",
+      "breaking": false
+    },
+    {
+      "version": "0.9.0",
+      "min_compatible": "0.9.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.9.0",
+      "upgrade_notes": "Update to 0.9.0.",
+      "breaking": false
+    },
+    {
+      "version": "0.8.0",
+      "min_compatible": "0.8.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.8.0",
+      "upgrade_notes": "Update to 0.8.0.",
+      "breaking": false
+    },
+    {
+      "version": "0.7.2",
+      "min_compatible": "0.7.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.2",
+      "upgrade_notes": "Update to 0.7.2.",
+      "breaking": false
+    },
+    {
+      "version": "0.7.1",
+      "min_compatible": "0.7.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.1",
+      "upgrade_notes": "Update to 0.7.1.",
+      "breaking": false
+    },
+    {
+      "version": "0.7.0",
+      "min_compatible": "0.7.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.7.0",
+      "upgrade_notes": "Update to 0.7.0.",
+      "breaking": false
+    },
+    {
+      "version": "0.6.5",
+      "min_compatible": "0.6.5",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.6.5",
+      "upgrade_notes": "Update to 0.6.5.",
+      "breaking": false
+    },
+    {
+      "version": "0.6.4",
+      "min_compatible": "0.6.4",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.6.4",
+      "upgrade_notes": "Update to 0.6.4.",
+      "breaking": false
+    },
+    {
+      "version": "0.5.2",
+      "min_compatible": "0.5.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/blob/main/CHANGELOG.md",
+      "upgrade_notes": "Update .version to 0.5.2 and refresh workflow and agent templates.",
+      "breaking": false
+    },
+    {
+      "version": "0.5.0",
+      "min_compatible": "0.5.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/blob/main/CHANGELOG.md",
+      "upgrade_notes": "Update .version to 0.5.0 and refresh workflow and agent templates.",
       "breaking": false
     }
   ]

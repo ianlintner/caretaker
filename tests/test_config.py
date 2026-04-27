@@ -19,9 +19,12 @@ class TestMaintainerConfig:
         assert config.pr_agent.auto_merge.dependabot_prs is True
         assert config.pr_agent.auto_merge.human_prs is False
         assert config.pr_agent.copilot.max_retries == 2
+        assert config.pr_agent.ci.close_managed_prs_on_backlog is False
         assert config.issue_agent.enabled is True
         assert config.issue_agent.auto_assign_bugs is True
         assert config.issue_agent.auto_assign_features is False
+        assert config.charlie_agent.enabled is True
+        assert config.charlie_agent.stale_days == 14
         assert config.upgrade_agent.enabled is True
         assert config.upgrade_agent.strategy == "auto-minor"
 
@@ -34,8 +37,13 @@ pr_agent:
     merge_method: merge
   copilot:
     max_retries: 3
+  ci:
+    close_managed_prs_on_backlog: true
 issue_agent:
   auto_assign_features: true
+charlie_agent:
+  stale_days: 21
+  close_duplicate_prs: false
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(yaml_content)
@@ -45,7 +53,10 @@ issue_agent:
         assert config.pr_agent.auto_merge.copilot_prs is False
         assert config.pr_agent.auto_merge.merge_method == "merge"
         assert config.pr_agent.copilot.max_retries == 3
+        assert config.pr_agent.ci.close_managed_prs_on_backlog is True
         assert config.issue_agent.auto_assign_features is True
+        assert config.charlie_agent.stale_days == 21
+        assert config.charlie_agent.close_duplicate_prs is False
         # Defaults still apply for unspecified fields
         assert config.pr_agent.auto_merge.dependabot_prs is True
 

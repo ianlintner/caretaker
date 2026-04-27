@@ -6,15 +6,21 @@ import pytest
 
 from caretaker.github_client.models import CheckConclusion
 from caretaker.pr_agent.ci_triage import (
+    NON_ACTIONABLE_CONCLUSIONS,
     FailureType,
     build_fix_instructions,
     classify_failure,
+    is_actionable_conclusion,
     triage_failure,
 )
 from tests.conftest import make_check_run
 
 
 class TestClassifyFailure:
+    def test_backlog_failure_by_queue_guard_name(self) -> None:
+        cr = make_check_run(name="queue-guard", conclusion=CheckConclusion.FAILURE)
+        assert classify_failure(cr) == FailureType.BACKLOG
+
     def test_test_failure_by_name(self) -> None:
         cr = make_check_run(name="test-unit", conclusion=CheckConclusion.FAILURE)
         assert classify_failure(cr) == FailureType.TEST_FAILURE
@@ -61,6 +67,12 @@ class TestClassifyFailure:
 
 
 class TestBuildFixInstructions:
+    def test_backlog_instructions(self) -> None:
+        cr = make_check_run(name="queue-guard")
+        instructions = build_fix_instructions(FailureType.BACKLOG, cr)
+        assert "backlog guard" in instructions
+        assert "Do not change application code" in instructions
+
     def test_test_failure_instructions(self) -> None:
         cr = make_check_run(name="test-unit")
         instructions = build_fix_instructions(FailureType.TEST_FAILURE, cr)
@@ -106,3 +118,41 @@ class TestTriageFailure:
         result = await triage_failure(cr)
         assert result.failure_type == FailureType.LINT_FAILURE
         assert result.error_summary == "E501 line too long"
+
+
+class TestIsActionableConclusion:
+    @pytest.mark.parametrize(
+        "conclusion",
+        [
+            CheckConclusion.CANCELLED,
+            CheckConclusion.SKIPPED,
+            CheckConclusion.NEUTRAL,
+        ],
+    )
+    def test_non_actionable_enum(self, conclusion: CheckConclusion) -> None:
+        assert is_actionable_conclusion(conclusion) is False
+
+    @pytest.mark.parametrize("value", ["cancelled", "skipped", "neutral"])
+    def test_non_actionable_string(self, value: str) -> None:
+        assert is_actionable_conclusion(value) is False
+
+    def test_none_is_not_actionable(self) -> None:
+        # in-progress / unreported runs should not trigger triage
+        assert is_actionable_conclusion(None) is False
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        [
+            CheckConclusion.FAILURE,
+            CheckConclusion.TIMED_OUT,
+            CheckConclusion.SUCCESS,  # actionable in the sense that it's a real result
+            CheckConclusion.ACTION_REQUIRED,
+        ],
+    )
+    def test_actionable(self, conclusion: CheckConclusion) -> None:
+        assert is_actionable_conclusion(conclusion) is True
+
+    def test_constant_set_complete(self) -> None:
+        # Sentinel: if someone adds a new conclusion value, force them to
+        # decide whether it's actionable.
+        assert set(NON_ACTIONABLE_CONCLUSIONS) == {"cancelled", "skipped", "neutral"}

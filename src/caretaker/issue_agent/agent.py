@@ -5,15 +5,28 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from caretaker.evolution.shadow import shadow_decision
+from caretaker.evolution.shadow_config import get_active_config
 from caretaker.issue_agent.classifier import IssueClassification, classify_issue
 from caretaker.issue_agent.dispatcher import IssueDispatcher
+from caretaker.issue_agent.issue_triage import is_qa_scenario_issue
+from caretaker.issue_agent.triage_llm import (
+    IssueTriage,
+    classify_issue_llm,
+    compare_triage,
+    legacy_to_triage,
+    select_candidates_by_jaccard,
+)
 from caretaker.state.models import IssueTrackingState, TrackedIssue
+from caretaker.tools.debug_dump import render_debug_dump
+from caretaker.tools.github import GitHubIssueTools, GitHubPullRequestTools
 
 if TYPE_CHECKING:
     from caretaker.config import IssueAgentConfig
+    from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Issue
     from caretaker.llm.router import LLMRouter
@@ -30,6 +43,54 @@ class IssueAgentReport:
     errors: list[str] = field(default_factory=list)
 
 
+def _mark_caretaker_touched(tracking: TrackedIssue) -> None:
+    """Stamp the attribution fields on a tracked issue after a write action.
+
+    Called after any comment / label / close / escalation on the issue
+    via the GitHub client. Keeps ``last_caretaker_action_at`` aligned
+    with the latest write so the intervention detector can tell human
+    activity that landed *after* caretaker's touch apart from activity
+    that landed between caretaker actions.
+    """
+    tracking.caretaker_touched = True
+    tracking.last_caretaker_action_at = datetime.now(UTC)
+
+
+def _compare_triage_tuple(
+    legacy_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
+    candidate_v: tuple[IssueClassification, IssueTriage] | IssueClassification,
+) -> bool:
+    """Compare shadow verdicts on ``(classification, duplicate_of)``.
+
+    Both sides are expected to return a ``(IssueClassification, IssueTriage)``
+    tuple so the shadow record captures the full triage payload for audit,
+    while the caller-facing return type is the classification enum. We
+    compare on ``(kind, duplicate_of)`` (per the migration plan: minor
+    label-list deltas should not trip the disagreement counter).
+    """
+    legacy_triage = legacy_v[1] if isinstance(legacy_v, tuple) else None
+    candidate_triage = candidate_v[1] if isinstance(candidate_v, tuple) else None
+    if legacy_triage is None or candidate_triage is None:
+        return legacy_v == candidate_v
+    return compare_triage(legacy_triage, candidate_triage)
+
+
+@shadow_decision("issue_triage", compare=_compare_triage_tuple)
+async def _triage_issue_shadow(
+    *,
+    legacy: Any,
+    candidate: Any,
+    context: Any = None,
+) -> tuple[IssueClassification, IssueTriage]:
+    """Shadow-mode wrapper — return legacy in ``off``/``shadow``, candidate in ``enforce``.
+
+    The decorator supplies the legacy/candidate dispatch and disagreement
+    bookkeeping; this body is never executed directly. See
+    :mod:`caretaker.evolution.shadow` for the full contract.
+    """
+    raise AssertionError("shadow_decision wrapper should short-circuit this function")
+
+
 class IssueAgent:
     """Triages and dispatches issues to Copilot."""
 
@@ -40,13 +101,16 @@ class IssueAgent:
         repo: str,
         config: IssueAgentConfig,
         llm_router: LLMRouter | None = None,
+        dispatcher: ExecutorDispatcher | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._config = config
         self._llm = llm_router
-        self._dispatcher = IssueDispatcher(github, owner, repo)
+        self._issues = GitHubIssueTools(github, owner, repo)
+        self._pull_requests = GitHubPullRequestTools(github, owner, repo)
+        self._dispatcher = IssueDispatcher(github, owner, repo, dispatcher=dispatcher)
 
     async def run(
         self, tracked_issues: dict[int, TrackedIssue]
@@ -54,8 +118,8 @@ class IssueAgent:
         """Run the issue agent — triage all open issues."""
         report = IssueAgentReport()
 
-        issues = await self._github.list_issues(self._owner, self._repo, state="all")
-        pull_requests = await self._github.list_pull_requests(self._owner, self._repo, state="all")
+        issues = await self._issues.list(state="all")
+        pull_requests = await self._pull_requests.list(state="all")
 
         for issue in issues:
             try:
@@ -71,11 +135,19 @@ class IssueAgent:
                         tracking.state = IssueTrackingState.COMPLETED
                     else:
                         tracking.state = IssueTrackingState.CLOSED
-                    tracking.last_checked = datetime.utcnow()
+                    tracking.last_checked = datetime.now(UTC)
                     tracked_issues[issue.number] = tracking
                     continue
 
                 tracking = self._reconcile_issue_progress(issue, pull_requests, tracking)
+
+                # Skip QA-scenario issues — they are synthetic test fixtures and
+                # must never be triaged, dispatched, labelled, or escalated.
+                if is_qa_scenario_issue(issue):
+                    logger.debug("Issue #%d: QA-scenario marker — skipping", issue.number)
+                    tracking.last_checked = datetime.now(UTC)
+                    tracked_issues[issue.number] = tracking
+                    continue
 
                 # Skip issues that are already actioned or in-flight
                 if tracking.state in (
@@ -87,16 +159,16 @@ class IssueAgent:
                     IssueTrackingState.COMPLETED,
                     IssueTrackingState.CLOSED,
                 ):
-                    tracking.last_checked = datetime.utcnow()
+                    tracking.last_checked = datetime.now(UTC)
                     tracked_issues[issue.number] = tracking
                     continue
 
-                classification = classify_issue(issue, self._config)
+                classification = await self._classify(issue, issues)
                 tracking.classification = classification.value
                 report.triaged += 1
 
                 tracking = await self._process_issue(issue, classification, tracking, report)
-                tracking.last_checked = datetime.utcnow()
+                tracking.last_checked = datetime.now(UTC)
                 tracked_issues[issue.number] = tracking
 
             except Exception as e:
@@ -104,6 +176,110 @@ class IssueAgent:
                 report.errors.append(f"Issue #{issue.number}: {e}")
 
         return report, tracked_issues
+
+    async def _classify(
+        self,
+        issue: Issue,
+        open_issues: list[Issue],
+    ) -> IssueClassification:
+        """Classify ``issue`` via the shadow decorator.
+
+        ``off`` and ``shadow`` modes return the legacy heuristic verdict
+        byte-identically to the pre-migration behaviour. In ``enforce``
+        mode the LLM candidate is authoritative; we map its
+        :class:`IssueTriage` verdict back onto the legacy
+        :class:`IssueClassification` vocabulary so the rest of the agent
+        state machine is untouched.
+
+        Returns a ``(classification, triage)`` tuple through the shadow
+        decorator so the persisted ``ShadowDecisionRecord`` captures the
+        full triage payload (labels, severity, summary) for audit, while
+        the caller only sees the classification.
+        """
+
+        async def _legacy_fn() -> tuple[IssueClassification, IssueTriage]:
+            cls = classify_issue(issue, self._config)
+            return cls, legacy_to_triage(cls, issue)
+
+        async def _candidate_fn() -> tuple[IssueClassification, IssueTriage] | None:
+            claude = self._claude_client()
+            if claude is None:
+                # No LLM wired — mimic a structured-complete failure so the
+                # shadow decorator records it and falls through to legacy.
+                return None
+            pool_size = self._dup_candidate_pool_size()
+            candidates = (
+                select_candidates_by_jaccard(issue, open_issues, limit=pool_size)
+                if pool_size > 0
+                else []
+            )
+            triage = await classify_issue_llm(
+                issue,
+                candidates=candidates,
+                claude=claude,
+            )
+            if triage is None:
+                return None
+            return self._triage_to_legacy(triage, issue), triage
+
+        verdict = await _triage_issue_shadow(
+            legacy=_legacy_fn,
+            candidate=_candidate_fn,
+            context={"repo_slug": f"{self._owner}/{self._repo}", "issue_number": issue.number},
+        )
+        return verdict[0]
+
+    def _claude_client(self) -> Any | None:
+        """Return the configured :class:`ClaudeClient`, or ``None``."""
+        if self._llm is None:
+            return None
+        claude = getattr(self._llm, "claude", None)
+        if claude is None or not getattr(claude, "available", False):
+            return None
+        return claude
+
+    @staticmethod
+    def _dup_candidate_pool_size() -> int:
+        """Read the pool-size knob from the active AgenticConfig.
+
+        Returns 5 (the plan default) when no config is installed, which
+        keeps the test harness — which never calls ``shadow_config.configure``
+        — from crashing on import order.
+        """
+        cfg = get_active_config()
+        if cfg is None:
+            return 5
+        domain = getattr(cfg, "issue_triage", None)
+        return int(getattr(domain, "dup_candidate_pool_size", 5))
+
+    @staticmethod
+    def _triage_to_legacy(triage: IssueTriage, issue: Issue) -> IssueClassification:
+        """Collapse an :class:`IssueTriage` back to an :class:`IssueClassification`.
+
+        Needed only when the shadow decorator is in ``enforce`` mode and
+        the LLM candidate is authoritative. In ``off``/``shadow`` the
+        legacy adapter round-trips exactly, so this mapping is still
+        stable for those paths.
+        """
+        if triage.duplicate_of is not None:
+            return IssueClassification.DUPLICATE
+        if issue.is_maintainer_issue:
+            return IssueClassification.MAINTAINER_INTERNAL
+        if triage.staleness in ("stale", "ancient"):
+            return IssueClassification.STALE
+        if triage.kind == "bug":
+            is_complex = triage.severity in ("blocker", "major")
+            return IssueClassification.BUG_COMPLEX if is_complex else IssueClassification.BUG_SIMPLE
+        if triage.kind == "feature":
+            # Large feature signal comes from the LLM's summary; without
+            # a dedicated size field, default to small and let the caller
+            # escalate on suggested labels later.
+            return IssueClassification.FEATURE_SMALL
+        if triage.kind == "question":
+            return IssueClassification.QUESTION
+        if triage.kind in ("chore", "security", "docs"):
+            return IssueClassification.INFRA_OR_CONFIG
+        return IssueClassification.FEATURE_SMALL
 
     async def _process_issue(
         self,
@@ -122,6 +298,7 @@ class IssueAgent:
                     result = await self._dispatcher.dispatch(issue, classification)
                     if result:
                         tracking.state = IssueTrackingState.ASSIGNED
+                        _mark_caretaker_touched(tracking)
                         report.assigned.append(issue.number)
 
             case IssueClassification.BUG_COMPLEX:
@@ -135,6 +312,7 @@ class IssueAgent:
                     result = await self._dispatcher.dispatch(issue, classification)
                     if result:
                         tracking.state = IssueTrackingState.ASSIGNED
+                        _mark_caretaker_touched(tracking)
                         report.assigned.append(issue.number)
                 else:
                     if tracking.state in (
@@ -144,56 +322,60 @@ class IssueAgent:
                         tracking.state = IssueTrackingState.TRIAGED
 
             case IssueClassification.FEATURE_LARGE:
-                await self._escalate(issue, "Large feature — needs human decomposition")
+                await self._escalate(
+                    issue,
+                    "Large feature — needs human decomposition",
+                    debug_data={"classification": classification.value},
+                )
                 tracking.state = IssueTrackingState.ESCALATED
+                _mark_caretaker_touched(tracking)
                 report.escalated.append(issue.number)
 
             case IssueClassification.QUESTION:
                 if self._config.auto_close_questions:
-                    await self._github.add_issue_comment(
-                        self._owner,
-                        self._repo,
+                    await self._issues.comment(
                         issue.number,
                         "This issue has been classified as a question. "
                         "Please check the project documentation and README for guidance. "
                         "If this needs further attention, please reopen.",
                     )
-                    await self._github.update_issue(
-                        self._owner, self._repo, issue.number, state="closed"
-                    )
+                    await self._issues.update(issue.number, state="closed")
                     tracking.state = IssueTrackingState.CLOSED
+                    _mark_caretaker_touched(tracking)
+                    tracking.caretaker_closed = True
                     report.closed.append(issue.number)
 
             case IssueClassification.DUPLICATE:
-                await self._github.add_issue_comment(
-                    self._owner,
-                    self._repo,
+                await self._issues.comment(
                     issue.number,
                     "This issue appears to be a duplicate. "
                     "If needed, please reference the original tracking issue.",
                 )
-                await self._github.update_issue(
-                    self._owner, self._repo, issue.number, state="closed"
-                )
+                await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.CLOSED
+                _mark_caretaker_touched(tracking)
+                tracking.caretaker_closed = True
                 report.closed.append(issue.number)
 
             case IssueClassification.STALE:
-                await self._github.add_issue_comment(
-                    self._owner,
-                    self._repo,
+                await self._issues.comment(
                     issue.number,
                     "Closing as stale due to inactivity. Please reopen if this is still relevant.",
                 )
-                await self._github.update_issue(
-                    self._owner, self._repo, issue.number, state="closed"
-                )
+                await self._issues.update(issue.number, state="closed")
                 tracking.state = IssueTrackingState.STALE
+                _mark_caretaker_touched(tracking)
+                tracking.caretaker_closed = True
                 report.closed.append(issue.number)
 
             case IssueClassification.INFRA_OR_CONFIG:
-                await self._escalate(issue, "Infrastructure/config issue — requires human access")
+                await self._escalate(
+                    issue,
+                    "Infrastructure/config issue — requires human access",
+                    debug_data={"classification": classification.value},
+                )
                 tracking.state = IssueTrackingState.ESCALATED
+                _mark_caretaker_touched(tracking)
                 report.escalated.append(issue.number)
 
             case _:
@@ -212,9 +394,7 @@ class IssueAgent:
         tracking: TrackedIssue,
     ) -> TrackedIssue:
         """Update issue tracking state based on assignees and linked PRs."""
-        is_copilot = any(
-            a.login in ("copilot", "copilot[bot]", "github-copilot[bot]") for a in issue.assignees
-        )
+        is_copilot = issue.is_copilot_assigned
         if is_copilot and tracking.state in (IssueTrackingState.NEW, IssueTrackingState.TRIAGED):
             tracking.state = IssueTrackingState.IN_PROGRESS
 
@@ -254,16 +434,51 @@ class IssueAgent:
 
         return None
 
-    async def _escalate(self, issue: Issue, reason: str) -> None:
+    async def _escalate(
+        self,
+        issue: Issue,
+        reason: str,
+        *,
+        debug_data: dict[str, Any] | None = None,
+    ) -> None:
         """Escalate an issue to the repo owner."""
-        await self._github.add_labels(
-            self._owner, self._repo, issue.number, ["maintainer:escalated"]
+        await self._issues.add_labels(issue.number, ["maintainer:escalated"])
+        payload: dict[str, Any] = {
+            "type": "issue_escalation",
+            "owner": self._owner,
+            "repo": self._repo,
+            "issue": {
+                "number": issue.number,
+                "title": issue.title,
+                "state": issue.state,
+                "labels": [label.name for label in issue.labels],
+                "assignees": [assignee.login for assignee in issue.assignees],
+                "updated_at": issue.updated_at,
+                "html_url": issue.html_url,
+            },
+            "reason": reason,
+        }
+        if debug_data:
+            payload["debug"] = debug_data
+
+        marker = "<!-- caretaker:escalation -->"
+        body = (
+            f"{marker}\n\n"
+            f"⚠️ **Caretaker Escalation**\n\n"
+            f"**Reason:** {reason}\n\n"
+            f"This issue needs human attention."
         )
-        await self._github.add_issue_comment(
+        body += render_debug_dump(payload, title="Escalation debug dump")
+        # Upsert: one escalation comment per issue, edited in place if reason
+        # changes. Without this, repeated escalation evaluations spammed the
+        # issue with identical comments (portfolio #148 saw 14 dupes).
+        # Cooldown: 1h between updates so human reviewers aren't re-pinged
+        # every cycle on issues that are already escalated.
+        await self._github.upsert_issue_comment(
             self._owner,
             self._repo,
             issue.number,
-            f"⚠️ **Caretaker Escalation**\n\n"
-            f"**Reason:** {reason}\n\n"
-            f"This issue needs human attention.",
+            marker,
+            body,
+            min_seconds_between_updates=3600,
         )

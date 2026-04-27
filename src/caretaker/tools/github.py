@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import builtins
+
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Comment, Issue, Label, PullRequest, Review
 
@@ -61,15 +63,15 @@ class GitHubIssueTools:
             model=model,
         )
 
-    async def list(self, state: str = "open", labels: str | None = None) -> list[Issue]:
+    async def list(self, state: str = "open", labels: str | None = None) -> builtins.list[Issue]:
         return await self._github.list_issues(self._owner, self._repo, state=state, labels=labels)
 
     async def create(
         self,
         title: str,
         body: str,
-        labels: list[str] | None = None,
-        assignees: list[str] | None = None,
+        labels: builtins.list[str] | None = None,
+        assignees: builtins.list[str] | None = None,
         copilot_assignment: CopilotAgentAssignment | None = None,
     ) -> Issue:
         return await self._github.create_issue(
@@ -85,10 +87,22 @@ class GitHubIssueTools:
     async def update(self, number: int, **kwargs: Any) -> Issue:
         return await self._github.update_issue(self._owner, self._repo, number, **kwargs)
 
-    async def comment(self, number: int, body: str) -> Comment:
-        return await self._github.add_issue_comment(self._owner, self._repo, number, body)
+    async def comment(
+        self,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            number,
+            body,
+            use_copilot_token=use_copilot_token,
+        )
 
-    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:
+    async def add_labels(self, number: int, labels: builtins.list[str]) -> builtins.list[Label]:
         return await self._github.add_labels(self._owner, self._repo, number, labels)
 
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
@@ -106,6 +120,15 @@ class GitHubIssueTools:
             assignment=assignment,
         )
 
+    async def run_id_tracked(self, run_id: int, labels: builtins.list[str]) -> bool:
+        """Check if any open issue with the given labels already references this run_id."""
+        for label in labels:
+            issues = await self.list(state="open", labels=label)
+            for issue in issues:
+                if f"run_id:{run_id}" in issue.body:
+                    return True
+        return False
+
 
 class GitHubPullRequestTools:
     """Repo-bound pull request tools for common caretaker workflows."""
@@ -115,7 +138,7 @@ class GitHubPullRequestTools:
         self._owner = owner
         self._repo = repo
 
-    async def list(self, state: str = "open") -> list[PullRequest]:
+    async def list(self, state: str = "open") -> builtins.list[PullRequest]:
         return await self._github.list_pull_requests(self._owner, self._repo, state=state)
 
     async def get(self, number: int) -> PullRequest | None:
@@ -127,8 +150,8 @@ class GitHubPullRequestTools:
         body: str,
         head: str,
         base: str,
-        labels: list[str] | None = None,
-        assignees: list[str] | None = None,
+        labels: builtins.list[str] | None = None,
+        assignees: builtins.list[str] | None = None,
     ) -> dict[str, Any]:
         return await self._github.create_pull_request(
             owner=self._owner,
@@ -149,16 +172,28 @@ class GitHubPullRequestTools:
             method=method,
         )
 
-    async def comment(self, number: int, body: str) -> Comment:
-        return await self._github.add_issue_comment(self._owner, self._repo, number, body)
+    async def comment(
+        self,
+        number: int,
+        body: str,
+        *,
+        use_copilot_token: bool | None = None,
+    ) -> Comment:
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            number,
+            body,
+            use_copilot_token=use_copilot_token,
+        )
 
-    async def add_labels(self, number: int, labels: list[str]) -> list[Label]:
+    async def add_labels(self, number: int, labels: builtins.list[str]) -> builtins.list[Label]:
         return await self._github.add_labels(self._owner, self._repo, number, labels)
 
-    async def get_reviews(self, number: int) -> list[Review]:
+    async def get_reviews(self, number: int) -> builtins.list[Review]:
         return await self._github.get_pr_reviews(self._owner, self._repo, number)
 
-    async def get_comments(self, number: int) -> list[Comment]:
+    async def get_comments(self, number: int) -> builtins.list[Comment]:
         return await self._github.get_pr_comments(self._owner, self._repo, number)
 
 

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from caretaker.causal import make_causal_marker
+
 if TYPE_CHECKING:
+    from caretaker.evolution.insight_store import Skill
     from caretaker.github_client.api import GitHubClient
     from caretaker.github_client.models import Comment
 
@@ -27,7 +30,13 @@ class TaskType(StrEnum):
     BUILD_FAILURE = "BUILD_FAILURE"
     REVIEW_COMMENT = "REVIEW_COMMENT"
     REBASE = "REBASE"
+    UPGRADE = "UPGRADE"
     GENERIC = "GENERIC"
+    ARCHITECTURE_REVIEW = "ARCHITECTURE_REVIEW"
+    PRD_GENERATION = "PRD_GENERATION"
+    TEST_GENERATION = "TEST_GENERATION"
+    REFACTOR = "REFACTOR"
+    MIGRATION = "MIGRATION"
 
 
 class ResultStatus(StrEnum):
@@ -47,11 +56,26 @@ class CopilotTask:
     max_attempts: int
     priority: str = "medium"
     context: str = ""
+    parent_causal_id: str | None = None
+    _skill_hints: str = field(default="", init=False, repr=False)
+
+    def enrich_with_skills(self, skills: list[Skill]) -> None:
+        """Append skill hints from the InsightStore into this task's comment body."""
+        if not skills:
+            return
+        lines = []
+        for s in skills[:3]:
+            pct = f"{s.confidence:.0%}"
+            lines.append(
+                f"> {s.sop_text} (confidence: {pct}, {s.success_count}/{s.total_attempts} attempts)"
+            )
+        self._skill_hints = "\n".join(lines)
 
     def to_comment(self) -> str:
         lines = [
             "@copilot",
             "",
+            make_causal_marker("pr-agent-task", parent=self.parent_causal_id),
             TASK_OPEN,
             f"TASK: Fix {self.task_type.value.replace('_', ' ').lower()}",
             f"TYPE: {self.task_type.value}",
@@ -70,6 +94,14 @@ class CopilotTask:
         ]
         if self.context:
             lines.extend(["**Context:**", self.context, ""])
+        if self._skill_hints:
+            lines.extend(
+                [
+                    "**SKILL HINTS** (learned from prior fixes in this repo):",
+                    self._skill_hints,
+                    "",
+                ]
+            )
         lines.append(TASK_CLOSE)
         return "\n".join(lines)
 
@@ -134,6 +166,18 @@ class CopilotProtocol:
         self._repo = repo
 
     async def post_task(self, pr_number: int, task: CopilotTask) -> Comment:
+        # Best-effort: thread this task to the most recent causal marker on
+        # the PR body (typically the issue-agent dispatch event that opened
+        # the PR), so the resulting comment-CausalEvent has a parent.
+        if task.parent_causal_id is None:
+            try:
+                from caretaker.causal import parent_from_body
+
+                pr = await self._github.get_pull_request(self._owner, self._repo, pr_number)
+                pr_body = getattr(pr, "body", "") or ""
+                task.parent_causal_id = parent_from_body(pr_body)
+            except Exception:
+                pass
         body = task.to_comment()
         logger.info(
             "Posting task to PR #%d: %s (attempt %d/%d)",
@@ -142,7 +186,13 @@ class CopilotProtocol:
             task.attempt,
             task.max_attempts,
         )
-        return await self._github.add_issue_comment(self._owner, self._repo, pr_number, body)
+        return await self._github.add_issue_comment(
+            self._owner,
+            self._repo,
+            pr_number,
+            body,
+            use_copilot_token=True,
+        )
 
     async def find_latest_result(
         self, pr_number: int, after_comment_id: int | None = None

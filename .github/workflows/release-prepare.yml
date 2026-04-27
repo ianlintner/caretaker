@@ -1,0 +1,124 @@
+name: Release — Prepare
+
+# Human trigger: run this to cut a release. It bumps the version, commits
+# to main, creates the tag, and opens a GitHub Release. The tag push then
+# automatically triggers release-publish.yml to build and ship to PyPI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version to release (e.g. 1.2.3). Leave empty to auto-increment."
+        required: false
+        type: string
+      increment:
+        description: "Increment type — used only when version is empty."
+        required: false
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.COPILOT_PAT != '' && secrets.COPILOT_PAT || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            CURRENT=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            INCR="${{ github.event.inputs.increment }}"
+            case "$INCR" in
+              major) VERSION="$((MAJOR + 1)).0.0" ;;
+              minor) VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+              *)     VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            esac
+          fi
+
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if tag already exists
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            echo "::error::Tag $TAG already exists on remote. Bump the version or delete the existing tag first."
+            exit 1
+          fi
+
+      - name: Bump version in pyproject.toml
+        run: |
+          python - <<'PYEOF'
+          import re, pathlib, os
+          version = os.environ["VERSION"]
+          path = pathlib.Path("pyproject.toml")
+          content = path.read_text()
+          updated = re.sub(
+              r'^(version\s*=\s*")[^"]*(")',
+              r'\g<1>' + version + r'\g<2>',
+              content,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          path.write_text(updated)
+          PYEOF
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          GH_TOKEN: ${{ secrets.COPILOT_PAT != '' && secrets.COPILOT_PAT || github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add pyproject.toml
+          if git diff --cached --quiet; then
+            echo "pyproject.toml already at $VERSION — skipping version commit."
+          else
+            git commit -m "chore: bump version to $VERSION"
+            git push origin HEAD:main
+          fi
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_PAT != '' && secrets.COPILOT_PAT || github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag

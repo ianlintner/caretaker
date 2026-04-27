@@ -56,7 +56,9 @@
             "ignore_jobs": {
               "type": "array",
               "items": { "type": "string" }
-            }
+            },
+            "close_managed_prs_on_backlog": { "type": "boolean" },
+            "auto_approve_workflows": { "type": "boolean" }
           }
         },
         "review": {
@@ -67,6 +69,17 @@
             "nitpick_threshold": {
               "type": "string",
               "enum": ["low", "high"]
+            }
+          }
+        },
+        "merge_authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["advisory", "gate_only", "gate_and_merge"],
+              "description": "advisory (default): readiness check publishes neutral, never blocks branch protection. gate_only / gate_and_merge: publishes failure to actively gate merges."
             }
           }
         }
@@ -117,6 +130,22 @@
         "auto_merge_non_breaking": { "type": "boolean" }
       }
     },
+    "charlie_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "stale_days": { "type": "integer", "minimum": 1 },
+        "close_duplicate_issues": { "type": "boolean" },
+        "close_duplicate_prs": { "type": "boolean" },
+        "close_stale_issues": { "type": "boolean" },
+        "close_stale_prs": { "type": "boolean" },
+        "exempt_labels": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "escalation": {
       "type": "object",
       "additionalProperties": false,
@@ -143,6 +172,130 @@
         "claude_features": {
           "type": "array",
           "items": { "type": "string" }
+        }
+      }
+    },
+    "goal_engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "goal_driven_dispatch": { "type": "boolean" },
+        "divergence_threshold": { "type": "integer", "minimum": 1 },
+        "stale_threshold": { "type": "integer", "minimum": 1 },
+        "max_history": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "azure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "use_managed_identity": { "type": "boolean" }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "endpoint": { "type": ["string", "null"] },
+        "auth_mode": {
+          "type": "string",
+          "enum": ["none", "managed_identity", "token", "apim"]
+        },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "allowed_tools": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "application_insights_connection_string_env": { "type": "string" }
+      }
+    },
+    "review_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": {
+          "type": "string",
+          "enum": ["scheduled", "targeted"]
+        },
+        "lookback_runs": { "type": "integer", "minimum": 1 },
+        "lookback_days": { "type": "integer", "minimum": 1 },
+        "artifact_dir": { "type": "string" },
+        "save_markdown": { "type": "boolean" },
+        "save_json": { "type": "boolean" },
+        "save_manifest": { "type": "boolean" },
+        "publish_summary_comments": { "type": "boolean" },
+        "comment_on_prs": { "type": "boolean" },
+        "comment_on_issues": { "type": "boolean" },
+        "minimum_comment_score": { "type": "integer", "minimum": 0 },
+        "use_llm_for_retro": { "type": "boolean" }
+      }
+    },
+    "memory_store": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "backend": {
+          "type": "string",
+          "enum": ["sqlite", "mongo"]
+        },
+        "db_path": { "type": "string" },
+        "snapshot_path": { "type": "string" },
+        "max_entries_per_namespace": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mongo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mongodb_url_env": { "type": "string" },
+        "database_name": { "type": "string" },
+        "memory_collection": { "type": "string" },
+        "audit_collection": { "type": "string" }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "redis_url_env": { "type": "string" },
+        "dedup_ttl_seconds": { "type": "integer", "minimum": 1 },
+        "token_cache_ttl_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "audit_log": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "github_app": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "app_id": { "type": ["integer", "null"], "minimum": 1 },
+        "private_key_env": { "type": "string" },
+        "webhook_secret_env": { "type": "string" },
+        "oauth_client_id_env": { "type": "string" },
+        "oauth_client_secret_env": { "type": "string" },
+        "public_base_url": { "type": ["string", "null"] },
+        "installation_token_refresh_skew_seconds": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

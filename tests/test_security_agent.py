@@ -223,3 +223,84 @@ class TestSecurityAgentUnavailableFeatures:
 
         assert len(report.errors) == 1
         assert "500" in report.errors[0]
+
+
+# ── _resolve_probes visibility auto-detect tests (#522) ──────────────────
+
+
+class TestResolveProbes:
+    """Unit tests for the _resolve_probes helper (issue #522).
+
+    Validates that the auto-detect logic skips GHAS probes on private repos
+    while respecting explicit config overrides.
+    """
+
+    from caretaker.security_agent.adapter import _resolve_probes
+
+    def test_public_repo_all_probes_enabled(self) -> None:
+        """Public repos: all probes pass through unchanged."""
+        from caretaker.security_agent.adapter import _resolve_probes
+
+        dep, code, secret = _resolve_probes(
+            cfg_dependabot=True,
+            cfg_code_scanning=True,
+            cfg_secret_scanning=True,
+            is_private=False,
+        )
+        assert dep is True
+        assert code is True
+        assert secret is True
+
+    def test_public_repo_disabled_probes_stay_disabled(self) -> None:
+        """Public repos: explicitly disabled probes remain disabled."""
+        from caretaker.security_agent.adapter import _resolve_probes
+
+        dep, code, secret = _resolve_probes(
+            cfg_dependabot=False,
+            cfg_code_scanning=False,
+            cfg_secret_scanning=False,
+            is_private=False,
+        )
+        assert dep is False
+        assert code is False
+        assert secret is False
+
+    def test_private_repo_ghas_probes_auto_skipped(self) -> None:
+        """Private repos: code_scanning and secret_scanning are suppressed by default."""
+        from caretaker.security_agent.adapter import _resolve_probes
+
+        dep, code, secret = _resolve_probes(
+            cfg_dependabot=True,
+            cfg_code_scanning=True,
+            cfg_secret_scanning=True,
+            is_private=True,
+        )
+        assert dep is True  # Dependabot works on private repos
+        assert code is False  # GHAS not available without license
+        assert secret is False  # GHAS not available without license
+
+    def test_private_repo_dependabot_respects_config(self) -> None:
+        """Private repos: disabling dependabot in config still disables it."""
+        from caretaker.security_agent.adapter import _resolve_probes
+
+        dep, code, secret = _resolve_probes(
+            cfg_dependabot=False,
+            cfg_code_scanning=True,
+            cfg_secret_scanning=True,
+            is_private=True,
+        )
+        assert dep is False
+
+    def test_private_repo_all_disabled_no_change(self) -> None:
+        """Private repos: already-disabled probes are unchanged."""
+        from caretaker.security_agent.adapter import _resolve_probes
+
+        dep, code, secret = _resolve_probes(
+            cfg_dependabot=True,
+            cfg_code_scanning=False,
+            cfg_secret_scanning=False,
+            is_private=True,
+        )
+        assert dep is True
+        assert code is False
+        assert secret is False

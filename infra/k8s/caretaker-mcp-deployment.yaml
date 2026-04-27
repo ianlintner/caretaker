@@ -1,0 +1,227 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caretaker-mcp
+  labels:
+    app: caretaker-mcp
+    app.kubernetes.io/name: caretaker-mcp
+    app.kubernetes.io/instance: caretaker-mcp
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: caretaker
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  # Two replicas + a PodDisruptionBudget (see caretaker-mcp-pdb.yaml) keeps
+  # the webhook ack path available across single-pod OOMs and rolling
+  # restarts. The webhook payload is idempotent (deduped on delivery_id).
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: caretaker-mcp
+  template:
+    metadata:
+      labels:
+        app: caretaker-mcp
+        app.kubernetes.io/name: caretaker-mcp
+        app.kubernetes.io/instance: caretaker-mcp
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: caretaker
+        app.kubernetes.io/managed-by: kubectl
+      annotations:
+        # Pod-level scrape annotations so pod-SD Prometheus configs also
+        # pick up the sidecar when the Service discovery path isn't used.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: caretaker-mcp
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      containers:
+        - name: mcp-backend
+          # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
+          image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: CARETAKER_MCP_AUTH_MODE
+              value: "apim"
+            - name: CARETAKER_MCP_ALLOWED_OBJECT_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: allowed-object-ids
+                  optional: true
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: appinsights-conn-string
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: webhook-secret
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-id
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-private-key
+                  optional: true
+            - name: CARETAKER_GITHUB_APP_INSTALLATION_ID
+              value: "124850811"
+            - name: CARETAKER_WEBHOOK_DISPATCH_MODE
+              value: "active"
+            - name: CARETAKER_ADMIN_WATCHED_REPO
+              value: "ianlintner/caretaker"
+            - name: CARETAKER_ADMIN_ENABLED
+              value: "true"
+            - name: CARETAKER_ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-issuer-url
+                  optional: true
+            - name: CARETAKER_ADMIN_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-client-id
+                  optional: true
+            - name: CARETAKER_ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: oidc-client-secret
+                  optional: true
+            - name: CARETAKER_ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: session-secret
+                  optional: true
+            - name: CARETAKER_ADMIN_PUBLIC_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: public-base-url
+                  optional: true
+            - name: CARETAKER_ADMIN_ALLOWED_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: allowed-emails
+                  optional: true
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: redis-url
+                  optional: true
+            - name: NEO4J_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: neo4j-url
+                  optional: true
+            - name: NEO4J_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: neo4j-auth
+                  optional: true
+            # ── Streamed-runs OIDC + ingest-token plumbing ───────────
+            # Set CARETAKER_OIDC_GITHUB_AUDIENCE to enable /runs/start.
+            # Consumer workflows pass the same audience when minting
+            # their GitHub Actions OIDC tokens.
+            - name: CARETAKER_OIDC_GITHUB_AUDIENCE
+              value: "caretaker-backend"
+            - name: CARETAKER_RUNS_INGEST_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: runs-ingest-token-secret
+                  optional: true
+            - name: CARETAKER_RUNS_REDIS_STREAM_MAXLEN
+              value: "50000"
+            - name: CARETAKER_RUNS_RETENTION_HOURS
+              value: "24"
+            - name: MONGODB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: mongodb-url
+                  optional: true
+            # ── LLM keys (moved off consumer workflows) ──────────────
+            - name: AZURE_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-key
+                  optional: true
+            - name: AZURE_AI_API_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-base
+                  optional: true
+            - name: AZURE_AI_API_VERSION
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-version
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: anthropic-api-key
+                  optional: true
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              # Bumped from 256Mi → 512Mi after observed OOMKills under
+              # webhook bursts coinciding with GitHub rate-limit cooldown.
+              # The bounded in-flight cap in github_app/dispatcher.py keeps
+              # this from masking a real leak.
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

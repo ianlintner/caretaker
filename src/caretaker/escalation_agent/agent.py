@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from caretaker.causal import make_causal_marker
+from caretaker.tools.debug_dump import render_debug_dump
+from caretaker.tools.github import GitHubIssueTools
+
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
 
@@ -53,6 +57,7 @@ class EscalationAgent:
         self._owner = owner
         self._repo = repo
         self._notify_assignees = notify_assignees or []
+        self._issues = GitHubIssueTools(github, owner, repo)
 
     async def run(self) -> EscalationReport:
         report = EscalationReport()
@@ -61,9 +66,7 @@ class EscalationAgent:
         buckets: dict[str, list[Any]] = {}
         for label, _description in _ACTION_LABELS.items():
             try:
-                items = await self._github.list_issues(
-                    self._owner, self._repo, state="open", labels=label
-                )
+                items = await self._issues.list(state="open", labels=label)
                 if items:
                     buckets[label] = items
             except Exception as e:
@@ -79,7 +82,10 @@ class EscalationAgent:
             await self._close_resolved_digest()
             return report
 
-        body = self._build_digest_body(buckets)
+        # Thread weekly digests so each new digest's CausalEvent links back
+        # to the previous one (forming a long-running escalation chain).
+        prior_parent = await self._latest_digest_causal_id()
+        body = self._build_digest_body(buckets, parent_id=prior_parent)
 
         try:
             issue_number = await self._upsert_digest(body)
@@ -91,29 +97,23 @@ class EscalationAgent:
         return report
 
     async def _upsert_digest(self, body: str) -> int:
-        await self._github.ensure_label(
-            self._owner,
-            self._repo,
+        await self._issues.ensure_label(
             ESCALATION_DIGEST_LABEL,
             color="b91c1c",
             description="Weekly human-action-required digest",
         )
 
-        existing = await self._github.list_issues(
-            self._owner, self._repo, state="open", labels=ESCALATION_DIGEST_LABEL
-        )
+        existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
         digest_issues = [i for i in existing if ESCALATION_AGENT_MARKER in (i.body or "")]
 
         if digest_issues:
             issue = digest_issues[0]
-            await self._github.update_issue(self._owner, self._repo, issue.number, body=body)
+            await self._issues.update(issue.number, body=body)
             logger.info("Escalation agent: updated digest issue #%d", issue.number)
             return issue.number
 
         assignees = self._notify_assignees or []
-        issue = await self._github.create_issue(
-            owner=self._owner,
-            repo=self._repo,
+        issue = await self._issues.create(
             title=f"[Caretaker] Human action required — {datetime.now(UTC).strftime('%Y-W%V')}",
             body=body,
             labels=[ESCALATION_DIGEST_LABEL],
@@ -126,14 +126,10 @@ class EscalationAgent:
     async def _close_resolved_digest(self) -> None:
         """Close any existing digest if all items are resolved."""
         try:
-            existing = await self._github.list_issues(
-                self._owner, self._repo, state="open", labels=ESCALATION_DIGEST_LABEL
-            )
+            existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
             for issue in existing:
                 if ESCALATION_AGENT_MARKER in (issue.body or ""):
-                    await self._github.update_issue(
-                        self._owner,
-                        self._repo,
+                    await self._issues.update(
                         issue.number,
                         state="closed",
                         state_reason="completed",
@@ -142,7 +138,26 @@ class EscalationAgent:
         except Exception as e:
             logger.warning("Escalation agent: could not close digest: %s", e)
 
-    def _build_digest_body(self, buckets: dict[str, list[Any]]) -> str:
+    async def _latest_digest_causal_id(self) -> str | None:
+        """Return the most recent digest CausalEvent id (for parent threading)."""
+        from caretaker.causal import parent_from_body
+
+        try:
+            existing = await self._issues.list(state="open", labels=ESCALATION_DIGEST_LABEL)
+        except Exception:
+            return None
+        for issue in existing:
+            body = getattr(issue, "body", "") or ""
+            if ESCALATION_AGENT_MARKER in body:
+                return parent_from_body(body)
+        return None
+
+    def _build_digest_body(
+        self,
+        buckets: dict[str, list[Any]],
+        *,
+        parent_id: str | None = None,
+    ) -> str:
         week = datetime.now(UTC).strftime("%Y-W%V")
         date = datetime.now(UTC).strftime("%Y-%m-%d")
         lines = [
@@ -166,7 +181,21 @@ class EscalationAgent:
             mention_str = " ".join(f"@{a}" for a in self._notify_assignees)
             lines.append(f"\n---\n📣 {mention_str} — please review the items above.")
 
+        debug_payload = {
+            "type": "escalation_digest",
+            "owner": self._owner,
+            "repo": self._repo,
+            "bucket_counts": {label: len(items) for label, items in sorted(buckets.items())},
+            "item_numbers_by_label": {
+                label: sorted(item.number for item in items)
+                for label, items in sorted(buckets.items())
+            },
+            "notify_assignees": self._notify_assignees,
+        }
+        lines.append(render_debug_dump(debug_payload, title="Digest debug dump"))
+
         lines.append(f"\n---\n{ESCALATION_AGENT_MARKER} week:{week} -->")
+        lines.append(make_causal_marker("escalation-agent:digest", parent=parent_id))
         return "\n".join(lines)
 
 
