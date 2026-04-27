@@ -33,7 +33,7 @@ from caretaker.evolution.executor_routing import (
     route_from_pr_reviewer_legacy,
 )
 from caretaker.evolution.shadow import shadow_decision
-from caretaker.pr_reviewer import claude_code_reviewer, inline_reviewer
+from caretaker.pr_reviewer import handoff_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
 
@@ -186,6 +186,7 @@ class PRReviewerAgent(BaseAgent):
             file_paths=file_paths,
             pr_labels=pr_labels,
             threshold=cfg.routing_threshold,
+            backend=cfg.complex_reviewer,
         )
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
 
@@ -270,8 +271,21 @@ class PRReviewerAgent(BaseAgent):
                     report.reviewed.append(pr_number)
                     return
 
-        # Claude-code hand-off path
-        success = await claude_code_reviewer.dispatch(
+        # Hand-off path — backend chosen by ``complex_reviewer`` (Claude
+        # Code, opencode, …). Falls back to claude_code if the configured
+        # backend isn't recognized so misconfiguration doesn't silently
+        # skip review entirely.
+        backend = decision.backend or cfg.complex_reviewer or "claude_code"
+        if backend not in handoff_reviewer.known_backends():
+            logger.warning(
+                "pr-reviewer: complex_reviewer=%r is not a known hand-off backend "
+                "(known: %s); falling back to claude_code",
+                backend,
+                ", ".join(handoff_reviewer.known_backends()),
+            )
+            backend = "claude_code"
+        success = await handoff_reviewer.dispatch(
+            backend=backend,
             github=self._ctx.github,
             owner=owner,
             repo=repo,
@@ -282,7 +296,7 @@ class PRReviewerAgent(BaseAgent):
         if success:
             report.dispatched.append(pr_number)
         else:
-            report.errors.append(f"claude-code dispatch failed for #{pr_number}")
+            report.errors.append(f"{backend} dispatch failed for #{pr_number}")
 
     async def _route_via_shadow(
         self,
