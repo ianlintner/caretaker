@@ -131,6 +131,71 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     except Exception:
         logger.exception("Failed to import fleet bearer auth module")
 
+    # ── GitHub Actions OIDC + streamed-runs router ───────────────────
+    #
+    # When ``CARETAKER_OIDC_GITHUB_AUDIENCE`` is set, the backend accepts
+    # short-lived OIDC tokens from GitHub Actions runners as proof of
+    # workflow identity — replacing the long-lived PATs that consumer
+    # workflows previously needed. The runs router exposes the
+    # /runs/start, /runs/{id}/{logs,trigger,heartbeat,finish,stream}
+    # endpoints used by the runner-side ``caretaker stream`` shipper.
+    try:
+        from caretaker.auth import github_oidc as gha_oidc
+
+        gh_audience = os.environ.get("CARETAKER_OIDC_GITHUB_AUDIENCE", "").strip()
+        if gh_audience:
+            try:
+                await gha_oidc.configure_github_oidc(audience=gh_audience)
+                logger.info("GitHub Actions OIDC configured (audience=%s)", gh_audience)
+            except Exception:
+                logger.exception(
+                    "Failed to configure GitHub Actions OIDC; /runs endpoints "
+                    "will reject all callers with 401",
+                )
+        else:
+            logger.info(
+                "CARETAKER_OIDC_GITHUB_AUDIENCE not set — /runs/start will reject "
+                "all GitHub Actions OIDC tokens",
+            )
+    except Exception:
+        logger.exception("Failed to import github_oidc auth module")
+
+    try:
+        from caretaker.runs import api as runs_api
+        from caretaker.runs import dispatch as runs_dispatch
+        from caretaker.runs.store import get_store as _get_runs_store
+
+        # Install the contextvar-scoped log handler that streams agent
+        # output into per-run Redis streams. Idempotent.
+        runs_dispatch.install_log_handler(_get_runs_store())
+
+        # Wire repo→installation resolver if the GitHub App is configured.
+        resolver = None
+        if _token_broker is not None:
+            from caretaker.github_app.repo_installation import RepoInstallationResolver
+
+            resolver = RepoInstallationResolver(signer=_token_broker._signer)
+            await resolver.__aenter__()
+            application.state.runs_resolver = resolver
+
+            async def _check(repo: str) -> int | None:
+                return await resolver.get(repo)
+
+            gha_oidc.set_installation_check(_check)
+            logger.info("GitHub App installation check wired into runs OIDC validation")
+
+        # Configure dispatch bridge — used by /runs/{id}/trigger.
+        runs_dispatch.configure(
+            resolver=resolver,
+            token_broker=_token_broker,
+            dispatcher_factory=_get_dispatcher,
+        )
+        runs_api.configure_dispatch(runs_dispatch.run_trigger)
+        application.include_router(runs_api.router)
+        logger.info("Streamed-runs API mounted at /runs")
+    except Exception:
+        logger.exception("Failed to mount streamed-runs API")
+
     # Register the OAuth2-protected fleet-heartbeat receiver so
     # opted-in caretaker runs can register themselves regardless of
     # whether the full admin dashboard is enabled on this backend
@@ -315,6 +380,17 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             except Exception:
                 logger.warning("Failed to initialise admin health API", exc_info=True)
 
+            # Streamed-runs admin surface — list, detail, SSE feed +
+            # background sweeper that flips long-silent runs to ``stalled``.
+            try:
+                from caretaker.admin import runs_stream_api
+
+                application.include_router(runs_stream_api.router)
+                application.state.runs_sweeper_task = runs_stream_api.build_sweeper_task()
+                logger.info("Admin runs API + sweeper enabled")
+            except Exception:
+                logger.warning("Failed to initialise admin runs API", exc_info=True)
+
             # Webhook delivery history — exposes the in-process ring
             # buffer populated by the GitHub webhook handler so the
             # admin dashboard can show recent deliveries (event, action,
@@ -361,6 +437,22 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await task
+
+    sweeper = getattr(application.state, "runs_sweeper_task", None)
+    if sweeper is not None:
+        sweeper.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await sweeper
+
+    runs_resolver = getattr(application.state, "runs_resolver", None)
+    if runs_resolver is not None:
+        with suppress(Exception):
+            await runs_resolver.__aexit__(None, None, None)
+
+    with suppress(Exception):
+        from caretaker.runs.store import get_store as _runs_get_store
+
+        await _runs_get_store().close()
 
     # Stop the metrics server side-car cleanly so tests that re-enter
     # the lifespan don't leak a port binding.

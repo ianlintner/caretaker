@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "caretaker-github"
-version = "0.22.3"
+version = "0.24.0"
 description = "Autonomous GitHub repository maintenance powered by Copilot"
 readme = "README.md"
 license = "MIT"

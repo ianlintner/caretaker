@@ -2,6 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **BYOCA hand-off reviews now appear in the Reviews tab.** When a
+  hand-off agent (Claude Code, opencode, …) replies to caretaker's
+  invitation comment, the reply can include a
+  `<!-- caretaker:review-result -->` marker followed by a fenced
+  `caretaker-review` JSON block. Caretaker's PR reviewer harvests the
+  payload on its next cycle and re-posts it as a *formal* GitHub PR
+  review via the Reviews API — inline comments anchored to lines,
+  verdict (`APPROVE` / `COMMENT` / `REQUEST_CHANGES`), summary,
+  attribution to the originating agent. The review is authored by
+  `the-care-taker[bot]`, so it counts toward branch-protection rules
+  that allow bot reviewers and shows up alongside human reviews under
+  the **Reviews** tab. Agents that don't include the marker still
+  post a regular issue comment, just outside the Reviews tab.
+
+  Implemented via:
+    - new `caretaker.pr_reviewer.handoff_review_consumer` module with
+      `parse_review_payload` (tolerant of malformed input — bad
+      payloads are recorded once and skipped permanently) and
+      `consume_handoff_reviews`.
+    - new `TrackedPR.consumed_handoff_review_comment_ids` field for
+      idempotency across cycles / webhook re-deliveries.
+    - new `harvested` field on the `pr_reviewer` agent's run report
+      so operators can distinguish caretaker's own inline reviews
+      from harvested-from-agent reviews.
+    - hand-off invitation now documents the `caretaker-review` schema
+      so the agent knows how to opt in.
+
+BYOCA — Bring Your Own Coding Agent. Generalises the existing Claude Code
+hand-off path into a pluggable registry so opencode (and future agents
+like codex, gemini, hermes) can coexist with Claude Code as first-class
+options.
+
+### Added
+
+- **`caretaker.coding_agents` package** — new module hosting the
+  `CodingAgent` protocol, `HandoffAgent` base class, concrete
+  `ClaudeCodeAgent` / `OpenCodeAgent` subclasses, and
+  `CodingAgentRegistry`. Each hand-off agent owns a unique HTML-comment
+  marker so per-PR attempt counts don't cross-contaminate.
+- **`OpenCodeExecutorConfig`** in `caretaker.config` plus an open-ended
+  `executor.agents: dict[str, HandoffAgentConfig]` map for additional
+  agents declared per repo. `executor.provider` is now an open string
+  (validated at startup against the registry) instead of a closed enum.
+- **`pr_reviewer.complex_reviewer` config field** — selects which
+  hand-off agent the PR reviewer uses for complex PRs (`claude_code`,
+  `opencode`, …). Default keeps existing behaviour.
+- **`pr_reviewer.opencode_label` / `opencode_mention` config fields**
+  paired with the new `OPENCODE_REVIEW_MARKER` so opencode review
+  hand-offs don't collide with Claude review hand-offs.
+- **Generic `agent:<name>` PR labels** — caretaker now resolves
+  `agent:opencode`, `agent:codex`, etc. against the registry instead of
+  only honouring the legacy `agent:custom` alias. `agent:custom` still
+  works.
+- **`RouteOutcome.CUSTOM_AGENT`** + `RouteResult.agent_name` — new
+  generic outcome for any registered hand-off agent. The legacy
+  `RouteOutcome.CLAUDE_CODE` value is preserved for one release as an
+  alias when ``agent_name == "claude_code"``.
+- **`opencode.yml` / `opencode-review.yml` workflow templates** in
+  `setup-templates/templates/workflows/`. The maintainer agent's sync
+  issue lists them in a new "Optional templates" section so consumer
+  repos opt in only when they enable the matching feature.
+- **`doctor` row** validating `executor.provider` and
+  `pr_reviewer.complex_reviewer` resolve to known agents.
+
+### Changed
+
+- **`ExecutorDispatcher` constructor** now takes a `registry:
+  CodingAgentRegistry` argument. The legacy `claude_code_executor=`
+  parameter is kept as a deprecated shim that wraps the executor in a
+  one-entry registry.
+- **`pr_reviewer.routing.RoutingDecision`** gains a `backend: str` field
+  carrying the chosen hand-off agent name when `use_inline=False`.
+- **`pr_reviewer.claude_code_reviewer.dispatch`** is a thin shim that
+  pins the new `handoff_reviewer.dispatch` to `backend="claude_code"`.
+
+### Deprecated
+
+- `caretaker.claude_code_executor.ClaudeCodeExecutor` — alias for
+  `caretaker.coding_agents.ClaudeCodeAgent`. Will be removed in the
+  release after next.
+- `RouteOutcome.CLAUDE_CODE` — alias for `RouteOutcome.CUSTOM_AGENT`
+  with `agent_name == "claude_code"`. Switch consumers to read
+  `agent_name` then drop the alias.
+
 ## [0.19.6] - 2026-04-25
 
 Wires the **fleet registry** into the admin dashboard end-to-end so that

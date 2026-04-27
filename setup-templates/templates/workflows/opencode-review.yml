@@ -1,0 +1,97 @@
+name: opencode Review
+
+# Companion to claude-code-review.yml. Runs when caretaker's PR reviewer
+# routes a complex PR to the opencode hand-off path
+# (``pr_reviewer.complex_reviewer = "opencode"`` in caretaker config).
+#
+# opencode picks the model/provider via the workflow inputs below — useful
+# when a repo wants a non-Anthropic backend for code review.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened, labeled]
+
+jobs:
+  opencode-review:
+    # Run when the opencode-review label is applied (caretaker's hand-off
+    # mechanism) or whenever a PR is opened/updated and the operator has
+    # opted in by leaving the workflow enabled.
+    if: |
+      (github.event_name == 'pull_request' && github.event.label.name == 'opencode-review') ||
+      contains(github.event.pull_request.labels.*.name, 'opencode-review')
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Preflight — check opencode provider keys are available
+        id: preflight
+        env:
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_KEY" ] && [ -z "$OPENAI_KEY" ] && [ -z "$OPENROUTER_KEY" ] && [ -z "$GROQ_KEY" ]; then
+            echo "::warning::No opencode provider key set — falling back to Copilot review"
+            echo "opencode_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "opencode_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run opencode review
+        id: opencode-review
+        if: steps.preflight.outputs.opencode_available == 'true'
+        continue-on-error: true
+        # Pinning to ``@latest`` is convenient but a supply-chain risk —
+        # any compromise of the upstream tag affects this workflow on the
+        # next run. Recommend pinning to a specific release tag (e.g.
+        # ``sst/opencode/github@v0.1.0``) or commit SHA before relying on
+        # this in production.
+        uses: sst/opencode/github@latest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        with:
+          model: anthropic/claude-sonnet-4
+          # Review mode: a focused prompt asking opencode to review the PR
+          # and post a review summary plus inline comments.
+          prompt: |
+            Review pull request ${{ github.repository }}#${{ github.event.pull_request.number }}.
+            Focus on correctness, security, API contracts, and missing tests.
+            Post a review comment summary and inline comments where applicable.
+
+      - name: Fallback — request Copilot review
+        if: |
+          steps.preflight.outputs.opencode_available != 'true' ||
+          steps.opencode-review.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const reason = '${{ steps.preflight.outputs.opencode_available }}' === 'true'
+              ? 'opencode review action failed'
+              : 'opencode provider keys unavailable';
+            core.info(`${reason} — requesting Copilot review for PR #${prNumber}`);
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                reviewers: ['copilot-pull-request-reviewer'],
+              });
+              core.info(`Requested Copilot review for PR #${prNumber}`);
+            } catch (error) {
+              core.warning(`Copilot review request failed: ${error.message}`);
+            }

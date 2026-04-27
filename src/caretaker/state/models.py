@@ -101,6 +101,15 @@ class TrackedPR(BaseModel):
     # person.
     bot_approvers: list[str] = Field(default_factory=list)
 
+    # ID(s) of agent reply comments whose ``caretaker-review`` JSON
+    # payload caretaker has already harvested and re-posted as a formal
+    # PR review via :mod:`caretaker.pr_reviewer.handoff_review_consumer`.
+    # Without this set, every cycle would re-post the same review when a
+    # hand-off agent (Claude Code / opencode) leaves their structured
+    # reply on the PR. Comment IDs are GitHub's monotonically-issued
+    # integers so duplicates are impossible across re-runs.
+    consumed_handoff_review_comment_ids: list[int] = Field(default_factory=list)
+
     # ── Attribution telemetry (R&D workstream A2) ────────────────────────
     # Answer "did caretaker actually save human toil on this PR?" — a
     # per-PR audit trail that the weekly rollup aggregates into

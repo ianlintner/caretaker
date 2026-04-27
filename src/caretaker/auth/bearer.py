@@ -1,19 +1,27 @@
-"""Shared OAuth2 bearer-token verifier for caretaker backend resources.
+"""Shared OAuth2 / OIDC bearer-token verifier for caretaker backend resources.
 
-This module provides a single canonical bearer-token verification path used by
-all caretaker backend resources that accept service-to-service traffic
-authenticated via OAuth2 access tokens (JWTs).  Currently consumed by the
-fleet heartbeat endpoint; designed to be reused by future MCP/resource
-endpoints so the entire backend has one auth path.
+This module provides the canonical bearer-token verification path used by all
+caretaker backend resources that accept service-to-service traffic
+authenticated via JWTs.  It supports multiple registered issuers (e.g. the
+roauth2 fleet token issuer *and* GitHub Actions OIDC) by routing each incoming
+token to the right verifier based on the token's ``iss`` claim.
 
 Usage
 -----
 At application startup (after reading config/env)::
 
     from caretaker.auth import bearer
+
+    # Existing roauth2-style issuer (audience left unverified):
     await bearer.configure(
         issuer_url="https://roauth2.cat-herding.net",
         required_scopes={"fleet:heartbeat"},
+    )
+
+    # Additional issuer (e.g. GitHub Actions OIDC) with audience pinning:
+    await bearer.configure(
+        issuer_url="https://token.actions.githubusercontent.com",
+        audience="caretaker-backend",
     )
 
 In a route handler::
@@ -30,15 +38,15 @@ In a route handler::
 Validation rules
 ----------------
 * The ``Authorization`` header MUST be ``Bearer <jwt>``.
+* The token's ``iss`` claim MUST match a registered issuer.
 * The JWT signature is validated against keys served at the issuer's
   ``jwks_uri`` (PyJWT ``PyJWKClient``).
-* ``iss`` claim MUST equal the configured issuer URL.
-* ``exp`` claim MUST be in the future.
-* ``aud`` is **not** verified (the roauth2 server emits ``aud == client_id``,
-  which is not a fixed audience we can pre-configure).
+* ``exp`` claim MUST be in the future (with configurable leeway).
+* When the issuer was registered with an ``audience`` value, the token's
+  ``aud`` claim MUST match it; otherwise ``aud`` is ignored.
 * ``scope`` claim MUST contain every required scope (space-separated string).
-* When auth has not been configured (e.g. issuer URL not set in env),
-  ``require_bearer_token`` raises HTTP 503 — fail-closed.
+* When no issuer has been registered, ``require_bearer_token`` raises HTTP
+  503 — fail-closed.
 """
 
 from __future__ import annotations
@@ -70,26 +78,28 @@ class BearerPrincipal:
     client_id: str
     scopes: frozenset[str]
     raw_claims: dict[str, Any] = field(default_factory=dict)
+    issuer: str = ""
 
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes
 
 
 # ---------------------------------------------------------------------------
-# Module-level state
+# Module-level state — registry keyed by issuer URL
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class _BearerAuthState:
+class _BearerIssuerState:
     issuer_url: str
     jwks_uri: str
     jwk_client: jwt.PyJWKClient
     required_scopes: frozenset[str]
+    audience: str | None = None
     leeway_seconds: int = 30
 
 
-_state: _BearerAuthState | None = None
+_issuers: dict[str, _BearerIssuerState] = {}
 _state_lock = threading.Lock()
 
 
@@ -102,14 +112,20 @@ async def configure(
     *,
     issuer_url: str,
     required_scopes: Iterable[str] = (),
+    audience: str | None = None,
     discovery_timeout: float = 10.0,
     leeway_seconds: int = 30,
     http_client: httpx.AsyncClient | None = None,
 ) -> None:
-    """Initialise (or replace) the global bearer-auth state.
+    """Register (or replace) a bearer-token issuer.
 
     Fetches the issuer's OIDC discovery document to learn the ``jwks_uri``
     and constructs a ``PyJWKClient`` (which caches keys with its own TTL).
+
+    Calling :func:`configure` multiple times with different ``issuer_url``
+    values registers each issuer independently — incoming tokens are routed
+    to the correct verifier by their ``iss`` claim.  Calling it again with
+    the same ``issuer_url`` replaces the existing registration.
 
     Raises ``RuntimeError`` if the discovery document cannot be loaded or is
     malformed; callers should treat that as a deployment misconfiguration.
@@ -146,39 +162,44 @@ async def configure(
     jwk_client = jwt.PyJWKClient(jwks_uri, cache_keys=True, lifespan=600)
     required = frozenset(s for s in required_scopes if s)
 
-    new_state = _BearerAuthState(
+    new_state = _BearerIssuerState(
         issuer_url=issuer_url,
         jwks_uri=jwks_uri,
         jwk_client=jwk_client,
         required_scopes=required,
+        audience=audience,
         leeway_seconds=leeway_seconds,
     )
 
     with _state_lock:
-        global _state
-        _state = new_state
+        _issuers[issuer_url] = new_state
 
     logger.info(
-        "Configured bearer-token auth: issuer=%s jwks_uri=%s required_scopes=%s",
+        "Configured bearer-token issuer: issuer=%s jwks_uri=%s required_scopes=%s aud=%s",
         issuer_url,
         jwks_uri,
         sorted(required),
+        audience or "<unverified>",
     )
 
 
 def reset() -> None:
-    """Clear the global state (for tests)."""
+    """Clear all registered issuers (for tests)."""
     with _state_lock:
-        global _state
-        _state = None
+        _issuers.clear()
 
 
 def is_configured() -> bool:
-    return _state is not None
+    """Return ``True`` when at least one issuer has been registered."""
+    return bool(_issuers)
 
 
-def get_state() -> _BearerAuthState | None:
-    return _state
+def is_issuer_configured(issuer_url: str) -> bool:
+    return issuer_url.rstrip("/") in _issuers
+
+
+def get_issuer_state(issuer_url: str) -> _BearerIssuerState | None:
+    return _issuers.get(issuer_url.rstrip("/"))
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +241,33 @@ def _scopes_from_claims(claims: dict[str, Any]) -> frozenset[str]:
     return frozenset()
 
 
-def _verify_token(state: _BearerAuthState, token: str) -> BearerPrincipal:
+def _peek_issuer(token: str) -> str:
+    """Return the ``iss`` claim from an unverified JWT.
+
+    Used only to route the token to the right verifier; the signature is
+    re-verified against that issuer's JWKS afterwards, so an attacker cannot
+    forge a token by lying about ``iss`` — they would have to also produce a
+    valid signature against the matching JWKS.
+    """
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Malformed token: {exc}",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        ) from exc
+    iss = unverified.get("iss")
+    if not isinstance(iss, str) or not iss:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing 'iss' claim",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        )
+    return iss.rstrip("/")
+
+
+def _verify_token(state: _BearerIssuerState, token: str) -> BearerPrincipal:
     try:
         signing_key = state.jwk_client.get_signing_key_from_jwt(token).key
     except jwt.exceptions.PyJWKClientError as exc:
@@ -238,18 +285,22 @@ def _verify_token(state: _BearerAuthState, token: str) -> BearerPrincipal:
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         ) from exc
 
+    decode_options: dict[str, Any] = {
+        "require": ["exp", "iat", "iss"],
+        "verify_aud": state.audience is not None,
+    }
+
+    decode_kwargs: dict[str, Any] = {
+        "algorithms": ["RS256"],
+        "issuer": state.issuer_url,
+        "leeway": state.leeway_seconds,
+        "options": decode_options,
+    }
+    if state.audience is not None:
+        decode_kwargs["audience"] = state.audience
+
     try:
-        claims = jwt.decode(
-            token,
-            signing_key,
-            algorithms=["RS256"],
-            issuer=state.issuer_url,
-            leeway=state.leeway_seconds,
-            options={
-                "require": ["exp", "iat", "iss"],
-                "verify_aud": False,
-            },
-        )
+        claims = jwt.decode(token, signing_key, **decode_kwargs)
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -262,6 +313,12 @@ def _verify_token(state: _BearerAuthState, token: str) -> BearerPrincipal:
             detail="Invalid token issuer",
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         ) from exc
+    except jwt.InvalidAudienceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token audience",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        ) from exc
     except jwt.InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -271,7 +328,12 @@ def _verify_token(state: _BearerAuthState, token: str) -> BearerPrincipal:
 
     client_id = claims.get("client_id") or claims.get("azp") or claims.get("sub") or ""
     scopes = _scopes_from_claims(claims)
-    return BearerPrincipal(client_id=str(client_id), scopes=scopes, raw_claims=claims)
+    return BearerPrincipal(
+        client_id=str(client_id),
+        scopes=scopes,
+        raw_claims=claims,
+        issuer=state.issuer_url,
+    )
 
 
 def _enforce_scopes(principal: BearerPrincipal, scopes: Iterable[str]) -> None:
@@ -288,29 +350,59 @@ def _enforce_scopes(principal: BearerPrincipal, scopes: Iterable[str]) -> None:
         )
 
 
+def verify_token_string(token: str) -> BearerPrincipal:
+    """Verify a raw token string and return the resolved principal.
+
+    Used by code paths that receive a token outside of an HTTP header
+    (e.g. SSE clients passing tokens via query string) and want the same
+    multi-issuer routing + signature verification as the HTTP dependency.
+    """
+    if not _issuers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Bearer authentication not configured",
+        )
+    iss = _peek_issuer(token)
+    state = _issuers.get(iss)
+    if state is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Unrecognized token issuer: {iss}",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        )
+    return _verify_token(state, token)
+
+
 def require_bearer_token(
     *scopes: str,
 ) -> Callable[[Request], Coroutine[Any, Any, BearerPrincipal]]:
     """FastAPI dependency factory: returns a Depends-able callable.
 
-    The returned callable validates the request's bearer token and ensures the
-    JWT carries every scope in ``scopes`` (in addition to any scopes set
-    globally via :func:`configure`).
+    The returned callable validates the request's bearer token and ensures
+    the JWT carries every scope in ``scopes`` plus any scopes set globally
+    on the resolved issuer's registration.
     """
 
     extra_scopes = frozenset(s for s in scopes if s)
 
     async def _dependency(request: Request) -> BearerPrincipal:
-        state = _state
-        if state is None:
+        if not _issuers:
             logger.error(
-                "Bearer auth used but not configured (issuer URL missing); rejecting request"
+                "Bearer auth used but no issuer configured; rejecting request",
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Bearer authentication not configured",
             )
         token = _extract_bearer_token(request)
+        iss = _peek_issuer(token)
+        state = _issuers.get(iss)
+        if state is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Unrecognized token issuer: {iss}",
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
         principal = _verify_token(state, token)
         _enforce_scopes(principal, state.required_scopes | extra_scopes)
         return principal
@@ -321,8 +413,10 @@ def require_bearer_token(
 __all__ = [
     "BearerPrincipal",
     "configure",
-    "reset",
+    "get_issuer_state",
     "is_configured",
-    "get_state",
+    "is_issuer_configured",
     "require_bearer_token",
+    "reset",
+    "verify_token_string",
 ]
