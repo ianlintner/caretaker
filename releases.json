@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.26.0",
+      "min_compatible": "0.25.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.26.0 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.25.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/626\n* fix(pr-agent): allow auto-approve for maintainer-bot PRs (releases.json) [F-7] by @ianlintner in https://github.com/ianlintner/caretaker/pull/627\n* fix(pr-agent): upgrade-PR dedup picks highest target version (F-6) + qa-findings 2026-04-27 update by @ianlintner in https://github.com/ianlintner/caretaker/pull/628\n* feat(fleet): server-side dispatch heartbeat \u2014 keeps /api/admin/fleet live post-v0.25.0 by @ianlintner in https://github.com/ianlintner/caretaker/pull/629\n* feat(observability): end-to-end OpenTelemetry tracing by @ianlintner in https://github.com/ianlintner/caretaker/pull/631\n* docs: reconcile CHANGELOG \u2014 2026-W18 by @the-care-taker[bot] in https://github.com/ianlintner/caretaker/pull/612\n* fix(k8s): raise Redis memory limit and add maxmemory eviction by @ianlintner in https://github.com/ianlintner/caretaker/pull/630\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.25.0...v0.26.0",
+      "breaking": false
+    },
+    {
       "version": "0.25.0",
       "min_compatible": "0.24.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.25.0",
