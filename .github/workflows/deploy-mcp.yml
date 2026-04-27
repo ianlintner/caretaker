@@ -98,13 +98,20 @@ jobs:
           # ``ServiceAccount "caretaker-mcp" not found``.
           kubectl apply \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
-            -f infra/k8s/caretaker-mcp-serviceaccount.yaml \
-            -f infra/k8s/caretaker-agent-worker.yaml
+            -f infra/k8s/caretaker-mcp-serviceaccount.yaml
 
-          # `replace --force` deletes and recreates the Deployment to reconcile
-          # stale unmanaged fields from a prior manual `kubectl apply` — a
-          # regular apply/server-side-apply cannot remove an unmanaged `value`
-          # on an env entry that we now declare via `valueFrom`.
+          # `replace --force` deletes and recreates resources whose specs are
+          # immutable in-place:
+          #   - caretaker-agent-worker.yaml ships a Job (alongside its SA/RBAC),
+          #     and Job.spec.template is immutable, so any pod-spec change
+          #     (e.g. new env vars) fails a plain `kubectl apply`.
+          #   - caretaker-mcp-deployment.yaml is force-replaced to clear
+          #     unmanaged fields from prior manual applies (a regular apply
+          #     can't remove an unmanaged `value` on an env entry that we now
+          #     declare via `valueFrom`).
+          kubectl replace --force \
+            -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
+            -f infra/k8s/caretaker-agent-worker.yaml
           kubectl replace --force \
             -n "${{ vars.CARETAKER_MCP_NAMESPACE }}" \
             -f infra/k8s/caretaker-mcp-deployment.yaml
