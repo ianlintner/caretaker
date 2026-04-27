@@ -1382,22 +1382,42 @@ class PRAgent:
         conclusion = evaluation.readiness.conclusion
         check_status = "completed"
         check_conclusion: str | None = None
-        # Terminal-state override: once a PR is closed/merged, force the
-        # readiness check to a terminal conclusion regardless of any
-        # outstanding blockers in the in-progress evaluation. Without
-        # this, ``evaluate_readiness`` keeps emitting ``in_progress`` when
-        # any blocker is still present (e.g. ``ci_pending`` because a
-        # post-merge workflow is still queued), so the check dangles
-        # forever — which is exactly what happened on PR #609.
+        # Terminal-state override: once a PR is closed/merged/escalated,
+        # force the readiness check to a terminal conclusion regardless
+        # of any outstanding blockers in the in-progress evaluation.
+        # Without this, ``evaluate_readiness`` keeps emitting
+        # ``in_progress`` when any blocker is still present (e.g.
+        # ``ci_pending`` because a post-merge workflow is still queued,
+        # or ``required_review_missing`` while the PR sits awaiting a
+        # human review), so the check dangles forever — see PR #609 (the
+        # closed-PR scenario) and PR #613 (the escalated-PR scenario).
+        #
+        # ``conclusion == "success"`` deliberately wins over the escalated
+        # branch: if a human approves and CI passes after caretaker had
+        # escalated, the check should reflect that the PR is actually
+        # ready, not stay locked at the escalation-time terminal state.
         pr_state = getattr(pr.state, "value", pr.state)
         is_merged = bool(getattr(pr, "merged", False)) or pr.merged_at is not None
         is_closed = pr_state == "closed"
+        is_escalated = tracking.escalated or tracking.state == PRTrackingState.ESCALATED
         if is_merged:
             check_conclusion = "success"
         elif is_closed:
             check_conclusion = "neutral"
         elif conclusion == "success":
             check_conclusion = "success"
+        elif is_escalated:
+            # An escalated PR has been handed off to humans; caretaker
+            # is no longer driving toward merge. Surface the check as
+            # terminal so it stops dangling. Mode controls severity:
+            # advisory → neutral (informational, never blocks branch
+            # protection); gate_only / gate_and_merge → failure (still
+            # blocks merge, matching the in_progress→failure mapping
+            # for those modes).
+            if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
+                check_conclusion = "neutral"
+            else:
+                check_conclusion = "failure"
         elif conclusion == "failure":
             if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
                 check_conclusion = "neutral"
