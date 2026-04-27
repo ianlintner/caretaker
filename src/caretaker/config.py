@@ -641,11 +641,24 @@ class PRReviewerConfig(StrictBaseModel):
             "ready_for_review",
         ]
     )
-    # Score threshold: score >= threshold → claude-code hand-off; else inline LLM.
+    # Score threshold: score >= threshold → complex hand-off; else inline LLM.
     routing_threshold: int = 40
+    # Which BYOCA coding agent to use for complex PR reviews. Must match
+    # a registered agent name (``claude_code``, ``opencode``, …) or the
+    # special value ``inline`` to keep everything inline. The default
+    # preserves the historical behaviour for existing consumers; switch
+    # to ``opencode`` when you want multi-provider review hand-off.
+    complex_reviewer: str = "claude_code"
     # Label/mention used for the claude-code-action hand-off.
+    # Retained for backward-compatibility — read by the claude_code
+    # reviewer dispatch path. New deployments should configure the
+    # equivalent on the registered agent instead.
     claude_code_label: str = "claude-code"
     claude_code_mention: str = "@claude"
+    # Label/mention used for the opencode hand-off when
+    # ``complex_reviewer = "opencode"``.
+    opencode_label: str = "opencode-review"
+    opencode_mention: str = "@opencode-agent"
     # Maximum diff lines fetched for inline review (excess is truncated).
     max_diff_lines: int = 2000
     # Whether to post per-file inline comments (in addition to the review body).
@@ -1110,38 +1123,75 @@ class FoundryExecutorConfig(StrictBaseModel):
     request_timeout_seconds: float = 120.0
 
 
-class ClaudeCodeExecutorConfig(StrictBaseModel):
-    """Configuration for the opt-in ``claude-code-action`` hand-off executor.
+class HandoffAgentConfig(StrictBaseModel):
+    """Configuration shared by every BYOCA hand-off coding agent.
 
-    Caretaker does not run Claude Code inline; instead, when this executor
-    is selected for a task, it applies a configurable *trigger label* to
-    the host PR / issue, and posts a structured hand-off comment. The
-    upstream [``anthropics/claude-code-action``][cca] workflow, installed
-    separately in the consumer repo, listens for that label (or the `@claude`
-    mention in the comment) and produces the fix asynchronously.
+    Hand-off agents (Claude Code, opencode, …) all behave identically:
+    apply a trigger label to the host PR / issue, post a structured
+    ``@mention`` comment, and let an upstream GitHub Action installed on
+    the consumer repo produce the fix asynchronously. Caretaker tracks
+    the resulting commit / PR through the same ``<!-- caretaker:result -->``
+    markers it already uses for the Copilot + Foundry paths.
 
-    The caretaker state machine then tracks the resulting commit / PR
-    through the same ``<!-- caretaker:result -->`` markers it already uses
-    for the Copilot + Foundry paths.
-
-    Feature is entirely opt-in: ``enabled = False`` by default; in addition
-    the consumer repo must have the upstream action installed and
-    authorised on its own.
-
-    [cca]: https://github.com/anthropics/claude-code-action
+    Each concrete agent supplies its own defaults for ``trigger_label`` /
+    ``mention``; operators can override them per repo via the
+    ``executor.agents.<name>`` config block.
     """
 
     enabled: bool = False
-    # Label caretaker applies to trigger the upstream workflow.
-    trigger_label: str = "claude-code"
+    # Execution mode. Phase 1 only ships ``handoff``; ``inline`` and
+    # ``k8s_job`` are reserved for future phases. Validated at startup
+    # against the agent class — opencode/claude_code are hand-off only.
+    mode: Literal["handoff", "inline", "k8s_job"] = "handoff"
+    # Label caretaker applies to trigger the upstream workflow. Empty
+    # string falls through to the agent class's ``default_trigger_label``.
+    trigger_label: str = ""
     # Mention string included in the hand-off comment so the upstream
     # auto-detector can pick it up even if a repo has a different label
-    # listener name configured.
-    mention: str = "@claude"
+    # listener name configured. Empty string falls through to the agent
+    # class's ``default_mention``.
+    mention: str = ""
     # Maximum attempts per task before caretaker stops re-applying the
     # trigger label; prevents ping-pong if the upstream action can't
     # complete the work.
     max_attempts: int = 2
+
+
+class ClaudeCodeExecutorConfig(HandoffAgentConfig):
+    """Configuration for the ``anthropics/claude-code-action`` hand-off agent.
+
+    Identical shape to :class:`HandoffAgentConfig`; subclassed only so
+    legacy ``executor.claude_code: …`` YAML keeps working without an
+    ``extra="forbid"`` validation error during the deprecation window.
+    The defaults match what shipped before the BYOCA refactor.
+
+    See https://github.com/anthropics/claude-code-action for the upstream
+    action this agent dispatches to.
+    """
+
+    trigger_label: str = "claude-code"
+    mention: str = "@claude"
+
+
+class OpenCodeExecutorConfig(HandoffAgentConfig):
+    """Configuration for the ``sst/opencode``-style hand-off agent.
+
+    opencode (https://github.com/sst/opencode) supports many providers in
+    agent mode — useful when caretaker is dispatching coding work in repos
+    that need a non-Anthropic backend. Caretaker treats it as a peer of
+    Claude Code: same hand-off shape, different label / mention so each
+    upstream workflow can listen on its own trigger and per-PR attempt
+    counts don't cross-contaminate.
+
+    Feature is opt-in (``enabled = False`` by default); the consumer repo
+    must have the upstream opencode action installed and authorised on
+    its own. The maintainer agent's template installer can write the
+    ``.github/workflows/opencode.yml`` workflow into consumer repos when
+    they opt in; see ``setup-templates/templates/.github/workflows/``.
+    """
+
+    trigger_label: str = "opencode"
+    mention: str = "@opencode-agent"
 
 
 class K8sAgentWorkerConfig(StrictBaseModel):
@@ -1178,12 +1228,33 @@ class K8sAgentWorkerConfig(StrictBaseModel):
 
 
 class ExecutorConfig(StrictBaseModel):
-    """Top-level switch deciding how coding tasks are executed."""
+    """Top-level switch deciding how coding tasks are executed.
 
-    provider: Literal["copilot", "foundry", "claude_code", "auto"] = "copilot"
+    BYOCA — Bring Your Own Coding Agent. ``provider`` is a string naming
+    a registered :class:`~caretaker.coding_agents.protocol.CodingAgent`
+    plus the legacy reserved values ``copilot`` (always available; never
+    in the registry) and ``auto`` (try the registered custom agents in
+    order, fall back to Copilot).
+
+    Built-in registered names today: ``foundry``, ``claude_code``,
+    ``opencode``. Operators can register additional agents (codex,
+    gemini, hermes, …) by populating the ``agents`` map below. Unknown
+    ``provider`` values are diagnosed at orchestrator startup with the
+    full list of registered names — not at config-parse time, so
+    operators get a useful error.
+    """
+
+    provider: str = "copilot"
     foundry: FoundryExecutorConfig = Field(default_factory=FoundryExecutorConfig)
     claude_code: ClaudeCodeExecutorConfig = Field(default_factory=ClaudeCodeExecutorConfig)
+    opencode: OpenCodeExecutorConfig = Field(default_factory=OpenCodeExecutorConfig)
     k8s_worker: K8sAgentWorkerConfig = Field(default_factory=K8sAgentWorkerConfig)
+    # Per-repo overrides for additional registered agents. Keys are agent
+    # names (matching the agent's ``CodingAgent.name``); values follow
+    # :class:`HandoffAgentConfig`. Use this for agents that aren't built
+    # in (codex, gemini, hermes, …) without breaking the existing typed
+    # ``claude_code`` / ``opencode`` blocks.
+    agents: dict[str, HandoffAgentConfig] = Field(default_factory=dict)
 
 
 class AgenticEnforceGateConfig(StrictBaseModel):

@@ -1,23 +1,34 @@
-"""Executor dispatcher — picks between Foundry and Copilot per task.
+"""Executor dispatcher — picks between BYOCA coding agents and Copilot per task.
 
 Existing agent bridges ask the dispatcher for a :class:`RouteResult` for each
 task. The dispatcher's decision tree (highest-priority first):
 
-0. **Label override** on the host PR / issue (see :data:`ROUTING_LABELS`):
-   * ``agent:quarantine`` — refuse dispatch entirely (``RouteOutcome.REFUSED``).
-   * ``agent:custom``     — force the custom executor (Foundry today).
-   * ``agent:copilot``    — force the legacy Copilot path.
-1. Config ``provider == "copilot"`` → always post the Copilot task (legacy).
-2. Config ``provider == "foundry"`` → try Foundry; fall back to Copilot on
-   ``ESCALATED`` or ``FAILED``.
-3. Config ``provider == "auto"`` → try Foundry when eligible (task type
-   allowed and provider credentials present), else Copilot.
+0. **Label override** on the host PR / issue:
 
-The dispatcher is a thin coordinator — it never opens a workspace itself.
+   * ``agent:quarantine`` — refuse dispatch entirely (``RouteOutcome.REFUSED``).
+   * ``agent:<name>``     — force the named registered agent (e.g.
+     ``agent:opencode``, ``agent:claude_code``). Falls back to Copilot if
+     the named agent is unregistered or disabled.
+   * ``agent:custom``     — *deprecated* alias for the configured
+     ``executor.provider`` agent.
+   * ``agent:copilot``    — force the legacy Copilot path.
+
+1. Config ``provider == "copilot"`` → always post the Copilot task (legacy).
+2. Config ``provider == "<registered name>"`` → run that agent. On
+   ``ESCALATED`` / ``FAILED``, fall back to Copilot. ``foundry`` follows
+   the eligibility gate (task type + size); hand-off agents follow their
+   per-agent attempt cap.
+3. Config ``provider == "auto"`` → try Foundry when eligible, then any
+   other enabled custom agent in registration order, then Copilot.
+
+The dispatcher itself never opens a workspace and never calls a model
+provider — it just routes. All the per-agent details live in
+:mod:`caretaker.coding_agents`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -27,7 +38,7 @@ from caretaker.foundry.executor import CodingTask, ExecutorOutcome, ExecutorResu
 from caretaker.llm.copilot import CopilotTask, TaskType
 
 if TYPE_CHECKING:
-    from caretaker.claude_code_executor import ClaudeCodeExecutor
+    from caretaker.coding_agents.registry import CodingAgentRegistry
     from caretaker.config import ExecutorConfig
     from caretaker.foundry.executor import FoundryExecutor
     from caretaker.github_client.models import Comment, PullRequest
@@ -40,7 +51,11 @@ class RouteOutcome(StrEnum):
     """How a task was actually dispatched."""
 
     FOUNDRY = "FOUNDRY"  # Foundry handled it end-to-end
-    CLAUDE_CODE = "CLAUDE_CODE"  # claude-code-action hand-off dispatched
+    CUSTOM_AGENT = "CUSTOM_AGENT"  # any registered hand-off agent dispatched
+    # Deprecated: kept for one release so downstream observability that
+    # filters on ``CLAUDE_CODE`` keeps working. New routing assigns
+    # ``CUSTOM_AGENT`` plus ``agent_name`` instead.
+    CLAUDE_CODE = "CLAUDE_CODE"
     COPILOT = "COPILOT"  # Copilot comment was posted (legacy path)
     COPILOT_FALLBACK = "COPILOT_FALLBACK"  # custom executor escalated; Copilot posted
     REFUSED = "REFUSED"  # Label-based quarantine refused dispatch
@@ -53,7 +68,14 @@ class RouteOutcome(StrEnum):
 LABEL_AGENT_CUSTOM = "agent:custom"
 LABEL_AGENT_COPILOT = "agent:copilot"
 LABEL_AGENT_QUARANTINE = "agent:quarantine"
+LABEL_AGENT_PREFIX = "agent:"
 ROUTING_LABELS = frozenset({LABEL_AGENT_CUSTOM, LABEL_AGENT_COPILOT, LABEL_AGENT_QUARANTINE})
+
+# Reserved agent-label suffixes that don't resolve to a registry entry —
+# these are caretaker's hand-rolled overrides and must not collide with a
+# registered agent name. Any other ``agent:<x>`` looks up ``x`` in the
+# registry.
+_RESERVED_AGENT_SUFFIXES = frozenset({"custom", "copilot", "quarantine"})
 
 
 def _label_names(labels: object) -> set[str]:
@@ -83,12 +105,29 @@ def _label_names(labels: object) -> set[str]:
 def routing_override(labels: object) -> str | None:
     """Return the routing override dictated by labels, or ``None``.
 
-    Precedence is: quarantine > custom > copilot. Caller decides how to
-    act on each value; see :class:`ExecutorDispatcher.route`.
+    Precedence is: quarantine > copilot > specific agent (``agent:<name>``)
+    > legacy ``custom`` alias. Caller decides how to act on each value;
+    see :class:`ExecutorDispatcher.route`.
+
+    Returns either one of the legacy constants
+    (:data:`LABEL_AGENT_QUARANTINE` / :data:`LABEL_AGENT_COPILOT` /
+    :data:`LABEL_AGENT_CUSTOM`) or a bare ``agent:<name>`` string for the
+    caller to resolve against the registry.
     """
     names = _label_names(labels)
     if LABEL_AGENT_QUARANTINE in names:
         return LABEL_AGENT_QUARANTINE
+    # Specific ``agent:<name>`` labels (other than reserved suffixes) win
+    # over the legacy ``agent:custom`` alias so operators can target a
+    # particular registered agent on a per-PR basis. Sorted for
+    # determinism when an operator stacks multiple ``agent:<name>``
+    # labels (rare; surfaced as a config smell elsewhere).
+    for label in sorted(names):
+        if not label.startswith(LABEL_AGENT_PREFIX):
+            continue
+        suffix = label[len(LABEL_AGENT_PREFIX) :]
+        if suffix and suffix not in _RESERVED_AGENT_SUFFIXES:
+            return label
     if LABEL_AGENT_CUSTOM in names:
         return LABEL_AGENT_CUSTOM
     if LABEL_AGENT_COPILOT in names:
@@ -101,14 +140,31 @@ class RouteResult:
     outcome: RouteOutcome
     # Set when a Copilot task comment was posted.
     copilot_comment: Comment | None = None
-    # Set when Foundry actually ran (either COMPLETED or ESCALATED).
+    # Set when any custom executor (Foundry or a hand-off agent) actually ran.
+    # Field name preserved for backward compatibility — historically only
+    # Foundry populated it. Now also populated by hand-off agents so
+    # callers can read ``foundry_result.outcome`` uniformly.
     foundry_result: ExecutorResult | None = None
     reason: str = ""
     errors: list[str] = field(default_factory=list)
+    # When ``outcome == CUSTOM_AGENT`` (or the deprecated CLAUDE_CODE
+    # alias), the registered agent name that handled the task. Empty for
+    # Foundry, Copilot, refusal.
+    agent_name: str = ""
 
 
 class ExecutorDispatcher:
-    """Routes tasks between the Foundry executor and the Copilot protocol."""
+    """Routes tasks between registered coding agents and the Copilot protocol.
+
+    The dispatcher does NOT instantiate agents — they're constructed by
+    :meth:`Orchestrator._build_executor_dispatcher` and passed in via the
+    ``registry`` argument. Foundry remains a separate parameter (rather
+    than a registry entry) because its eligibility check is more
+    elaborate than the registry's simple ``enabled`` flag — it inspects
+    task type and per-task size budget. The dispatcher promotes Foundry
+    to the registry surface only for the ``auto`` provider's fallback
+    chain.
+    """
 
     def __init__(
         self,
@@ -116,38 +172,61 @@ class ExecutorDispatcher:
         config: ExecutorConfig,
         foundry_executor: FoundryExecutor | None,
         copilot_protocol: CopilotProtocol,
-        claude_code_executor: ClaudeCodeExecutor | None = None,
+        registry: CodingAgentRegistry | None = None,
+        claude_code_executor: object = None,
     ) -> None:
         self._config = config
         self._foundry = foundry_executor
-        self._claude_code = claude_code_executor
         self._copilot = copilot_protocol
+        # Back-compat: tests and older callers passed
+        # ``claude_code_executor=...`` directly. Build a single-entry
+        # registry so they keep working through the deprecation window.
+        if registry is None:
+            from caretaker.coding_agents.registry import CodingAgentRegistry as _Registry
+
+            registry = _Registry()
+            if claude_code_executor is not None:
+                # The legacy parameter pinned this to the claude_code
+                # agent — pin the name/enabled so a bare MagicMock works
+                # as a stand-in.
+                with contextlib.suppress(Exception):
+                    claude_code_executor.name = "claude_code"  # type: ignore[attr-defined]
+                with contextlib.suppress(Exception):
+                    if not isinstance(getattr(claude_code_executor, "enabled", None), bool):
+                        claude_code_executor.enabled = config.claude_code.enabled  # type: ignore[attr-defined]
+                registry.register(claude_code_executor)  # type: ignore[arg-type]
+        self._registry = registry
 
     @property
     def provider(self) -> str:
         return self._config.provider
 
-    def foundry_eligible(self, coding_task: CodingTask) -> bool:
-        """Return True if the task is a candidate for Foundry routing.
+    @property
+    def registry(self) -> CodingAgentRegistry:
+        return self._registry
 
-        Callers that only have a :class:`CopilotTask` can build an equivalent
-        :class:`CodingTask` and pass it here.
-        """
+    def foundry_eligible(self, coding_task: CodingTask) -> bool:
+        """Return True if the task is a candidate for Foundry routing."""
         if self._foundry is None:
             return False
         if not self._config.foundry.enabled:
             return False
         return coding_task.task_type.value in self._config.foundry.allowed_task_types
 
+    def agent_eligible(self, name: str) -> bool:
+        """Return True if a registered hand-off agent is available and enabled."""
+        agent = self._registry.get(name)
+        return agent is not None and agent.enabled
+
+    # Back-compat alias used by older callers / tests.
     def claude_code_eligible(self) -> bool:
-        """Return True if a Claude Code hand-off is configured and available."""
-        return self._claude_code is not None and self._config.claude_code.enabled
+        return self.agent_eligible("claude_code")
 
     def _custom_executor_available(self) -> bool:
         """Is at least one non-Copilot executor wired up?"""
-        return (
-            self._foundry is not None and self._config.foundry.enabled
-        ) or self.claude_code_eligible()
+        if self._foundry is not None and self._config.foundry.enabled:
+            return True
+        return bool(self._registry.enabled())
 
     async def route(
         self,
@@ -157,15 +236,7 @@ class ExecutorDispatcher:
         coding_task: CodingTask | None = None,
         labels: object = None,
     ) -> RouteResult:
-        """Dispatch a task, handling provider selection + Copilot fallback.
-
-        ``copilot_task`` is required so the Copilot path (legacy or fallback)
-        has the exact payload it needs.  ``coding_task`` — if supplied — is
-        handed to the Foundry executor; otherwise a CodingTask is derived from
-        ``copilot_task``. ``labels`` are the labels currently applied to the
-        host PR / issue and participate in the routing decision per
-        :data:`ROUTING_LABELS`.
-        """
+        """Dispatch a task, handling provider selection + Copilot fallback."""
         effective_task = coding_task or self._to_coding_task(copilot_task)
 
         # 0. Label overrides trump every config knob. Operators use these
@@ -178,118 +249,191 @@ class ExecutorDispatcher:
                 outcome=RouteOutcome.REFUSED,
                 reason="agent:quarantine label present",
             )
-        if override == LABEL_AGENT_CUSTOM:
-            if not self._custom_executor_available():
+        if override == LABEL_AGENT_COPILOT:
+            return await self._post_copilot(pr, copilot_task, reason="agent:copilot label")
+        if override and override.startswith(LABEL_AGENT_PREFIX) and override != LABEL_AGENT_CUSTOM:
+            target = override[len(LABEL_AGENT_PREFIX) :]
+            if not self.agent_eligible(target):
                 logger.warning(
-                    "agent:custom label on PR #%s but no custom executor "
-                    "is enabled; falling back to Copilot",
+                    "%s label on PR #%s but agent %r is not registered/enabled; "
+                    "falling back to Copilot",
+                    override,
                     pr.number,
+                    target,
                 )
                 return await self._post_copilot(
                     pr,
                     copilot_task,
-                    reason="agent:custom label set but custom executor unavailable",
+                    reason=f"{override} label but {target} unavailable",
                     is_fallback=True,
                 )
-            # When both Foundry and Claude Code are configured, respect the
-            # ``executor.provider`` setting to decide which wins. If the
-            # provider is ``copilot`` (the original default) but the label
-            # says custom, prefer whichever custom executor is enabled.
-            if self.provider == "claude_code" and self.claude_code_eligible():
-                return await self._run_claude_code(
-                    pr, copilot_task, effective_task, reason="agent:custom label"
-                )
-            if self._foundry is not None and self._config.foundry.enabled:
-                return await self._run_foundry(
-                    pr, copilot_task, effective_task, reason="agent:custom label"
-                )
-            return await self._run_claude_code(
-                pr, copilot_task, effective_task, reason="agent:custom label"
+            return await self._run_agent(
+                target, pr, copilot_task, effective_task, reason=f"{override} label"
             )
-        if override == LABEL_AGENT_COPILOT:
-            return await self._post_copilot(pr, copilot_task, reason="agent:copilot label")
+        if override == LABEL_AGENT_CUSTOM:
+            return await self._handle_custom_label(pr, copilot_task, effective_task)
 
-        # Claude Code provider — dispatch via label + mention comment.
-        if self.provider == "claude_code":
-            if not self.claude_code_eligible():
-                logger.warning(
-                    "executor.provider='claude_code' but claude_code.enabled=False "
-                    "or executor missing; routing to Copilot"
-                )
-                return await self._post_copilot(pr, copilot_task, reason="claude_code disabled")
-            return await self._run_claude_code(
-                pr, copilot_task, effective_task, reason="provider=claude_code"
-            )
-
-        if self.provider == "copilot" or self._foundry is None:
+        # 1. Provider == copilot — short-circuit to legacy path.
+        if self.provider == "copilot":
             return await self._post_copilot(pr, copilot_task, reason="provider=copilot")
 
-        if self.provider == "auto" and not self.foundry_eligible(effective_task):
-            # When auto-routing and Foundry is ineligible, try Claude Code
-            # as the next-cheapest custom executor before falling to Copilot.
-            if self.claude_code_eligible():
-                return await self._run_claude_code(
+        # 2. Provider names a registered agent (claude_code, opencode, …).
+        if self._registry.has(self.provider):
+            if not self.agent_eligible(self.provider):
+                logger.warning(
+                    "executor.provider=%r but that agent is disabled or "
+                    "unavailable; routing to Copilot",
+                    self.provider,
+                )
+                return await self._post_copilot(
+                    pr, copilot_task, reason=f"{self.provider} disabled"
+                )
+            return await self._run_agent(
+                self.provider,
+                pr,
+                copilot_task,
+                effective_task,
+                reason=f"provider={self.provider}",
+            )
+
+        # 3. Provider == foundry / auto / unknown.
+        if self.provider == "foundry":
+            if self._foundry is None or not self._config.foundry.enabled:
+                logger.warning(
+                    "executor.provider='foundry' but foundry.enabled=False; routing to Copilot"
+                )
+                return await self._post_copilot(pr, copilot_task, reason="foundry disabled")
+            return await self._run_foundry(
+                pr, copilot_task, effective_task, reason=f"provider={self.provider}"
+            )
+
+        if self.provider == "auto":
+            if self._foundry is not None and self.foundry_eligible(effective_task):
+                return await self._run_foundry(
+                    pr, copilot_task, effective_task, reason="auto: foundry eligible"
+                )
+            # Foundry ineligible — try registered custom agents (Claude
+            # Code, opencode, …) in registration order before Copilot.
+            for agent in self._registry.enabled():
+                return await self._run_agent(
+                    agent.name,
                     pr,
                     copilot_task,
                     effective_task,
-                    reason="auto: foundry ineligible, claude_code eligible",
+                    reason=f"auto: foundry ineligible, {agent.name} eligible",
                 )
             return await self._post_copilot(
-                pr, copilot_task, reason="auto: task not Foundry-eligible"
+                pr, copilot_task, reason="auto: no custom agent eligible"
             )
 
-        if self.provider == "foundry" and not self._config.foundry.enabled:
-            # Misconfiguration: provider set to foundry but feature disabled.
-            logger.warning(
-                "executor.provider='foundry' but foundry.enabled=False; routing to Copilot"
-            )
-            return await self._post_copilot(pr, copilot_task, reason="foundry disabled")
-
-        return await self._run_foundry(
-            pr, copilot_task, effective_task, reason=f"provider={self.provider}"
+        # Unknown provider name — log and fall back to Copilot. We don't
+        # crash the dispatcher because the same config is loaded by
+        # multiple agents and a typo shouldn't take the whole orchestrator
+        # down. ``caretaker doctor`` surfaces the misconfiguration.
+        logger.warning(
+            "executor.provider=%r is not registered (known agents: %s); routing to Copilot",
+            self.provider,
+            ", ".join(self._registry.names()) or "(none)",
+        )
+        return await self._post_copilot(
+            pr, copilot_task, reason=f"unknown provider {self.provider!r}"
         )
 
-    async def _run_claude_code(
+    async def _handle_custom_label(
         self,
+        pr: PullRequest,
+        copilot_task: CopilotTask,
+        effective_task: CodingTask,
+    ) -> RouteResult:
+        """Resolve the deprecated ``agent:custom`` label.
+
+        Preference order: configured ``provider`` (if it names a custom
+        agent), then Foundry, then the first enabled hand-off agent.
+        Falls back to Copilot when nothing is wired up.
+        """
+        if not self._custom_executor_available():
+            logger.warning(
+                "agent:custom label on PR #%s but no custom executor "
+                "is enabled; falling back to Copilot",
+                pr.number,
+            )
+            return await self._post_copilot(
+                pr,
+                copilot_task,
+                reason="agent:custom label set but custom executor unavailable",
+                is_fallback=True,
+            )
+        # If provider names a registered agent, prefer it.
+        if self.agent_eligible(self.provider):
+            return await self._run_agent(
+                self.provider, pr, copilot_task, effective_task, reason="agent:custom label"
+            )
+        if self._foundry is not None and self._config.foundry.enabled:
+            return await self._run_foundry(
+                pr, copilot_task, effective_task, reason="agent:custom label"
+            )
+        # Last resort: first enabled registered agent.
+        for agent in self._registry.enabled():
+            return await self._run_agent(
+                agent.name, pr, copilot_task, effective_task, reason="agent:custom label"
+            )
+        return await self._post_copilot(
+            pr, copilot_task, reason="agent:custom label but nothing eligible", is_fallback=True
+        )
+
+    async def _run_agent(
+        self,
+        name: str,
         pr: PullRequest,
         copilot_task: CopilotTask,
         effective_task: CodingTask,
         *,
         reason: str,
     ) -> RouteResult:
-        """Invoke the Claude Code hand-off executor and handle fallback."""
-        assert self._claude_code is not None
+        """Invoke a registered hand-off agent and handle fallback."""
+        agent = self._registry.get(name)
+        assert agent is not None, f"agent {name!r} not registered"
         try:
-            cc_result = await self._claude_code.run(effective_task, pr)
+            agent_result = await agent.run(effective_task, pr)
         except Exception as exc:
-            logger.exception("ClaudeCodeExecutor.run raised: %s", exc)
+            logger.exception("%sAgent.run raised: %s", name, exc)
             return await self._post_copilot(
                 pr,
                 copilot_task,
-                reason=f"claude_code raised: {exc}",
+                reason=f"{name} raised: {exc}",
                 is_fallback=True,
             )
 
-        if cc_result.outcome == ExecutorOutcome.COMPLETED:
+        if agent_result.outcome == ExecutorOutcome.COMPLETED:
+            # ``CLAUDE_CODE`` is a deprecated alias of ``CUSTOM_AGENT``;
+            # we surface the legacy value for ``claude_code`` so existing
+            # observability filters keep working through the deprecation
+            # window. Switch all consumers to read ``agent_name`` and
+            # then drop the alias in a follow-up.
+            outcome = (
+                RouteOutcome.CLAUDE_CODE if name == "claude_code" else RouteOutcome.CUSTOM_AGENT
+            )
             return RouteResult(
-                outcome=RouteOutcome.CLAUDE_CODE,
-                foundry_result=cc_result,  # reuse field; same shape
-                reason=f"{reason}: claude_code dispatched",
+                outcome=outcome,
+                foundry_result=agent_result,
+                reason=f"{reason}: {name} dispatched",
+                agent_name=name,
             )
 
         # ESCALATED / FAILED → fall back to Copilot.
         logger.info(
-            "ClaudeCode outcome=%s reason=%s — falling back to Copilot",
-            cc_result.outcome,
-            cc_result.reason,
+            "%s outcome=%s reason=%s — falling back to Copilot",
+            name,
+            agent_result.outcome,
+            agent_result.reason,
         )
-        fallback_task = self._augment_copilot_task(copilot_task, cc_result)
+        fallback_task = self._augment_copilot_task(copilot_task, agent_result)
         return await self._post_copilot(
             pr,
             fallback_task,
-            reason=f"{reason}: claude_code {cc_result.outcome.value}: {cc_result.reason}",
+            reason=f"{reason}: {name} {agent_result.outcome.value}: {agent_result.reason}",
             is_fallback=True,
-            foundry_result=cc_result,
+            foundry_result=agent_result,
         )
 
     async def _run_foundry(
@@ -315,6 +459,7 @@ class ExecutorDispatcher:
                 outcome=RouteOutcome.FOUNDRY,
                 foundry_result=foundry_result,
                 reason=f"{reason}: foundry completed",
+                agent_name="foundry",
             )
 
         # ESCALATED / FAILED → fall back to Copilot.
@@ -334,13 +479,7 @@ class ExecutorDispatcher:
 
     @staticmethod
     def _pr_labels(pr: PullRequest) -> object:
-        """Return whatever label container the PR object carries.
-
-        ``PullRequest.labels`` is currently a ``list[str]`` but callers may
-        be running against older fixtures that don't populate it. We defer
-        normalisation to :func:`_label_names` so the dispatcher stays
-        tolerant of schema drift.
-        """
+        """Return whatever label container the PR object carries."""
         return getattr(pr, "labels", None)
 
     async def _post_copilot(
@@ -389,10 +528,10 @@ class ExecutorDispatcher:
 
     @staticmethod
     def _augment_copilot_task(base: CopilotTask, foundry_result: ExecutorResult) -> CopilotTask:
-        """Append Foundry's escalation context to the Copilot task's context field.
+        """Append the prior agent's escalation context to the Copilot task's context field.
 
-        Giving Copilot visibility into why Foundry escalated lets it skip
-        approaches that already failed.
+        Giving Copilot visibility into why the prior agent escalated lets
+        it skip approaches that already failed.
         """
         extra = (
             "\n\n---\n"

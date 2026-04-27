@@ -1,0 +1,64 @@
+name: opencode
+
+# Companion to the Claude Code workflow. Listens for the `opencode` label
+# and `@opencode-agent` mentions that caretaker's BYOCA dispatcher
+# applies when ``executor.provider = "opencode"`` (or a per-PR
+# ``agent:opencode`` label is set).
+#
+# opencode (https://github.com/sst/opencode) supports many providers in
+# agent mode (Anthropic, OpenAI, OpenRouter, local models). The provider
+# / model selection lives in this workflow file, not in caretaker.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned, labeled]
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [labeled]
+
+jobs:
+  opencode:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@opencode-agent')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@opencode-agent')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@opencode-agent')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@opencode-agent') || contains(github.event.issue.title, '@opencode-agent') || github.event.label.name == 'opencode')) ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'opencode')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run opencode
+        uses: sst/opencode/github@latest
+        env:
+          # Pick whichever provider keys this repo has configured. opencode
+          # picks them up automatically. Add only the keys you intend to
+          # use — empty values are ignored.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        with:
+          # Default model — override per-repo. Any provider/model string
+          # opencode supports works (e.g. ``openrouter/anthropic/claude-sonnet-4``,
+          # ``openai/gpt-4o``, ``anthropic/claude-sonnet-4``).
+          model: anthropic/claude-sonnet-4
+          # Mention string the workflow listens for. Must match
+          # ``executor.opencode.mention`` in caretaker's config.
+          # Default keeps caretaker's hand-off comments triggering work.
+          # mention: '@opencode-agent'

@@ -37,3 +37,54 @@ If an upgrade introduces regressions:
 - Validation is strict (unknown fields are rejected).
 - Use the CLI to validate config locally:
   - `caretaker validate-config --config .github/maintainer/config.yml`
+
+## BYOCA — opencode and the pluggable coding-agent registry
+
+`caretaker.claude_code_executor.ClaudeCodeExecutor` and the closed
+`executor.provider` enum (`copilot | foundry | claude_code | auto`) are
+now backed by a registry of pluggable coding agents. Behaviour is
+backward-compatible: existing configs keep working byte-identically.
+
+To opt in to opencode as a peer of Claude Code, add an `executor.opencode`
+block to `.github/maintainer/config.yml`:
+
+```yaml
+executor:
+  provider: opencode      # was: claude_code (or copilot/foundry)
+  claude_code:
+    enabled: true         # leave on if you want both available
+  opencode:
+    enabled: true
+    trigger_label: opencode
+    mention: "@opencode-agent"
+    max_attempts: 2
+
+pr_reviewer:
+  complex_reviewer: opencode   # default: claude_code
+```
+
+You will also need the opencode workflow files in your repo:
+
+- `.github/workflows/opencode.yml`
+- `.github/workflows/opencode-review.yml`
+
+The maintainer agent's sync issue lists both alongside the existing
+Claude templates in an "Optional templates" section. Copy them only when
+the matching feature is enabled.
+
+### Per-PR overrides
+
+`agent:opencode` and any other `agent:<registered-name>` label now
+forces routing to that specific agent. The legacy `agent:custom`,
+`agent:copilot`, and `agent:quarantine` labels keep working unchanged.
+
+### Deprecations
+
+These names continue to work for one release and will be removed after:
+
+- `caretaker.claude_code_executor.ClaudeCodeExecutor` →
+  `caretaker.coding_agents.ClaudeCodeAgent`
+- `caretaker.foundry.dispatcher.RouteOutcome.CLAUDE_CODE` →
+  `RouteOutcome.CUSTOM_AGENT` plus `RouteResult.agent_name == "claude_code"`
+- `ExecutorDispatcher(claude_code_executor=...)` constructor argument
+  → `ExecutorDispatcher(registry=...)`

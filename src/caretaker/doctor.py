@@ -1045,6 +1045,93 @@ def check_external_services(
 # ── Orchestration ──────────────────────────────────────────────────────
 
 
+def check_coding_agent_config(config: MaintainerConfig) -> list[CheckResult]:
+    """Validate ``executor.provider`` resolves to a registered coding agent.
+
+    The dispatcher tolerates an unknown provider at runtime (logs and falls
+    back to Copilot) so a typo doesn't crash the orchestrator. ``doctor``
+    surfaces the misconfiguration as a row so operators can spot it before
+    they wonder why every task is going to Copilot.
+    """
+    rows: list[CheckResult] = []
+    cfg = config.executor
+
+    # Names always known to the registry-construction code in
+    # ``Orchestrator._build_executor_dispatcher``. Built-ins plus any
+    # extra agents declared in ``executor.agents``. ``copilot`` / ``auto``
+    # / ``foundry`` are always-valid reserved provider values.
+    known: set[str] = {"copilot", "auto", "foundry"}
+    if cfg.claude_code.enabled:
+        known.add("claude_code")
+    if cfg.opencode.enabled:
+        known.add("opencode")
+    for name, agent_cfg in cfg.agents.items():
+        if agent_cfg.enabled:
+            known.add(name)
+
+    if cfg.provider not in known:
+        # Distinguish between "named agent isn't enabled" and "provider
+        # doesn't exist at all" — the first is a common misconfig where
+        # the operator pasted ``provider: opencode`` but forgot
+        # ``opencode.enabled: true``.
+        is_typed_disabled = (cfg.provider == "claude_code" and not cfg.claude_code.enabled) or (
+            cfg.provider == "opencode" and not cfg.opencode.enabled
+        )
+        detail = (
+            f"executor.provider={cfg.provider!r} is set but the "
+            f"corresponding agent block has enabled=False — caretaker will "
+            "route to Copilot instead. Set the matching ``.enabled = true``."
+            if is_typed_disabled
+            else (
+                f"executor.provider={cfg.provider!r} does not match any "
+                f"registered coding agent (known: {', '.join(sorted(known))}). "
+                "Tasks will silently route to Copilot."
+            )
+        )
+        rows.append(
+            CheckResult(
+                category="executor",
+                name="provider",
+                severity=Severity.WARN,
+                detail=detail,
+                hint="executor.provider",
+            )
+        )
+
+    # Validate per-PR ``complex_reviewer`` matches a known reviewer backend.
+    pr_cfg = config.pr_reviewer
+    valid_reviewers = {"inline", "claude_code", "opencode"}
+    if pr_cfg.complex_reviewer not in valid_reviewers:
+        rows.append(
+            CheckResult(
+                category="executor",
+                name="pr-reviewer backend",
+                severity=Severity.WARN,
+                detail=(
+                    f"pr_reviewer.complex_reviewer={pr_cfg.complex_reviewer!r} "
+                    f"is not a recognized hand-off backend "
+                    f"(known: {', '.join(sorted(valid_reviewers))}). "
+                    "Caretaker falls back to claude_code."
+                ),
+                hint="pr_reviewer.complex_reviewer",
+            )
+        )
+
+    if not rows:
+        rows.append(
+            CheckResult(
+                category="executor",
+                name="provider",
+                severity=Severity.OK,
+                detail=(
+                    f"executor.provider={cfg.provider!r}, "
+                    f"pr_reviewer.complex_reviewer={pr_cfg.complex_reviewer!r}"
+                ),
+            )
+        )
+    return rows
+
+
 async def run_doctor(
     config: MaintainerConfig,
     *,
@@ -1092,6 +1179,9 @@ async def run_doctor(
                     await github.close()
 
     for result in check_external_services(config, env, strict=strict):
+        report.add(result)
+
+    for result in check_coding_agent_config(config):
         report.add(result)
 
     return report
