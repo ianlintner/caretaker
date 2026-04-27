@@ -6,6 +6,24 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **`caretaker-mcp` Prometheus HTTP middleware no longer silently fails
+  to register at startup.** `init_metrics(app, ...)` was being called
+  from inside the FastAPI lifespan handler, which Starlette rejects with
+  `RuntimeError: Cannot add middleware after an application has started`.
+  The error was swallowed by a `try/except` that demoted it to a warning,
+  so pods stayed up — but `caretaker_http_server_requests_total` and
+  `caretaker_http_server_request_duration_seconds` never incremented in
+  production, leaving the RED-floor dashboards empty. The middleware now
+  registers at module import time (right after `app = FastAPI(...)`),
+  matching the layout that `tests/test_metrics.py` has had all along; the
+  `/metrics` ASGI sidecar — which legitimately needs an event loop —
+  stays in lifespan. Regression test in
+  `tests/test_mcp_backend_metrics_wired.py` asserts the counter
+  increments after a `TestClient` hits `/health`. Surfaced while
+  debugging an unrelated `@caretaker` PR-takeover question (PR #630)
+  where the empty counters made it impossible to tell whether the
+  webhook dispatcher had run.
+
 - **`pr_reviewer.handoff_review_consumer` two-bug fix surfaced by the
   v0.24.0 live QA cycle on caretaker-qa#63.**
 
