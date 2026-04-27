@@ -1536,6 +1536,61 @@ class GitHubClient:
     async def delete_branch(self, owner: str, repo: str, branch: str) -> None:
         await self._request("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}")
 
+    # ── Repository variables ────────────────────────────────────
+    #
+    # Used by the bootstrap flow to set ``CARETAKER_BACKEND_URL`` on a
+    # newly-installed consumer repo without any operator action. Variables
+    # are NOT secrets — they are visible in the repo's Settings UI and
+    # readable by any workflow run. The endpoint requires the ``actions:
+    # write`` (variables sub-permission) on the App's installation token.
+
+    async def set_repo_variable(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Create or update a repository-level Actions variable.
+
+        Idempotent: tries to create (POST) first; on 422 (already exists)
+        falls through to update (PATCH) the existing value. Raises
+        :class:`GitHubAPIError` on any other failure.
+        """
+        try:
+            await self._post(
+                f"/repos/{owner}/{repo}/actions/variables",
+                json={"name": name, "value": value},
+            )
+            return
+        except GitHubAPIError as exc:
+            # 422 = variable already exists. Anything else is fatal.
+            if exc.status_code != 422:
+                raise
+        await self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/actions/variables/{name}",
+            json={"name": name, "value": value},
+        )
+
+    async def get_repo_variable(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+    ) -> str | None:
+        """Return the value of a repository Actions variable, or None if absent."""
+        try:
+            data = await self._get(f"/repos/{owner}/{repo}/actions/variables/{name}")
+        except GitHubAPIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not data:
+            return None
+        value = data.get("value")
+        return str(value) if value is not None else None
+
     # ── Parsing helpers ─────────────────────────────────────────
 
     @staticmethod

@@ -1,503 +1,69 @@
+# Caretaker dogfoods on itself via the same thin streaming workflow that
+# every consumer repo gets. Webhooks (delivered to the backend's GitHub
+# App) are the real-time path; this file exists for:
+#
+#   - Operator-triggered runs (workflow_dispatch).
+#   - Sparse cron-driven webhook-miss recovery.
+#
+# The backend's in-cluster reconciliation scheduler handles the bulk of
+# scheduled work; the cron here is the safety net.
+#
+# Backend URL is configured at the repo level via the CARETAKER_BACKEND_URL
+# variable. No PATs, LLM keys, or COPILOT_PAT are needed in this workflow —
+# the backend holds them all.
+
 name: Caretaker
 
 on:
   schedule:
-    # 5-minute cron is the GitHub Actions practical minimum (best-effort).
-    # Webhooks remain the primary low-latency path; this cron is the
-    # polling fallback that recovers from dropped webhook deliveries —
-    # PR #609's status comment stalled at 30% for ~10 minutes despite all
-    # CI completing, because the agent never re-fetched after the missed
-    # webhook. The dispatch-guard cooldown (EVENT_COOLDOWN_MINUTES=3)
-    # serializes runs so the bumped cadence does not pile up duplicate
-    # invocations.
-    - cron: "*/5 * * * *"
-  pull_request:
-    types: [opened, synchronize, reopened]
-  pull_request_review:
-    types: [submitted]
-  check_suite:
-    types: [completed]
-  issues:
-    types: [opened, labeled]
-  issue_comment:
-    types: [created]
-  # Triggered when ANY workflow run completes — used by devops + self-heal agents
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-  # Security agent runs during the scheduled cycle (no webhook event for Dependabot alerts)
+    - cron: "37 */6 * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: "Run mode"
+        description: "Run mode the backend should execute"
         required: false
         default: "full"
         type: choice
         options:
-          [
-            full,
-            pr-only,
-            issue-only,
-            upgrade-only,
-            devops,
-            self-heal,
-            security,
-            deps,
-            docs,
-            stale,
-            escalation,
-            shepherd,
-            dry-run,
-          ]
+          - full
+          - pr-only
+          - issue-only
+          - upgrade-only
+          - devops
+          - self-heal
+          - security
+          - deps
+          - docs
+          - stale
+          - escalation
+          - shepherd
+          - dry-run
+
+concurrency:
+  group: caretaker
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  actions: read
-
-env:
-  # Broad throttle for bursty webhook-triggered caretaker executions.
-  EVENT_COOLDOWN_MINUTES: "3"
-  # Additional stricter throttle for issue_comment-triggered runs.
-  ISSUE_COMMENT_COOLDOWN_MINUTES: "5"
-
-# Concurrency strategy (Sprint 2 B2):
-#
-# For ``pull_request`` events a new commit makes the prior run obsolete, so we
-# cancel the older run. For every other event class — ``issue_comment``,
-# ``check_suite``, ``workflow_run``, ``schedule``, etc. — each event carries
-# fresh signal that the in-progress run hasn't seen yet, so cancellation just
-# loses work. We let those serialize via the dispatch-guard cooldown instead.
-#
-# Driving change: in the 60-day audit, 67% of caretaker workflow runs ended
-# in ``cancelled`` because comment-event cascades were cancelling each other
-# rather than queueing.
-concurrency:
-  group: caretaker-${{ github.event.pull_request.number || github.event.check_suite.head_branch || github.event.workflow_run.head_branch || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  id-token: write
+  contents: read
 
 jobs:
-  dispatch-guard:
+  stream:
     runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.guard.outputs.should_run }}
-      reason: ${{ steps.guard.outputs.reason }}
+    timeout-minutes: 15
+    env:
+      CARETAKER_BACKEND_URL: ${{ vars.CARETAKER_BACKEND_URL }}
+      CARETAKER_OIDC_AUDIENCE: ${{ vars.CARETAKER_OIDC_AUDIENCE }}
     steps:
-      - name: Decide whether this event should run caretaker
-        id: guard
-        # NOTE: This JS block is a cheap prefilter. The richer Python
-        # self-echo detector lives in
-        # ``src/caretaker/github_app/dispatch_guard.py`` and runs behind
-        # the ``agentic.dispatch_guard`` shadow-mode switch. Keep this
-        # regex + actor allowlist in sync with
-        # ``legacy_dispatch_verdict`` there — both encode the same
-        # deterministic rules.
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const eventName = context.eventName;
-            const payload = context.payload || {};
-
-            const pass = (reason) => {
-              core.setOutput("should_run", "true");
-              core.setOutput("reason", reason);
-              core.info(`Dispatch guard: pass — ${reason}`);
-            };
-
-            const skip = (reason) => {
-              core.setOutput("should_run", "false");
-              core.setOutput("reason", reason);
-              core.notice(`Dispatch guard: skip — ${reason}`);
-            };
-
-            // Never throttle explicit operator-triggered runs.
-            if (eventName === "schedule" || eventName === "workflow_dispatch") {
-              pass(`event=${eventName} is exempt from cooldown guard`);
-              return;
-            }
-
-            // Issue comments need extra filtering to avoid chatter storms and self loops.
-            if (eventName === "issue_comment") {
-              const actor = payload.comment?.user?.login || context.actor || "unknown";
-              const rawBody = payload.comment?.body || "";
-              const body = rawBody.toLowerCase();
-
-              // Skip any caretaker-marker comment regardless of who authored it.
-              // PAT-routed caretaker comments come from a write-capable user
-              // identity, not a bot, so an actor-only filter misses them.
-              if (/<!--\s*caretaker:[a-z0-9:_-]+/i.test(rawBody)) {
-                skip("issue_comment carries caretaker marker (self-trigger loop guard)");
-                return;
-              }
-
-              // Ignore bot-authored comments to avoid self-trigger loops.
-              const botActors = new Set([
-                "the-care-taker[bot]",
-                "github-actions[bot]",
-                "copilot-swe-agent[bot]",
-                "anthropic-code-agent[bot]",
-                "copilot-pull-request-reviewer[bot]",
-              ]);
-              if (botActors.has(actor)) {
-                skip(`bot-authored issue_comment from ${actor}`);
-                return;
-              }
-
-              // Only run on explicit maintainer commands / mentions.
-              const hasExplicitCommand =
-                body.includes("@the-care-taker") ||
-                body.includes("/caretaker") ||
-                body.includes("/maintain");
-
-              if (!hasExplicitCommand) {
-                skip("issue_comment missing explicit maintainer command/mention");
-                return;
-              }
-            }
-
-            // Reviews submitted by the Copilot reviewer bot are not human signals
-            // and should not trigger a caretaker run on their own.
-            if (eventName === "pull_request_review") {
-              const reviewer = payload.review?.user?.login || "";
-              if (reviewer === "copilot-pull-request-reviewer[bot]") {
-                skip(`pull_request_review by ${reviewer} (bot reviewer; not a human signal)`);
-                return;
-              }
-            }
-
-            const hotEvents = new Set([
-              "issue_comment",
-              "issues",
-              "pull_request",
-              "pull_request_review",
-              "check_suite",
-              "workflow_run",
-            ]);
-
-            if (!hotEvents.has(eventName)) {
-              pass(`event=${eventName} not in cooldown-managed event set`);
-              return;
-            }
-
-            const cooldownEnv =
-              eventName === "issue_comment"
-                ? "ISSUE_COMMENT_COOLDOWN_MINUTES"
-                : "EVENT_COOLDOWN_MINUTES";
-            const defaultCooldown = eventName === "issue_comment" ? 5 : 3;
-            const cooldownMinutes = Number(process.env[cooldownEnv] || String(defaultCooldown));
-            const effectiveCooldown =
-              Number.isFinite(cooldownMinutes) && cooldownMinutes >= 0
-                ? cooldownMinutes
-                : defaultCooldown;
-
-            const activeStatuses = new Set(["queued", "in_progress", "pending", "requested", "waiting"]);
-            const now = Date.now();
-
-            const targetBranch =
-              payload.pull_request?.head?.ref ||
-              payload.check_suite?.head_branch ||
-              payload.workflow_run?.head_branch ||
-              null;
-
-            const { data } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: "maintainer.yml",
-              event: eventName,
-              per_page: 20,
-            });
-
-            const blockingRun = (data.workflow_runs || []).find((run) => {
-              if (run.id === context.runId) {
-                return false;
-              }
-
-              // If we can scope by branch, only compare against that branch.
-              if (targetBranch && run.head_branch && run.head_branch !== targetBranch) {
-                return false;
-              }
-
-              // Active serialized runs should block immediately.
-              if (activeStatuses.has(run.status)) {
-                return true;
-              }
-
-              // Also enforce a short post-run cooldown to smooth bursts.
-              const referenceTs = Date.parse(run.updated_at || run.created_at || "");
-              if (!Number.isFinite(referenceTs)) {
-                return false;
-              }
-              const ageMinutes = (now - referenceTs) / 60000;
-              return ageMinutes < effectiveCooldown;
-            });
-
-            if (blockingRun) {
-              skip(
-                `cooldown active (${effectiveCooldown}m): run #${blockingRun.id} is ${blockingRun.status}` +
-                  (targetBranch ? ` on ${targetBranch}` : ""),
-              );
-              return;
-            }
-
-            pass(`${eventName} accepted and cooldown window clear`);
-
-      - name: Guard result
-        run: |
-          echo "should_run=${{ steps.guard.outputs.should_run }}"
-          echo "reason=${{ steps.guard.outputs.reason }}"
-
-  # Pre-flight: fail loudly on missing secrets / missing required GitHub
-  # token scopes / unreachable external services *before* any agent boots.
-  # See src/caretaker/doctor.py for the check list. Non-strict by default
-  # so unreachable external services downgrade to WARN rather than FAIL
-  # and block the whole run.
-  doctor:
-    needs: dispatch-guard
-    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    outputs:
-      status: ${{ steps.doctor.outputs.status }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-      - name: Install caretaker (dogfood)
-        run: pip install .
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.CARETAKER_APP_ID }}
-          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-      - name: Preflight
-        id: doctor
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          # GitHub App raw credentials — lets caretaker self-mint tokens via
-          # GitHubAppCredentialsProvider instead of consuming the pre-minted
-          # GITHUB_TOKEN (which can't auto-refresh on long runs).
-          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
-          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
-          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          # LLM credentials — Azure AI Foundry is the primary path.
-          # ANTHROPIC_API_KEY is intentionally absent: provider=litellm
-          # routes Claude through Azure AI Foundry (AZURE_AI_API_KEY).
-          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
-          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
-        run: |
-          set +e
-          caretaker doctor --config .github/maintainer/config.yml --json \
-            >doctor.json 2>doctor.stderr
-          code=$?
-          # Human-readable report always gets echoed to the run log…
-          cat doctor.stderr
-          # …and the JSON payload is uploaded as a step summary.
-          {
-            echo "## caretaker doctor preflight"
-            echo
-            echo '```'
-            cat doctor.stderr
-            echo '```'
-          } >>"$GITHUB_STEP_SUMMARY"
-          # Emit a job-level status so downstream jobs can skip when
-          # preflight itself crashed (exit 2) while still running when
-          # preflight passed (exit 0). A doctor FAIL (exit 1) also blocks.
-          if [ "$code" = "0" ]; then
-            echo "status=pass" >>"$GITHUB_OUTPUT"
-          elif [ "$code" = "1" ]; then
-            echo "status=fail" >>"$GITHUB_OUTPUT"
-          else
-            echo "status=error" >>"$GITHUB_OUTPUT"
-          fi
-          exit $code
-
-  maintain:
-    needs: [dispatch-guard, doctor]
-    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' && needs.doctor.outputs.status == 'pass' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install caretaker (dogfood)
+      - name: Install caretaker (thin client only)
         run: |
-          # ``llm-multi`` pulls in LiteLLM so the in-process Foundry
-          # executor can talk to Azure AI Foundry / Anthropic / OpenAI.
-          # Without it the orchestrator logs "LiteLLM provider is
-          # unavailable" and every dispatch falls through to Copilot.
-          pip install ".[llm-multi]"
+          pip install --quiet -e .
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.CARETAKER_APP_ID }}
-          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-
-      - name: Run
-        id: caretaker_run
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          # GitHub App raw credentials — lets caretaker self-mint tokens via
-          # GitHubAppCredentialsProvider instead of consuming the pre-minted
-          # GITHUB_TOKEN (which can't auto-refresh on long runs).
-          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
-          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
-          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-          # Fine-grained PAT for a real write-capable user or machine user.
-          # Caretaker uses this for Copilot issue assignment and @copilot comments
-          # that must not be authored as github-actions[bot].
-          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Azure AI Foundry — enables the in-process coding executor as an
-          # alternative to posting @copilot comments. Safe to leave unset;
-          # caretaker falls through to Copilot when the vars are absent.
-          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
-          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
-          CARETAKER_EVENT_PAYLOAD: ${{ toJSON(github.event) }}
-          CARETAKER_LOG_FILE: caretaker-run.log
-          CARETAKER_REPORT_FILE: caretaker-report.json
+      - name: Stream a backend-executed run
         run: |
-          caretaker run \
-            --config .github/maintainer/config.yml \
-            --mode "${{ github.event.inputs.mode || (github.event_name == 'workflow_run' && 'event') || 'full' }}" \
-            --event-type "${{ github.event_name }}" \
-            --event-payload "$CARETAKER_EVENT_PAYLOAD"
-
-      - name: Upload run log
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: caretaker-run-log-${{ github.run_id }}
-          path: caretaker-run.log
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload run report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: caretaker-run-report-${{ github.run_id }}
-          path: caretaker-report.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload memory snapshot
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: caretaker-memory-snapshot-${{ github.run_id }}
-          path: .caretaker-memory-snapshot.json
-          if-no-files-found: ignore
-          # Dotfiles are excluded by default in upload-artifact v4 — must
-          # set include-hidden-files: true so .caretaker-memory-snapshot.json
-          # is actually captured. Without this the step always logs "No files
-          # were found" even when the snapshot was written successfully.
-          include-hidden-files: true
-          retention-days: 30
-
-  # When the caretaker run itself fails, trigger the self-heal agent.
-  # We intentionally require ``maintain.result == 'failure'`` (not a bare
-  # ``failure()`` call) so a ``doctor`` FAIL — which is a config problem,
-  # not a runtime bug — doesn't fan out into a second caretaker run that
-  # would hit the same missing secret or scope.
-  self-heal-on-failure:
-    runs-on: ubuntu-latest
-    needs: [dispatch-guard, doctor, maintain]
-    if: ${{ needs.dispatch-guard.outputs.should_run == 'true' && needs.maintain.result == 'failure' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install caretaker (dogfood)
-        run: pip install .
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.CARETAKER_APP_ID }}
-          private-key: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-
-      - name: Self-heal — analyse own failure
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          # GitHub App raw credentials — lets caretaker self-mint tokens via
-          # GitHubAppCredentialsProvider instead of consuming the pre-minted
-          # GITHUB_TOKEN (which can't auto-refresh on long runs).
-          CARETAKER_GITHUB_APP_ID: ${{ vars.CARETAKER_APP_ID }}
-          CARETAKER_GITHUB_APP_INSTALLATION_ID: "124850811"
-          CARETAKER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CARETAKER_APP_PRIVATE_KEY }}
-          # Fine-grained PAT for a real write-capable user or machine user.
-          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Azure AI Foundry — enables the in-process coding executor as an
-          # alternative to posting @copilot comments. Safe to leave unset;
-          # caretaker falls through to Copilot when the vars are absent.
-          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
-          AZURE_AI_API_BASE: ${{ secrets.AZURE_AI_API_BASE }}
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
-          # Pass info about the failed run so the agent can fetch its logs
-          CARETAKER_FAILED_RUN_ID: ${{ github.run_id }}
-          CARETAKER_LOG_FILE: caretaker-self-heal.log
-          CARETAKER_REPORT_FILE: caretaker-self-heal-report.json
-          CARETAKER_EVENT_PAYLOAD: >-
-            {
-              "workflow_run": {
-                "id": ${{ github.run_id }},
-                "name": "Caretaker",
-                "conclusion": "failure",
-                "head_branch": "${{ github.ref_name }}"
-              }
-            }
-        run: |
-          caretaker run \
-            --config .github/maintainer/config.yml \
-            --mode self-heal \
-            --event-type workflow_run \
-            --event-payload "$CARETAKER_EVENT_PAYLOAD"
-
-      - name: Upload self-heal log
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: caretaker-self-heal-log-${{ github.run_id }}
-          path: caretaker-self-heal.log
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload self-heal report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: caretaker-self-heal-report-${{ github.run_id }}
-          path: caretaker-self-heal-report.json
-          if-no-files-found: ignore
-          retention-days: 30
+          caretaker stream --mode "${{ inputs.mode || 'full' }}"

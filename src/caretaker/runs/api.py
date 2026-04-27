@@ -467,6 +467,27 @@ async def finish_run(
         exit_code=body.exit_code,
     )
 
+    # Publish a synthetic workflow_run event so the self-heal agent
+    # picks up the failure via the same dispatcher path as a real
+    # GitHub workflow_run webhook. Best-effort; bus failure does not
+    # affect the finish response. Skipped on success.
+    if new_status is RunStatus.FAILED:
+        try:
+            from caretaker.eventbus import build_event_bus
+            from caretaker.runs.self_heal_trigger import publish_self_heal_trigger
+
+            # The terminal record carries the new status — re-fetch so
+            # publish_self_heal_trigger sees the latest version.
+            terminal = await store.get_run(run_id) or record
+            await publish_self_heal_trigger(
+                bus=build_event_bus(),
+                record=terminal,
+                exit_code=body.exit_code,
+                summary=body.summary,
+            )
+        except Exception:
+            logger.warning("self-heal trigger emit failed run_id=%s", run_id, exc_info=True)
+
     logger.info(
         "run.finish run_id=%s status=%s exit_code=%d duration_s=%.1f",
         run_id,
