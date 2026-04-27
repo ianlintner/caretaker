@@ -1686,6 +1686,24 @@ class TestHandleReviewApprove:
         assert updated.last_approved_sha is None
         assert 4 in report.waiting
 
+    async def test_approves_maintainer_bot_releases_json_pr(self) -> None:
+        """F-7 regression: ``chore/releases-json-*`` is opened by the
+        update-releases-json workflow after every release. The state
+        machine routes it to ``request_review_approve`` (states.py:530),
+        so the handler must accept it. Pre-fix it was refused on the
+        ``is_caretaker_pr`` head-ref check, which is why every past
+        v0.X.Y bump (#616, #618, ...) had to be merged manually."""
+        pr = make_pr(number=8, head_ref="chore/releases-json-v0.25.0")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=8)
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_awaited_once()
+        assert updated.state == PRTrackingState.MERGE_READY
+        assert updated.last_approved_sha == "deadbeef"
+        assert 8 in report.approved
+
     async def test_disabled_flag_skips(self) -> None:
         pr = make_pr(number=5, head_ref="caretaker/x")
         pr.head_sha = "abc123"

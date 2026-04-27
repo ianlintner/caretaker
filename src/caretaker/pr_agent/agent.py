@@ -1028,12 +1028,23 @@ class PRAgent:
         advances ``pr.head_sha`` and re-arms the gate naturally.
 
         Defensive guard: refuse to approve PRs that aren't caretaker-owned
-        even if a state-machine bug routed us here. ``is_caretaker_pr``
-        keys off the ``claude/`` / ``caretaker/`` head-branch prefix.
+        OR maintainer-bot-authored (e.g. ``chore/releases-json-*`` from the
+        update-releases-json workflow). The state machine in ``states.py``
+        emits ``request_review_approve`` for either flag (see
+        ``pr_agent.states`` line 530), so the handler must accept both —
+        otherwise PRs that are eligible per the state-machine condition
+        are silently refused here, which is the F-7 regression: every
+        post-release ``chore/releases-json-vX.Y.Z`` PR sat un-approved
+        until a human merged it by hand (see #616, #618). ``is_caretaker_pr``
+        keys off the ``claude/`` / ``caretaker/`` head-branch prefix;
+        ``is_maintainer_bot_pr`` keys off ``chore/releases-json-*`` and
+        ``chore/*`` from ``github-actions[bot]``.
         """
-        if not getattr(pr, "is_caretaker_pr", False):
+        if not (
+            getattr(pr, "is_caretaker_pr", False) or getattr(pr, "is_maintainer_bot_pr", False)
+        ):
             logger.warning(
-                "PR #%d: refusing auto-approve — not a caretaker PR (head_ref=%r)",
+                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR (head_ref=%r)",
                 pr.number,
                 getattr(pr, "head_ref", ""),
             )
