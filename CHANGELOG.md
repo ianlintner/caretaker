@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-dispatch comment gate for the GitHub App webhook receiver.**
+  New module `caretaker.github_app.comment_gate` runs in front of
+  `WebhookDispatcher.dispatch` for `issue_comment`,
+  `pull_request_review`, and `pull_request_review_comment` events. Two
+  jobs:
+
+  *Self-echo loop prevention.* When a webhook delivery comes from a
+  bot actor with a `<!-- caretaker:... -->` marker (caretaker's own
+  output bouncing back), the gate short-circuits with
+  `outcome="self_echo"`. No installation token is minted, no agent
+  runs. Defence in depth on top of the per-agent marker checks that
+  already exist.
+
+  *Explicit human-intent recognition.* When a non-bot actor invokes
+  one of the existing trigger tokens — `@caretaker`, `@the-care-taker`,
+  `/caretaker`, `/maintain` — the gate surfaces a structured log line
+  (`webhook gate outcome=human_intent ...`) and an extra
+  `caretaker_webhook_events_total{outcome="human_intent"}` sample.
+  Operators can grep this to confirm a `@caretaker` mention reached
+  the backend, separate from the generic `outcome="active"` /
+  `"shadow"` rates. Underlying agent dispatch is unchanged.
+
+  Mode is selected by `CARETAKER_WEBHOOK_COMMENT_GATING`:
+  `off` (legacy / instant rollback), `advise` (default — self-echo
+  skip + human-intent observability), `enforce` (also drop comment
+  events with no explicit trigger). `advise` is the safe default
+  because it only changes behaviour for self-echo events, which were
+  already expected to no-op.
+
+  Surfaced after a `@caretaker take this over` comment on PR #630
+  produced no observable backend signal — the gate now makes such
+  triggers loud in the metric stream and lays the groundwork for a
+  future "spawn dedicated takeover worker" path.
+
 ### Fixed
 
 - **`pr_reviewer.handoff_review_consumer` two-bug fix surfaced by the

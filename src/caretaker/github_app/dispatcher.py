@@ -48,6 +48,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
+from caretaker.github_app.comment_gate import (
+    CommentGateDecision,
+    evaluate_comment_gate,
+)
 from caretaker.github_app.events import agents_for_event
 from caretaker.observability.metrics import (
     record_error,
@@ -191,7 +195,18 @@ class WebhookDispatcher:
 
         try:
             agents = tuple(agents_for_event(parsed.event_type))
-            if self._mode is DispatchMode.OFF:
+
+            # Comment-gate runs before agent resolution: it short-circuits
+            # self-echo loops and (in ``enforce`` mode) drops comment events
+            # without an explicit ``@caretaker`` / ``/caretaker`` mention.
+            # In ``advise`` mode it flags human-intent events so operators
+            # can verify the trigger landed without changing dispatch.
+            gate = evaluate_comment_gate(parsed)
+            if gate.skip:
+                self._log_gate(parsed, gate, agents)
+                outcome = gate.outcome
+                detail = gate.reason or f"gate skipped event ({gate.outcome})"
+            elif self._mode is DispatchMode.OFF:
                 outcome = "off"
                 detail = "dispatcher disabled"
             elif not agents:
@@ -206,6 +221,19 @@ class WebhookDispatcher:
             else:  # pragma: no cover — enum exhaustive above
                 outcome = "error"
                 detail = f"unhandled dispatch mode: {self._mode}"
+
+            # Surface the human-intent trigger as its own observability
+            # signal — independently of the mode-specific outcome. Lets
+            # operators grep ``outcome="human_intent"`` to confirm
+            # ``@caretaker`` mentions are reaching the backend, without
+            # mixing them into the generic ``active`` / ``shadow`` rates.
+            if not gate.skip and gate.outcome == "human_intent":
+                self._log_gate(parsed, gate, agents)
+                record_webhook_event(
+                    event=parsed.event_type,
+                    mode=self._mode.value,
+                    outcome="human_intent",
+                )
         except Exception as exc:  # defensive; dispatch must never raise
             logger.exception(
                 "webhook dispatch failed event=%s delivery=%s: %s",
@@ -370,6 +398,33 @@ class WebhookDispatcher:
             parsed.installation_id,
             parsed.repository_full_name,
             list(agents),
+        )
+
+    def _log_gate(
+        self,
+        parsed: ParsedWebhook,
+        gate: CommentGateDecision,
+        agents: tuple[str, ...],
+    ) -> None:
+        """Emit the comment-gate verdict as a structured log line.
+
+        Fires for both skip outcomes (``self_echo``, ``no_human_intent``)
+        and the proceed-with-flag outcome (``human_intent``). The
+        ``reason`` is the short rationale from
+        :class:`~caretaker.github_app.dispatch_guard.DispatchVerdict`.
+        """
+        logger.info(
+            "webhook gate outcome=%s skip=%s event=%s action=%s "
+            "delivery=%s installation=%s repository=%s agents=%s reason=%r",
+            gate.outcome,
+            gate.skip,
+            parsed.event_type,
+            parsed.action,
+            parsed.delivery_id,
+            parsed.installation_id,
+            parsed.repository_full_name,
+            list(agents),
+            gate.reason,
         )
 
     def _log_agent_would_run(self, parsed: ParsedWebhook, agent: str) -> None:
