@@ -1,6 +1,12 @@
 {
   "releases": [
     {
+      "version": "0.24.0",
+      "min_compatible": "0.22.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.24.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.24.0 -->\n\n## What's Changed\n### Other Changes\n* feat(pr-reviewer): harvest hand-off agent reviews into the Reviews tab by @ianlintner in https://github.com/ianlintner/caretaker/pull/617\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.23.0...v0.24.0"
+    },
+    {
       "version": "0.23.0",
       "min_compatible": "0.22.3",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.23.0",
