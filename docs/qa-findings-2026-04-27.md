@@ -88,30 +88,74 @@ No "comment posted twice" or "two pr-readiness checks at the same SHA from the s
 
 The new Redis-backed config cache (with the `acquire_key_lock(owner, repo)` stampede protection added in the review-fixes commit) sat directly in the hot path of every webhook for caretaker-qa during this cycle (the issue from scenario-15 + the PR from scenario-16 + their associated `issue_comment`, `pull_request_review`, and `check_suite` follow-ups). No `secondary rate limit exceeded` errors surfaced in agent comments, no fallback-to-defaults messages, and the agents that read agent-specific config (pr_reviewer's `min_severity`, pr_agent's `auto_merge`) behaved per the QA repo's configured values. Single-flight is working under real concurrency.
 
+### F-5. `.caretaker.yml` autonomy keys never loaded by server-side dispatch — **REGRESSION, FIXED**
+
+Surfaced when [caretaker#622](https://github.com/ianlintner/caretaker/pull/622) sat at 100% readiness without an APPROVE or merge. The active dispatcher's `GitHubAppContextFactory._load_config` reads `.github/maintainer/config.yml` exclusively. The central caretaker repo's `pr_agent.merge_authority.mode: gate_and_merge` and `pr_agent.review.auto_approve_caretaker_prs: true` lived in `.caretaker.yml` at the repo root — a path no caretaker code path auto-discovers. Result: those keys silently fell back to defaults (`auto_approve_caretaker_prs: False`, `merge_authority.mode: advisory`, agent memory backend = SQLite) and autonomy stopped working.
+
+Fix in [#625](https://github.com/ianlintner/caretaker/pull/625): inlined the four missing keys (`memory_store`, `mongo`, `pr_agent.merge_authority`, `pr_agent.review.auto_approve_caretaker_prs`) into `.github/maintainer/config.yml`, deleted `.caretaker.yml`, updated docstring examples and the qa-cycle skill recipe (F-2). Single source of truth. Verified post-merge by the next webhook tick honoring the autonomy keys.
+
+### F-6. Duplicate-PR dedup picked older over newer target version — **BUG, FIXED**
+
+Symptom: caretaker-qa#67 (target v0.25.0) was closed as "duplicate of #39 (both address pkg:caretaker)" — but #39 was a stale 2-day-old upgrade PR targeting v0.19.4. The retry caretaker-qa#70 was closed for the same reason against caretaker-qa#69 (also v0.25.0, but earlier). The dedup heuristic in `pr_agent/pr_triage.close_duplicate_fix_prs` selected the **oldest** PR by `created_at` as the survivor for **all** group keys, including `pkg:*` (upgrade) groups where the canonical "first PR opened" rationale doesn't apply — newer upgrade PRs target newer versions.
+
+Fix in [#628](https://github.com/ianlintner/caretaker/pull/628): split the survivor selection by group key. CVE groups keep oldest-wins (canonical review history). `pkg:*` groups switch to **highest target version** (parsed from "to vX.Y.Z" in the title), with `created_at` as a tiebreak and PR number as the final deterministic break. Three new regression tests including an explicit replay of the qa#39-vs-qa#70 scenario.
+
+### F-7. Auto-approve handler refused `is_maintainer_bot_pr` PRs — **REGRESSION (pre-existing), FIXED**
+
+Surfaced once F-5 was fixed and [caretaker#626](https://github.com/ianlintner/caretaker/pull/626) (a `chore/releases-json-v0.25.0` PR auto-opened by the `update-releases-json` workflow) sat at 100% readiness without an APPROVE. The state machine in `pr_agent/states.py:530` emits `request_review_approve` when `pr.is_caretaker_pr OR pr.is_maintainer_bot_pr`, but `_handle_auto_approve` at `agent.py:1034` only accepted `is_caretaker_pr` — silently refusing every `chore/releases-json-vX.Y.Z` PR. Pre-F-5 the symptom was masked because nothing auto-approved at all.
+
+Fix in [#627](https://github.com/ianlintner/caretaker/pull/627): relaxed the defensive guard to accept either flag. Both upstream gates already enforce the safety set ("CI passing + caretaker-or-bot-authored + not changes_requested + not already approved + not FIX_REQUESTED"). Live test will fire on the next `chore/releases-json-vX.Y.Z` PR (e.g. v0.26.0 release pipeline).
+
 ## Triage
 
 | Finding | Severity | Action |
 |---|---|---|
 | F-1 | informational | none — expected migration shape |
-| F-2 | minor docs | follow-up PR to the skill's monitor recipe |
+| F-2 | minor docs | fixed in #625 (caretaker-qa-cycle skill monitor recipe) |
 | F-3 | confirms healthy | none |
 | F-4 | confirms healthy | none |
+| F-5 | regression, blocking autonomy | **fixed in #625** |
+| F-6 | bug, stalls upgrade chain | **fixed in #628** |
+| F-7 | pre-existing gap, blocks release pipeline | **fixed in #627** |
 
-**No regressions** were surfaced by this cycle. PR #621 + #620 are validated against live traffic.
+## v0.25.0 release + fleet upgrade
+
+Cycle ended in a clean v0.25.0 cut and full fleet upgrade. Order:
+
+1. F-5 fix landed in [#625](https://github.com/ianlintner/caretaker/pull/625) (autonomy unblocked on the central repo).
+2. `release-prepare` workflow auto-bumped pyproject, tagged `v0.25.0`, pushed the GitHub Release. `release-publish` shipped 2 wheels to PyPI. `update-releases-json` opened [#626](https://github.com/ianlintner/caretaker/pull/626) automatically.
+3. F-7 fix landed in [#627](https://github.com/ianlintner/caretaker/pull/627). Backend redeployed at the F-7 sha.
+4. F-6 fix landed in [#628](https://github.com/ianlintner/caretaker/pull/628).
+5. Fleet upgrade rolled to all 12 known consumer repos in one batch — every repo now pinned to `v0.25.0` with the ~80-line thin streaming workflow:
+
+| Repo | Was | Now |
+|---|---|---|
+| caretaker-qa | 0.24.0 | 0.25.0 |
+| space-tycoon | 0.22.3 | 0.25.0 |
+| rust-oauth2-server | 0.22.3 | 0.25.0 |
+| AI-Pipeline | 0.19.4 | 0.25.0 |
+| Example-React-AI-Chat-App | 0.19.4 | 0.25.0 |
+| algo_functional | 0.19.4 | 0.25.0 |
+| tail_vapor | 0.19.4 | 0.25.0 |
+| portfolio | 0.19.4 | 0.25.0 |
+| flashcards | 0.19.4 | 0.25.0 |
+| python_dsa | 0.19.6 | 0.25.0 |
+| kubernetes-apply-vscode | 0.19.4 | 0.25.0 |
+| audio_engineer | 0.19.6 | 0.25.0 |
+
+Side effect already observed: space-tycoon's failing `Caretaker Maintainer` workflow (401 Invalid token audience from the empty `CARETAKER_OIDC_AUDIENCE` env var) was unblocked by the upgrade because v0.25.0 includes [#619](https://github.com/ianlintner/caretaker/pull/619)'s default-audience fallback.
 
 ## Closures
 
-- [caretaker-qa#64](https://github.com/ianlintner/caretaker-qa/issues/64) closed (scenario-15 PASS).
-- [caretaker-qa#65](https://github.com/ianlintner/caretaker-qa/issues/65) to be closed with `caretaker:qa-passed` label after this doc lands.
-- [caretaker-qa#66](https://github.com/ianlintner/caretaker-qa/pull/66) — to be merged or closed (no behavioral cost either way; the PR's job was to fire the webhook).
+- [caretaker-qa#64](https://github.com/ianlintner/caretaker-qa/issues/64) closed (scenario-15 PASS, `caretaker:qa-passed`).
+- [caretaker-qa#65](https://github.com/ianlintner/caretaker-qa/issues/65) closed (scenario-16 PASS, `caretaker:qa-passed`).
+- [caretaker-qa#66](https://github.com/ianlintner/caretaker-qa/pull/66) — left for QA repo maintainer; verification value already captured.
+- [caretaker-qa#67](https://github.com/ianlintner/caretaker-qa/pull/67) — closed by F-6 dedup; superseded.
+- [caretaker-qa#69](https://github.com/ianlintner/caretaker-qa/pull/69) — caretaker's own auto-bump merged (qa pin to v0.25.0).
+- [caretaker-qa#70](https://github.com/ianlintner/caretaker-qa/pull/70) — closed by F-6 dedup against #69; superseded.
 
 ## Next cycle prep
 
-When the QA repo's pin moves forward to a release containing PR #621 (i.e. the thin streaming workflow), open scenario-17 to verify the consumer-side path:
-
-- `caretaker stream` mints OIDC, calls `/runs/start` → `/runs/{id}/trigger`.
-- `/runs/{id}/trigger` publishes to the bus as a `run_trigger` payload.
-- Consumer body sets the run-scoped contextvars + writes terminal status to the runs store.
-- Self-heal trigger fires on `RunStatus.FAILED` via `runs.self_heal_trigger.publish_self_heal_trigger`.
-
-That scenario will close out the migration story end-to-end on both sides of the wire.
+- Verify the F-7 fix on the next `chore/releases-json-vX.Y.Z` PR (will fire on v0.26.0 release pipeline).
+- Verify the F-6 fix on the next collision in the wild (any future dual-target upgrade PR for the same package).
+- Scenario-17 (consumer-side `caretaker stream` → `/runs/{id}/trigger` → bus path) is unblocked now that the entire fleet runs the thin workflow.

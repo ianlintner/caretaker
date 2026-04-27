@@ -28,6 +28,41 @@ _PACKAGE_BUMP_RE = re.compile(
     r"\b(?:bump|upgrade|update)\s+(?P<pkg>[a-zA-Z0-9_.-]+)",
     re.IGNORECASE,
 )
+# Match "to vX.Y.Z" (with or without the v) anywhere in a PR title — used to
+# extract the target version of an upgrade PR so dedup prefers the newer
+# target over the older. F-6 from the 2026-04-27 QA cycle: caretaker-qa#67
+# (target v0.25.0) was incorrectly closed as a duplicate of caretaker-qa#39
+# (target v0.19.4) because the dedup heuristic picked oldest-by-created_at,
+# stalling the upgrade chain.
+_TARGET_VERSION_RE = re.compile(
+    r"\bto\s+v?(?P<ver>\d+(?:\.\d+){1,3}(?:[a-zA-Z0-9.+-]*))",
+    re.IGNORECASE,
+)
+
+
+def _parse_target_version(title: str | None) -> tuple[int, ...] | None:
+    """Extract a comparable version tuple from an upgrade PR title.
+
+    Returns ``None`` when the title doesn't carry a "to vX.Y.Z" clause
+    (or it can't be parsed cleanly), so callers can fall back to a
+    timestamp tiebreak. Pre-release / build suffixes after the numeric
+    components are dropped — comparing v1.2.3-rc1 against v1.2.3 as
+    equal is acceptable for dedup purposes.
+    """
+    if not title:
+        return None
+    match = _TARGET_VERSION_RE.search(title)
+    if not match:
+        return None
+    raw = match.group("ver")
+    parts: list[int] = []
+    for chunk in raw.split("."):
+        # Strip any non-numeric trailing junk (e.g. "3-rc1" → "3").
+        digits = re.match(r"\d+", chunk)
+        if not digits:
+            break
+        parts.append(int(digits.group(0)))
+    return tuple(parts) if parts else None
 
 
 @dataclass
@@ -196,17 +231,38 @@ async def close_duplicate_fix_prs(
         if len(prs) < 2:
             continue
 
-        # Survivor: oldest by created_at, falling back to lowest PR number.
-        # PRs with an unknown created_at sort last (never chosen as survivor
-        # over a PR with a real timestamp).
-        def _sort_key(p: PullRequest) -> tuple[float, int]:
-            created = p.created_at.timestamp() if p.created_at else float("inf")
-            return (created, p.number)
+        if key.startswith("pkg:"):
+            # Upgrade PRs: prefer the highest target version, then newest by
+            # created_at as tiebreak. Closing the newer target in favor of
+            # an older stale upgrade PR was F-6 — it stalled the upgrade
+            # chain on caretaker-qa where a v0.19.4 PR sat open for two
+            # days and silently closed every v0.25.0 bump that came after.
+            #
+            # PRs without a parseable target version sort behind any PR
+            # that does parse, so a freshly-titled "upgrade caretaker
+            # pin from v0.24.0 to v0.25.0" beats an unparseable
+            # placeholder title. Lowest PR number breaks the final tie
+            # so two same-target same-time PRs collapse deterministically.
+            def _pkg_sort_key(p: PullRequest) -> tuple[tuple[int, ...], float, int]:
+                version = _parse_target_version(p.title) or ()
+                created = p.created_at.timestamp() if p.created_at else 0.0
+                # Negate so ``min`` selects the highest version + newest.
+                return (
+                    tuple(-c for c in version) if version else (1,),
+                    -created,
+                    p.number,
+                )
 
-        # why oldest wins: mirrors close_duplicate_issues in
-        # issue_agent/issue_triage.py — canonical history lives on the first
-        # PR opened for a given fix.
-        survivor = min(prs, key=_sort_key)
+            survivor = min(prs, key=_pkg_sort_key)
+        else:
+            # CVE / non-upgrade groups: oldest wins, mirroring
+            # issue_agent.issue_triage.close_duplicate_issues — canonical
+            # review history lives on the first PR opened for a given fix.
+            def _oldest_sort_key(p: PullRequest) -> tuple[float, int]:
+                created = p.created_at.timestamp() if p.created_at else float("inf")
+                return (created, p.number)
+
+            survivor = min(prs, key=_oldest_sort_key)
         for pr in prs:
             if pr.number == survivor.number:
                 continue
