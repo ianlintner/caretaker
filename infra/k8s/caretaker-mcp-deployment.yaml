@@ -55,6 +55,22 @@ spec:
             - containerPort: 9090
               name: metrics
           env:
+            # ── OpenTelemetry — point at the in-cluster collector ────
+            # The collector is at otel-collector.default.svc:4317 (gRPC),
+            # which fans out to Tempo with tail-sampling. ``caretaker-mcp``
+            # is on the always-keep service-name list in the collector's
+            # tail-sampling config so every trace from this pod is
+            # retained regardless of latency or status. The SDK's
+            # AlwaysOn sampler is correct here — sampling decisions live
+            # at the collector, not in app pods.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "caretaker-mcp"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=caretaker,deployment.environment=prod"
             - name: CARETAKER_MCP_AUTH_MODE
               value: "apim"
             - name: CARETAKER_MCP_ALLOWED_OBJECT_IDS

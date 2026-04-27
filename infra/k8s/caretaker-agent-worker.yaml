@@ -115,6 +115,20 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            # ── OpenTelemetry — point at the in-cluster collector ────
+            # Same collector as caretaker-mcp; distinct service.name so
+            # operators can filter agent-worker traces in Tempo.
+            # caretaker-agent-worker is NOT on the always-keep tail-
+            # sampling list — relies on the 10% probabilistic baseline
+            # plus always-keep on errors/slow.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "caretaker-agent-worker"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=caretaker,deployment.environment=prod"
             - name: GITHUB_REPOSITORY
               value: "MUST_BE_OVERRIDDEN_BY_MCP_BACKEND"
             - name: CARETAKER_TARGET_NUMBER
