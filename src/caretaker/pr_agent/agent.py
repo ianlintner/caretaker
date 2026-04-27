@@ -1028,12 +1028,23 @@ class PRAgent:
         advances ``pr.head_sha`` and re-arms the gate naturally.
 
         Defensive guard: refuse to approve PRs that aren't caretaker-owned
-        even if a state-machine bug routed us here. ``is_caretaker_pr``
-        keys off the ``claude/`` / ``caretaker/`` head-branch prefix.
+        OR maintainer-bot-authored (e.g. ``chore/releases-json-*`` from the
+        update-releases-json workflow). The state machine in ``states.py``
+        emits ``request_review_approve`` for either flag (see
+        ``pr_agent.states`` line 530), so the handler must accept both —
+        otherwise PRs that are eligible per the state-machine condition
+        are silently refused here, which is the F-7 regression: every
+        post-release ``chore/releases-json-vX.Y.Z`` PR sat un-approved
+        until a human merged it by hand (see #616, #618). ``is_caretaker_pr``
+        keys off the ``claude/`` / ``caretaker/`` head-branch prefix;
+        ``is_maintainer_bot_pr`` keys off ``chore/releases-json-*`` and
+        ``chore/*`` from ``github-actions[bot]``.
         """
-        if not getattr(pr, "is_caretaker_pr", False):
+        if not (
+            getattr(pr, "is_caretaker_pr", False) or getattr(pr, "is_maintainer_bot_pr", False)
+        ):
             logger.warning(
-                "PR #%d: refusing auto-approve — not a caretaker PR (head_ref=%r)",
+                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR (head_ref=%r)",
                 pr.number,
                 getattr(pr, "head_ref", ""),
             )
@@ -1382,22 +1393,42 @@ class PRAgent:
         conclusion = evaluation.readiness.conclusion
         check_status = "completed"
         check_conclusion: str | None = None
-        # Terminal-state override: once a PR is closed/merged, force the
-        # readiness check to a terminal conclusion regardless of any
-        # outstanding blockers in the in-progress evaluation. Without
-        # this, ``evaluate_readiness`` keeps emitting ``in_progress`` when
-        # any blocker is still present (e.g. ``ci_pending`` because a
-        # post-merge workflow is still queued), so the check dangles
-        # forever — which is exactly what happened on PR #609.
+        # Terminal-state override: once a PR is closed/merged/escalated,
+        # force the readiness check to a terminal conclusion regardless
+        # of any outstanding blockers in the in-progress evaluation.
+        # Without this, ``evaluate_readiness`` keeps emitting
+        # ``in_progress`` when any blocker is still present (e.g.
+        # ``ci_pending`` because a post-merge workflow is still queued,
+        # or ``required_review_missing`` while the PR sits awaiting a
+        # human review), so the check dangles forever — see PR #609 (the
+        # closed-PR scenario) and PR #613 (the escalated-PR scenario).
+        #
+        # ``conclusion == "success"`` deliberately wins over the escalated
+        # branch: if a human approves and CI passes after caretaker had
+        # escalated, the check should reflect that the PR is actually
+        # ready, not stay locked at the escalation-time terminal state.
         pr_state = getattr(pr.state, "value", pr.state)
         is_merged = bool(getattr(pr, "merged", False)) or pr.merged_at is not None
         is_closed = pr_state == "closed"
+        is_escalated = tracking.escalated or tracking.state == PRTrackingState.ESCALATED
         if is_merged:
             check_conclusion = "success"
         elif is_closed:
             check_conclusion = "neutral"
         elif conclusion == "success":
             check_conclusion = "success"
+        elif is_escalated:
+            # An escalated PR has been handed off to humans; caretaker
+            # is no longer driving toward merge. Surface the check as
+            # terminal so it stops dangling. Mode controls severity:
+            # advisory → neutral (informational, never blocks branch
+            # protection); gate_only / gate_and_merge → failure (still
+            # blocks merge, matching the in_progress→failure mapping
+            # for those modes).
+            if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
+                check_conclusion = "neutral"
+            else:
+                check_conclusion = "failure"
         elif conclusion == "failure":
             if self._config.merge_authority.mode == MergeAuthorityMode.ADVISORY:
                 check_conclusion = "neutral"

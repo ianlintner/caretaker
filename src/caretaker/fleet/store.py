@@ -180,31 +180,56 @@ _STORE: Any = FleetRegistryStore()
 _STORE_INITIALISED = False
 
 _FLEET_DB_PATH_ENV = "CARETAKER_FLEET_DB_PATH"
+_MONGODB_URL_ENV = "MONGODB_URL"
+_FLEET_BACKEND_ENV = "CARETAKER_FLEET_BACKEND"  # "mongo" | "sqlite" | "memory" (auto)
 
 
 def _build_store() -> Any:
-    """Construct the appropriate store from the environment.
+    """Construct the appropriate fleet registry store from the environment.
 
-    When ``CARETAKER_FLEET_DB_PATH`` is set, returns a SQLite-backed store
-    rooted at that path (``:memory:`` is honoured for tests). Otherwise
-    falls back to the in-memory implementation, which preserves backwards
-    compatibility for unit tests and lightweight deployments.
+    Selection order:
+
+    1. **Mongo** when ``MONGODB_URL`` is set OR ``CARETAKER_FLEET_BACKEND=mongo``.
+       This is the multi-replica-safe production path; SQLite fails when
+       two pods write the same file.
+    2. **SQLite** when ``CARETAKER_FLEET_DB_PATH`` is set OR
+       ``CARETAKER_FLEET_BACKEND=sqlite``. Single-replica deployments
+       (local dev, hobby boxes).
+    3. **In-memory** fallback, used by unit tests and the absolute minimum
+       deployment.
+
+    Mongo failure falls through to SQLite/memory rather than crashing, so
+    a transient Mongo outage at startup doesn't take the heartbeat receiver
+    down with it.
     """
-    db_path = os.environ.get(_FLEET_DB_PATH_ENV)
-    if db_path and db_path.strip():
+    backend_pref = os.environ.get(_FLEET_BACKEND_ENV, "").strip().lower()
+    mongo_url = os.environ.get(_MONGODB_URL_ENV, "").strip()
+    db_path = os.environ.get(_FLEET_DB_PATH_ENV, "").strip()
+
+    # Tier 1: Mongo
+    if backend_pref == "mongo" or (backend_pref != "sqlite" and mongo_url):
         try:
-            from .sqlite_store import SQLiteFleetRegistryStore  # local import to avoid cycle
-        except ImportError:  # pragma: no cover — sqlite is in stdlib
-            logger.warning("SQLite fleet store unavailable; falling back to in-memory")
-            return FleetRegistryStore()
+            from .mongo_store import MongoFleetRegistryStore  # local import to avoid cycle
+
+            return MongoFleetRegistryStore(mongodb_url=mongo_url)
+        except Exception:
+            logger.exception(
+                "Failed to initialise Mongo fleet store; falling through to SQLite/memory"
+            )
+
+    # Tier 2: SQLite
+    if db_path or backend_pref == "sqlite":
         try:
-            return SQLiteFleetRegistryStore(db_path.strip())
-        except Exception:  # noqa: BLE001
+            from .sqlite_store import SQLiteFleetRegistryStore
+
+            return SQLiteFleetRegistryStore(db_path or None)
+        except Exception:
             logger.exception(
                 "Failed to initialise SQLite fleet store at %s; falling back to in-memory",
                 db_path,
             )
-            return FleetRegistryStore()
+
+    # Tier 3: in-memory
     return FleetRegistryStore()
 
 

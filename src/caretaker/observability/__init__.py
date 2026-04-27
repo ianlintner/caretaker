@@ -8,6 +8,8 @@ is a no-op when the SDK is missing or the endpoint is unset, so call
 sites never branch on availability.
 """
 
+from caretaker.observability.bootstrap import bootstrap_observability
+from caretaker.observability.llm_span import llm_chat_span
 from caretaker.observability.metrics import (
     init_metrics,
     record_error,
@@ -27,12 +29,20 @@ from caretaker.observability.otel import (
     current_span_ids,
     init_tracing,
 )
+from caretaker.observability.propagation import (
+    extracted_context,
+    inject_trace_context,
+)
 
 __all__ = [
     "agent_span",
+    "bootstrap_observability",
     "current_span_ids",
+    "extracted_context",
     "init_metrics",
     "init_tracing",
+    "inject_trace_context",
+    "llm_chat_span",
     "record_error",
     "record_http_client",
     "record_orchestrator_soft_fail",

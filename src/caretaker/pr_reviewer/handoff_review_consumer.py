@@ -28,8 +28,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from caretaker.pr_reviewer.github_review import post_review
-from caretaker.pr_reviewer.handoff_reviewer import REVIEW_RESULT_MARKER
+from caretaker.pr_reviewer.handoff_reviewer import (
+    CLAUDE_CODE_REVIEW_MARKER,
+    OPENCODE_REVIEW_MARKER,
+)
 from caretaker.pr_reviewer.inline_reviewer import InlineReviewComment, ReviewResult
+
+# Per-backend hand-off invitation markers — caretaker writes these on
+# the comment that *asks* the agent for a review. They must never be
+# treated as the agent's response, even when the invitation body
+# quotes :data:`REVIEW_RESULT_MARKER` for documentation purposes (it
+# does today — the invitation includes a worked example so the agent
+# knows what JSON shape to emit).
+_HANDOFF_INVITATION_MARKERS = frozenset({CLAUDE_CODE_REVIEW_MARKER, OPENCODE_REVIEW_MARKER})
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -61,16 +72,21 @@ class _ParsedReview:
 def parse_review_payload(comment_body: str) -> _ParsedReview | None:
     """Extract a ``caretaker-review`` JSON block from a comment body.
 
-    Returns ``None`` when the marker is absent, the JSON block is
-    missing or malformed, or the schema doesn't validate. The caller
-    should treat ``None`` as "no formal review to post; the agent's
-    plain comment stays as-is" rather than as an error condition.
+    Returns ``None`` when no JSON block is present, the JSON is
+    malformed, or the schema doesn't validate. The caller should treat
+    ``None`` as "no formal review to post; the agent's plain comment
+    stays as-is" rather than as an error condition.
+
+    The ``caretaker:review-result`` HTML comment marker is *optional*:
+    in practice agents (Claude Code observed in the v0.24.0 live QA
+    cycle) emit the JSON fence correctly but drop the HTML comment
+    during their output formatting. The fenced ```` ```caretaker-review
+    ```` tag is unique enough to serve as the primary signal on its own.
+    The HTML marker remains documented as a hint for agents that
+    preserve it (and as a useful grep target).
     """
-    if REVIEW_RESULT_MARKER not in comment_body:
-        return None
     match = _PAYLOAD_RE.search(comment_body)
     if not match:
-        logger.debug("handoff_review: marker present but no caretaker-review fence")
         return None
     raw = match.group("json").strip()
     try:
@@ -116,18 +132,25 @@ def parse_review_payload(comment_body: str) -> _ParsedReview | None:
 def _is_caretaker_authored(comment: Comment) -> bool:
     """Return True if the comment is one caretaker itself wrote.
 
-    Caretaker's own hand-off comments carry the
-    ``<!-- caretaker:pr-reviewer-* -->`` marker and never include the
-    review-result marker (caretaker writes the *invitation*, not the
-    *response*). Either signal is enough to identify a caretaker-authored
-    comment we must not consume; checking for the absence of the
-    response marker keeps us safe even if a future hand-off comment
-    quotes the response marker for documentation purposes.
+    Detection is by *invitation marker* — every caretaker-authored
+    hand-off comment carries one of the per-backend handoff markers
+    (:data:`CLAUDE_CODE_REVIEW_MARKER` or :data:`OPENCODE_REVIEW_MARKER`).
+
+    The previous implementation also tried to use "absence of the
+    response marker" as exonerating evidence — but the v0.24.0
+    invitation deliberately quotes the response marker for
+    documentation purposes (it shows the agent what shape to emit), so
+    that predicate now misclassifies the invitation as an agent reply.
+    Doing nothing else has been protecting us in production only
+    because the documentation example contains JSON-with-comments
+    (intentionally invalid JSON), so ``parse_review_payload`` returns
+    ``None`` and the consumer skips with a warning. A future copy edit
+    that produced strictly-valid example JSON would post a fake formal
+    review with placeholder content. Detecting the invitation marker
+    directly closes that gap.
     """
     body = comment.body or ""
-    has_caretaker_marker = "<!-- caretaker:" in body
-    has_response_marker = REVIEW_RESULT_MARKER in body
-    return has_caretaker_marker and not has_response_marker
+    return any(marker in body for marker in _HANDOFF_INVITATION_MARKERS)
 
 
 async def consume_handoff_reviews(
@@ -169,21 +192,31 @@ async def consume_handoff_reviews(
     for comment in comments:
         if comment.id in consumed_ids:
             continue
-        if REVIEW_RESULT_MARKER not in (comment.body or ""):
+        body = comment.body or ""
+        # Cheap pre-filter — must contain the fenced JSON tag to be a
+        # candidate. Skips the vast majority of unrelated PR comments
+        # without paying for the regex compile / parse.
+        if "```caretaker-review" not in body:
             continue
         if _is_caretaker_authored(comment):
-            # Defensive: caretaker should never emit the review-result
-            # marker in its own hand-off comment, but if a future change
-            # does, skip rather than recurse.
+            # Caretaker's own hand-off invitation embeds the
+            # ``caretaker-review`` fence as a *documentation example*
+            # so the agent knows what shape to emit. Detected by the
+            # handoff-specific marker (see ``_is_caretaker_authored``)
+            # rather than the response marker — agents have been
+            # observed dropping the response HTML comment while
+            # preserving the fence (Claude Code in v0.24.0 live QA),
+            # so the response marker is no longer a reliable
+            # exonerating signal.
             continue
-        parsed = parse_review_payload(comment.body or "")
+        parsed = parse_review_payload(body)
         if parsed is None:
-            # Marker present but payload unparseable — record the ID so
+            # Fence present but payload unparseable — record the ID so
             # we don't re-scan the same broken comment forever, but log
             # at warning so an operator can investigate.
             logger.warning(
-                "handoff_review: comment %d on %s/%s#%d has marker but invalid payload; "
-                "skipping permanently",
+                "handoff_review: comment %d on %s/%s#%d has caretaker-review "
+                "fence but invalid payload; skipping permanently",
                 comment.id,
                 owner,
                 repo,

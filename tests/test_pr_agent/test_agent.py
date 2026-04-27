@@ -1686,6 +1686,24 @@ class TestHandleReviewApprove:
         assert updated.last_approved_sha is None
         assert 4 in report.waiting
 
+    async def test_approves_maintainer_bot_releases_json_pr(self) -> None:
+        """F-7 regression: ``chore/releases-json-*`` is opened by the
+        update-releases-json workflow after every release. The state
+        machine routes it to ``request_review_approve`` (states.py:530),
+        so the handler must accept it. Pre-fix it was refused on the
+        ``is_caretaker_pr`` head-ref check, which is why every past
+        v0.X.Y bump (#616, #618, ...) had to be merged manually."""
+        pr = make_pr(number=8, head_ref="chore/releases-json-v0.25.0")
+        pr.head_sha = "deadbeef"
+        tracking = TrackedPR(number=8)
+
+        updated, report, github = await self._run(pr, tracking)
+
+        github.create_review.assert_awaited_once()
+        assert updated.state == PRTrackingState.MERGE_READY
+        assert updated.last_approved_sha == "deadbeef"
+        assert 8 in report.approved
+
     async def test_disabled_flag_skips(self) -> None:
         pr = make_pr(number=5, head_ref="caretaker/x")
         pr.head_sha = "abc123"
@@ -2189,6 +2207,167 @@ class TestTerminalReadinessOnCloseMerge:
         github.create_check_run.reset_mock()
         report2, tracked2 = await agent.run(tracked, pr_number=609)
         github.create_check_run.assert_not_awaited()
+
+
+class TestTerminalReadinessOnEscalation:
+    """An escalated PR has been handed off to humans — the readiness
+    check must transition to a terminal conclusion so it stops dangling
+    in ``in_progress`` while the PR sits awaiting human review.
+
+    Motivating incident: PR #613. Caretaker scored the PR at 30%
+    immediately after open (CI hadn't started), escalated within 45s,
+    released ownership, and the ``caretaker/pr-readiness`` GitHub Check
+    stayed ``in_progress`` indefinitely even after CI passed and a
+    review posted — because ``required_review_missing`` kept the
+    readiness conclusion at ``in_progress`` and there was no terminal
+    branch for escalated-but-still-open PRs.
+    """
+
+    def _agent(self, github, mode: MergeAuthorityMode = MergeAuthorityMode.ADVISORY):
+        from caretaker.pr_agent.agent import PRAgent
+
+        config = make_config()
+        config.readiness.enabled = True
+        config.merge_authority.mode = mode
+        return PRAgent(github=github, owner="o", repo="r", config=config)
+
+    def _in_progress_eval(self, pr, *, conclusion: str = "in_progress"):
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReadinessEvaluation,
+            ReviewEvaluation,
+        )
+
+        return PRStateEvaluation(
+            pr=pr,
+            ci=CIEvaluation(
+                status=CIStatus.PASSING,
+                failed_runs=[],
+                pending_runs=[],
+                passed_runs=[],
+                action_required_runs=[],
+                all_completed=True,
+            ),
+            reviews=ReviewEvaluation(
+                approved=False,
+                changes_requested=False,
+                pending=True,
+                approving_reviews=[],
+                blocking_reviews=[],
+            ),
+            readiness=ReadinessEvaluation(
+                score=0.5,
+                blockers=["required_review_missing"],
+                summary="Awaiting human review",
+                conclusion=conclusion,
+            ),
+        )
+
+    async def test_escalated_open_pr_in_advisory_mode_publishes_neutral(self) -> None:
+        """Advisory mode (the default) publishes ``neutral`` so the check
+        is informational and won't block any branch-protection rule even
+        if an operator has listed it as required."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 1})
+
+        agent = self._agent(github)
+        pr = make_pr(number=613, head_ref="feat/byoca", state=PRState.OPEN)
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=613, escalated=True, state=PRTrackingState.ESCALATED)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "neutral"
+        assert kwargs["status"] == "completed"
+
+    async def test_escalated_open_pr_in_gate_mode_publishes_failure(self) -> None:
+        """Gate modes publish ``failure`` so branch protection still blocks
+        the merge — operators who've opted into gating want the check to
+        stay enforcing, not advisory, even after escalation."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 2})
+
+        agent = self._agent(github, mode=MergeAuthorityMode.GATE_ONLY)
+        pr = make_pr(number=613, head_ref="feat/byoca", state=PRState.OPEN)
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=613, escalated=True, state=PRTrackingState.ESCALATED)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "failure"
+        assert kwargs["status"] == "completed"
+
+    async def test_escalated_pr_with_success_conclusion_still_publishes_success(self) -> None:
+        """If a human approves and CI is green after caretaker had
+        escalated, the check must reflect that the PR is now ready —
+        ``conclusion == "success"`` wins over the escalated terminal
+        branch so the PR isn't permanently locked at neutral/failure.
+        """
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 3})
+
+        agent = self._agent(github)
+        pr = make_pr(number=613, head_ref="feat/byoca", state=PRState.OPEN)
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=613, escalated=True, state=PRTrackingState.ESCALATED)
+
+        await agent._publish_readiness_check(
+            pr, tracking, self._in_progress_eval(pr, conclusion="success")
+        )
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "success"
+        assert kwargs["status"] == "completed"
+
+    async def test_escalated_pr_recognized_via_state_field_alone(self) -> None:
+        """``tracking.state == ESCALATED`` should trigger the terminal
+        branch even if the legacy ``escalated`` boolean drifted out of
+        sync (e.g. older persisted tracking that didn't set both)."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 4})
+
+        agent = self._agent(github)
+        pr = make_pr(number=613, head_ref="feat/byoca", state=PRState.OPEN)
+        pr.head_sha = "abc123"
+        # Only the state field set; ``escalated`` boolean stays False.
+        tracking = TrackedPR(number=613, escalated=False, state=PRTrackingState.ESCALATED)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] == "neutral"
+
+    async def test_non_escalated_in_progress_pr_stays_in_progress(self) -> None:
+        """Regression guard: a non-escalated open PR with in-progress
+        readiness must continue to publish ``in_progress`` (the existing
+        contract — escalation alone is what flips us to terminal)."""
+        github = AsyncMock()
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 5})
+
+        agent = self._agent(github)
+        pr = make_pr(number=42, head_ref="feat/x", state=PRState.OPEN)
+        pr.head_sha = "abc123"
+        tracking = TrackedPR(number=42, escalated=False, state=PRTrackingState.DISCOVERED)
+
+        await agent._publish_readiness_check(pr, tracking, self._in_progress_eval(pr))
+
+        github.create_check_run.assert_awaited_once()
+        kwargs = github.create_check_run.call_args.kwargs
+        assert kwargs["conclusion"] is None
+        assert kwargs["status"] == "in_progress"
 
 
 class TestResyncOpenPRs:

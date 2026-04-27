@@ -27,7 +27,7 @@ COPY src /app/src
 COPY --from=frontend-build /frontend/dist /app/src/caretaker/admin/static
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir ".[admin]" fastapi uvicorn
+    && pip install --no-cache-dir ".[admin,otel]" fastapi uvicorn
 
 EXPOSE 8000
 

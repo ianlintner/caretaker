@@ -55,6 +55,22 @@ spec:
             - containerPort: 9090
               name: metrics
           env:
+            # ── OpenTelemetry — point at the in-cluster collector ────
+            # The collector is at otel-collector.default.svc:4317 (gRPC),
+            # which fans out to Tempo with tail-sampling. ``caretaker-mcp``
+            # is on the always-keep service-name list in the collector's
+            # tail-sampling config so every trace from this pod is
+            # retained regardless of latency or status. The SDK's
+            # AlwaysOn sampler is correct here — sampling decisions live
+            # at the collector, not in app pods.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "caretaker-mcp"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=caretaker,deployment.environment=prod"
             - name: CARETAKER_MCP_AUTH_MODE
               value: "apim"
             - name: CARETAKER_MCP_ALLOWED_OBJECT_IDS
@@ -165,6 +181,57 @@ spec:
               value: "50000"
             - name: CARETAKER_RUNS_RETENTION_HOURS
               value: "24"
+            # ── Webhook event-bus (Redis Streams + consumer groups) ──
+            # Webhook deliveries publish onto caretaker:events; one
+            # consumer task per replica drains the stream. Survives pod
+            # restart; load-balanced across replicas via consumer group.
+            - name: CARETAKER_EVENT_BUS_MAXLEN
+              value: "100000"
+            - name: CARETAKER_EVENT_BUS_CLAIM_IDLE_MS
+              value: "300000"
+            - name: CARETAKER_EVENT_BUS_REAPER_INTERVAL_SECONDS
+              value: "60"
+            # ── Per-repo MaintainerConfig cache (Redis-backed) ───────
+            # Active webhook dispatch reads each consumer repo's
+            # .github/maintainer/config.yml; without caching every
+            # delivery would burn a Contents API call. 5 min TTL means
+            # config edits propagate within that window across the fleet.
+            - name: CARETAKER_CONFIG_CACHE_TTL_SECONDS
+              value: "300"
+            # ── Reconciliation scheduler ─────────────────────────────
+            # Replaces the per-repo cron in maintainer.yml with a
+            # backend-side schedule. Multi-pod safe via Redis lease;
+            # only one replica fans out per tick.
+            - name: CARETAKER_SCHEDULER_ENABLED
+              value: "true"
+            - name: CARETAKER_SCHEDULER_INTERVAL_SECONDS
+              value: "1800"
+            - name: CARETAKER_SCHEDULER_LEASE_TTL_SECONDS
+              value: "60"
+            # Mongo-backed fleet registry (replaces the SQLite store
+            # which was unsafe across the 2-replica deployment). Reuses
+            # MONGODB_URL set above; explicit backend selector documents
+            # intent and survives MONGODB_URL reconfig.
+            - name: CARETAKER_FLEET_BACKEND
+              value: "mongo"
+            # ── Bootstrap agent ──────────────────────────────────────
+            # Public URL the bootstrap agent writes into each newly-
+            # installed consumer repo's CARETAKER_BACKEND_URL variable.
+            # Different from the in-cluster service URL — this is what
+            # the consumer's GitHub Actions runner will reach.
+            - name: CARETAKER_PUBLIC_BACKEND_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: public-backend-url
+                  optional: true
+            # CARETAKER_EVENT_BUS_CONSUMER is left unset so the consumer
+            # name defaults to the pod hostname (set by the downward API
+            # below) — each replica is a distinct consumer in the group.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: MONGODB_URL
               valueFrom:
                 secretKeyRef:

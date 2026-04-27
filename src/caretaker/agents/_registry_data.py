@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from caretaker.bootstrap_agent.adapter import BootstrapAgentAdapter
 from caretaker.charlie_agent.adapter import CharlieAgentAdapter
 from caretaker.dependency_agent.adapter import DependencyAgentAdapter
 from caretaker.devops_agent.adapter import DevOpsAgentAdapter
@@ -52,6 +53,7 @@ ALL_ADAPTERS: list[type[BaseAgent]] = [
     PRCIApproverAgent,
     TriageAgentAdapter,
     ShepherdAgentAdapter,
+    BootstrapAgentAdapter,
 ]
 
 # Maps agent name -> set of run modes that include it
@@ -80,6 +82,10 @@ AGENT_MODES: dict[str, set[str]] = {
     # dedicated "shepherd" mode so scheduled hourly runs keep their
     # current behavior until the operator opts in.
     "shepherd": {"shepherd"},
+    # Bootstrap is event-driven only — never picked up by a scheduled
+    # mode. It runs on installation/installation_repositories webhook
+    # events and is a no-op on a "full" reconciliation tick.
+    "bootstrap": {"bootstrap"},
 }
 
 # Maps GitHub event types -> list of agent names to run
@@ -92,6 +98,9 @@ EVENT_AGENT_MAP: dict[str, list[str]] = {
     "issue_comment": ["issue"],
     "workflow_run": ["devops", "self-heal", "pr", "pr-ci-approver"],
     "dependabot_alert": ["security"],
+    # App lifecycle events — auto-bootstrap every newly-attached repo.
+    "installation": ["bootstrap"],
+    "installation_repositories": ["bootstrap"],
 }
 
 

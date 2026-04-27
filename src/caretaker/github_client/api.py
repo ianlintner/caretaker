@@ -1516,25 +1516,109 @@ class GitHubClient:
         labels: list[str] | None = None,
         assignees: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Create a PR plus best-effort label / assignee attachment.
+
+        Label and assignee attachment are wrapped in their own
+        ``try/except``: the PR has already been created at that point
+        and we don't want a missing label (e.g. the consumer repo doesn't
+        have ``caretaker:bootstrap`` defined) or an invalid assignee to
+        bubble up as if PR creation itself had failed. Failures are
+        logged so the operator can investigate.
+        """
         data = await self._post(
             f"/repos/{owner}/{repo}/pulls",
             json={"title": title, "body": body, "head": head, "base": base},
         )
         pr_number = data["number"]
         if labels:
-            await self._post(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
-                json={"labels": labels},
-            )
+            try:
+                await self._post(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    json={"labels": labels},
+                )
+            except Exception:
+                logger.warning(
+                    "create_pull_request: failed to attach labels %s to %s/%s#%s",
+                    labels,
+                    owner,
+                    repo,
+                    pr_number,
+                    exc_info=True,
+                )
         if assignees:
-            await self._post(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
-                json={"assignees": assignees},
-            )
+            try:
+                await self._post(
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/assignees",
+                    json={"assignees": assignees},
+                )
+            except Exception:
+                logger.warning(
+                    "create_pull_request: failed to assign %s to %s/%s#%s",
+                    assignees,
+                    owner,
+                    repo,
+                    pr_number,
+                    exc_info=True,
+                )
         return cast("dict[str, Any]", data)
 
     async def delete_branch(self, owner: str, repo: str, branch: str) -> None:
         await self._request("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}")
+
+    # ── Repository variables ────────────────────────────────────
+    #
+    # Used by the bootstrap flow to set ``CARETAKER_BACKEND_URL`` on a
+    # newly-installed consumer repo without any operator action. Variables
+    # are NOT secrets — they are visible in the repo's Settings UI and
+    # readable by any workflow run. The endpoint requires the ``actions:
+    # write`` (variables sub-permission) on the App's installation token.
+
+    async def set_repo_variable(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Create or update a repository-level Actions variable.
+
+        Idempotent: tries to create (POST) first; on 422 (already exists)
+        falls through to update (PATCH) the existing value. Raises
+        :class:`GitHubAPIError` on any other failure.
+        """
+        try:
+            await self._post(
+                f"/repos/{owner}/{repo}/actions/variables",
+                json={"name": name, "value": value},
+            )
+            return
+        except GitHubAPIError as exc:
+            # 422 = variable already exists. Anything else is fatal.
+            if exc.status_code != 422:
+                raise
+        await self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/actions/variables/{name}",
+            json={"name": name, "value": value},
+        )
+
+    async def get_repo_variable(
+        self,
+        owner: str,
+        repo: str,
+        name: str,
+    ) -> str | None:
+        """Return the value of a repository Actions variable, or None if absent."""
+        try:
+            data = await self._get(f"/repos/{owner}/{repo}/actions/variables/{name}")
+        except GitHubAPIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not data:
+            return None
+        value = data.get("value")
+        return str(value) if value is not None else None
 
     # ── Parsing helpers ─────────────────────────────────────────
 

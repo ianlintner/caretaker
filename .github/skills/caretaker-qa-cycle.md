@@ -157,6 +157,33 @@ gh run watch -R ianlintner/caretaker-qa $(gh run list \
 gh run download <run-id> -R ianlintner/caretaker-qa
 ```
 
+For the **server-side dispatch path** (PR #621 onwards) the caretaker
+run no longer happens in the consumer's GitHub Actions; it happens in
+the backend after a real webhook. Trigger it by opening a real PR or
+issue (or pushing to `main`) on caretaker-qa, then watch for caretaker's
+side effects directly on the issue/PR:
+
+```bash
+PR=66  # the verification PR you just opened
+# Comment markers (one per agent kind, no duplicates):
+gh pr view "$PR" -R ianlintner/caretaker-qa --json comments \
+  --jq '.comments[].body | match("<!-- caretaker:[a-z0-9:_-]+").string' | sort | uniq -c
+# Reviews (state, author, SHA):
+gh pr view "$PR" -R ianlintner/caretaker-qa \
+  --json reviews,headRefOid \
+  --jq '{sha: .headRefOid, reviews: [.reviews[] | {state, author: .author.login, at: .submittedAt}]}'
+# Readiness check-run conclusion at the head SHA:
+gh api "repos/ianlintner/caretaker-qa/commits/$(gh pr view "$PR" -R ianlintner/caretaker-qa --json headRefOid -q .headRefOid)/check-runs" \
+  --jq '.check_runs[] | select(.name == "caretaker/pr-readiness") | {status, conclusion}'
+```
+
+Prefer the REST `gh pr view --json comments` path over a GraphQL
+`pullRequest.comments.nodes[].body` filter — the GraphQL response is
+fine but the documented `--jq match("<!-- caretaker:…")` against it is
+flaky when the body contains nested HTML-comment markers (e.g. inside
+fenced code blocks describing the convention itself). The REST form
+above survives both shapes.
+
 Cross-check against the **invariants** in
 `docs/plans/2026-04-25-qa-orchestration-test-plan.md` §9. The most
 load-bearing for autonomy releases are:
