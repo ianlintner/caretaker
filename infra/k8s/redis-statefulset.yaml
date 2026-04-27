@@ -41,7 +41,13 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
-          args: ["--appendonly", "yes"]
+          args:
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - "400mb"
+            - --maxmemory-policy
+            - "volatile-lru"
           ports:
             - containerPort: 6379
               name: redis
@@ -51,10 +57,10 @@ spec:
           resources:
             requests:
               cpu: "10m"
-              memory: "32Mi"
+              memory: "128Mi"
             limits:
               cpu: "100m"
-              memory: "128Mi"
+              memory: "512Mi"
           livenessProbe:
             tcpSocket:
               port: 6379
