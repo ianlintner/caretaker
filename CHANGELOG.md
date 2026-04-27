@@ -6,6 +6,37 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **`pr_reviewer.handoff_review_consumer` two-bug fix surfaced by the
+  v0.24.0 live QA cycle on caretaker-qa#63.**
+
+  *Bug 1 — caretaker harvested its own invitation.* The hand-off
+  invitation comment embeds a worked example of the `caretaker-review`
+  payload (so the agent knows what shape to emit), which means the
+  invitation contains the same `<!-- caretaker:review-result -->`
+  marker the response uses. The previous `_is_caretaker_authored`
+  predicate (`has_caretaker_marker AND NOT has_response_marker`)
+  misclassified the invitation as an agent reply. Production was
+  saved only because the example JSON intentionally contains `//`
+  comments (invalid JSON → `parse_review_payload` returned `None`);
+  a future copy edit producing strictly-valid example JSON would
+  have posted a fake formal review with placeholder content.
+  Detection now uses the per-backend invitation markers
+  (`CLAUDE_CODE_REVIEW_MARKER` / `OPENCODE_REVIEW_MARKER`) directly.
+
+  *Bug 2 — Claude Code's actual replies were never harvested.* In
+  practice, Claude Code's output formatter drops the literal
+  `<!-- caretaker:review-result -->` HTML comment while keeping the
+  `caretaker-review` JSON fence intact. The previous consumer
+  required the HTML marker as a precondition, so every real-world
+  hand-off review was silently skipped. The fence tag is unique
+  enough to be the primary signal; the HTML marker stays documented
+  as optional belt-and-suspenders.
+
+  Two new regression tests pin both fixes — `_is_caretaker_authored`
+  against the verbatim invitation body from caretaker-qa#61, and the
+  fence-without-marker path against a faithful reproduction of
+  Claude Code's actual reply on caretaker-qa#63.
+
 - **`caretaker/pr-readiness` no longer dangles in `in_progress` after
   caretaker escalates a PR.** The check now transitions to a terminal
   conclusion as soon as the PR enters the escalated state — `neutral`

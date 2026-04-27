@@ -60,9 +60,20 @@ def test_parse_valid_payload_returns_review() -> None:
     assert parsed.comments[0].line == 42
 
 
-def test_parse_missing_marker_returns_none() -> None:
+def test_parse_fence_without_html_marker_is_accepted() -> None:
+    """Real-world finding from the v0.24.0 live QA cycle on
+    caretaker-qa#63: Claude Code emitted the JSON fence correctly but
+    omitted the ``<!-- caretaker:review-result -->`` HTML comment
+    marker (its output formatter dropped the literal HTML comment).
+    The fenced ``caretaker-review`` tag is unique enough to be the
+    primary signal; the marker is documented as optional belt-and-
+    suspenders, and a fence-without-marker reply must still parse.
+    """
     body = '```caretaker-review\n{"summary": "x", "verdict": "COMMENT"}\n```'
-    assert parse_review_payload(body) is None
+    parsed = parse_review_payload(body)
+    assert parsed is not None
+    assert parsed.summary == "x"
+    assert parsed.verdict == "COMMENT"
 
 
 def test_parse_missing_fence_returns_none() -> None:
@@ -210,6 +221,77 @@ async def test_consume_is_idempotent_across_cycles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_consume_skips_real_v0_24_0_invitation_with_example_payload() -> None:
+    """Regression for caretaker-qa#61.
+
+    The v0.24.0 hand-off invitation deliberately quotes the response
+    marker AND a fenced ``caretaker-review`` example so the agent
+    knows what shape to emit. The previous implementation of
+    ``_is_caretaker_authored`` (``has_caretaker_marker and not
+    has_response_marker``) returned False on this body, allowing the
+    consumer to fall through to ``parse_review_payload`` on its OWN
+    invitation. We were saved in production only by the example JSON
+    having ``//`` comments (invalid JSON → parse returned None). A
+    future copy edit that strictly-validated the example would post a
+    fake formal review with placeholder content. The fix detects the
+    handoff marker directly.
+
+    This fixture is a verbatim copy of the invitation body posted to
+    https://github.com/ianlintner/caretaker-qa/pull/61, including the
+    nested ```` ```` outer fence + ``` inner fence layout.
+    """
+    real_invitation = (
+        "<!-- caretaker:pr-reviewer-handoff -->\n"
+        "@claude caretaker is requesting a full code review for this PR.\n"
+        "\n"
+        "**Repo:** `ianlintner/caretaker-qa` · **PR:** #61\n"
+        "\n"
+        "**To have your review surface in the GitHub Reviews tab** "
+        "(not just an issue comment), end your reply with the marker "
+        "line `<!-- caretaker:review-result -->` followed by a fenced "
+        "JSON block tagged `caretaker-review`. Example:\n"
+        "\n"
+        "````\n"
+        "<!-- caretaker:review-result -->\n"
+        "```caretaker-review\n"
+        "{\n"
+        '  "verdict": "COMMENT",\n'
+        '  "summary": "1-3 sentence overall assessment.",\n'
+        '  "comments": [\n'
+        '    {"path": "src/foo.py", "line": 42, "body": "..."}\n'
+        "  ]\n"
+        "}\n"
+        "```\n"
+        "````\n"
+    )
+    github = MagicMock()
+    github.get_pr_comments = AsyncMock(
+        return_value=[_comment(cid=1, login="github-actions[bot]", body=real_invitation)]
+    )
+    github.create_review = AsyncMock()
+
+    tracking = TrackedPR(number=61)
+    posted = await consume_handoff_reviews(
+        github=github,
+        owner="o",
+        repo="r",
+        pr_number=61,
+        head_sha="sha",
+        tracking=tracking,
+    )
+
+    # Despite the example being strictly-valid JSON (no ``//`` comments
+    # in this fixture), the consumer must skip the invitation entirely
+    # — it never reaches ``parse_review_payload``.
+    assert posted == 0
+    github.create_review.assert_not_awaited()
+    # And we don't record the ID either; if a future change made the
+    # invitation legitimately consumable (e.g. an opt-in self-review
+    # mode), it should still be available for that path.
+    assert tracking.consumed_handoff_review_comment_ids == []
+
+
+@pytest.mark.asyncio
 async def test_consume_skips_caretaker_authored_comment() -> None:
     """Caretaker's own hand-off invitation must never be harvested as the
     agent's response, even when the response marker would otherwise be
@@ -330,6 +412,61 @@ async def test_consume_post_review_failure_leaves_id_unconsumed() -> None:
     # failure in post_review's logged warning. Idempotency still
     # protects against re-posting if create_review later succeeds.
     assert posted == 1
+    assert tracking.consumed_handoff_review_comment_ids == [42]
+
+
+@pytest.mark.asyncio
+async def test_consume_harvests_claude_reply_without_html_marker() -> None:
+    """End-to-end regression for caretaker-qa#63.
+
+    Claude's real output on the live QA cycle dropped the
+    ``<!-- caretaker:review-result -->`` HTML comment marker but kept
+    the ``caretaker-review`` JSON fence intact. Pre-fix, the consumer
+    bailed at the marker filter and never parsed the reply, leaving
+    the harvest cycle silently broken on every actual hand-off. The
+    fence is now the primary signal; this test pins that contract.
+    """
+    no_marker_reply = (
+        "Reviewed PR #63. Findings inline.\n"
+        "\n"
+        "```caretaker-review\n"
+        "{\n"
+        '  "verdict": "COMMENT",\n'
+        '  "summary": "Solid change overall; a few rotation-tracking '
+        'edge cases worth considering.",\n'
+        '  "comments": [\n'
+        '    {"path": "src/qa_agent/secret_tracker.py", "line": 152, '
+        '"body": "Three observations of the same fingerprint resets the rotation '
+        'clock to the third — implementation does not match the docstring."},\n'
+        '    {"path": ".github/workflows/secret-audit.yml", "line": 52, '
+        '"body": "GITHUB_TOKEN is auto-minted per run; its fingerprint changes '
+        'every execution and stale() will never fire for it."}\n'
+        "  ]\n"
+        "}\n"
+        "```\n"
+    )
+    github = MagicMock()
+    github.get_pr_comments = AsyncMock(
+        return_value=[_comment(cid=42, login="claude[bot]", body=no_marker_reply)]
+    )
+    github.create_review = AsyncMock(return_value={"id": 100})
+
+    tracking = TrackedPR(number=63)
+    posted = await consume_handoff_reviews(
+        github=github,
+        owner="ianlintner",
+        repo="caretaker-qa",
+        pr_number=63,
+        head_sha="fake-sha",
+        tracking=tracking,
+    )
+
+    assert posted == 1
+    github.create_review.assert_awaited_once()
+    review_kwargs = github.create_review.await_args.kwargs
+    assert review_kwargs["event"] == "COMMENT"
+    assert "@claude[bot]" in review_kwargs["body"]
+    assert len(review_kwargs["comments"]) == 2
     assert tracking.consumed_handoff_review_comment_ids == [42]
 
 
