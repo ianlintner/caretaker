@@ -32,6 +32,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from caretaker.observability.llm_span import llm_chat_span
 from caretaker.observability.metrics import record_llm_cache_usage
 
 logger = logging.getLogger(__name__)
@@ -216,26 +217,46 @@ class AnthropicProvider:
                 }
             ]
 
-        response = await self._client.messages.create(**kwargs)
-        text = response.content[0].text if response.content else ""
-        usage = getattr(response, "usage", None)
-        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        record_llm_cache_usage(
-            provider=self.name,
+        with llm_chat_span(
+            system="anthropic",
             model=request.model,
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
-        return LLMResponse(
-            text=text,
-            model=request.model,
-            provider=self.name,
-            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            extra_attrs={"caretaker.llm.feature": request.feature},
+        ) as span:
+            response = await self._client.messages.create(**kwargs)
+            text = response.content[0].text if response.content else ""
+            usage = getattr(response, "usage", None)
+            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+            cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            record_llm_cache_usage(
+                provider=self.name,
+                model=request.model,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
+            stop_reason = getattr(response, "stop_reason", None)
+            span.record_response(
+                model=getattr(response, "model", None) or request.model,
+                response_id=getattr(response, "id", None),
+                finish_reasons=[stop_reason] if stop_reason else None,
+                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            )
+            if cache_read or cache_creation:
+                span.set_attribute("caretaker.gen_ai.cache.read_input_tokens", int(cache_read))
+                span.set_attribute(
+                    "caretaker.gen_ai.cache.creation_input_tokens", int(cache_creation)
+                )
+            return LLMResponse(
+                text=text,
+                model=request.model,
+                provider=self.name,
+                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
 
     async def complete_with_tools(
         self,
@@ -332,38 +353,63 @@ class LiteLLMProvider:
         if self._fallback_models:
             kwargs["fallbacks"] = self._fallback_models
 
-        response = await self._acompletion(**kwargs)
+        with llm_chat_span(
+            system=_genai_system_for_model(request.model),
+            model=request.model,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            extra_attrs={
+                "caretaker.llm.feature": request.feature,
+                "caretaker.llm.router": "litellm",
+            },
+        ) as span:
+            response = await self._acompletion(**kwargs)
 
-        choice = response.choices[0]
-        text = choice.message.content or ""
-        usage = getattr(response, "usage", None)
-        actual_model = getattr(response, "model", request.model)
-        cost = None
-        try:
-            from litellm import completion_cost
-
-            cost = completion_cost(completion_response=response)
-        except Exception:
+            choice = response.choices[0]
+            text = choice.message.content or ""
+            usage = getattr(response, "usage", None)
+            actual_model = getattr(response, "model", request.model)
             cost = None
+            try:
+                from litellm import completion_cost
 
-        cache_read, cache_creation = _extract_litellm_cache_tokens(usage)
-        record_llm_cache_usage(
-            provider=self.name,
-            model=actual_model,
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
+                cost = completion_cost(completion_response=response)
+            except Exception:
+                cost = None
 
-        return LLMResponse(
-            text=text,
-            model=actual_model,
-            provider=self.name,
-            input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            cost_usd=cost,
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
+            cache_read, cache_creation = _extract_litellm_cache_tokens(usage)
+            record_llm_cache_usage(
+                provider=self.name,
+                model=actual_model,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
+            finish_reason = getattr(choice, "finish_reason", None)
+            span.record_response(
+                model=actual_model,
+                response_id=getattr(response, "id", None),
+                finish_reasons=[finish_reason] if finish_reason else None,
+                input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            )
+            if cost is not None:
+                span.set_attribute("caretaker.gen_ai.cost_usd", float(cost))
+            if cache_read or cache_creation:
+                span.set_attribute("caretaker.gen_ai.cache.read_input_tokens", int(cache_read))
+                span.set_attribute(
+                    "caretaker.gen_ai.cache.creation_input_tokens", int(cache_creation)
+                )
+
+            return LLMResponse(
+                text=text,
+                model=actual_model,
+                provider=self.name,
+                input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                cost_usd=cost,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
 
     async def complete_with_tools(
         self,
@@ -398,88 +444,151 @@ class LiteLLMProvider:
         if self._fallback_models:
             kwargs["fallbacks"] = self._fallback_models
 
-        response = await self._acompletion(**kwargs)
-        choice = response.choices[0]
-        message = choice.message
-        text = getattr(message, "content", None) or ""
-        finish_reason = getattr(choice, "finish_reason", None)
+        with llm_chat_span(
+            system=_genai_system_for_model(request.model),
+            model=request.model,
+            operation="chat.tool_use",
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            extra_attrs={
+                "caretaker.llm.feature": request.feature,
+                "caretaker.llm.router": "litellm",
+                "caretaker.llm.tool_count": len(tools),
+            },
+        ) as _tool_span:
+            response = await self._acompletion(**kwargs)
+            choice = response.choices[0]
+            message = choice.message
+            text = getattr(message, "content", None) or ""
+            finish_reason = getattr(choice, "finish_reason", None)
 
-        raw_tool_calls = getattr(message, "tool_calls", None) or []
-        tool_calls: list[LLMToolCall] = []
-        for tc in raw_tool_calls:
-            name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
-            raw_args = (
-                getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
-            )
-            try:
-                parsed_args = json.loads(raw_args) if raw_args else {}
-                if not isinstance(parsed_args, dict):
-                    parsed_args = {"_raw": parsed_args}
-            except (TypeError, ValueError):
-                parsed_args = {"_raw": raw_args}
-            tool_calls.append(
-                LLMToolCall(
-                    id=getattr(tc, "id", "") or "",
-                    name=name,
-                    arguments=parsed_args,
+            raw_tool_calls = getattr(message, "tool_calls", None) or []
+            tool_calls: list[LLMToolCall] = []
+            for tc in raw_tool_calls:
+                name = getattr(tc.function, "name", "") if getattr(tc, "function", None) else ""
+                raw_args = (
+                    getattr(tc.function, "arguments", "") if getattr(tc, "function", None) else ""
                 )
+                try:
+                    parsed_args = json.loads(raw_args) if raw_args else {}
+                    if not isinstance(parsed_args, dict):
+                        parsed_args = {"_raw": parsed_args}
+                except (TypeError, ValueError):
+                    parsed_args = {"_raw": raw_args}
+                tool_calls.append(
+                    LLMToolCall(
+                        id=getattr(tc, "id", "") or "",
+                        name=name,
+                        arguments=parsed_args,
+                    )
+                )
+
+            # Build a round-trip-safe raw_message so the caller can append it to
+            # the next request's messages array verbatim. LiteLLM message objects
+            # are Pydantic-ish; fall back to a manual dict build.
+            raw_message: dict[str, Any]
+            try:
+                raw_message = message.model_dump()
+            except AttributeError:
+                raw_message = {
+                    "role": getattr(message, "role", "assistant"),
+                    "content": text,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
+                    or None,
+                }
+
+            usage = getattr(response, "usage", None)
+            actual_model = getattr(response, "model", request.model)
+            cost = None
+            try:
+                from litellm import completion_cost
+
+                cost = completion_cost(completion_response=response)
+            except Exception:
+                cost = None
+
+            cache_read, cache_creation = _extract_litellm_cache_tokens(usage)
+            record_llm_cache_usage(
+                provider=self.name,
+                model=actual_model,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
+            _tool_span.record_response(
+                model=actual_model,
+                response_id=getattr(response, "id", None),
+                finish_reasons=[finish_reason] if finish_reason else None,
+                input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            )
+            if cost is not None:
+                _tool_span.set_attribute("caretaker.gen_ai.cost_usd", float(cost))
+            if tool_calls:
+                _tool_span.set_attribute(
+                    "caretaker.llm.tool_calls",
+                    [tc.name for tc in tool_calls if tc.name],
+                )
+
+            return LLMToolResponse(
+                text=text,
+                tool_calls=tool_calls,
+                model=actual_model,
+                provider=self.name,
+                input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                cost_usd=cost,
+                stop_reason=finish_reason,
+                raw_message=raw_message,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
             )
 
-        # Build a round-trip-safe raw_message so the caller can append it to
-        # the next request's messages array verbatim. LiteLLM message objects
-        # are Pydantic-ish; fall back to a manual dict build.
-        raw_message: dict[str, Any]
-        try:
-            raw_message = message.model_dump()
-        except AttributeError:
-            raw_message = {
-                "role": getattr(message, "role", "assistant"),
-                "content": text,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
-                        },
-                    }
-                    for tc in tool_calls
-                ]
-                or None,
-            }
 
-        usage = getattr(response, "usage", None)
-        actual_model = getattr(response, "model", request.model)
-        cost = None
-        try:
-            from litellm import completion_cost
+# ── GenAI semantic-convention helpers ─────────────────────────────────────────
 
-            cost = completion_cost(completion_response=response)
-        except Exception:
-            cost = None
 
-        cache_read, cache_creation = _extract_litellm_cache_tokens(usage)
-        record_llm_cache_usage(
-            provider=self.name,
-            model=actual_model,
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
+# Map LiteLLM model-string namespaces to OTel ``gen_ai.system`` values.
+# Order matters — Azure-flavoured Anthropic deployments arrive as
+# ``azure_ai/claude-...``, so the namespace prefix wins over substring
+# checks. Unknown models fall through to "litellm" (better than nothing
+# for cardinality).
+_GENAI_SYSTEM_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("azure_ai/", "azure.openai"),
+    ("azure/", "azure.openai"),
+    ("openai/", "openai"),
+    ("anthropic/", "anthropic"),
+    ("vertex_ai/", "vertex_ai"),
+    ("bedrock/", "aws.bedrock"),
+    ("ollama/", "ollama"),
+    ("mistral/", "mistral"),
+    ("cohere/", "cohere"),
+    ("groq/", "groq"),
+)
 
-        return LLMToolResponse(
-            text=text,
-            tool_calls=tool_calls,
-            model=actual_model,
-            provider=self.name,
-            input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            cost_usd=cost,
-            stop_reason=finish_reason,
-            raw_message=raw_message,
-            cache_read_input_tokens=cache_read,
-            cache_creation_input_tokens=cache_creation,
-        )
+
+def _genai_system_for_model(model: str) -> str:
+    """Return the OTel ``gen_ai.system`` value for a LiteLLM model string."""
+    lowered = model.lower()
+    for prefix, system in _GENAI_SYSTEM_PREFIXES:
+        if lowered.startswith(prefix):
+            return system
+    # Bare claude-* or gpt-* without a namespace defaults the same way
+    # LiteLLM does: anthropic for claude, openai for gpt.
+    if "claude" in lowered:
+        return "anthropic"
+    if lowered.startswith("gpt-"):
+        return "openai"
+    return "litellm"
 
 
 # ── Prompt-cache helpers ──────────────────────────────────────────────────────

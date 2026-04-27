@@ -24,6 +24,7 @@ load-balancing for everything — no separate worker pools to operate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from datetime import UTC, datetime
@@ -59,8 +60,14 @@ _PAYLOAD_KIND_RUN_TRIGGER = "run_trigger"
 
 
 def webhook_event_payload(parsed: ParsedWebhook) -> dict[str, object]:
-    """Serialise a :class:`ParsedWebhook` into a bus-publishable dict."""
-    return {
+    """Serialise a :class:`ParsedWebhook` into a bus-publishable dict.
+
+    Stamps W3C ``traceparent``/``tracestate`` from the active OTel
+    context so the consumer (potentially on another replica) can
+    rejoin the trace via :func:`extracted_context`. No-op when OTel
+    isn't configured.
+    """
+    payload: dict[str, object] = {
         "kind": _PAYLOAD_KIND_WEBHOOK,
         "delivery_id": parsed.delivery_id,
         "event_type": parsed.event_type,
@@ -69,6 +76,8 @@ def webhook_event_payload(parsed: ParsedWebhook) -> dict[str, object]:
         "repository_full_name": parsed.repository_full_name,
         "raw_payload": parsed.payload,
     }
+    _inject_trace_context(payload)
+    return payload
 
 
 def run_trigger_event_payload(
@@ -81,9 +90,11 @@ def run_trigger_event_payload(
 
     The consumer treats ``run_trigger`` events almost identically to
     webhook events, with the addition of run-scoped log streaming and
-    terminal-status persistence on completion.
+    terminal-status persistence on completion. The active OTel context
+    is stamped onto the payload (``traceparent``/``tracestate``) so the
+    /runs/{id}/trigger root span continues across the bus hop.
     """
-    return {
+    payload: dict[str, object] = {
         "kind": _PAYLOAD_KIND_RUN_TRIGGER,
         "run_id": run_id,
         "last_seq": last_seq,
@@ -94,6 +105,18 @@ def run_trigger_event_payload(
         "repository_full_name": parsed.repository_full_name,
         "raw_payload": parsed.payload,
     }
+    _inject_trace_context(payload)
+    return payload
+
+
+def _inject_trace_context(payload: dict[str, object]) -> None:
+    """Best-effort W3C trace-context stamp; never raises."""
+    try:
+        from caretaker.observability import inject_trace_context
+
+        inject_trace_context(payload)
+    except Exception:  # pragma: no cover
+        pass
 
 
 def _parsed_from_payload(payload: dict[str, Any]) -> ParsedWebhook | None:
@@ -116,6 +139,73 @@ def _parsed_from_payload(payload: dict[str, Any]) -> ParsedWebhook | None:
     except (KeyError, TypeError, ValueError) as exc:
         logger.error("undecodable event payload: %s", exc)
         return None
+
+
+# ── Consumer-side trace context re-anchor ─────────────────────────────
+
+
+@contextlib.contextmanager
+def _consume_span(
+    *,
+    kind: object,
+    event: Any,
+    parsed: ParsedWebhook,
+    consumer_name: str,
+) -> Any:
+    """Open a ``messaging.consume`` span parented on the producer's context.
+
+    Reads the W3C ``traceparent`` the producer stamped onto the payload
+    and uses it as the parent context for the consume span. This stitches
+    the trace across the Redis Streams hop. No-op when the OTel SDK is
+    unavailable.
+
+    Stamps the consume span with semantic-convention messaging
+    attributes plus caretaker-specific labels (``delivery_id``,
+    ``event_type``) so traces can be filtered to a single GitHub
+    delivery in Tempo.
+    """
+    try:
+        from opentelemetry import trace as _trace
+
+        from caretaker.observability import extracted_context
+    except Exception:  # pragma: no cover - OTel extra not installed
+        yield None
+        return
+
+    parent_ctx = extracted_context(event.payload)
+    tracer = _trace.get_tracer("caretaker.eventbus")
+    kind_str = str(kind) if kind is not None else "unknown"
+    with tracer.start_as_current_span(
+        f"eventbus.consume {kind_str}",
+        context=parent_ctx,
+    ) as span:
+        try:
+            span.set_attribute("messaging.system", "redis")
+            span.set_attribute("messaging.operation", "process")
+            span.set_attribute("messaging.destination.name", DEFAULT_STREAM)
+            span.set_attribute("messaging.consumer.id", consumer_name)
+            if getattr(event, "id", None):
+                span.set_attribute("messaging.message.id", str(event.id))
+            span.set_attribute("caretaker.event_kind", kind_str)
+            span.set_attribute("caretaker.delivery_id", parsed.delivery_id)
+            span.set_attribute("caretaker.event_type", parsed.event_type)
+            if parsed.repository_full_name:
+                span.set_attribute("caretaker.repository", parsed.repository_full_name)
+            if parsed.installation_id is not None:
+                span.set_attribute("caretaker.installation_id", parsed.installation_id)
+        except Exception:  # pragma: no cover
+            pass
+        try:
+            yield span
+        except Exception as exc:
+            try:
+                from opentelemetry.trace import Status, StatusCode
+
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+            except Exception:
+                pass
+            raise
 
 
 # ── Consumer name ─────────────────────────────────────────────────────
@@ -165,18 +255,33 @@ def start_webhook_consumer(
             return
 
         kind = event.payload.get("kind")
-        logger.info(
-            "eventbus consume kind=%s event=%s delivery=%s consumer=%s",
-            kind,
-            parsed.event_type,
-            parsed.delivery_id,
-            consumer_name,
-        )
 
-        if kind == _PAYLOAD_KIND_RUN_TRIGGER:
-            await _handle_run_trigger(event=event, parsed=parsed, dispatcher=dispatcher, bus=bus)
-        else:
-            await _handle_webhook(parsed=parsed, dispatcher=dispatcher)
+        # Re-anchor the OTel trace at the consumer side using the
+        # ``traceparent`` the producer stamped onto the payload. The
+        # surrounding span becomes a child of the ``POST /webhooks/github``
+        # (or ``/runs/{id}/trigger``) root, even though we're potentially
+        # in a different replica. ``_consume_span`` is a no-op context
+        # manager when OTel is missing/disabled.
+        with _consume_span(
+            kind=kind,
+            event=event,
+            parsed=parsed,
+            consumer_name=consumer_name,
+        ):
+            logger.info(
+                "eventbus consume kind=%s event=%s delivery=%s consumer=%s",
+                kind,
+                parsed.event_type,
+                parsed.delivery_id,
+                consumer_name,
+            )
+
+            if kind == _PAYLOAD_KIND_RUN_TRIGGER:
+                await _handle_run_trigger(
+                    event=event, parsed=parsed, dispatcher=dispatcher, bus=bus
+                )
+            else:
+                await _handle_webhook(parsed=parsed, dispatcher=dispatcher)
 
     consume_task = asyncio.create_task(
         bus.consume(

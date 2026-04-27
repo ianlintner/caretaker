@@ -71,15 +71,28 @@ class RunStreamHandler(logging.Handler):
             if seq_holder is None:
                 return
             seq_holder[0] += 1
+            tags: dict[str, str] = {
+                "logger": record.name,
+                "level": record.levelname,
+            }
+            # ``LoggingInstrumentor`` (installed by
+            # :func:`caretaker.observability.bootstrap_observability`)
+            # stamps these attributes onto every LogRecord. A real trace
+            # id is 32 hex chars; the instrumentor uses the all-zeros
+            # value when no span is active — drop it so we don't bloat
+            # the run-stream payload with empty correlation ids.
+            trace_id = str(getattr(record, "otelTraceID", "") or "")
+            span_id = str(getattr(record, "otelSpanID", "") or "")
+            if trace_id and trace_id != "0" * 32:
+                tags["trace_id"] = trace_id
+            if span_id and span_id != "0" * 16:
+                tags["span_id"] = span_id
             entry = LogEntry(
                 seq=seq_holder[0],
                 ts=datetime.now(UTC),
                 stream=LogStream.STDERR if record.levelno >= logging.WARNING else LogStream.STDOUT,
                 data=record.getMessage(),
-                tags={
-                    "logger": record.name,
-                    "level": record.levelname,
-                },
+                tags=tags,
             )
             asyncio.create_task(  # noqa: RUF006 — fire-and-forget by design
                 self._store.append_log(run_id, entry),
