@@ -73,16 +73,17 @@ _ADMIN_STATIC_DIR = Path(__file__).resolve().parent.parent / "admin" / "static"
 @asynccontextmanager
 async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     """App lifespan: initialise admin dashboard if configured."""
-    # M8 of the memory-graph plan — initialise OpenTelemetry GenAI
-    # tracing. A no-op when the ``otel`` extra is missing or
-    # ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset, so the default install
-    # doesn't pay the SDK cost. ``init_tracing`` never raises.
+    # End-to-end OpenTelemetry tracing — wires the OTLP exporter, the
+    # FastAPI/httpx/Redis/Neo4j auto-instrumentors, and the logging
+    # instrumentor that stamps trace_id/span_id onto every LogRecord.
+    # No-op when the ``otel`` extra is missing or
+    # ``OTEL_EXPORTER_OTLP_ENDPOINT`` is unset.
     try:
-        from caretaker.observability import init_tracing
+        from caretaker.observability import bootstrap_observability
 
-        init_tracing("caretaker-mcp")
+        bootstrap_observability("caretaker-mcp")
     except Exception:
-        logger.debug("OpenTelemetry init skipped", exc_info=True)
+        logger.debug("OpenTelemetry bootstrap skipped", exc_info=True)
 
     # Prometheus metrics (paved-path SKILL §1-§10). RED-floor HTTP
     # metrics + http_client_* + db_client_* + worker_* are emitted

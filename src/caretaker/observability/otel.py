@@ -1,4 +1,4 @@
-"""OpenTelemetry GenAI agent-span instrumentation (M8 of memory-graph plan).
+"""OpenTelemetry tracing — agent GenAI spans + cluster-wide e2e wiring.
 
 Caretaker adopts the April 2026 OpenTelemetry GenAI semantic
 conventions — every agent run emits a single ``invoke_agent`` span
@@ -6,6 +6,17 @@ with ``gen_ai.agent.name`` + ``gen_ai.operation.name`` attributes.
 The span id is mirrored into :class:`~caretaker.causal_chain.CausalEvent`
 rows so "which span caused this escalation" is a one-hop query against
 either the graph or the trace backend.
+
+This module owns the SDK setup. The full e2e wiring
+(auto-instrumentors, log enrichment, cross-process propagation) lives
+in sibling modules:
+
+* :mod:`caretaker.observability.bootstrap` — single entry-point helper
+  every long-running caretaker process calls at startup.
+* :mod:`caretaker.observability.propagation` — W3C trace-context
+  inject/extract for the Redis Streams event-bus hop.
+* :mod:`caretaker.observability.llm_span` — manual GenAI spans around
+  LLM calls (Anthropic / Azure OpenAI / etc.).
 
 Design constraints
 ------------------
@@ -15,8 +26,8 @@ Design constraints
   degrades to no-op stubs when the packages are not installed.
 * :func:`init_tracing` never raises. If the SDK is missing or
   ``OTEL_EXPORTER_OTLP_ENDPOINT`` is not set, it logs a debug note and
-  returns. Operators point the env var at any GenAI-aware backend
-  (Phoenix, Datadog, LangSmith) to start collecting traces.
+  returns. Operators point the env var at any OTLP-aware backend
+  (the in-cluster collector, Phoenix, Datadog, LangSmith).
 * :func:`agent_span` always returns a context manager yielding a
   span-like handle, even when OTel is unavailable, so call sites stay
   branch-free.
@@ -24,9 +35,9 @@ Design constraints
 Usage
 -----
 
-    from caretaker.observability import agent_span, init_tracing
+    from caretaker.observability import bootstrap_observability, agent_span
 
-    init_tracing("caretaker-mcp")
+    bootstrap_observability("caretaker-mcp")  # prefer this over init_tracing
 
     with agent_span(agent_name="pr", operation="run") as span:
         span.set_attribute("caretaker.run_id", run_id)
@@ -110,6 +121,61 @@ class _NullSpan:
         return None
 
 
+def _resolve_resource_attrs(service_name: str) -> dict[str, str]:
+    """Build the OTel ``Resource`` attribute dict.
+
+    Operator-supplied ``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES``
+    win over caretaker defaults so deployments can override per-pod
+    without code changes (matches the OTel SDK env-var contract).
+    """
+    attrs: dict[str, str] = {
+        "service.name": os.environ.get("OTEL_SERVICE_NAME", "").strip() or service_name,
+        "service.namespace": "caretaker",
+    }
+
+    # Pod name from the k8s downward API (set in our Deployment spec)
+    # is the natural service.instance.id. Falls back to the local
+    # hostname so non-k8s callers still get a useful value.
+    instance_id = os.environ.get("HOSTNAME", "").strip()
+    if not instance_id:
+        try:
+            import socket
+
+            instance_id = socket.gethostname()
+        except Exception:  # pragma: no cover - hostname is always available in practice
+            instance_id = ""
+    if instance_id:
+        attrs["service.instance.id"] = instance_id
+
+    # Pin the package version so traces from a partial rollout can be
+    # cleanly bisected. Best-effort — never block startup if importlib
+    # metadata can't find the dist (e.g. running from a source checkout
+    # without ``pip install -e .``).
+    try:
+        import contextlib
+        from importlib.metadata import PackageNotFoundError, version
+
+        with contextlib.suppress(PackageNotFoundError):
+            attrs["service.version"] = version("caretaker-github")
+    except Exception:  # pragma: no cover
+        pass
+
+    # Operator-supplied OTEL_RESOURCE_ATTRIBUTES merges last so it can
+    # override anything above (e.g. deployment.environment=staging vs prod).
+    raw = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").strip()
+    if raw:
+        for entry in raw.split(","):
+            if "=" not in entry:
+                continue
+            key, _, value = entry.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key:
+                attrs[key] = value
+
+    return attrs
+
+
 def init_tracing(service_name: str = "caretaker") -> None:
     """Configure the global OTel tracer provider once per process.
 
@@ -140,11 +206,35 @@ def init_tracing(service_name: str = "caretaker") -> None:
         assert _OTLPSpanExporter is not None
         assert _otel_trace is not None
 
-        resource = _OTelResource.create({"service.name": service_name})
+        resource = _OTelResource.create(_resolve_resource_attrs(service_name))
         provider = _TracerProvider(resource=resource)
         exporter = _OTLPSpanExporter(endpoint=endpoint)
         provider.add_span_processor(_BatchSpanProcessor(exporter))
         _otel_trace.set_tracer_provider(provider)
+
+        # Lock the propagator contract: W3C tracecontext + baggage. The
+        # SDK default is identical, but pinning it explicitly means a
+        # stray ``OTEL_PROPAGATORS=jaeger`` in the environment can't
+        # silently desync our producer/consumer trace context across the
+        # event-bus hop.
+        try:
+            from opentelemetry.propagate import set_global_textmap
+            from opentelemetry.propagators.composite import CompositePropagator
+            from opentelemetry.trace.propagation.tracecontext import (
+                TraceContextTextMapPropagator,
+            )
+
+            try:
+                from opentelemetry.baggage.propagation import W3CBaggagePropagator
+
+                set_global_textmap(
+                    CompositePropagator([TraceContextTextMapPropagator(), W3CBaggagePropagator()])
+                )
+            except ImportError:  # pragma: no cover - baggage available in modern api
+                set_global_textmap(TraceContextTextMapPropagator())
+        except Exception:  # pragma: no cover
+            logger.debug("Failed to pin OTel propagators; using SDK defaults", exc_info=True)
+
         _TRACING_INITIALISED = True
         logger.info(
             "OpenTelemetry tracing initialised (service=%s, endpoint=%s)",

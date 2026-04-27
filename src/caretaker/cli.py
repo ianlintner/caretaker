@@ -67,17 +67,61 @@ class RunMode(StrEnum):
     EVENT = "event"
 
 
+class _OTelDefaultsFilter(logging.Filter):
+    """Ensure ``otelTraceID`` / ``otelSpanID`` always exist on the record.
+
+    ``LoggingInstrumentor`` only stamps these when an OTel span is
+    active. Outside a span (most CLI work) the fields would be missing
+    and our format string would raise ``KeyError``. This filter fills
+    in empty strings so the format string is always valid. When a span
+    *is* active, the instrumentor's record-factory has already set
+    real values before we run, so we don't overwrite them.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "otelTraceID"):
+            record.otelTraceID = ""
+        if not hasattr(record, "otelSpanID"):
+            record.otelSpanID = ""
+        return True
+
+
 def _configure_logging(log_file: str | None, debug: bool) -> None:
-    """Configure root logger with console and optional file handlers."""
+    """Configure root logger with console and optional file handlers.
+
+    The format string interleaves ``trace_id``/``span_id`` so any line
+    can be pivoted into a Tempo trace by paste-search. Empty when no
+    span is active — see :class:`_OTelDefaultsFilter`.
+    """
     level = logging.DEBUG if debug else logging.INFO
-    fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    fmt = (
+        "%(asctime)s %(levelname)-8s %(name)s "
+        "[trace_id=%(otelTraceID)s span_id=%(otelSpanID)s] — %(message)s"
+    )
+    otel_filter = _OTelDefaultsFilter()
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.addFilter(otel_filter)
+    handlers: list[logging.Handler] = [stderr_handler]
     if log_file:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)  # always capture debug in the file
         file_handler.setFormatter(logging.Formatter(fmt))
+        file_handler.addFilter(otel_filter)
         handlers.append(file_handler)
     logging.basicConfig(level=level, format=fmt, handlers=handlers, force=True)
+
+    # Bootstrap OpenTelemetry so the CLI's spans (when ``OTEL_EXPORTER_OTLP_ENDPOINT``
+    # is set) land in the same backend as the cluster services. The
+    # ``LoggingInstrumentor`` activated here stamps ``otelTraceID`` /
+    # ``otelSpanID`` onto every subsequent LogRecord, which the format
+    # string above renders inline. No-op when the ``otel`` extra is missing.
+    try:
+        from caretaker.observability import bootstrap_observability
+
+        bootstrap_observability("caretaker-cli")
+    except Exception:
+        logging.getLogger(__name__).debug("OpenTelemetry bootstrap skipped for CLI", exc_info=True)
 
 
 @click.group()
