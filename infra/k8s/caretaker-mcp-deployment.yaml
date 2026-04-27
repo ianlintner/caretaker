@@ -149,6 +149,59 @@ spec:
                   name: caretaker-admin-secrets
                   key: neo4j-auth
                   optional: true
+            # ── Streamed-runs OIDC + ingest-token plumbing ───────────
+            # Set CARETAKER_OIDC_GITHUB_AUDIENCE to enable /runs/start.
+            # Consumer workflows pass the same audience when minting
+            # their GitHub Actions OIDC tokens.
+            - name: CARETAKER_OIDC_GITHUB_AUDIENCE
+              value: "caretaker-backend"
+            - name: CARETAKER_RUNS_INGEST_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: runs-ingest-token-secret
+                  optional: true
+            - name: CARETAKER_RUNS_REDIS_STREAM_MAXLEN
+              value: "50000"
+            - name: CARETAKER_RUNS_RETENTION_HOURS
+              value: "24"
+            - name: MONGODB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-admin-secrets
+                  key: mongodb-url
+                  optional: true
+            # ── LLM keys (moved off consumer workflows) ──────────────
+            - name: AZURE_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-key
+                  optional: true
+            - name: AZURE_AI_API_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-base
+                  optional: true
+            - name: AZURE_AI_API_VERSION
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: azure-ai-api-version
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: anthropic-api-key
+                  optional: true
           resources:
             requests:
               cpu: "10m"
