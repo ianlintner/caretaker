@@ -172,6 +172,7 @@ def _event_for_mode(mode: str) -> str:
 _resolver: RepoInstallationResolver | None = None
 _token_broker: InstallationTokenMinter | None = None
 _dispatcher_factory: Any = None  # callable returning the WebhookDispatcher
+_event_bus_factory: Any = None  # callable returning the EventBus
 
 
 def configure(
@@ -179,19 +180,28 @@ def configure(
     resolver: RepoInstallationResolver | None,
     token_broker: InstallationTokenMinter | None,
     dispatcher_factory: Any,
+    event_bus_factory: Any = None,
 ) -> None:
-    """Register collaborators wired by main.py at startup."""
-    global _resolver, _token_broker, _dispatcher_factory  # noqa: PLW0603
+    """Register collaborators wired by main.py at startup.
+
+    ``event_bus_factory`` is optional for backwards compatibility — when
+    omitted, :func:`run_trigger` falls back to its legacy in-process
+    asyncio task path. Providing the factory routes triggers through the
+    durable event bus so they survive pod restarts.
+    """
+    global _resolver, _token_broker, _dispatcher_factory, _event_bus_factory  # noqa: PLW0603
     _resolver = resolver
     _token_broker = token_broker
     _dispatcher_factory = dispatcher_factory
+    _event_bus_factory = event_bus_factory
 
 
 def reset() -> None:
-    global _resolver, _token_broker, _dispatcher_factory  # noqa: PLW0603
+    global _resolver, _token_broker, _dispatcher_factory, _event_bus_factory  # noqa: PLW0603
     _resolver = None
     _token_broker = None
     _dispatcher_factory = None
+    _event_bus_factory = None
 
 
 async def run_trigger(record: RunRecord, body: RunTriggerRequest) -> bool:
@@ -233,6 +243,38 @@ async def run_trigger(record: RunRecord, body: RunTriggerRequest) -> bool:
     dispatcher = _dispatcher_factory()
     store = get_store()
 
+    # Preferred path: publish a ``run_trigger`` event onto the durable
+    # event bus so the consumer (this replica or another) drives the
+    # actual dispatch + terminal-status persistence. Survives pod
+    # restarts; load-balanced across replicas via consumer group.
+    if _event_bus_factory is not None:
+        try:
+            from caretaker.eventbus import DEFAULT_STREAM, run_trigger_event_payload
+
+            bus = _event_bus_factory()
+            payload = run_trigger_event_payload(
+                parsed=parsed,
+                run_id=record.run_id,
+                last_seq=record.last_seq,
+            )
+            await bus.publish(DEFAULT_STREAM, payload)
+            logger.info(
+                "run_trigger published to event bus run_id=%s repo=%s",
+                record.run_id,
+                record.repository,
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "run_trigger event bus publish failed; falling back to in-process dispatch "
+                "run_id=%s",
+                record.run_id,
+                exc_info=True,
+            )
+
+    # Fallback path: in-process asyncio task. Non-durable — used when
+    # the bus is not configured or its publish raised. Keeps the legacy
+    # behaviour available so a Redis blip never strands a run.
     async def _runner() -> None:
         token = _current_run_id.set(record.run_id)
         seq_token = _current_seq.set([record.last_seq + 10])  # leave headroom for system events

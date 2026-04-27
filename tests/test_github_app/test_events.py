@@ -35,9 +35,10 @@ def test_ping_is_intentionally_unrouted() -> None:
     assert agents_for_event("ping") == []
 
 
-def test_installation_events_are_intentionally_unrouted() -> None:
-    assert agents_for_event("installation") == []
-    assert agents_for_event("installation_repositories") == []
+def test_installation_events_route_to_bootstrap_agent() -> None:
+    """Installation events trigger the bootstrap agent that scaffolds new repos."""
+    assert agents_for_event("installation") == ["bootstrap"]
+    assert agents_for_event("installation_repositories") == ["bootstrap"]
 
 
 def test_unknown_event_returns_empty_list() -> None:
