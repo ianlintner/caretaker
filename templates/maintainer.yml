@@ -72,8 +72,10 @@ jobs:
     env:
       # Required: the only configuration the workflow needs.
       CARETAKER_BACKEND_URL: ${{ vars.CARETAKER_BACKEND_URL }}
-      # Optional: override the OIDC audience (default: caretaker-backend).
-      CARETAKER_OIDC_AUDIENCE: ${{ vars.CARETAKER_OIDC_AUDIENCE }}
+      # Optional: override the OIDC audience. Leave unset to use the default
+      # ("caretaker-backend"). If you set this as a repo variable, it must
+      # match the audience the backend was configured with.
+      CARETAKER_OIDC_AUDIENCE: ${{ vars.CARETAKER_OIDC_AUDIENCE || 'caretaker-backend' }}
 
     steps:
       - uses: actions/setup-python@v5
