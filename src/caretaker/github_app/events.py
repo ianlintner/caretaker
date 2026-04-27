@@ -39,9 +39,13 @@ EVENT_AGENT_MAP: dict[str, list[str]] = {
     "secret_scanning_alert": ["security"],
     # Repository push (docs / changelog triggers)
     "push": ["docs"],
-    # App lifecycle — handled by the webhook receiver itself, no agent
-    "installation": [],
-    "installation_repositories": [],
+    # App lifecycle — bootstrap agent auto-scaffolds setup files in
+    # newly-installed repos. The agent is idempotent: it skips repos
+    # that already have a caretaker bootstrap marker, so re-deliveries
+    # and ``installation_repositories.added`` events for already-set-up
+    # repos don't create duplicate PRs.
+    "installation": ["bootstrap"],
+    "installation_repositories": ["bootstrap"],
     # Ping is what GitHub sends to validate the webhook URL on create.
     "ping": [],
 }

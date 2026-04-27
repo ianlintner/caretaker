@@ -29,6 +29,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from caretaker.eventbus import (
+    DEFAULT_STREAM as _BUS_STREAM,
+)
+from caretaker.eventbus import (
+    EventBus,
+    EventBusError,
+    build_event_bus,
+    start_webhook_consumer,
+    webhook_event_payload,
+)
 from caretaker.github_app import (
     DispatchMode,
     GitHubAppContextFactory,
@@ -41,7 +51,7 @@ from caretaker.github_app import (
     verify_signature,
 )
 from caretaker.github_client.rate_limit import get_cooldown
-from caretaker.observability.metrics import record_webhook_event
+from caretaker.observability.metrics import record_error, record_webhook_event
 from caretaker.state.dedup import LocalDedup, RedisDedup, build_dedup
 from caretaker.state.token_broker import build_token_broker
 
@@ -185,10 +195,14 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             logger.info("GitHub App installation check wired into runs OIDC validation")
 
         # Configure dispatch bridge — used by /runs/{id}/trigger.
+        # event_bus_factory routes triggers through the durable event
+        # bus so they survive pod restarts; falls back to in-process if
+        # the bus publish raises.
         runs_dispatch.configure(
             resolver=resolver,
             token_broker=_token_broker,
             dispatcher_factory=_get_dispatcher,
+            event_bus_factory=_get_event_bus,
         )
         runs_api.configure_dispatch(runs_dispatch.run_trigger)
         application.include_router(runs_api.router)
@@ -418,6 +432,73 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         except Exception:
             logger.warning("Failed to initialise admin dashboard", exc_info=True)
 
+    # ── Webhook event-bus consumer ───────────────────────────────────
+    #
+    # One consume task + one reaper task per replica. The consumer group
+    # gives us at-least-once delivery, automatic load-balancing across
+    # replicas, and (via the reaper's XAUTOCLAIM) redelivery of messages
+    # whose handler crashed mid-processing. When Redis is not configured
+    # the bus falls back to in-process; the consumer still runs but
+    # only sees messages produced inside this same process.
+    try:
+        bus = _get_event_bus()
+        dispatcher = _get_dispatcher()
+        consume_task, reaper_task = start_webhook_consumer(
+            bus=bus,
+            dispatcher=dispatcher,
+        )
+        application.state.eventbus = bus
+        application.state.eventbus_consume_task = consume_task
+        application.state.eventbus_reaper_task = reaper_task
+        logger.info("Webhook event-bus consumer started")
+    except Exception:
+        logger.exception("Failed to start webhook event-bus consumer")
+        application.state.eventbus = None
+        application.state.eventbus_consume_task = None
+        application.state.eventbus_reaper_task = None
+
+    # ── Reconciliation scheduler ─────────────────────────────────────
+    #
+    # Replaces the per-repo cron in the heavy maintainer.yml with a
+    # single in-cluster schedule. Fans out a synthetic ``schedule`` event
+    # per installed repo onto the event bus on each tick. Multi-pod
+    # safety via Redis lease — only one replica fires per tick.
+    #
+    # Disabled by default to keep test environments quiet; opt in via
+    # ``CARETAKER_SCHEDULER_ENABLED=true`` in production.
+    application.state.scheduler_task = None
+    application.state.installations_index = None
+    scheduler_enabled = os.environ.get("CARETAKER_SCHEDULER_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if scheduler_enabled:
+        try:
+            if _token_broker is None:
+                logger.warning(
+                    "CARETAKER_SCHEDULER_ENABLED=true but GitHub App is not configured; "
+                    "skipping scheduler"
+                )
+            else:
+                from caretaker.github_app.installations_index import InstallationsIndex
+                from caretaker.scheduler import start_reconciliation_scheduler
+
+                bus = getattr(application.state, "eventbus", None) or _get_event_bus()
+                index = InstallationsIndex(
+                    signer=_token_broker._signer,
+                    token_minter=_token_broker,
+                )
+                await index.__aenter__()
+                application.state.installations_index = index
+                application.state.scheduler_task = start_reconciliation_scheduler(
+                    bus=bus,
+                    installations_index=index,
+                )
+                logger.info("Reconciliation scheduler started")
+        except Exception:
+            logger.exception("Failed to start reconciliation scheduler")
+
     # Register the SPA catch-all AFTER all API routes so it never shadows them.
     # Starlette matches routes in registration order; a /{full_path:path} wildcard
     # added at module level would intercept every /api/* request before the admin
@@ -443,6 +524,22 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         sweeper.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await sweeper
+
+    # Cancel the event-bus consumer + reaper, then close the bus client.
+    for attr in ("eventbus_consume_task", "eventbus_reaper_task", "scheduler_task"):
+        task_handle = getattr(application.state, attr, None)
+        if task_handle is not None:
+            task_handle.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task_handle
+    bus_attr: EventBus | None = getattr(application.state, "eventbus", None)
+    if bus_attr is not None:
+        with suppress(Exception):
+            await bus_attr.close()
+    installations_index = getattr(application.state, "installations_index", None)
+    if installations_index is not None:
+        with suppress(Exception):
+            await installations_index.__aexit__(None, None, None)
 
     runs_resolver = getattr(application.state, "runs_resolver", None)
     if runs_resolver is not None:
@@ -508,6 +605,25 @@ async def _remember_delivery(delivery_id: str) -> bool:
 # Lazily initialised; returns None when the GitHub App is not configured.
 
 _token_broker = build_token_broker()
+
+
+# ── Event bus (durable webhook fan-out) ──────────────────────────────
+#
+# Webhook deliveries are published onto a Redis Stream + consumer group
+# so dispatch survives pod restarts and load-balances across replicas.
+# Falls back to an in-process LocalEventBus when REDIS_URL is unset
+# (single-pod dev). The webhook handler retains a fallback to
+# ``dispatch_in_background`` if publish fails — the goal is that a Redis
+# outage degrades to MVP behaviour instead of returning 5xx to GitHub.
+
+_event_bus: EventBus | None = None
+
+
+def _get_event_bus() -> EventBus:
+    global _event_bus  # noqa: PLW0603
+    if _event_bus is None:
+        _event_bus = build_event_bus()
+    return _event_bus
 
 
 # ── Webhook dispatcher (Phase 2) ──────────────────────────────────────
@@ -853,8 +969,30 @@ async def github_webhook(request: Request) -> WebhookAck:
     if is_new and not cooldown_blocked:
         dispatcher = _get_dispatcher()
         if dispatcher.mode is not DispatchMode.OFF:
-            task = dispatch_in_background(dispatcher, parsed)
-            dispatched = task is not None
+            # Preferred path: publish onto the event bus so a consumer
+            # task on this (or another) replica picks it up. Durable
+            # across pod restarts; load-balanced via consumer group.
+            #
+            # Fallback: if publish fails (Redis outage), drop to the
+            # in-process asyncio.create_task path so a Redis blip never
+            # turns into a 5xx back to GitHub. The fallback is non-durable
+            # — we accept that trade-off because Redis going down should
+            # be rare and short.
+            bus = _get_event_bus()
+            try:
+                await bus.publish(_BUS_STREAM, webhook_event_payload(parsed))
+                dispatched = True
+            except EventBusError:
+                logger.warning(
+                    "eventbus publish failed; falling back to in-process dispatch "
+                    "event=%s delivery=%s",
+                    parsed.event_type,
+                    parsed.delivery_id,
+                    exc_info=True,
+                )
+                record_error(kind="eventbus_publish_failed")
+                task = dispatch_in_background(dispatcher, parsed)
+                dispatched = task is not None
     elif cooldown_blocked:
         logger.warning(
             "webhook dispatch deferred: GitHub rate-limit cooldown active "

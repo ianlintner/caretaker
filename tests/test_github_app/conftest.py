@@ -45,3 +45,19 @@ def rsa_private_pem(rsa_keypair_pem: tuple[str, str]) -> str:
 @pytest.fixture(scope="session")
 def rsa_public_pem(rsa_keypair_pem: tuple[str, str]) -> str:
     return rsa_keypair_pem[1]
+
+
+@pytest.fixture(autouse=True)
+def _reset_context_factory_config_cache() -> Iterator[None]:
+    """Drop the module-level config cache between tests.
+
+    The cache is a singleton that intentionally lives across requests in
+    production; in tests it would leak warm entries between cases (e.g.
+    a test that loads a custom config would poison a later test that
+    expects the default-config fallback path).
+    """
+    from caretaker.github_app.context_factory import reset_config_cache
+
+    reset_config_cache()
+    yield
+    reset_config_cache()
