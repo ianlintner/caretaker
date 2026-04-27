@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.25.0",
+      "min_compatible": "0.24.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.25.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.25.0 -->\n\n## What's Changed\n### Other Changes\n* fix(devops): route PR-head CI failures to PR comment, not new issue by @ianlintner in https://github.com/ianlintner/caretaker/pull/611\n* fix(pr-agent): finalize readiness check when PR is escalated by @ianlintner in https://github.com/ianlintner/caretaker/pull/614\n* fix: handle GitHub API 403 rate-limit errors gracefully in orchestrator by @Copilot in https://github.com/ianlintner/caretaker/pull/61\n* chore: add v0.23.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/616\n* chore: add v0.24.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/618\n* fix(stream): fall back to default OIDC audience when env var is empty string by @ianlintner in https://github.com/ianlintner/caretaker/pull/619\n* feat: route fleet workflow to backend with durable eventing + auto-bootstrap by @ianlintner in https://github.com/ianlintner/caretaker/pull/621\n* fix(pr-reviewer): two harvest-consumer bugs surfaced by v0.24.0 live QA by @ianlintner in https://github.com/ianlintner/caretaker/pull/620\n* docs: qa findings 2026-04-27 (event-bus migration, scenarios 15+16 pass) by @ianlintner in https://github.com/ianlintner/caretaker/pull/622\n* fix: consolidate dogfood config to .github/maintainer/config.yml (F-5/F-2) by @ianlintner in https://github.com/ianlintner/caretaker/pull/625\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.24.0...v0.25.0",
+      "breaking": false
+    },
+    {
       "version": "0.24.0",
       "min_compatible": "0.22.3",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.24.0",
