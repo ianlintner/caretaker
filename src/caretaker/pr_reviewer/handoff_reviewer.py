@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 CLAUDE_CODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-handoff -->"
 OPENCODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-handoff -->"
 
+# Marker the agent's reply must include for caretaker to harvest the
+# review payload and re-post it as a formal PR review (Reviews tab) via
+# ``handoff_review_consumer``. The marker is grep-friendly so the
+# upstream action's output (typically a Markdown comment) doesn't need
+# a special API; agents simply emit the marker plus a fenced
+# ``caretaker-review`` JSON block.
+REVIEW_RESULT_MARKER = "<!-- caretaker:review-result -->"
+
 
 @dataclass(frozen=True)
 class HandoffReviewerSpec:
@@ -85,7 +93,29 @@ def _build_handoff_comment(
         "- Test coverage gaps",
         "- Any blocking issues before merge",
         "",
-        "Post a review comment summary and inline comments where applicable.",
+        "**To have your review surface in the GitHub Reviews tab** "
+        "(not just an issue comment), end your reply with the marker line "
+        f"`{REVIEW_RESULT_MARKER}` followed by a fenced JSON block tagged "
+        "`caretaker-review`. Example:",
+        "",
+        "````",
+        REVIEW_RESULT_MARKER,
+        "```caretaker-review",
+        "{",
+        '  "verdict": "COMMENT",          // APPROVE | COMMENT | REQUEST_CHANGES',
+        '  "summary": "1-3 sentence overall assessment.",',
+        '  "comments": [                  // optional, max 8',
+        '    {"path": "src/foo.py", "line": 42, "body": "..."}',
+        "  ]",
+        "}",
+        "```",
+        "````",
+        "",
+        "Caretaker will pick the JSON up on its next cycle and post a "
+        "formal PR review (with inline comments) attributed to "
+        "`the-care-taker[bot]` so it counts in the Reviews tab. If you "
+        "don't include the marker, your review still posts as a regular "
+        "comment, just outside the Reviews tab.",
         "",
         f"_Delegated by caretaker's PRReviewerAgent via {spec.upstream_action_name} hand-off._",
     ]
@@ -194,6 +224,7 @@ def known_backends() -> list[str]:
 __all__ = [
     "CLAUDE_CODE_REVIEW_MARKER",
     "OPENCODE_REVIEW_MARKER",
+    "REVIEW_RESULT_MARKER",
     "HandoffReviewerSpec",
     "dispatch",
     "known_backends",

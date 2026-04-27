@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`caretaker/pr-readiness` no longer dangles in `in_progress` after
+  caretaker escalates a PR.** The check now transitions to a terminal
+  conclusion as soon as the PR enters the escalated state — `neutral`
+  in advisory mode (the default; informational only) or `failure` in
+  gate modes (still blocks branch protection). `conclusion == "success"`
+  still wins so a human approval after escalation correctly flips the
+  check back to success rather than locking it at terminal-neutral.
+  Motivating incident: PR #613, where caretaker scored the PR at 30%
+  immediately after open (before CI had started), escalated within
+  45s, and the check stayed `in_progress` indefinitely even after CI
+  passed and a Claude review posted.
+### Added
+
+- **BYOCA hand-off reviews now appear in the Reviews tab.** When a
+  hand-off agent (Claude Code, opencode, …) replies to caretaker's
+  invitation comment, the reply can include a
+  `<!-- caretaker:review-result -->` marker followed by a fenced
+  `caretaker-review` JSON block. Caretaker's PR reviewer harvests the
+  payload on its next cycle and re-posts it as a *formal* GitHub PR
+  review via the Reviews API — inline comments anchored to lines,
+  verdict (`APPROVE` / `COMMENT` / `REQUEST_CHANGES`), summary,
+  attribution to the originating agent. The review is authored by
+  `the-care-taker[bot]`, so it counts toward branch-protection rules
+  that allow bot reviewers and shows up alongside human reviews under
+  the **Reviews** tab. Agents that don't include the marker still
+  post a regular issue comment, just outside the Reviews tab.
+
+  Implemented via:
+    - new `caretaker.pr_reviewer.handoff_review_consumer` module with
+      `parse_review_payload` (tolerant of malformed input — bad
+      payloads are recorded once and skipped permanently) and
+      `consume_handoff_reviews`.
+    - new `TrackedPR.consumed_handoff_review_comment_ids` field for
+      idempotency across cycles / webhook re-deliveries.
+    - new `harvested` field on the `pr_reviewer` agent's run report
+      so operators can distinguish caretaker's own inline reviews
+      from harvested-from-agent reviews.
+    - hand-off invitation now documents the `caretaker-review` schema
+      so the agent knows how to opt in.
+
 BYOCA — Bring Your Own Coding Agent. Generalises the existing Claude Code
 hand-off path into a pluggable registry so opencode (and future agents
 like codex, gemini, hermes) can coexist with Claude Code as first-class

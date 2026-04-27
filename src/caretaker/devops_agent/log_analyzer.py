@@ -33,6 +33,12 @@ class FailureSummary:
     suspected_files: list[str] = field(default_factory=list)
     error_lines: list[str] = field(default_factory=list)
     category: str = "unknown"  # "test_failure" | "lint" | "type_error" | "import" | "unknown"
+    # Head commit SHA the failing job ran against. Optional because some
+    # discovery paths (older check_runs fallback) cannot recover it. When
+    # present, the DevOps agent uses it to route a fix request onto the
+    # owning PR (when the SHA is the head of an open PR) instead of
+    # opening a parallel build-failure issue.
+    head_sha: str | None = None
 
     def to_markdown(self) -> str:
         files_md = "\n".join(f"- `{f}`" for f in self.suspected_files) or "_none identified_"

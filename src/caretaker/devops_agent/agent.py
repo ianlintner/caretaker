@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 # Label applied to issues opened by this agent
 BUILD_FAILURE_LABEL = "devops:build-failure"
 DEVOPS_AGENT_MARKER = "<!-- caretaker:devops-build-failure"
+# Marker stamped onto PR comments when we route a fix request onto an
+# open PR instead of opening a parallel build-failure issue. Same family
+# as ``DEVOPS_AGENT_MARKER`` so future cleanup / dedup passes can find
+# both via the ``caretaker:devops-build-failure`` substring.
+DEVOPS_PR_COMMENT_MARKER = "<!-- caretaker:devops-build-failure-on-pr"
 
 
 @dataclass
@@ -38,6 +43,11 @@ class DevOpsReport:
     actioned_sigs: list[str] = field(default_factory=list)
     # Updated cooldown map to persist back to state
     updated_cooldowns: dict[str, str] = field(default_factory=dict)
+    # PRs we routed a CI fix comment onto instead of opening a parallel
+    # build-failure issue. Populated when the failing commit is the head
+    # of an open PR — keeps the work where the reviewer / coding agent
+    # is already engaged.
+    pr_comments_posted: list[int] = field(default_factory=list)
 
 
 class DevOpsAgent:
@@ -132,6 +142,50 @@ class DevOpsAgent:
                 report.issues_skipped += 1
                 continue
 
+            # Prefer routing the fix request onto an open PR whose head is
+            # this failing commit — keeps the @copilot work where the
+            # reviewer is already engaged. Only fall through to a fresh
+            # issue when no such PR exists (or the lookup fails).
+            try:
+                pr_number = await self._find_open_pr_for_failure(summary)
+            except Exception as e:
+                logger.warning(
+                    "DevOps agent: PR-by-SHA lookup failed for %s: %s",
+                    summary.job_name,
+                    e,
+                )
+                pr_number = None
+
+            if pr_number is not None:
+                try:
+                    posted = await self._post_pr_fix_comment(pr_number, summary, sig, run_id=run_id)
+                except Exception as e:
+                    logger.error(
+                        "DevOps agent: failed to comment on PR #%d: %s",
+                        pr_number,
+                        e,
+                    )
+                    report.errors.append(str(e))
+                    continue
+
+                if posted:
+                    report.pr_comments_posted.append(pr_number)
+                    report.actioned_sigs.append(sig)
+                    self._record_cooldown(coarse_key)
+                    created += 1
+                    logger.info(
+                        "DevOps agent: routed fix request to PR #%d "
+                        "(job '%s', sig %s) instead of opening an issue",
+                        pr_number,
+                        summary.job_name,
+                        sig,
+                    )
+                else:
+                    # An identical comment was already on the PR — count as
+                    # a dedup skip so the report numbers stay honest.
+                    report.issues_skipped += 1
+                continue
+
             try:
                 issue = await self._create_fix_issue(summary, sig, run_id=run_id)
                 report.issues_created.append(issue.number)
@@ -184,7 +238,13 @@ class DevOpsAgent:
     async def _discover_failing_jobs(
         self, event_payload: dict[str, Any] | None
     ) -> list[FailureSummary]:
-        """Return FailureSummary objects for each failed CI job on the default branch."""
+        """Return FailureSummary objects for each failed CI job on the default branch.
+
+        Each summary carries ``head_sha`` populated from the workflow_run
+        event (or the default branch HEAD in the fallback path) so the
+        caller can route a fix request onto the owning PR when one
+        exists.
+        """
         summaries: list[FailureSummary] = []
 
         # If triggered by a workflow_run event, use its data directly
@@ -196,12 +256,13 @@ class DevOpsAgent:
                 return []
 
             run_id = run["id"]
+            head_sha = run.get("head_sha") or run.get("head_commit", {}).get("id")
             jobs = await self._get_failed_jobs_for_run(run_id)
             for job in jobs:
                 log = await self._fetch_job_log(job["id"])
-                summaries.append(
-                    analyze_job_log(job["name"], job.get("conclusion", "failure"), log)
-                )
+                summary = analyze_job_log(job["name"], job.get("conclusion", "failure"), log)
+                summary.head_sha = head_sha
+                summaries.append(summary)
             return summaries
 
         # Fallback: inspect the latest check-runs on the default branch HEAD
@@ -218,7 +279,9 @@ class DevOpsAgent:
         for cr in failed:
             # We don't have full logs via check-run endpoint, build from output fields
             log_text = "\n".join(filter(None, [cr.output_title, cr.output_summary]))
-            summaries.append(analyze_job_log(cr.name, cr.conclusion or "failure", log_text))
+            summary = analyze_job_log(cr.name, cr.conclusion or "failure", log_text)
+            summary.head_sha = sha
+            summaries.append(summary)
 
         return summaries
 
@@ -263,6 +326,58 @@ class DevOpsAgent:
         return await self._issues.run_id_tracked(
             run_id, [BUILD_FAILURE_LABEL, "caretaker:self-heal"]
         )
+
+    async def _find_open_pr_for_failure(self, summary: FailureSummary) -> int | None:
+        """Return the number of an open PR whose head is the failing commit.
+
+        Returns ``None`` when no SHA is known, when the lookup yields no
+        open PRs, or when more than one open PR shares the SHA (rare —
+        we prefer to fall through to the issue path rather than guess
+        which PR to comment on).
+        """
+        sha = summary.head_sha
+        if not sha:
+            return None
+        prs = await self._github.find_open_pull_requests_for_sha(self._owner, self._repo, sha)
+        # Match strictly by head_sha so a PR that merely *contains* the
+        # commit elsewhere in its history (e.g. a long-running branch
+        # that ate the commit via merge) does not get pinged. Only the
+        # PR whose HEAD is currently this commit gets the @copilot task.
+        head_match = [pr for pr in prs if pr.head_sha == sha]
+        if len(head_match) != 1:
+            return None
+        return head_match[0].number
+
+    async def _post_pr_fix_comment(
+        self,
+        pr_number: int,
+        summary: FailureSummary,
+        sig: str,
+        *,
+        run_id: int | None = None,
+    ) -> bool:
+        """Post a ``@copilot`` fix request onto the failing commit's PR.
+
+        Returns ``True`` when a new comment was posted, ``False`` when an
+        existing devops marker for the same signature was already on the
+        PR (dedup — we don't pile duplicate task comments).
+        """
+        existing_comments = await self._github.get_pr_comments(self._owner, self._repo, pr_number)
+        for comment in existing_comments:
+            if DEVOPS_PR_COMMENT_MARKER in (comment.body or "") and f"sig:{sig}" in (
+                comment.body or ""
+            ):
+                logger.info(
+                    "DevOps agent: PR #%d already has devops fix comment "
+                    "for sig %s — skipping duplicate",
+                    pr_number,
+                    sig,
+                )
+                return False
+
+        body = _build_pr_comment_body(summary, sig, run_id=run_id)
+        await self._issues.comment(pr_number, body)
+        return True
 
     async def _create_fix_issue(
         self, summary: FailureSummary, sig: str, *, run_id: int | None = None
@@ -363,6 +478,61 @@ def _failure_signature(summary: FailureSummary) -> str:
     """Stable short hash that identifies a unique failure (job + category)."""
     raw = f"{summary.job_name}:{summary.category}:{':'.join(summary.suspected_files[:3])}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def _build_pr_comment_body(
+    summary: FailureSummary,
+    sig: str,
+    *,
+    run_id: int | None = None,
+    parent_id: str | None = None,
+) -> str:
+    """Build the @copilot fix-request comment posted onto an owning PR.
+
+    Mirrors the structure of :func:`_build_issue_body` so the reviewer /
+    coding agent gets the same triage info, but framed as a PR comment
+    ("fix this PR before merge") rather than a fresh tracking issue.
+    """
+    run_id_fragment = f" run_id:{run_id}" if run_id else ""
+    causal = make_causal_marker("devops", run_id=run_id, parent=parent_id)
+    return f"""{DEVOPS_PR_COMMENT_MARKER} sig:{sig}{run_id_fragment} -->
+{causal}
+
+@copilot
+
+## CI failure on this PR's head commit
+
+{summary.to_markdown()}
+
+---
+
+<!-- caretaker:devops-pr-task -->
+TYPE: BUG_SIMPLE
+CATEGORY: {summary.category}
+JOB: {summary.job_name}
+
+**What happened:**
+The `{summary.job_name}` CI job failed on this PR's head commit
+(category: **{summary.category}**). Caretaker is routing the fix request
+here instead of opening a parallel build-failure issue so the work
+stays attached to the PR you're already reviewing.
+
+**Suspected files:**
+{chr(10).join(f"- `{f}`" for f in summary.suspected_files) or "- _not identified — see log_"}
+
+**Acceptance criteria:**
+- [ ] The `{summary.job_name}` CI job passes on this PR
+- [ ] No regressions in the rest of the test suite
+- [ ] Push the fix to this PR (do NOT open a new PR)
+
+**Instructions:**
+1. Review the log snippet and error lines above
+2. Identify the root cause in the suspected files
+3. Apply the minimal fix needed
+4. Add or update tests if a test is failing
+5. Push to this branch — caretaker will pick up the next CI run automatically
+<!-- /caretaker:devops-pr-task -->
+"""
 
 
 def _build_issue_body(
