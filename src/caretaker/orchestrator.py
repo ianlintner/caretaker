@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from caretaker import __version__
 from caretaker.agent_protocol import AgentContext
 from caretaker.agents import EVENT_AGENT_MAP, build_registry
-from caretaker.config import MaintainerConfig
+from caretaker.config import ExecutorConfig, MaintainerConfig
 from caretaker.evolution.backends.factory import build_evolution_store
 from caretaker.evolution.crystallizer import SkillCrystallizer
 from caretaker.evolution.mutator import StrategyMutator
@@ -443,7 +443,7 @@ class Orchestrator:
         github: GitHubClient,
         owner: str,
         repo: str,
-        executor_cfg: Any,
+        executor_cfg: ExecutorConfig,
     ) -> CodingAgentRegistry:
         """Construct the BYOCA registry from ``executor_cfg``.
 
@@ -484,6 +484,16 @@ class Orchestrator:
         # Extra registered agents (codex, gemini, hermes, …). These all
         # share the generic HandoffAgent surface today; Phase 2 adds
         # InlineSubprocessAgent and Phase 3 adds K8sJobAgent.
+        #
+        # Names are interpolated into HTML-comment markers
+        # (``<!-- caretaker:<name>-handoff -->``) and into the
+        # ``agent:<name>`` PR label. Anything outside the kebab/snake
+        # alphabet would either produce malformed markers (breaking the
+        # attempt-count detection) or labels GitHub rejects, so we
+        # validate up-front rather than register a broken agent.
+        import re
+
+        agent_name_pattern = re.compile(r"^[a-z][a-z0-9_-]*$")
         for name, agent_cfg in executor_cfg.agents.items():
             if not agent_cfg.enabled:
                 continue
@@ -493,6 +503,13 @@ class Orchestrator:
                 # into ``agents`` — log once and keep the typed entry.
                 logger.warning(
                     "executor.agents[%r] duplicates a typed config block; typed block wins",
+                    name,
+                )
+                continue
+            if not agent_name_pattern.match(name):
+                logger.warning(
+                    "executor.agents[%r] is not a valid agent name "
+                    "(must match ^[a-z][a-z0-9_-]*$); skipping registration",
                     name,
                 )
                 continue

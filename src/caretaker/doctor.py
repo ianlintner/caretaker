@@ -1057,10 +1057,14 @@ def check_coding_agent_config(config: MaintainerConfig) -> list[CheckResult]:
     cfg = config.executor
 
     # Names always known to the registry-construction code in
-    # ``Orchestrator._build_executor_dispatcher``. Built-ins plus any
-    # extra agents declared in ``executor.agents``. ``copilot`` / ``auto``
-    # / ``foundry`` are always-valid reserved provider values.
-    known: set[str] = {"copilot", "auto", "foundry"}
+    # ``Orchestrator._build_executor_dispatcher``. ``copilot`` and
+    # ``auto`` are reserved router-only values that don't need a
+    # corresponding enabled feature; ``foundry`` is gated on its own
+    # ``enabled`` flag so a typo'd ``provider: foundry`` without
+    # ``foundry.enabled = true`` surfaces here as a WARN row.
+    known: set[str] = {"copilot", "auto"}
+    if cfg.foundry.enabled:
+        known.add("foundry")
     if cfg.claude_code.enabled:
         known.add("claude_code")
     if cfg.opencode.enabled:
@@ -1074,8 +1078,10 @@ def check_coding_agent_config(config: MaintainerConfig) -> list[CheckResult]:
         # doesn't exist at all" — the first is a common misconfig where
         # the operator pasted ``provider: opencode`` but forgot
         # ``opencode.enabled: true``.
-        is_typed_disabled = (cfg.provider == "claude_code" and not cfg.claude_code.enabled) or (
-            cfg.provider == "opencode" and not cfg.opencode.enabled
+        is_typed_disabled = (
+            (cfg.provider == "claude_code" and not cfg.claude_code.enabled)
+            or (cfg.provider == "opencode" and not cfg.opencode.enabled)
+            or (cfg.provider == "foundry" and not cfg.foundry.enabled)
         )
         detail = (
             f"executor.provider={cfg.provider!r} is set but the "
@@ -1098,9 +1104,14 @@ def check_coding_agent_config(config: MaintainerConfig) -> list[CheckResult]:
             )
         )
 
-    # Validate per-PR ``complex_reviewer`` matches a known reviewer backend.
+    # Validate per-PR ``complex_reviewer`` matches a known reviewer
+    # backend. Pull the hand-off backend list from the canonical source
+    # (``handoff_reviewer.known_backends``) so adding a new backend
+    # there doesn't silently desync this check.
+    from caretaker.pr_reviewer.handoff_reviewer import known_backends
+
     pr_cfg = config.pr_reviewer
-    valid_reviewers = {"inline", "claude_code", "opencode"}
+    valid_reviewers = {"inline", *known_backends()}
     if pr_cfg.complex_reviewer not in valid_reviewers:
         rows.append(
             CheckResult(

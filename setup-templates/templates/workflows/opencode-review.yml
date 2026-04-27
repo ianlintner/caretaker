@@ -52,6 +52,11 @@ jobs:
         id: opencode-review
         if: steps.preflight.outputs.opencode_available == 'true'
         continue-on-error: true
+        # Pinning to ``@latest`` is convenient but a supply-chain risk —
+        # any compromise of the upstream tag affects this workflow on the
+        # next run. Recommend pinning to a specific release tag (e.g.
+        # ``sst/opencode/github@v0.1.0``) or commit SHA before relying on
+        # this in production.
         uses: sst/opencode/github@latest
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

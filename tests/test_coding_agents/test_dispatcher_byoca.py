@@ -151,3 +151,77 @@ async def test_opencode_disabled_falls_to_copilot_when_named() -> None:
     assert route.outcome == RouteOutcome.COPILOT
     copilot.post_task.assert_awaited_once()
     agent.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_provider_picks_first_registered_agent() -> None:
+    """``auto`` with multiple agents picks the first in registration order.
+
+    Documents the single-shot fallthrough behaviour: ``_run_agent``
+    already falls back to Copilot internally on ESCALATED/FAILED, so a
+    real chain through every enabled agent would require a deeper
+    refactor (Phase 2). For now the contract is: try one custom agent,
+    then Copilot.
+    """
+    cfg = ExecutorConfig(
+        provider="auto",
+        foundry=FoundryExecutorConfig(enabled=False),
+        opencode=OpenCodeExecutorConfig(enabled=True),
+    )
+    copilot = MagicMock()
+    copilot.post_task = AsyncMock(return_value=_comment())
+    registry = CodingAgentRegistry()
+
+    # Register two agents — opencode first (registration order matters).
+    opencode_agent = MagicMock(spec=OpenCodeAgent)
+    opencode_agent.name = "opencode"
+    opencode_agent.enabled = True
+    opencode_agent.run = AsyncMock(
+        return_value=ExecutorResult(
+            outcome=ExecutorOutcome.COMPLETED, reason="dispatched", comment_id=1
+        )
+    )
+    registry.register(opencode_agent)
+
+    second = MagicMock()
+    second.name = "claude_code"
+    second.enabled = True
+    second.run = AsyncMock(
+        return_value=ExecutorResult(
+            outcome=ExecutorOutcome.COMPLETED, reason="dispatched", comment_id=2
+        )
+    )
+    registry.register(second)
+
+    dispatcher = ExecutorDispatcher(
+        config=cfg,
+        foundry_executor=None,
+        copilot_protocol=copilot,
+        registry=registry,
+    )
+    route = await dispatcher.route(pr=_pr(), copilot_task=_copilot_task())
+    # First-registered (opencode) wins; the second agent is not called.
+    assert route.outcome == RouteOutcome.CUSTOM_AGENT
+    assert route.agent_name == "opencode"
+    opencode_agent.run.assert_awaited_once()
+    second.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_custom_label_with_byoca_provider_routes_to_provider() -> None:
+    """Legacy ``agent:custom`` resolves to the configured provider.
+
+    When ``provider`` names a registered BYOCA agent (opencode), the
+    ``agent:custom`` deprecated alias should still route to it rather
+    than falling through to Copilot. New code should use
+    ``agent:opencode`` directly.
+    """
+    dispatcher, copilot, agent = _build(provider="opencode")
+    route = await dispatcher.route(
+        pr=_pr(labels=["agent:custom"]),
+        copilot_task=_copilot_task(),
+    )
+    assert route.outcome == RouteOutcome.CUSTOM_AGENT
+    assert route.agent_name == "opencode"
+    agent.run.assert_awaited_once()
+    copilot.post_task.assert_not_called()

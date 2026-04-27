@@ -186,9 +186,16 @@ class ExecutorDispatcher:
 
             registry = _Registry()
             if claude_code_executor is not None:
-                # The legacy parameter pinned this to the claude_code
-                # agent — pin the name/enabled so a bare MagicMock works
-                # as a stand-in.
+                # NOTE: this branch *mutates the caller's object* so a
+                # bare ``MagicMock()`` (which is what every legacy test
+                # passes) satisfies the registry's ``name`` / ``enabled``
+                # contract. Real ``ClaudeCodeAgent`` instances already
+                # carry the correct values so the assignments are no-ops
+                # on them. The mutation only matters for test-only mocks
+                # and is bounded to the deprecation window — production
+                # callers should switch to the ``registry=`` argument
+                # which avoids the in-place mutation entirely. See
+                # CHANGELOG / UPGRADE_GUIDE for the deprecation timeline.
                 with contextlib.suppress(Exception):
                     claude_code_executor.name = "claude_code"  # type: ignore[attr-defined]
                 with contextlib.suppress(Exception):
@@ -312,15 +319,22 @@ class ExecutorDispatcher:
                 return await self._run_foundry(
                     pr, copilot_task, effective_task, reason="auto: foundry eligible"
                 )
-            # Foundry ineligible — try registered custom agents (Claude
-            # Code, opencode, …) in registration order before Copilot.
-            for agent in self._registry.enabled():
+            # Foundry ineligible — pick the first enabled hand-off agent
+            # in registration order. ``_run_agent`` already falls back to
+            # Copilot on ESCALATED / FAILED, so a real chain through
+            # multiple custom agents would require restructuring that
+            # method to not bail to Copilot internally. Phase 1 keeps the
+            # legacy single-shot behaviour (Claude Code was always tried
+            # alone here) and operators can still target a specific agent
+            # via the ``agent:<name>`` PR label.
+            primary = next(iter(self._registry.enabled()), None)
+            if primary is not None:
                 return await self._run_agent(
-                    agent.name,
+                    primary.name,
                     pr,
                     copilot_task,
                     effective_task,
-                    reason=f"auto: foundry ineligible, {agent.name} eligible",
+                    reason=f"auto: foundry ineligible, {primary.name} eligible",
                 )
             return await self._post_copilot(
                 pr, copilot_task, reason="auto: no custom agent eligible"
@@ -372,10 +386,13 @@ class ExecutorDispatcher:
             return await self._run_foundry(
                 pr, copilot_task, effective_task, reason="agent:custom label"
             )
-        # Last resort: first enabled registered agent.
-        for agent in self._registry.enabled():
+        # Last resort: first enabled registered agent in registration
+        # order. ``agent:custom`` is the deprecated alias — operators
+        # who want a specific agent should use ``agent:<name>``.
+        primary = next(iter(self._registry.enabled()), None)
+        if primary is not None:
             return await self._run_agent(
-                agent.name, pr, copilot_task, effective_task, reason="agent:custom label"
+                primary.name, pr, copilot_task, effective_task, reason="agent:custom label"
             )
         return await self._post_copilot(
             pr, copilot_task, reason="agent:custom label but nothing eligible", is_fallback=True

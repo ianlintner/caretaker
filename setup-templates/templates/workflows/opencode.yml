@@ -44,6 +44,11 @@ jobs:
           fetch-depth: 1
 
       - name: Run opencode
+        # Pinning to ``@latest`` is convenient but a supply-chain risk —
+        # any compromise of the upstream tag affects this workflow on the
+        # next run. Recommend pinning to a specific release tag (e.g.
+        # ``sst/opencode/github@v0.1.0``) or commit SHA before relying on
+        # this in production.
         uses: sst/opencode/github@latest
         env:
           # Pick whichever provider keys this repo has configured. opencode
