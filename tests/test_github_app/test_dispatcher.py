@@ -432,3 +432,193 @@ async def test_dispatch_in_background_drops_when_in_flight_cap_reached(
     # The done callback runs on the next event-loop tick.
     await asyncio.sleep(0)
     assert in_flight_count() == starting
+
+
+# ── comment gate (self-echo / human-intent) ──────────────────────────
+
+
+def _make_comment_parsed(
+    *,
+    body: str,
+    actor: str,
+    event: str = "issue_comment",
+    delivery: str = "00000000-0000-0000-0000-000000aaaa01",
+) -> ParsedWebhook:
+    """ParsedWebhook with a realistic ``issue_comment`` payload shape."""
+    return ParsedWebhook(
+        event_type=event,
+        delivery_id=delivery,
+        action="created",
+        installation_id=42,
+        repository_full_name="ianlintner/caretaker",
+        payload={
+            "action": "created",
+            "comment": {"body": body, "user": {"login": actor}},
+            "sender": {"login": actor},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_echo_short_circuits_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caretaker's own bot-authored comment with the marker → skip.
+
+    No agents resolve, no factory build, no runner call. The result
+    envelope carries ``outcome="self_echo"`` so operators can see it on
+    the metric and structured log.
+    """
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "advise")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    parsed = _make_comment_parsed(
+        body="Caretaker review: LGTM\n<!-- caretaker:review-result -->",
+        actor="caretaker[bot]",
+    )
+    result = await dispatcher.dispatch(parsed)
+
+    assert result.outcome == "self_echo"
+    # Critically: no agent ran, no installation token was minted.
+    assert factory.builds == []
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_human_intent_proceeds_in_advise_and_emits_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``@caretaker take this over`` from a human → agents still run,
+    but a structured ``webhook gate outcome=human_intent`` log line
+    fires so operators can confirm the trigger landed."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "advise")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"issue": "success", "pr": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    parsed = _make_comment_parsed(
+        body="@caretaker take this over",
+        actor="alice",
+    )
+
+    with caplog.at_level("INFO", logger="caretaker.github_app.dispatcher"):
+        result = await dispatcher.dispatch(parsed)
+
+    # Underlying dispatch ran agents normally.
+    assert result.outcome == "active"
+    assert runner.calls == ["issue", "pr"]
+    # Plus the gate logged its verdict — operators grep this in production.
+    gate_lines = [
+        r.message for r in caplog.records if "webhook gate outcome=human_intent" in r.message
+    ]
+    assert len(gate_lines) == 1
+
+
+@pytest.mark.asyncio
+async def test_advise_mode_no_intent_proceeds_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A regular PR comment (no @caretaker) in advise mode dispatches
+    agents exactly as before — the gate is purely additive."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "advise")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"issue": "success", "pr": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    parsed = _make_comment_parsed(body="LGTM, merging soon", actor="alice")
+    result = await dispatcher.dispatch(parsed)
+
+    assert result.outcome == "active"
+    assert runner.calls == ["issue", "pr"]
+
+
+@pytest.mark.asyncio
+async def test_enforce_mode_drops_comments_without_explicit_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In enforce mode, plain comments don't dispatch agents at all —
+    only ``@caretaker``/``/caretaker`` mentions do."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "enforce")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    parsed = _make_comment_parsed(body="LGTM, merging soon", actor="alice")
+    result = await dispatcher.dispatch(parsed)
+
+    assert result.outcome == "no_human_intent"
+    assert factory.builds == []
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_off_mode_disables_gate_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CARETAKER_WEBHOOK_COMMENT_GATING=off`` reverts to legacy: even
+    self-echoes dispatch agents (which then no-op via their own marker
+    checks). Provides an instant rollback knob if the gate misbehaves."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "off")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"issue": "success", "pr": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    parsed = _make_comment_parsed(
+        body="LGTM <!-- caretaker:review-result -->",
+        actor="caretaker[bot]",
+    )
+    result = await dispatcher.dispatch(parsed)
+
+    # off mode: gate is bypassed → agents run as today.
+    assert result.outcome == "active"
+    assert runner.calls == ["issue", "pr"]
+
+
+@pytest.mark.asyncio
+async def test_non_comment_event_unaffected_by_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pull_request.opened`` is state-driven; the gate must never
+    short-circuit it even in enforce mode."""
+    monkeypatch.setenv("CARETAKER_WEBHOOK_COMMENT_GATING", "enforce")
+
+    factory = _FakeFactory()
+    runner = _RecordingRunner(outcomes={"pr": "success", "pr-reviewer": "success"})
+    dispatcher = WebhookDispatcher(
+        mode=DispatchMode.ACTIVE,
+        context_factory=factory,  # type: ignore[arg-type]
+        agent_runner=runner,  # type: ignore[arg-type]
+    )
+
+    result = await dispatcher.dispatch(_make_parsed(event="pull_request"))
+
+    assert result.outcome == "active"
+    assert runner.calls == ["pr", "pr-reviewer"]
