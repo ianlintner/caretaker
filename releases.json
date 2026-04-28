@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.26.1",
+      "min_compatible": "0.26.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.26.1 -->\n\n## What's Changed\n### Other Changes\n* ci(deploy-mcp): use replace --force for the agent-worker Job by @ianlintner in https://github.com/ianlintner/caretaker/pull/635\n* chore: add v0.26.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/633\n* feat(github-app): pre-dispatch comment gate for self-echo + @caretaker triggers by @ianlintner in https://github.com/ianlintner/caretaker/pull/634\n* fix(setup-templates): drop pip cache from thin maintainer workflow by @ianlintner in https://github.com/ianlintner/caretaker/pull/636\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.26.0...v0.26.1",
+      "breaking": false
+    },
+    {
       "version": "0.26.0",
       "min_compatible": "0.25.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.0",
