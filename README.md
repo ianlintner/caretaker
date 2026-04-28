@@ -2,9 +2,9 @@
 
 Autonomous GitHub repository management powered by Copilot and github app.
 
-Documentation: https://ianlintner.github.io/caretaker/
+<img width="100" alt="Caretaker Avatar" src="https://github.com/user-attachments/assets/fb236484-2b83-41c6-b836-ec6f2d378b46" />
 
-<img width="450" alt="Gemini_Generated_Image_544abh544abh544a" src="https://github.com/user-attachments/assets/abd77a15-aa7f-41d3-b56c-ff8ec7f89542" />
+Documentation: https://ianlintner.github.io/caretaker/
 
 **One issue. No CLI. No tooling.** Paste a setup issue into your repo, assign it to `@copilot`, walk away. Your repo is now autonomously maintained.
 
