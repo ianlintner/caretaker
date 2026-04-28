@@ -58,11 +58,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install caretaker (thin client only)
         run: |
-          pip install --quiet -e .
+          # Match the published-template form so dogfood validates the
+          # exact path consumer repos run. PyPI dist name is
+          # "caretaker-github"; the console script is `caretaker`.
+          pip install --quiet "caretaker-github"
 
       - name: Stream a backend-executed run
         run: |
