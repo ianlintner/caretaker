@@ -11,7 +11,6 @@ boundary so caretaker itself stays under its own licence.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
@@ -19,6 +18,7 @@ import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 from caretaker.pr_reviewer.handoff_reviewer import (
     PR_AGENT_REVIEW_MARKER,
     HandoffReviewerSpec,
@@ -26,8 +26,6 @@ from caretaker.pr_reviewer.handoff_reviewer import (
 from caretaker.pr_reviewer.inline_reviewer import InlineReviewComment, ReviewResult
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from caretaker.config import PRAgentBackendConfig
 
 logger = logging.getLogger(__name__)
@@ -44,32 +42,6 @@ class PRAgentRawResult:
     stdout: str
     stderr: str
     returncode: int
-
-
-async def _stream_lines(
-    stream: asyncio.StreamReader | None,
-    *,
-    log: Callable[[str], None],
-) -> str:
-    """Drain ``stream`` line-by-line, log each line, return the full text.
-
-    Streaming (vs ``proc.communicate()``) lets pr-agent's progress
-    markers — "fetching diff", "calling LLM", "writing review" — show
-    up live in caretaker's GH Actions job log instead of appearing in
-    one batch after the subprocess exits. The accumulated text is still
-    returned so the caller can parse the full review.
-    """
-    if stream is None:
-        return ""
-    chunks: list[str] = []
-    while True:
-        line_bytes = await stream.readline()
-        if not line_bytes:
-            break
-        line = line_bytes.decode("utf-8", errors="replace")
-        chunks.append(line)
-        log(line.rstrip("\n"))
-    return "".join(chunks)
 
 
 async def run_pr_agent(
@@ -118,30 +90,14 @@ async def run_pr_agent(
     except FileNotFoundError as exc:
         raise PRAgentInvocationError(f"pr-agent CLI not executable: {exc}") from exc
 
-    stdout_task = asyncio.create_task(
-        _stream_lines(proc.stdout, log=lambda line: logger.info("pr-agent | %s", line))
-    )
-    stderr_task = asyncio.create_task(
-        _stream_lines(proc.stderr, log=lambda line: logger.warning("pr-agent! %s", line))
-    )
-
     try:
-        stdout, stderr = await asyncio.wait_for(
-            asyncio.gather(stdout_task, stderr_task),
-            timeout=timeout_seconds,
+        stdout, stderr = await stream_subprocess_output(
+            proc,
+            timeout_seconds=timeout_seconds,
+            stdout_log=lambda line: logger.info("pr-agent | %s", line),
+            stderr_log=lambda line: logger.warning("pr-agent! %s", line),
         )
-        await proc.wait()
     except TimeoutError as exc:
-        proc.kill()
-        # Drain so the subprocess exits cleanly and our reader tasks
-        # don't leak. Best-effort — if cleanup fails we still want the
-        # original timeout error to propagate.
-        for task in (stdout_task, stderr_task):
-            task.cancel()
-        with contextlib.suppress(Exception):
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-        with contextlib.suppress(Exception):
-            await proc.wait()
         raise PRAgentInvocationError(
             f"pr-agent timed out after {timeout_seconds}s on {pr_url}"
         ) from exc
