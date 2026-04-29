@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_HANDLED_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
 
+# Sentinel passed to local-subprocess runners that have no per-backend
+# config block yet (e.g. the greptile stub). Using a frozen empty
+# dataclass instance — not ``None`` — so runners can ``getattr`` safely
+# while we add config blocks one backend at a time.
+_EMPTY_BACKEND_CONFIG = type("_EmptyBackendConfig", (), {})()
+
 
 @dataclass
 class _PRReviewReport:
@@ -270,7 +276,7 @@ class PRReviewerAgent(BaseAgent):
                     "pr-reviewer: LLM unavailable for inline review of #%d, falling back",
                     pr_number,
                 )
-                decision = decision  # fall through to claude-code below
+                # Fall through to the hand-off path below.
             else:
                 from caretaker.llm.claude import StructuredCompleteError
 
@@ -329,9 +335,9 @@ class PRReviewerAgent(BaseAgent):
                     return
 
         # Hand-off path — backend chosen by ``complex_reviewer`` (Claude
-        # Code, opencode, …). Falls back to claude_code if the configured
-        # backend isn't recognized so misconfiguration doesn't silently
-        # skip review entirely.
+        # Code, opencode, pr_agent, …). Falls back to claude_code if the
+        # configured backend isn't recognized or isn't enabled so a
+        # misconfiguration doesn't silently skip review entirely.
         backend = decision.backend or cfg.complex_reviewer or "claude_code"
         if backend not in handoff_reviewer.known_backends():
             logger.warning(
@@ -341,6 +347,29 @@ class PRReviewerAgent(BaseAgent):
                 ", ".join(handoff_reviewer.known_backends()),
             )
             backend = "claude_code"
+        if cfg.enabled_backends and backend not in cfg.enabled_backends:
+            logger.warning(
+                "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
+                "falling back to claude_code",
+                backend,
+                cfg.enabled_backends,
+            )
+            backend = "claude_code"
+
+        spec = handoff_reviewer.get_spec(backend)
+        if spec.invocation == "local_subprocess":
+            await self._run_local_subprocess_backend(
+                backend=backend,
+                spec=spec,
+                pr=pr,
+                pr_number=pr_number,
+                owner=owner,
+                repo=repo,
+                report=report,
+                routing_reason=decision.reason,
+            )
+            return
+
         success = await handoff_reviewer.dispatch(
             backend=backend,
             github=self._ctx.github,
@@ -354,6 +383,126 @@ class PRReviewerAgent(BaseAgent):
             report.dispatched.append(pr_number)
         else:
             report.errors.append(f"{backend} dispatch failed for #{pr_number}")
+
+    async def _run_local_subprocess_backend(
+        self,
+        *,
+        backend: str,
+        spec: handoff_reviewer.HandoffReviewerSpec,
+        pr: dict[str, Any],
+        pr_number: int,
+        owner: str,
+        repo: str,
+        report: _PRReviewReport,
+        routing_reason: str,
+    ) -> None:
+        """Run a local-subprocess backend (pr_agent, greptile) and post the review.
+
+        Unlike the comment-trigger path, the review is produced
+        synchronously by caretaker itself, so we post the formal Reviews
+        API entry directly rather than waiting for a cross-cycle harvest.
+        Dispatch failures fall back to a regular comment so the operator
+        sees what went wrong without losing the PR's review slot.
+        """
+        cfg = self._ctx.config.pr_reviewer
+        commit_sha = (pr.get("head") or {}).get("sha", "")
+        if not commit_sha:
+            logger.warning(
+                "pr-reviewer(%s): no head SHA on #%d; cannot post review", backend, pr_number
+            )
+            report.skipped.append(pr_number)
+            return
+
+        if spec.runner is None:
+            logger.error(
+                "pr-reviewer(%s): spec marked local_subprocess but runner is None; skipping #%d",
+                backend,
+                pr_number,
+            )
+            report.errors.append(f"{backend} runner missing for #{pr_number}")
+            return
+
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        backend_config = self._resolve_local_backend_config(backend)
+
+        try:
+            review_result = await spec.runner(pr_url=pr_url, config=backend_config)
+        except Exception as exc:  # noqa: BLE001 — we always want to log + fall back
+            logger.warning(
+                "pr-reviewer(%s): runner failed on %s/%s#%d: %s",
+                backend,
+                owner,
+                repo,
+                pr_number,
+                exc,
+            )
+            try:
+                await self._ctx.github.upsert_issue_comment(
+                    owner,
+                    repo,
+                    pr_number,
+                    marker=spec.marker,
+                    body=(
+                        f"{spec.marker}\n\n"
+                        f"caretaker tried to run the **{backend}** review backend "
+                        f"and it failed: `{exc}`. The PR is unreviewed by this backend; "
+                        "consider re-running or switching `pr_reviewer.complex_reviewer`."
+                    ),
+                )
+            except Exception as post_exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "pr-reviewer(%s): also failed to post failure note: %s", backend, post_exc
+                )
+            report.errors.append(f"{backend} runner failed for #{pr_number}: {exc}")
+            return
+
+        try:
+            await post_review(
+                github=self._ctx.github,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                commit_sha=commit_sha,
+                result=review_result,
+                post_inline_comments=cfg.post_inline_comments,
+                force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            logger.warning(
+                "pr-reviewer(%s): post_review failed on %s/%s#%d: %s",
+                backend,
+                owner,
+                repo,
+                pr_number,
+                exc,
+            )
+            report.errors.append(f"{backend} post_review failed for #{pr_number}: {exc}")
+            return
+
+        try:
+            reviewed_label = "caretaker:reviewed"
+            await self._ctx.github.ensure_label(
+                owner, repo, reviewed_label, color="0075ca", description="Reviewed by caretaker"
+            )
+            await self._ctx.github.add_labels(owner, repo, pr_number, [reviewed_label])
+        except Exception as exc:  # noqa: BLE001 — best-effort, don't drop the review
+            logger.warning(
+                "pr-reviewer(%s): posted review on #%d but failed to apply reviewed label: %s",
+                backend,
+                pr_number,
+                exc,
+            )
+        report.reviewed.append(pr_number)
+
+    def _resolve_local_backend_config(self, backend: str) -> Any:
+        """Return the per-backend config object passed to the runner.
+
+        Convention: a backend named ``foo_bar`` looks up
+        ``PRReviewerConfig.foo_bar``. Stub backends without a config
+        block get an empty namespace so their runner can raise
+        ``NotImplementedError`` cleanly without a missing-attribute.
+        """
+        return getattr(self._ctx.config.pr_reviewer, backend, _EMPTY_BACKEND_CONFIG)
 
     async def _route_via_shadow(
         self,

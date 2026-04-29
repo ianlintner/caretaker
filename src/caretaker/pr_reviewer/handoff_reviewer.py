@@ -13,12 +13,14 @@ own trigger).
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from caretaker.config import PRReviewerConfig
     from caretaker.github_client.api import GitHubClient
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,19 @@ logger = logging.getLogger(__name__)
 # different agent without confusion.
 CLAUDE_CODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-handoff -->"
 OPENCODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-handoff -->"
+PR_AGENT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-pr-agent-handoff -->"
+CODERABBIT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-coderabbit-handoff -->"
+GREPTILE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-greptile-handoff -->"
+CLAUDE_CODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-claude-code-local-handoff -->"
+
+# Invocation models a backend can use:
+#   - ``comment_trigger``: caretaker labels the PR + posts a mention
+#     comment. An external action/agent picks it up and replies. The
+#     response is harvested next cycle by ``handoff_review_consumer``.
+#   - ``local_subprocess``: caretaker runs the backend itself (CLI or
+#     library call) and posts the formal review directly via
+#     ``post_review`` — no cross-cycle harvest, no external trigger.
+InvocationMode = Literal["comment_trigger", "local_subprocess"]
 
 # Marker the agent's reply must include for caretaker to harvest the
 # review payload and re-post it as a formal PR review (Reviews tab) via
@@ -38,15 +53,38 @@ OPENCODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-handoff -->"
 REVIEW_RESULT_MARKER = "<!-- caretaker:review-result -->"
 
 
+# Runner signature for ``local_subprocess`` backends. Receives the PR
+# coordinates plus backend-specific config; returns a ``ReviewResult``
+# ready for ``post_review``. The runner is responsible for invoking the
+# external tool, capturing its output, and shaping the response — any
+# subprocess errors should be raised so the agent can log + fall back.
+LocalRunner = Callable[..., Awaitable["ReviewResult"]]
+
+
 @dataclass(frozen=True)
 class HandoffReviewerSpec:
-    """Per-backend strings used to compose the hand-off comment."""
+    """Per-backend metadata for the PR-reviewer hand-off layer.
 
-    backend: str  # "claude_code" | "opencode" | …
+    Two invocation modes are supported (see :data:`InvocationMode`):
+
+    * ``comment_trigger`` (default): caretaker posts a labelled comment
+      and waits for an upstream agent (Claude Code, opencode) to reply.
+      The reply is harvested by ``handoff_review_consumer`` next cycle.
+      Only ``marker``, ``label_color``, ``label_description``, and the
+      ``upstream_action_name`` are required.
+
+    * ``local_subprocess``: caretaker runs the tool itself (e.g. the
+      pr-agent CLI). ``runner`` is the async callable that produces a
+      ``ReviewResult`` to be posted directly via ``post_review``.
+    """
+
+    backend: str  # "claude_code" | "opencode" | "pr_agent" | …
     marker: str
     upstream_action_name: str  # human-readable name for the closing note
     label_color: str
     label_description: str
+    invocation: InvocationMode = "comment_trigger"
+    runner: LocalRunner | None = None
 
 
 _CLAUDE_CODE = HandoffReviewerSpec(
@@ -55,6 +93,7 @@ _CLAUDE_CODE = HandoffReviewerSpec(
     upstream_action_name="anthropics/claude-code-action",
     label_color="7057ff",
     label_description="claude-code-action trigger",
+    invocation="comment_trigger",
 )
 _OPENCODE = HandoffReviewerSpec(
     backend="opencode",
@@ -62,12 +101,37 @@ _OPENCODE = HandoffReviewerSpec(
     upstream_action_name="sst/opencode/github",
     label_color="d04a02",
     label_description="opencode review trigger",
+    invocation="comment_trigger",
 )
 
-_SPECS: dict[str, HandoffReviewerSpec] = {
-    _CLAUDE_CODE.backend: _CLAUDE_CODE,
-    _OPENCODE.backend: _OPENCODE,
-}
+
+def _build_specs() -> dict[str, HandoffReviewerSpec]:
+    """Assemble the registry once, at module import.
+
+    Imports happen inside the function so the ``backends`` package can
+    depend on this module's marker constants without a circular import,
+    and so a future optional backend can be skipped on ImportError
+    without breaking the rest of the agent.
+    """
+    specs: dict[str, HandoffReviewerSpec] = {
+        _CLAUDE_CODE.backend: _CLAUDE_CODE,
+        _OPENCODE.backend: _OPENCODE,
+    }
+    # ``backends`` package depends on this module's marker constants, so
+    # importing it at module top-level would create a circular import.
+    from caretaker.pr_reviewer.backends import (
+        claude_code_local,
+        coderabbit,
+        greptile,
+        pr_agent,
+    )
+
+    for spec in (pr_agent.SPEC, coderabbit.SPEC, greptile.SPEC, claude_code_local.SPEC):
+        specs[spec.backend] = spec
+    return specs
+
+
+_SPECS: dict[str, HandoffReviewerSpec] = _build_specs()
 
 
 def _build_handoff_comment(
@@ -122,26 +186,49 @@ def _build_handoff_comment(
     return "\n".join(lines)
 
 
-def _resolve(backend: str, config: PRReviewerConfig) -> tuple[HandoffReviewerSpec, str, str]:
-    """Return the (spec, label, mention) tuple for a given backend.
-
-    Reads the per-backend label/mention from :class:`PRReviewerConfig`
-    (``claude_code_label`` / ``opencode_label`` / etc.), falling back to
-    the agent's spec defaults when the operator hasn't customised them.
-    """
+def get_spec(backend: str) -> HandoffReviewerSpec:
+    """Return the registered spec for ``backend`` or raise ``ValueError``."""
     spec = _SPECS.get(backend)
     if spec is None:
         raise ValueError(
             f"Unsupported PR reviewer backend {backend!r}. Known backends: {', '.join(_SPECS)}"
         )
-    if backend == "claude_code":
-        return spec, config.claude_code_label, config.claude_code_mention
-    if backend == "opencode":
-        return spec, config.opencode_label, config.opencode_mention
-    # Future backends would extend PRReviewerConfig with their own
-    # label/mention pair; until then ``_resolve`` only knows about
-    # claude_code and opencode.
-    raise AssertionError(f"backend {backend!r} listed in _SPECS but no config mapping")
+    return spec
+
+
+# Per-backend (label, mention) pairs for ``comment_trigger`` backends.
+# ``local_subprocess`` backends don't post a mention comment so they
+# aren't keyed here. Adding a new comment_trigger backend means adding
+# both a spec entry and a row here (plus the matching ``*_label`` /
+# ``*_mention`` fields on PRReviewerConfig).
+_COMMENT_TRIGGER_LABEL_FIELDS: dict[str, tuple[str, str]] = {
+    "claude_code": ("claude_code_label", "claude_code_mention"),
+    "opencode": ("opencode_label", "opencode_mention"),
+    "coderabbit": ("coderabbit_label", "coderabbit_mention"),
+}
+
+
+def _resolve(backend: str, config: PRReviewerConfig) -> tuple[HandoffReviewerSpec, str, str]:
+    """Return the (spec, label, mention) tuple for a comment_trigger backend.
+
+    Raises ``ValueError`` for unknown backends and ``AssertionError`` if
+    a ``comment_trigger`` backend has been registered without a config
+    mapping (programming error — the spec table and field map must stay
+    in sync).
+    """
+    spec = get_spec(backend)
+    if spec.invocation != "comment_trigger":
+        raise ValueError(
+            f"backend {backend!r} uses invocation={spec.invocation!r}; "
+            "comment-trigger _resolve() does not apply"
+        )
+    label_field, mention_field = _COMMENT_TRIGGER_LABEL_FIELDS.get(backend, ("", ""))
+    if not label_field or not hasattr(config, label_field):
+        raise AssertionError(
+            f"backend {backend!r} listed in _SPECS as comment_trigger "
+            "but no PRReviewerConfig label/mention mapping"
+        )
+    return spec, getattr(config, label_field), getattr(config, mention_field)
 
 
 async def dispatch(
@@ -154,7 +241,12 @@ async def dispatch(
     config: PRReviewerConfig,
     routing_reason: str,
 ) -> bool:
-    """Apply trigger label + post hand-off comment. Returns True on success."""
+    """Apply trigger label + post hand-off comment. Returns True on success.
+
+    For comment-trigger backends only. ``local_subprocess`` backends
+    (e.g. pr_agent) are handled directly in ``PRReviewerAgent`` because
+    they post a formal review rather than a mention comment.
+    """
     try:
         spec, label, mention = _resolve(backend, config)
     except ValueError as exc:
@@ -222,10 +314,16 @@ def known_backends() -> list[str]:
 
 
 __all__ = [
+    "CLAUDE_CODE_LOCAL_REVIEW_MARKER",
     "CLAUDE_CODE_REVIEW_MARKER",
-    "OPENCODE_REVIEW_MARKER",
-    "REVIEW_RESULT_MARKER",
+    "CODERABBIT_REVIEW_MARKER",
+    "GREPTILE_REVIEW_MARKER",
     "HandoffReviewerSpec",
+    "InvocationMode",
+    "OPENCODE_REVIEW_MARKER",
+    "PR_AGENT_REVIEW_MARKER",
+    "REVIEW_RESULT_MARKER",
     "dispatch",
+    "get_spec",
     "known_backends",
 ]
