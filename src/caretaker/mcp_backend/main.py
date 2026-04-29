@@ -231,7 +231,7 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             from caretaker.admin import api as admin_api
             from caretaker.admin import auth as admin_auth
             from caretaker.admin.data import AdminDataAccess
-            from caretaker.config import AdminDashboardConfig
+            from caretaker.config import AdminDashboardConfig, MaintainerConfig
 
             # Build config from env vars
             config = AdminDashboardConfig(
@@ -251,10 +251,42 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             else:
                 logger.warning("CARETAKER_ADMIN_OIDC_ISSUER_URL not set — admin auth disabled")
 
+            # ── InsightStore (skills) ──────────────────────────────────
+            # Build an InsightStore for the admin dashboard. Without
+            # this, the skills block in GraphBuilder.full_sync() is
+            # skipped (builder.py:407-443) and fleet :GlobalSkill
+            # promotion has no handle to pull SOP text from.
+            #
+            # The store is configured from the repo's maintainer config
+            # (same YAML the orchestrator uses).  When the file is
+            # unavailable or evolution is disabled by default, we force
+            # ``evolution.enabled = True`` so the dashboard always has
+            # at least a SQLite-backed InsightStore.
+            maint_cfg_path = os.environ.get(
+                "CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml"
+            )
+            try:
+                maint_cfg = MaintainerConfig.from_yaml(maint_cfg_path)
+            except Exception:
+                maint_cfg = MaintainerConfig()
+            insight_store = None
+            try:
+                from caretaker.evolution.backends.factory import build_evolution_store
+
+                maint_cfg.evolution.enabled = True
+                insight_store = build_evolution_store(maint_cfg)
+                if insight_store:
+                    logger.info(
+                        "Admin InsightStore configured (backend=sqlite, path=%s)",
+                        maint_cfg.evolution.db_path,
+                    )
+            except Exception:
+                logger.warning("Failed to build InsightStore for admin dashboard", exc_info=True)
+
             # Initialise data access. The state store is hydrated by a
             # background task (see admin.state_loader) that polls the
             # orchestrator's per-repo tracking issue.
-            data = AdminDataAccess()
+            data = AdminDataAccess(config=maint_cfg, insight_store=insight_store)
             admin_api.configure(data)
 
             try:
@@ -285,7 +317,6 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             # off so the MCP backend doesn't need the optional
             # ``kubernetes`` Python package unless the feature is on.
             try:
-                from caretaker.config import MaintainerConfig
                 from caretaker.k8s_worker import (
                     K8sAgentLauncher,
                 )
@@ -296,13 +327,6 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
                     router as k8s_router,
                 )
 
-                maint_cfg_path = os.environ.get(
-                    "CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml"
-                )
-                try:
-                    maint_cfg = MaintainerConfig.from_yaml(maint_cfg_path)
-                except Exception:
-                    maint_cfg = MaintainerConfig()
                 worker_cfg = maint_cfg.executor.k8s_worker
                 if worker_cfg.enabled:
                     redis_client = None
