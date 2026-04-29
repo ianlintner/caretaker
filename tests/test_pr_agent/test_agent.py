@@ -2496,7 +2496,13 @@ class TestApplyMergeCommand:
         config = make_config()
         return PRAgent(github=github, owner="o", repo="r", config=config), github
 
-    def _make_comment(self, body: str, login: str = "alice", user_type: str = "User"):
+    def _make_comment(
+        self,
+        body: str,
+        login: str = "alice",
+        user_type: str = "User",
+        author_association: str = "OWNER",
+    ):
         from caretaker.github_client.models import Comment
 
         return Comment(
@@ -2504,6 +2510,7 @@ class TestApplyMergeCommand:
             user=User(login=login, id=10, type=user_type),
             body=body,
             created_at=datetime(2024, 1, 1, tzinfo=UTC),
+            author_association=author_association,
         )
 
     async def test_adds_label_on_caretaker_merge_comment(self) -> None:
@@ -2567,3 +2574,24 @@ class TestApplyMergeCommand:
         result = await agent._apply_merge_command(pr, [comment])
         assert result is True
         github.add_labels.assert_awaited_once_with("o", "r", 11, ["ship-it"])
+
+    async def test_untrusted_commenter_is_rejected(self) -> None:
+        """External contributors (CONTRIBUTOR / NONE) must not trigger the merge command."""
+        agent, github = self._make_agent()
+        pr = make_pr(number=20)
+        for assoc in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""):
+            comment = self._make_comment("@caretaker merge", author_association=assoc)
+            result = await agent._apply_merge_command(pr, [comment])
+            assert result is False, f"association {assoc!r} should be rejected"
+        github.add_labels.assert_not_awaited()
+
+    async def test_collaborator_is_trusted(self) -> None:
+        """OWNER / MEMBER / COLLABORATOR may trigger the merge command."""
+        agent, github = self._make_agent()
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            github.add_labels.reset_mock()
+            comment = self._make_comment("@caretaker merge", author_association=assoc)
+            pr_fresh = make_pr(number=21)  # label not yet present
+            result = await agent._apply_merge_command(pr_fresh, [comment])
+            assert result is True, f"association {assoc!r} should be trusted"
+            github.add_labels.assert_awaited_once()

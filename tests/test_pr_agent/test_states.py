@@ -732,6 +732,88 @@ class TestRequestReviewApprove:
         pr = make_pr(head_ref="chore/releases-json-v0.19.5")
         assert _auto_merge_allows(pr, AutoMergeConfig(maintainer_bot_prs=False)) is False
 
+    def test_caretaker_pr_auto_merge_allowed_by_default(self) -> None:
+        """_auto_merge_allows returns True for caretaker PRs (caretaker_prs defaults True)."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="claude/fix-something")
+        assert _auto_merge_allows(pr, AutoMergeConfig()) is True
+
+    def test_caretaker_pr_auto_merge_disabled_when_flag_off(self) -> None:
+        """_auto_merge_allows returns False when caretaker_prs=False."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="claude/fix-something")
+        assert _auto_merge_allows(pr, AutoMergeConfig(caretaker_prs=False)) is False
+
+    def test_caretaker_pr_does_not_fall_through_to_human_prs(self) -> None:
+        """Caretaker PRs must not fall through to the human_prs branch (which defaults False)."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.states import _auto_merge_allows  # type: ignore[attr-defined]
+
+        pr = make_pr(head_ref="claude/something")
+        # human_prs=False (default), caretaker_prs=True (default) → should allow
+        config = AutoMergeConfig(human_prs=False)
+        assert _auto_merge_allows(pr, config) is True
+
+
+# ── evaluate_readiness — automated_feedback blocker exemptions ────────
+
+
+class TestReadinessAutomatedFeedbackExemptions:
+    """Caretaker/maintainer-bot/opted-in PRs must skip automated_feedback_unaddressed."""
+
+    def _bot_review(self) -> object:
+        from caretaker.github_client.models import User
+
+        return make_review(
+            user=User(login="the-care-taker[bot]", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Looks good to me.",
+        )
+
+    def test_caretaker_pr_skips_automated_feedback_blocker(self) -> None:
+        from caretaker.pr_agent.states import evaluate_readiness
+
+        pr = make_pr(head_ref="claude/fix-something")
+        ci = evaluate_ci([make_check_run("ci")])
+        review_eval = evaluate_reviews([self._bot_review()])
+        result = evaluate_readiness(pr, ci, review_eval, PRTrackingState.CI_PASSING)
+        assert "automated_feedback_unaddressed" not in result.blockers
+
+    def test_maintainer_bot_pr_skips_automated_feedback_blocker(self) -> None:
+        from caretaker.pr_agent.states import evaluate_readiness
+
+        pr = make_pr(head_ref="chore/releases-json-v1.0.0")
+        ci = evaluate_ci([make_check_run("ci")])
+        review_eval = evaluate_reviews([self._bot_review()])
+        result = evaluate_readiness(pr, ci, review_eval, PRTrackingState.CI_PASSING)
+        assert "automated_feedback_unaddressed" not in result.blockers
+
+    def test_opted_in_pr_skips_automated_feedback_blocker(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import Label
+        from caretaker.pr_agent.states import evaluate_readiness
+
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        ci = evaluate_ci([make_check_run("ci")])
+        review_eval = evaluate_reviews([self._bot_review()])
+        result = evaluate_readiness(
+            pr, ci, review_eval, PRTrackingState.CI_PASSING, auto_merge=AutoMergeConfig()
+        )
+        assert "automated_feedback_unaddressed" not in result.blockers
+
+    def test_plain_human_pr_still_gets_automated_feedback_blocker(self) -> None:
+        from caretaker.pr_agent.states import evaluate_readiness
+
+        pr = make_pr(head_ref="feature/my-thing")
+        ci = evaluate_ci([make_check_run("ci")])
+        review_eval = evaluate_reviews([self._bot_review()])
+        result = evaluate_readiness(pr, ci, review_eval, PRTrackingState.CI_PASSING)
+        assert "automated_feedback_unaddressed" in result.blockers
+
 
 # ── Opted-in PR auto-approve and dispatch-loop prevention ────────────
 

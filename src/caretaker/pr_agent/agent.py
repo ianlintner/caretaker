@@ -70,6 +70,12 @@ _MERGE_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 
+# GitHub author_association values that indicate write/maintain/admin permissions.
+# Only these roles may trigger the @caretaker merge command — external contributors
+# (CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE) must not be able to bypass
+# human_prs=false on public repos.
+_TRUSTED_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
 
 def _readiness_verdicts_agree(a: Readiness, b: Readiness) -> bool:
     """Compare two :class:`Readiness` verdicts at the decision level.
@@ -507,14 +513,22 @@ class PRAgent:
             login = getattr(user, "login", "") if user else ""
             if login and is_automated(login):
                 continue
+            # Only honour the command from trusted collaborators (write access or above).
+            # OWNER / MEMBER / COLLABORATOR have push permissions on the repo.
+            # CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE are external — they must not
+            # be able to bypass human_prs=false by posting @caretaker merge on a public repo.
+            assoc = getattr(comment, "author_association", None) or ""
+            if assoc.upper() not in _TRUSTED_ASSOCIATIONS:
+                continue
             body = getattr(comment, "body", "") or ""
             if _MERGE_COMMAND_RE.search(body):
                 await self._github.add_labels(self._owner, self._repo, pr.number, [label])
                 logger.info(
-                    "PR #%d: applied %r label via @caretaker merge command by %s",
+                    "PR #%d: applied %r label via @caretaker merge command by %s (%s)",
                     pr.number,
                     label,
                     login,
+                    assoc,
                 )
                 return True
         return False

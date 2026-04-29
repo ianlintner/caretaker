@@ -286,6 +286,7 @@ def evaluate_readiness(
     review_eval: ReviewEvaluation,
     current_state: PRTrackingState,
     required_reviews: int = 1,
+    auto_merge: AutoMergeConfig | None = None,
 ) -> ReadinessEvaluation:
     """Evaluate PR readiness score and blockers.
 
@@ -294,6 +295,10 @@ def evaluate_readiness(
             component. When ``0`` (repo doesn't require reviews), the review
             component passes automatically and ``required_review_missing`` is not
             added as a blocker. An explicit ``changes_requested`` review still blocks.
+        auto_merge: When supplied, caretaker/maintainer-bot PRs and PRs carrying
+            the merge opt-in label skip the ``automated_feedback_unaddressed``
+            blocker — COMMENT-type bot reviews on these PRs are informational,
+            not actionable change requests.
     """
     score = 0.0
     blockers = []
@@ -317,8 +322,16 @@ def evaluate_readiness(
         if pr.has_label("caretaker:hold"):
             blockers.append("manual_hold")
 
-    # 20%: Automated feedback addressed
-    if not review_eval.has_automated_comments or current_state == PRTrackingState.FIX_REQUESTED:
+    # 20%: Automated feedback addressed.
+    # Caretaker/maintainer-bot PRs and opted-in PRs skip this blocker —
+    # COMMENT-type bot reviews on these PRs don't carry actionable change requests.
+    _am_opted_in = auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label)
+    _am_skip = _am_opted_in or pr.is_caretaker_pr or pr.is_maintainer_bot_pr
+    if (
+        not review_eval.has_automated_comments
+        or current_state == PRTrackingState.FIX_REQUESTED
+        or _am_skip
+    ):
         score += 0.20
     else:
         blockers.append("automated_feedback_unaddressed")
@@ -386,6 +399,8 @@ def _auto_merge_allows(pr: PullRequest, auto_merge: AutoMergeConfig | None) -> b
         return auto_merge.copilot_prs
     if pr.is_dependabot_pr:
         return auto_merge.dependabot_prs
+    if pr.is_caretaker_pr:
+        return auto_merge.caretaker_prs
     if pr.is_maintainer_bot_pr:
         return auto_merge.maintainer_bot_prs
     return auto_merge.human_prs
@@ -429,7 +444,7 @@ def evaluate_pr(
         bot_check_names=bot_check_names,
         bot_approval_markers=bot_approval_markers,
     )
-    readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews)
+    readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews, auto_merge)
 
     # State transitions
     if pr.merged:
