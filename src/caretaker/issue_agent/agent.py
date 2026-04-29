@@ -163,6 +163,19 @@ class IssueAgent:
                     tracked_issues[issue.number] = tracking
                     continue
 
+                # Phase 1 — triage gate: park NEW issues before dispatch.
+                # On the first encounter the issue is classified for
+                # dedup/stale checks; terminal classifications are handled
+                # immediately (duplicate/stale → close). Everything else
+                # receives a triage-summary comment, the caretaker:triaged
+                # label, and advances to TRIAGED. The coding-agent dispatch
+                # happens on the next agent cycle (Phase 2).
+                if self._config.triage_gate and tracking.state == IssueTrackingState.NEW:
+                    tracking = await self._triage_new_issue(issue, issues, tracking, report)
+                    tracking.last_checked = datetime.now(UTC)
+                    tracked_issues[issue.number] = tracking
+                    continue
+
                 classification = await self._classify(issue, issues)
                 tracking.classification = classification.value
                 report.triaged += 1
@@ -433,6 +446,94 @@ class IssueAgent:
                 return cast("int", cast("Any", pr).number)
 
         return None
+
+    async def _triage_new_issue(
+        self,
+        issue: Issue,
+        all_issues: list[Issue],
+        tracking: TrackedIssue,
+        report: IssueAgentReport,
+    ) -> TrackedIssue:
+        """Phase-1 triage gate: classify, dedup-check, and park the issue.
+
+        Terminal classifications (DUPLICATE, STALE, MAINTAINER_INTERNAL) are
+        handled immediately so obvious noise never reaches the dispatch queue.
+        Everything else gets a triage-summary comment and the
+        ``caretaker:triaged`` label, then advances to ``TRIAGED`` so the
+        next agent cycle dispatches it to a coding agent.
+        """
+        classification = await self._classify(issue, all_issues)
+        tracking.classification = classification.value
+        report.triaged += 1
+
+        if classification == IssueClassification.MAINTAINER_INTERNAL:
+            return tracking  # internal bookkeeping — leave NEW, skip silently
+
+        if classification == IssueClassification.DUPLICATE:
+            await self._issues.comment(
+                issue.number,
+                "This issue appears to be a duplicate. "
+                "If needed, please reference the original tracking issue.",
+            )
+            await self._issues.update(issue.number, state="closed")
+            tracking.state = IssueTrackingState.CLOSED
+            tracking.caretaker_closed = True
+            _mark_caretaker_touched(tracking)
+            report.closed.append(issue.number)
+            return tracking
+
+        if classification == IssueClassification.STALE:
+            await self._issues.comment(
+                issue.number,
+                "Closing as stale due to inactivity. Please reopen if this is still relevant.",
+            )
+            await self._issues.update(issue.number, state="closed")
+            tracking.state = IssueTrackingState.STALE
+            tracking.caretaker_closed = True
+            _mark_caretaker_touched(tracking)
+            report.closed.append(issue.number)
+            return tracking
+
+        # Park everything else in TRIAGED — dispatch happens on the next cycle.
+        await self._post_triage_summary(issue, classification)
+        await self._issues.add_labels(issue.number, ["caretaker:triaged"])
+        tracking.state = IssueTrackingState.TRIAGED
+        _mark_caretaker_touched(tracking)
+        return tracking
+
+    async def _post_triage_summary(
+        self,
+        issue: Issue,
+        classification: IssueClassification,
+    ) -> None:
+        """Upsert a triage-summary comment on the issue."""
+        _label_map: dict[IssueClassification, str] = {
+            IssueClassification.BUG_SIMPLE: "Bug (simple)",
+            IssueClassification.BUG_COMPLEX: "Bug (complex)",
+            IssueClassification.FEATURE_SMALL: "Feature (small)",
+            IssueClassification.FEATURE_LARGE: "Feature (large — needs human decomposition)",
+            IssueClassification.QUESTION: "Question",
+            IssueClassification.INFRA_OR_CONFIG: "Infrastructure / config",
+        }
+        classification_label = _label_map.get(classification, classification.value)
+        marker = "<!-- caretaker:triage-summary -->"
+        body = (
+            f"{marker}\n\n"
+            f"## Caretaker Triage\n\n"
+            f"**Classification:** {classification_label}\n\n"
+            f"This issue has been triaged and is queued for implementation. "
+            f"Caretaker will assign it to a coding agent on the next cycle.\n\n"
+            f"_To pause dispatch add the `caretaker:hold` label. "
+            f"To require human review before any changes land add `maintainer:breaking`._"
+        )
+        await self._github.upsert_issue_comment(
+            self._owner,
+            self._repo,
+            issue.number,
+            marker,
+            body,
+            min_seconds_between_updates=3600,
+        )
 
     async def _escalate(
         self,

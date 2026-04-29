@@ -2482,3 +2482,116 @@ class TestResyncOpenPRs:
         assert sorted(seen) == [1, 2]  # both attempted
         assert any("PR #1" in e for e in report.errors)
         assert tracked[2].readiness_score == 1.0  # PR #2 still processed
+
+
+@pytest.mark.asyncio
+class TestApplyMergeCommand:
+    """Tests for PRAgent._apply_merge_command (@caretaker merge handling)."""
+
+    def _make_agent(self, add_labels_mock=None):
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        github.add_labels = add_labels_mock or AsyncMock()
+        config = make_config()
+        return PRAgent(github=github, owner="o", repo="r", config=config), github
+
+    def _make_comment(
+        self,
+        body: str,
+        login: str = "alice",
+        user_type: str = "User",
+        author_association: str = "OWNER",
+    ):
+        from caretaker.github_client.models import Comment
+
+        return Comment(
+            id=1,
+            user=User(login=login, id=10, type=user_type),
+            body=body,
+            created_at=datetime(2024, 1, 1, tzinfo=UTC),
+            author_association=author_association,
+        )
+
+    async def test_adds_label_on_caretaker_merge_comment(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=42)
+        comment = self._make_comment("@caretaker merge")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is True
+        github.add_labels.assert_awaited_once_with("o", "r", 42, ["caretaker:merge"])
+
+    async def test_slash_caretaker_merge_also_triggers(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=7)
+        comment = self._make_comment("/caretaker merge")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is True
+        github.add_labels.assert_awaited_once()
+
+    async def test_the_care_taker_alias_triggers(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=7)
+        comment = self._make_comment("@the-care-taker merge please")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is True
+        github.add_labels.assert_awaited_once()
+
+    async def test_bot_comment_is_ignored(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=5)
+        comment = self._make_comment("@caretaker merge", login="caretaker[bot]", user_type="Bot")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is False
+        github.add_labels.assert_not_awaited()
+
+    async def test_skips_when_label_already_present(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=3, labels=[Label(name="caretaker:merge")])
+        comment = self._make_comment("@caretaker merge")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is False
+        github.add_labels.assert_not_awaited()
+
+    async def test_no_command_in_comment_returns_false(self) -> None:
+        agent, github = self._make_agent()
+        pr = make_pr(number=9)
+        comment = self._make_comment("looks good to me!")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is False
+        github.add_labels.assert_not_awaited()
+
+    async def test_custom_opt_in_label_respected(self) -> None:
+        from caretaker.config import AutoMergeConfig
+        from caretaker.pr_agent.agent import PRAgent
+
+        github = AsyncMock()
+        config = make_config()
+        config.auto_merge = AutoMergeConfig(merge_opt_in_label="ship-it")
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+        pr = make_pr(number=11)
+        comment = self._make_comment("@caretaker merge")
+        result = await agent._apply_merge_command(pr, [comment])
+        assert result is True
+        github.add_labels.assert_awaited_once_with("o", "r", 11, ["ship-it"])
+
+    async def test_untrusted_commenter_is_rejected(self) -> None:
+        """External contributors (CONTRIBUTOR / NONE) must not trigger the merge command."""
+        agent, github = self._make_agent()
+        pr = make_pr(number=20)
+        for assoc in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""):
+            comment = self._make_comment("@caretaker merge", author_association=assoc)
+            result = await agent._apply_merge_command(pr, [comment])
+            assert result is False, f"association {assoc!r} should be rejected"
+        github.add_labels.assert_not_awaited()
+
+    async def test_collaborator_is_trusted(self) -> None:
+        """OWNER / MEMBER / COLLABORATOR may trigger the merge command."""
+        agent, github = self._make_agent()
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            github.add_labels.reset_mock()
+            comment = self._make_comment("@caretaker merge", author_association=assoc)
+            pr_fresh = make_pr(number=21)  # label not yet present
+            result = await agent._apply_merge_command(pr_fresh, [comment])
+            assert result is True, f"association {assoc!r} should be trusted"
+            github.add_labels.assert_awaited_once()

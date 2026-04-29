@@ -159,3 +159,32 @@ class TestEvaluateMerge:
         config = PRAgentConfig()
         decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
         assert decision.should_merge is True
+
+    def test_human_pr_merge_opt_in_label_overrides_default(self) -> None:
+        """Human PR with the merge opt-in label should merge even when human_prs=False."""
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        config = PRAgentConfig()  # human_prs=False by default
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is True
+
+    def test_human_pr_custom_opt_in_label(self) -> None:
+        """Custom merge_opt_in_label is respected."""
+        pr = make_pr(labels=[Label(name="ship-it")])
+        config = PRAgentConfig(auto_merge=AutoMergeConfig(merge_opt_in_label="ship-it"))
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is True
+
+    def test_opt_in_label_does_not_bypass_ci_or_draft(self) -> None:
+        """merge_opt_in_label only bypasses the PR-type gate, not CI or draft checks."""
+        pr = make_pr(labels=[Label(name="caretaker:merge")], draft=True)
+        config = PRAgentConfig()
+        decision = evaluate_merge(pr, _ci_passing(), _reviews_approved(), config)
+        assert decision.should_merge is False
+        assert any("draft" in b for b in decision.blockers)
+
+    def test_opt_in_label_ci_still_required(self) -> None:
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        config = PRAgentConfig()
+        decision = evaluate_merge(pr, _ci_failing(), _reviews_approved(), config)
+        assert decision.should_merge is False
+        assert any("CI status" in b for b in decision.blockers)

@@ -1693,4 +1693,5 @@ class GitHubClient:
             body=data.get("body") or "",
             created_at=data["created_at"],
             updated_at=data.get("updated_at"),
+            author_association=data.get("author_association"),
         )

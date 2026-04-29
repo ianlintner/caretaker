@@ -63,6 +63,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Matches "@caretaker merge", "@the-care-taker merge", or "/caretaker merge"
+# posted by a human (non-bot) commenter as an explicit opt-in for auto-merge.
+_MERGE_COMMAND_RE = re.compile(
+    r"(?:@(?:the-care-taker|caretaker)|/caretaker)\s+merge\b",
+    re.IGNORECASE,
+)
+
+# GitHub author_association values that indicate write/maintain/admin permissions.
+# Only these roles may trigger the @caretaker merge command — external contributors
+# (CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE) must not be able to bypass
+# human_prs=false on public repos.
+_TRUSTED_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
 
 def _readiness_verdicts_agree(a: Readiness, b: Readiness) -> bool:
     """Compare two :class:`Readiness` verdicts at the decision level.
@@ -481,6 +494,45 @@ class PRAgent:
             f"``{action}``. {verdict.explanation}"
         )
 
+    async def _apply_merge_command(
+        self,
+        pr: PullRequest,
+        issue_comments: list[Any],
+    ) -> bool:
+        """Add the merge opt-in label when a human posts ``@caretaker merge``.
+
+        Returns True when the label was freshly applied so the caller can
+        re-fetch the PR and pick up the updated label list before evaluation.
+        Skips silently when the label is already present.
+        """
+        label = self._config.auto_merge.merge_opt_in_label
+        if pr.has_label(label):
+            return False
+        for comment in issue_comments:
+            user = getattr(comment, "user", None)
+            login = getattr(user, "login", "") if user else ""
+            if login and is_automated(login):
+                continue
+            # Only honour the command from trusted collaborators (write access or above).
+            # OWNER / MEMBER / COLLABORATOR have push permissions on the repo.
+            # CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE are external — they must not
+            # be able to bypass human_prs=false by posting @caretaker merge on a public repo.
+            assoc = getattr(comment, "author_association", None) or ""
+            if assoc.upper() not in _TRUSTED_ASSOCIATIONS:
+                continue
+            body = getattr(comment, "body", "") or ""
+            if _MERGE_COMMAND_RE.search(body):
+                await self._github.add_labels(self._owner, self._repo, pr.number, [label])
+                logger.info(
+                    "PR #%d: applied %r label via @caretaker merge command by %s (%s)",
+                    pr.number,
+                    label,
+                    login,
+                    assoc,
+                )
+                return True
+        return False
+
     async def _process_pr(
         self, pr: PullRequest, tracking: TrackedPR, report: PRAgentReport
     ) -> TrackedPR:
@@ -507,6 +559,14 @@ class PRAgent:
                 type(exc).__name__,
                 exc,
             )
+
+        # Handle @caretaker merge command: add the opt-in label so the
+        # evaluation below sees it. Re-fetch the PR to pick up the updated
+        # label list — the extra API call is only made when the command fires.
+        if await self._apply_merge_command(pr, issue_comments):
+            refreshed = await self._github.get_pull_request(self._owner, self._repo, pr.number)
+            if refreshed is not None:
+                pr = refreshed
 
         # Evaluate PR state (shared by both the stuck-PR gate and the
         # main action ladder below).
@@ -1049,17 +1109,23 @@ class PRAgent:
         ``is_maintainer_bot_pr`` keys off ``chore/releases-json-*`` and
         ``chore/*`` from ``github-actions[bot]``.
         """
-        if not (
-            getattr(pr, "is_caretaker_pr", False) or getattr(pr, "is_maintainer_bot_pr", False)
-        ):
+        _is_caretaker_type = getattr(pr, "is_caretaker_pr", False) or getattr(
+            pr, "is_maintainer_bot_pr", False
+        )
+        _is_opted_in = pr.has_label(self._config.auto_merge.merge_opt_in_label)
+        if not _is_caretaker_type and not _is_opted_in:
             logger.warning(
-                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR (head_ref=%r)",
+                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR "
+                "or merge-opted-in PR (head_ref=%r)",
                 pr.number,
                 getattr(pr, "head_ref", ""),
             )
             report.waiting.append(pr.number)
             return tracking
-        if not self._config.review.auto_approve_caretaker_prs:
+        _allowed = (_is_caretaker_type and self._config.review.auto_approve_caretaker_prs) or (
+            _is_opted_in and self._config.review.auto_approve_opted_in_prs
+        )
+        if not _allowed:
             report.waiting.append(pr.number)
             return tracking
         if tracking.last_approved_sha and tracking.last_approved_sha == pr.head_sha:

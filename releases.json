@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.26.2",
+      "min_compatible": "0.26.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.2",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.26.2 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.26.1 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/637\n* fix(thin-workflow): use correct PyPI dist name caretaker-github by @ianlintner in https://github.com/ianlintner/caretaker/pull/638\n* Update README.md to remove unnecessary image by @ianlintner in https://github.com/ianlintner/caretaker/pull/639\n* fix(observability): register HTTP metrics middleware at app construction by @ianlintner in https://github.com/ianlintner/caretaker/pull/632\n* fix(admin): wire InsightStore and auto-discover fleet repos by @ianlintner in https://github.com/ianlintner/caretaker/pull/643\n* fix(pr-agent): finalize readiness check for untracked closed PRs by @ianlintner in https://github.com/ianlintner/caretaker/pull/644\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.26.1...v0.26.2",
+      "breaking": false
+    },
+    {
       "version": "0.26.1",
       "min_compatible": "0.26.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.1",

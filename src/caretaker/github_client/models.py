@@ -138,6 +138,10 @@ class Comment(BaseModel):
     body: str
     created_at: dt.datetime
     updated_at: dt.datetime | None = None
+    # GitHub author_association values: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR,
+    # FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE.  Used by _apply_merge_command
+    # to gate the @caretaker merge command to trusted collaborators only.
+    author_association: str | None = None
 
     @property
     def is_maintainer_task(self) -> bool:

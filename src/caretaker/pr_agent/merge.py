@@ -65,8 +65,11 @@ def evaluate_merge(
         reviewers = [r.user.login for r in reviews.blocking_reviews]
         blockers.append(f"Changes requested by: {', '.join(reviewers)}")
 
-    # Check merge policy
-    if pr.is_copilot_pr:
+    # Check merge policy. The merge_opt_in_label bypasses the per-type
+    # default so any PR (including human PRs) can be opted in individually.
+    if pr.has_label(config.auto_merge.merge_opt_in_label):
+        pass  # label opt-in — no blocker added
+    elif pr.is_copilot_pr:
         if not config.auto_merge.copilot_prs:
             blockers.append("Auto-merge disabled for Copilot PRs")
     elif pr.is_dependabot_pr:

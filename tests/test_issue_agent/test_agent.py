@@ -198,3 +198,102 @@ class TestIssueAgent:
         assert '"type": "issue_escalation"' in comment_body
         assert '"classification": "INFRA_OR_CONFIG"' in comment_body
         assert "<!-- caretaker:escalation -->" in comment_body
+
+
+@pytest.mark.asyncio
+class TestTriageGate:
+    """Two-phase triage gate: NEW → TRIAGED on first cycle, dispatch on second."""
+
+    def _make_agent(self, github, **config_kwargs):
+        return IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(triage_gate=True, **config_kwargs),
+        )
+
+    async def test_new_bug_parks_as_triaged_not_dispatched(self) -> None:
+        """With triage_gate=True, a NEW bug is parked in TRIAGED — not dispatched immediately."""
+        github = AsyncMock()
+        issue = make_issue(10, "Button crashes on click", "clicking the submit button crashes")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = self._make_agent(github, auto_assign_bugs=True)
+        report, tracked = await agent.run({})
+
+        assert tracked[10].state == IssueTrackingState.TRIAGED
+        assert 10 not in report.assigned
+        # triage-summary comment posted
+        github.upsert_issue_comment.assert_awaited()
+        comment_body = github.upsert_issue_comment.await_args.args[4]
+        assert "<!-- caretaker:triage-summary -->" in comment_body
+        assert "Caretaker Triage" in comment_body
+        # caretaker:triaged label applied
+        github.add_labels.assert_awaited()
+        label_call_args = [str(call) for call in github.add_labels.await_args_list]
+        assert any("caretaker:triaged" in s for s in label_call_args)
+
+    async def test_triaged_bug_gets_dispatched_on_second_cycle(self) -> None:
+        """A TRIAGED bug is dispatched on the next agent cycle (triage_gate=True)."""
+        github = AsyncMock()
+        issue = make_issue(11, "Button crashes on click", "clicking the submit button crashes")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = self._make_agent(github, auto_assign_bugs=True)
+        # Pre-seed issue as already TRIAGED (simulating second cycle)
+        pre = {11: TrackedIssue(number=11, state=IssueTrackingState.TRIAGED)}
+        report, tracked = await agent.run(pre)
+
+        assert 11 in report.assigned
+        assert tracked[11].state == IssueTrackingState.ASSIGNED
+
+    async def test_new_duplicate_closes_immediately(self) -> None:
+        """DUPLICATE issues are closed on the first cycle even when triage_gate=True."""
+        github = AsyncMock()
+        issue = make_issue(12, "Same bug again", "duplicate of #1")
+        issue.labels = []
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = self._make_agent(github)
+        report, tracked = await agent.run({})
+
+        assert tracked[12].state == IssueTrackingState.CLOSED
+        assert 12 in report.closed
+        github.update_issue.assert_awaited()
+
+    async def test_new_stale_closes_immediately(self) -> None:
+        """STALE issues are closed on the first cycle even when triage_gate=True."""
+        from datetime import timedelta
+
+        github = AsyncMock()
+        old = datetime.now(UTC) - timedelta(days=40)
+        issue = make_issue(13, "Old forgotten bug", "still broken", updated_at=old)
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = self._make_agent(github, auto_close_stale_days=30)
+        report, tracked = await agent.run({})
+
+        assert tracked[13].state == IssueTrackingState.STALE
+        assert 13 in report.closed
+
+    async def test_triage_gate_false_dispatches_immediately(self) -> None:
+        """With triage_gate=False (default), bugs are dispatched immediately — legacy behavior."""
+        github = AsyncMock()
+        issue = make_issue(14, "Button crashes on click", "clicking the submit button crashes")
+        github.list_issues.return_value = [issue]
+        github.list_pull_requests.return_value = []
+
+        agent = IssueAgent(
+            github=github,
+            owner="o",
+            repo="r",
+            config=IssueAgentConfig(triage_gate=False, auto_assign_bugs=True),
+        )
+        report, tracked = await agent.run({})
+
+        assert 14 in report.assigned
+        assert tracked[14].state == IssueTrackingState.ASSIGNED
