@@ -102,16 +102,52 @@ async def test_run_pr_agent_raises_on_missing_binary(monkeypatch: pytest.MonkeyP
         )
 
 
+class _FakeStream:
+    """Minimal asyncio.StreamReader stand-in for line-streaming tests.
+
+    ``readline()`` returns each queued line in turn, then empty bytes
+    forever (EOF). ``slow_after`` makes the Nth readline block forever
+    so we can exercise the timeout path without sleeping the test.
+    """
+
+    def __init__(self, lines: list[bytes], *, slow_after: int | None = None) -> None:
+        self._lines = list(lines)
+        self._slow_after = slow_after
+        self._calls = 0
+
+    async def readline(self) -> bytes:
+        self._calls += 1
+        if self._slow_after is not None and self._calls > self._slow_after:
+            await asyncio.sleep(3600)  # never returns within test
+            return b""
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
+
+def _fake_proc(
+    *,
+    returncode: int,
+    stdout_lines: list[bytes],
+    stderr_lines: list[bytes] | None = None,
+    slow_after: int | None = None,
+) -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.stdout = _FakeStream(stdout_lines, slow_after=slow_after)
+    proc.stderr = _FakeStream(stderr_lines or [])
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.kill = MagicMock()
+    return proc
+
+
 @pytest.mark.asyncio
 async def test_run_pr_agent_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pr_agent_backend.shutil, "which", lambda x: f"/usr/bin/{x}")
-
-    fake_proc = MagicMock()
-    fake_proc.returncode = 2
-    fake_proc.communicate = AsyncMock(return_value=(b"", b"boom: bad config"))
+    proc = _fake_proc(returncode=2, stdout_lines=[], stderr_lines=[b"boom: bad config\n"])
 
     async def _fake_create(*args, **kwargs):
-        return fake_proc
+        return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
     with pytest.raises(PRAgentInvocationError, match="exited 2"):
@@ -124,13 +160,10 @@ async def test_run_pr_agent_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPat
 @pytest.mark.asyncio
 async def test_run_pr_agent_returns_stdout_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pr_agent_backend.shutil, "which", lambda x: f"/usr/bin/{x}")
-
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-    fake_proc.communicate = AsyncMock(return_value=(b"## Review\n\nLooks good.\n", b""))
+    proc = _fake_proc(returncode=0, stdout_lines=[b"## Review\n", b"\n", b"Looks good.\n"])
 
     async def _fake_create(*args, **kwargs):
-        return fake_proc
+        return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
     raw = await pr_agent_backend.run_pr_agent(
@@ -141,21 +174,45 @@ async def test_run_pr_agent_returns_stdout_on_success(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_run_pr_agent_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_pr_agent_streams_lines_to_logger(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each subprocess line should be logged immediately, not after exit."""
     monkeypatch.setattr(pr_agent_backend.shutil, "which", lambda x: f"/usr/bin/{x}")
-
-    fake_proc = MagicMock()
-    fake_proc.returncode = None
-
-    async def _slow_communicate():
-        await asyncio.sleep(10)
-        return (b"", b"")
-
-    fake_proc.communicate = AsyncMock(side_effect=_slow_communicate)
-    fake_proc.kill = MagicMock()
+    proc = _fake_proc(
+        returncode=0,
+        stdout_lines=[b"fetching PR diff...\n", b"calling LLM...\n", b"writing review\n"],
+        stderr_lines=[b"warning: cache miss\n"],
+    )
 
     async def _fake_create(*args, **kwargs):
-        return fake_proc
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
+    with caplog.at_level("INFO", logger=pr_agent_backend.logger.name):
+        raw = await pr_agent_backend.run_pr_agent(
+            pr_url="https://github.com/o/r/pull/1", cli_path="pr-agent"
+        )
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("pr-agent | fetching PR diff..." in m for m in messages)
+    assert any("pr-agent | calling LLM..." in m for m in messages)
+    assert any("pr-agent | writing review" in m for m in messages)
+    # stderr should land at WARNING with the bang prefix.
+    assert any("pr-agent! warning: cache miss" in m for m in messages)
+    # And the accumulated stdout/stderr is still returned in full.
+    assert "fetching PR diff" in raw.stdout
+    assert "cache miss" in raw.stderr
+
+
+@pytest.mark.asyncio
+async def test_run_pr_agent_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pr_agent_backend.shutil, "which", lambda x: f"/usr/bin/{x}")
+    # First readline returns instantly; the second blocks forever, so the
+    # gather() of stream tasks never completes within the timeout.
+    proc = _fake_proc(returncode=None, stdout_lines=[b"starting...\n"], slow_after=1)
+
+    async def _fake_create(*args, **kwargs):
+        return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
     with pytest.raises(PRAgentInvocationError, match="timed out"):
@@ -164,7 +221,7 @@ async def test_run_pr_agent_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -
             cli_path="pr-agent",
             timeout_seconds=0,
         )
-    fake_proc.kill.assert_called_once()
+    proc.kill.assert_called_once()
 
 
 # ── high-level run() coroutine wires wrapper + transformer ────────────────
