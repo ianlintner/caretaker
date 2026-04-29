@@ -276,7 +276,7 @@ class PRReviewerAgent(BaseAgent):
                     "pr-reviewer: LLM unavailable for inline review of #%d, falling back",
                     pr_number,
                 )
-                decision = decision  # fall through to claude-code below
+                # Fall through to the hand-off path below.
             else:
                 from caretaker.llm.claude import StructuredCompleteError
 
@@ -497,15 +497,12 @@ class PRReviewerAgent(BaseAgent):
     def _resolve_local_backend_config(self, backend: str) -> Any:
         """Return the per-backend config object passed to the runner.
 
-        Each local-subprocess backend has its own pydantic config block on
-        :class:`PRReviewerConfig` (e.g. ``pr_agent``). Stub backends that
-        don't yet have one get an empty namespace so their runner can
-        raise ``NotImplementedError`` cleanly without a missing-attr.
+        Convention: a backend named ``foo_bar`` looks up
+        ``PRReviewerConfig.foo_bar``. Stub backends without a config
+        block get an empty namespace so their runner can raise
+        ``NotImplementedError`` cleanly without a missing-attribute.
         """
-        cfg = self._ctx.config.pr_reviewer
-        if backend == "pr_agent":
-            return cfg.pr_agent
-        return _EMPTY_BACKEND_CONFIG
+        return getattr(self._ctx.config.pr_reviewer, backend, _EMPTY_BACKEND_CONFIG)
 
     async def _route_via_shadow(
         self,

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # different agent without confusion.
 CLAUDE_CODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-handoff -->"
 OPENCODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-handoff -->"
-PR_AGENT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-pragent-handoff -->"
+PR_AGENT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-pr-agent-handoff -->"
 CODERABBIT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-coderabbit-handoff -->"
 GREPTILE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-greptile-handoff -->"
 
@@ -105,11 +105,12 @@ _OPENCODE = HandoffReviewerSpec(
 
 
 def _build_specs() -> dict[str, HandoffReviewerSpec]:
-    """Assemble the registry, importing local-subprocess runners lazily.
+    """Assemble the registry once, at module import.
 
-    Imports happen inside the function so a missing optional backend
-    (e.g. an unwritten greptile API client) never breaks startup of the
-    rest of the agent.
+    Imports happen inside the function so the ``backends`` package can
+    depend on this module's marker constants without a circular import,
+    and so a future optional backend can be skipped on ImportError
+    without breaking the rest of the agent.
     """
     specs: dict[str, HandoffReviewerSpec] = {
         _CLAUDE_CODE.backend: _CLAUDE_CODE,

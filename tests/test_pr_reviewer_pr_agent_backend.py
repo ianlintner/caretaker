@@ -51,6 +51,25 @@ def test_transformer_marks_security_findings_as_request_changes() -> None:
     assert result.verdict == "REQUEST_CHANGES"
 
 
+def test_transformer_does_not_request_changes_on_no_security_concerns() -> None:
+    """Regression: ``no security concerns`` must not match ``security concern``.
+
+    Caught by Claude Code's review of PR #650 — the prior regex used a
+    bare substring match so phrasings like "🔒 No security concerns
+    found" were mis-classified as REQUEST_CHANGES, producing a
+    contradictory review on a clean PR.
+    """
+    raw = PRAgentRawResult(
+        stdout=(
+            "## PR Reviewer Guide\n\n🔒 No security concerns found. The change is well scoped.\n"
+        ),
+        stderr="",
+        returncode=0,
+    )
+    result = to_caretaker_review(raw, include_full_output=False)
+    assert result.verdict == "COMMENT"
+
+
 def test_transformer_extracts_inline_comments_from_suggestions_table() -> None:
     raw = PRAgentRawResult(
         stdout=(

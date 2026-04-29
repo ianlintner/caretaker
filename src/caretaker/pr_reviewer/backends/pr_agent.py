@@ -166,7 +166,13 @@ async def run_pr_agent(
 # summary, a verdict (default COMMENT, REQUEST_CHANGES on explicit
 # security/critical signals), and inline comments parsed from the
 # suggestions table when present.
-_SECURITY_RE = re.compile(r"(security concern|critical issue|🚨|severe|exploit)", re.IGNORECASE)
+# Negative lookbehind on ``no `` / ``no_`` so phrasing like "no security
+# concerns found" doesn't trip the security check (caught by Claude Code's
+# review of the PR that introduced this file).
+_SECURITY_RE = re.compile(
+    r"(?<!\bno\s)(security concern|critical issue|🚨|severe|exploit)",
+    re.IGNORECASE,
+)
 _NO_BLOCKERS_RE = re.compile(
     r"(no security concerns|no relevant tests|looks good|lgtm)", re.IGNORECASE
 )
