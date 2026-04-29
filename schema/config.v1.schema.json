@@ -32,10 +32,16 @@
           "properties": {
             "copilot_prs": { "type": "boolean" },
             "dependabot_prs": { "type": "boolean" },
+            "caretaker_prs": { "type": "boolean" },
+            "maintainer_bot_prs": { "type": "boolean" },
             "human_prs": { "type": "boolean" },
             "merge_method": {
               "type": "string",
               "enum": ["squash", "merge", "rebase"]
+            },
+            "merge_opt_in_label": {
+              "type": "string",
+              "description": "Label that opts any individual PR into auto-merge, overriding human_prs=false. Applied automatically when a human posts '@caretaker merge'. Default: caretaker:merge"
             }
           }
         },
@@ -69,6 +75,11 @@
             "nitpick_threshold": {
               "type": "string",
               "enum": ["low", "high"]
+            },
+            "auto_approve_caretaker_prs": { "type": "boolean" },
+            "auto_approve_opted_in_prs": {
+              "type": "boolean",
+              "description": "When true, automatically approve PRs that a human has opted into auto-merge via @caretaker merge or the caretaker:merge label. Requires auto_approve_opted_in_prs=true to take effect."
             }
           }
         },

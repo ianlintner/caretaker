@@ -286,6 +286,7 @@ def evaluate_readiness(
     review_eval: ReviewEvaluation,
     current_state: PRTrackingState,
     required_reviews: int = 1,
+    auto_merge: AutoMergeConfig | None = None,
 ) -> ReadinessEvaluation:
     """Evaluate PR readiness score and blockers.
 
@@ -294,6 +295,10 @@ def evaluate_readiness(
             component. When ``0`` (repo doesn't require reviews), the review
             component passes automatically and ``required_review_missing`` is not
             added as a blocker. An explicit ``changes_requested`` review still blocks.
+        auto_merge: When supplied, caretaker/maintainer-bot PRs and PRs carrying
+            the merge opt-in label skip the ``automated_feedback_unaddressed``
+            blocker — COMMENT-type bot reviews on these PRs are informational,
+            not actionable change requests.
     """
     score = 0.0
     blockers = []
@@ -317,8 +322,16 @@ def evaluate_readiness(
         if pr.has_label("caretaker:hold"):
             blockers.append("manual_hold")
 
-    # 20%: Automated feedback addressed
-    if not review_eval.has_automated_comments or current_state == PRTrackingState.FIX_REQUESTED:
+    # 20%: Automated feedback addressed.
+    # Caretaker/maintainer-bot PRs and opted-in PRs skip this blocker —
+    # COMMENT-type bot reviews on these PRs don't carry actionable change requests.
+    _am_opted_in = auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label)
+    _am_skip = _am_opted_in or pr.is_caretaker_pr or pr.is_maintainer_bot_pr
+    if (
+        not review_eval.has_automated_comments
+        or current_state == PRTrackingState.FIX_REQUESTED
+        or _am_skip
+    ):
         score += 0.20
     else:
         blockers.append("automated_feedback_unaddressed")
@@ -373,13 +386,21 @@ def _auto_merge_allows(pr: PullRequest, auto_merge: AutoMergeConfig | None) -> b
     that's user-confusing ("ready" but nothing happens). When ``auto_merge``
     is ``None`` (caller didn't thread the config in), the gate is disabled
     for backwards compatibility.
+
+    The ``merge_opt_in_label`` (default ``caretaker:merge``) overrides the
+    per-type default for any individual PR — a human can add the label
+    directly or post ``@caretaker merge`` to have caretaker apply it.
     """
     if auto_merge is None:
+        return True
+    if pr.has_label(auto_merge.merge_opt_in_label):
         return True
     if pr.is_copilot_pr:
         return auto_merge.copilot_prs
     if pr.is_dependabot_pr:
         return auto_merge.dependabot_prs
+    if pr.is_caretaker_pr:
+        return auto_merge.caretaker_prs
     if pr.is_maintainer_bot_pr:
         return auto_merge.maintainer_bot_prs
     return auto_merge.human_prs
@@ -423,7 +444,7 @@ def evaluate_pr(
         bot_check_names=bot_check_names,
         bot_approval_markers=bot_approval_markers,
     )
-    readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews)
+    readiness = evaluate_readiness(pr, ci, review_eval, current_state, required_reviews, auto_merge)
 
     # State transitions
     if pr.merged:
@@ -502,9 +523,17 @@ def evaluate_pr(
     # that are not formal CHANGES_REQUESTED but still carry actionable feedback.
     # Once a fix has been requested, don't re-request — the old bot comments are
     # permanent and would otherwise block the PR forever.
+    #
+    # For caretaker/maintainer-bot PRs and for any PR the human has explicitly
+    # opted into auto-merge (via @caretaker merge / caretaker:merge label),
+    # COMMENT-type bot reviews without approval markers don't warrant a Copilot
+    # dispatch — no changes were explicitly requested and the PR is either
+    # machine-generated or the human already decided to merge.
     if review_eval.has_automated_comments:
-        if current_state == PRTrackingState.FIX_REQUESTED:
-            # Fix was already requested for these comments — proceed to merge check
+        _is_opted_in = auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label)
+        _skip_dispatch = _is_opted_in or pr.is_caretaker_pr or pr.is_maintainer_bot_pr
+        if current_state == PRTrackingState.FIX_REQUESTED or _skip_dispatch:
+            # Fix was already requested or dispatch is not warranted — proceed
             pass
         else:
             return PRStateEvaluation(
@@ -516,18 +545,21 @@ def evaluate_pr(
                 recommended_action="request_review_fix",
             )
 
-    # Auto-approve caretaker-authored or maintainer-bot PRs when:
-    # - CI is green
-    # - No CHANGES_REQUESTED reviews
-    # - Not yet approved (prevents duplicate approval submissions)
-    # - No fix already in-flight (would re-approve while Copilot is still working)
+    # Auto-approve when CI is green and no blocking reviews exist for:
+    # - caretaker-authored PRs (claude/ or caretaker/ branch prefix)
+    # - maintainer-bot PRs (e.g. chore/releases-json-* from github-actions[bot])
+    # - any PR explicitly opted into auto-merge via caretaker:merge label
+    # Not yet approved (prevents duplicate approval submissions).
+    # No fix already in-flight (would re-approve while Copilot is still working).
     # The caretaker GitHub App is a different identity from the PR author, so
     # its APPROVE satisfies the required-review gate.
-    # Maintainer-bot PRs (e.g. chore/releases-json-*) contain only mechanical,
-    # workflow-generated changes and are equally safe to auto-approve.
     if (
         ci.status == CIStatus.PASSING
-        and (pr.is_caretaker_pr or pr.is_maintainer_bot_pr)
+        and (
+            pr.is_caretaker_pr
+            or pr.is_maintainer_bot_pr
+            or (auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label))
+        )
         and not review_eval.changes_requested
         and not review_eval.approved
         and current_state != PRTrackingState.FIX_REQUESTED

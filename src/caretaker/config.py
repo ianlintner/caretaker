@@ -103,6 +103,10 @@ class AutoMergeConfig(StrictBaseModel):
     maintainer_bot_prs: bool = True
     human_prs: bool = False
     merge_method: Literal["squash", "merge", "rebase"] = "squash"
+    # Label that opts any individual PR into auto-merge regardless of its
+    # author type. Applied automatically when a human posts "@caretaker merge"
+    # on the PR, or can be added manually. Overrides human_prs=false.
+    merge_opt_in_label: str = "caretaker:merge"
 
 
 class CopilotConfig(StrictBaseModel):
@@ -134,6 +138,12 @@ class ReviewConfig(StrictBaseModel):
     # opt in per-repo once they're comfortable with the auto-approve flow and
     # the head-SHA idempotency gate in :meth:`_handle_review_approve`.
     auto_approve_caretaker_prs: bool = False
+    # When CI is green and a human has opted a PR into auto-merge via
+    # ``@caretaker merge`` or the ``caretaker:merge`` label, automatically
+    # submit an APPROVE review so the required-review gate is satisfied.
+    # Like auto_approve_caretaker_prs this defaults to False — operators
+    # opt in once they trust the merge command flow end-to-end.
+    auto_approve_opted_in_prs: bool = False
     # When a reviewer signals infeasibility (duplicate, won't work, out of
     # scope), close the PR instead of dispatching a fix — prevents wasting
     # Copilot/Claude Code cycles on hopeless tasks.
