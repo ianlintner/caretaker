@@ -8,10 +8,10 @@ repository. Read this document fully before taking any action.
 ## What you are doing
 
 You are installing the **caretaker** autonomous repository maintenance system into this
-repository. Caretaker now runs primarily server-side: a centralised backend listens to
-GitHub App webhooks and executes agent work in-cluster. Each consumer repo's footprint
-is intentionally tiny — a config file, a few agent persona docs, and a thin GitHub Actions
-workflow that exists only as a fallback to the webhook path.
+repository. Caretaker runs entirely server-side: a centralised backend listens to GitHub
+App webhooks and executes agent work in-cluster. Each consumer repo's footprint is
+intentionally tiny — a config file, a version pin, and a few agent persona docs. There is
+**no consumer-side GitHub Actions workflow** to install.
 
 ---
 
@@ -54,10 +54,10 @@ A plain text file containing only the pinned version string (no `v` prefix):
 
 Replace `0.1.0` with the latest version from Step 1.
 
-> The version pin used to gate the consumer-side `pip install`. With server-side
-> execution, the backend version is what actually runs the agents — but we keep the
-> pin file in place so the upgrade agent has a single place to bump and so the thin
-> client (Step 2.3) can be aligned with the backend if needed in future.
+> With server-side execution, the backend version is what actually runs the agents.
+> The pin file remains so the upgrade agent has a single place to bump it and so the
+> backend can refuse to run agents against a config from a future version it doesn't
+> understand yet.
 
 ---
 
@@ -78,31 +78,16 @@ this as the repo-specific config file.
 > backend-routed architecture (the backend tracks fleet state internally). Leave them
 > at their defaults; future versions of the template will remove them.
 
----
-
-### 2.3 `.github/workflows/maintainer.yml`
-
-Fetch the **thin streaming workflow** template from:
-
-```
-https://raw.githubusercontent.com/ianlintner/caretaker/main/setup-templates/templates/workflows/maintainer.yml
-```
-
-Save it verbatim to `.github/workflows/maintainer.yml`. **Do not modify** it.
-
-> The workflow is intentionally small (~80 lines, mostly comments). It does NOT install
-> the agent code, run the orchestrator, or handle CI failures inside the runner — all of
-> that is now backend-side. The workflow exists only to:
->
->   1. Let an operator kick a run from the GitHub UI (`workflow_dispatch`).
->   2. Provide a sparse cron-driven safety net if a webhook delivery is dropped.
->
-> Required repo variable: `CARETAKER_BACKEND_URL` (e.g. `https://caretaker.example.com`).
-> Optional: `CARETAKER_OIDC_AUDIENCE` (defaults to `caretaker-backend`).
+> Note: there is **no consumer-side GitHub Actions workflow**. All execution is
+> backend-side, triggered by App webhooks (or by the backend's own reconciliation
+> scheduler). Operators kick manual runs from the caretaker admin UI rather than
+> from the GitHub Actions "Run workflow" button. If you find a stale
+> `.github/workflows/maintainer.yml` in this repo from an earlier caretaker version,
+> delete it as part of this PR.
 
 ---
 
-### 2.4 `.github/agents/maintainer-pr.md`
+### 2.3 `.github/agents/maintainer-pr.md`
 
 Fetch from:
 
@@ -115,7 +100,7 @@ because they describe how `@copilot` should respond to caretaker's PR fix reques
 
 ---
 
-### 2.5 `.github/agents/maintainer-issue.md`
+### 2.4 `.github/agents/maintainer-issue.md`
 
 Fetch from:
 
@@ -127,7 +112,7 @@ Save to `.github/agents/maintainer-issue.md`.
 
 ---
 
-### 2.6 `.github/agents/maintainer-upgrade.md`
+### 2.5 `.github/agents/maintainer-upgrade.md`
 
 Fetch from:
 
@@ -139,7 +124,7 @@ Save to `.github/agents/maintainer-upgrade.md`.
 
 ---
 
-### 2.7 `.github/copilot-instructions.md`
+### 2.6 `.github/copilot-instructions.md`
 
 **Append** (do not overwrite) the following block to the end of
 `.github/copilot-instructions.md`. If the file does not exist, create it with only this
@@ -150,8 +135,8 @@ block:
 
 This repo uses the [caretaker](https://github.com/ianlintner/caretaker) autonomous
 maintenance system. A centralised backend listens to this repo's GitHub App webhooks and
-posts structured comments on PRs and issues; the workflow at
-`.github/workflows/maintainer.yml` is a thin fallback that streams runs from the backend.
+posts structured comments on PRs and issues. All execution is backend-side; this repo
+holds only configuration and agent persona docs.
 
 Agent instruction files live in `.github/agents/`:
 - `maintainer-pr.md` — how to respond to PR fix requests
@@ -163,23 +148,11 @@ Always check these files when you receive a caretaker assignment.
 
 ---
 
-### 2.8 Repo variables (required)
+### 2.7 Repo variables and secrets
 
-Add the following **repository variable** in *Settings → Secrets and variables → Actions
-→ Variables*:
-
-| Variable | Value | Purpose |
-|---|---|---|
-| `CARETAKER_BACKEND_URL` | `https://caretaker.example.com` (the backend URL operators give you) | The thin streaming workflow uses this to call `/runs/start` |
-
-Optional:
-
-| Variable | Value | Purpose |
-|---|---|---|
-| `CARETAKER_OIDC_AUDIENCE` | `caretaker-backend` | OIDC audience the workflow's GitHub Actions JWT is bound to. Defaults to `caretaker-backend` if unset. |
-
-**No secrets are required** in this repo. No `COPILOT_PAT`, no `ANTHROPIC_API_KEY`, no
-LLM provider keys — those all live backend-side.
+**No repository variables and no secrets are required** in this repo. There is no
+consumer-side workflow that needs them — the backend holds the App credentials and
+the LLM keys. Skip this step.
 
 ---
 
@@ -188,10 +161,8 @@ LLM provider keys — those all live backend-side.
 After creating all files, open a **single pull request** with:
 
 - **Title:** `chore: setup caretaker`
-- **Body:** List all files created/modified, plus:
-  - **Reminder for the repo owner**: install the caretaker GitHub App on this repo if
-    not already installed.
-  - **Reminder for the repo owner**: set the `CARETAKER_BACKEND_URL` repo variable.
+- **Body:** List all files created/modified, plus a reminder for the repo owner to
+  install the caretaker GitHub App on this repo if not already installed.
 
 Do not merge the PR yourself. The repo owner will review and merge it.
 
@@ -199,14 +170,12 @@ Do not merge the PR yourself. The repo owner will review and merge it.
 
 ## Notes
 
-- All execution happens server-side now. There is no `caretaker run` invoked in the
-  consumer's GitHub Actions; the workflow only runs `caretaker stream`, which mints an
-  OIDC JWT, asks the backend to execute, and tails the resulting log stream.
-- The `pip install caretaker` line in the workflow only installs the thin streaming
-  client — no agent code, no LLM dependencies. Cold start is ~5 seconds.
+- All execution happens server-side. The backend receives App webhooks and runs
+  agents in-cluster. There is no consumer-side GitHub Actions workflow at all.
 - Webhook delivery is the primary path for everything event-driven (PR opened, issue
-  opened, CI failed, etc.). The cron in the workflow file fires at most every 6 hours
-  and exists only as a safety net for missed webhook deliveries.
-- If a repo intentionally stays off the fleet (e.g. a private demo with no backend
-  access), simply skip Step 2.3 (the workflow). The repo will still have its config
-  and persona files, but no automated runs will happen.
+  opened, CI failed, etc.). The backend's reconciliation scheduler covers any missed
+  webhook deliveries on a 30-minute cadence.
+- Operators kick manual runs from the caretaker admin UI rather than from GitHub
+  Actions.
+- If a repo intentionally stays off the fleet, just don't install the App on it —
+  the config and persona files in this PR are inert without it.

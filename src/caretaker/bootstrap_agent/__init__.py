@@ -2,11 +2,11 @@
 
 When the caretaker GitHub App is installed on a new repo (or an existing
 installation gains access to a new repo), this agent opens a setup PR
-that drops the thin streaming workflow, default config, agent persona
-files, version pin, and copilot-instructions append — and sets the
-``CARETAKER_BACKEND_URL`` repository variable. The repo owner reviews
-and merges; from that point forward, caretaker operates on the repo via
-webhooks.
+that drops the default config, agent persona files, version pin, and
+copilot-instructions append. The repo owner reviews and merges; from
+that point forward, caretaker operates on the repo entirely via App
+webhooks — there is no consumer-side GitHub Actions workflow and no
+repo-level variable to set.
 
 Replaces the legacy SETUP_AGENT.md flow that required ``@copilot`` to
 scaffold each repo manually.

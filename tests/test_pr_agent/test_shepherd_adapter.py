@@ -161,23 +161,6 @@ def test_shepherd_mode_not_in_event_agent_map() -> None:
         )
 
 
-def test_maintainer_workflow_has_shepherd_mode_option() -> None:
-    """maintainer.yml workflow_dispatch.mode must include 'shepherd' so
-    operators can trigger the shepherd loop from the GitHub Actions UI."""
-    from pathlib import Path
-
-    import yaml
-
-    root = Path(__file__).resolve().parents[2]
-    wf_path = root / ".github" / "workflows" / "maintainer.yml"
-    wf = yaml.safe_load(wf_path.read_text())
-    # PyYAML parses "on:" as boolean True in some YAML versions
-    on_block = wf.get("on") or wf.get(True)
-    assert on_block is not None, "workflow missing 'on' block"
-    mode_options = on_block["workflow_dispatch"]["inputs"]["mode"]["options"]
-    assert "shepherd" in mode_options
-
-
 def test_dogfood_config_has_shepherd_section_disabled() -> None:
     """Dogfood config must declare shepherd explicitly disabled so
     behavior is byte-identical to pre-Delta-E runs until operator opts in."""

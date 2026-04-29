@@ -76,11 +76,11 @@ After setup, your repo has:
   maintainer/
     config.yml                    ← Repo-specific settings
     .version                      ← Pinned version
-  workflows/
-    maintainer.yml                ← Orchestrator workflow
 ```
 
-No Python. No Node. No vendored code. Just config and Copilot instructions.
+No Python. No Node. No vendored code. **No GitHub Actions workflow either** — all
+execution happens server-side, driven by App webhooks. Just config and Copilot
+instructions.
 
 ---
 
@@ -111,7 +111,7 @@ No Python. No Node. No vendored code. Just config and Copilot instructions.
 - Assigns work to Copilot for resolution
 
 #### Self-Heal Agent
-- Detects caretaker's own workflow failures
+- Detects backend agent failures during a run
 - Creates self-diagnosis issues
 - Reports bugs to upstream caretaker repository (configurable)
 - Ensures the system can maintain itself
