@@ -624,14 +624,44 @@ class ReviewAgentConfig(StrictBaseModel):
     use_llm_for_retro: bool = True
 
 
+class PRAgentBackendConfig(StrictBaseModel):
+    """Configuration for the ``pr_agent`` complex-reviewer backend.
+
+    Caretaker invokes the open-source PR-Agent CLI
+    (https://github.com/The-PR-Agent/pr-agent) as a subprocess to produce
+    a review for high-complexity PRs. PR-Agent is AGPL-3.0; running it as
+    a separate process keeps the licence boundary at "aggregation" — no
+    Python imports, no in-process linking. Tighten ``cli_path`` to a
+    pinned path in production deployments where you control the binary.
+    """
+
+    cli_path: str = "pr-agent"
+    command: str = "review"
+    timeout_seconds: int = 180
+    # Extra environment variables passed through to the pr-agent
+    # subprocess (e.g. ``OPENAI_KEY``, ``ANTHROPIC_KEY``, ``GITHUB_TOKEN``,
+    # ``CONFIG.MODEL``). Caretaker does NOT inject defaults here so
+    # operators stay in explicit control of which credentials reach the
+    # third-party process.
+    extra_env: dict[str, str] = Field(default_factory=dict)
+    # When True, also post pr-agent's raw markdown output as an issue
+    # comment (in addition to the formal Reviews-tab entry) so reviewers
+    # can see pr-agent's full reasoning. Off by default to keep the PR
+    # thread tidy.
+    post_raw_output_comment: bool = False
+
+
 class PRReviewerConfig(StrictBaseModel):
     """Configuration for the dual-path PR code reviewer.
 
     When ``enabled`` is ``True``, caretaker reviews opened/updated PRs:
     - Low-complexity PRs (score < ``routing_threshold``) get an inline
       LLM review posted as a GitHub pull-request review.
-    - High-complexity PRs get handed off to the ``claude-code-action``
-      workflow via a trigger label + structured ``@claude`` comment.
+    - High-complexity PRs get handed off to a configurable backend
+      (``claude_code``, ``opencode``, ``pr_agent``, …). ``claude_code``
+      and ``opencode`` use the comment-trigger pattern (label + mention,
+      reply harvested next cycle); ``pr_agent`` runs the third-party CLI
+      in-process and posts the formal review directly.
 
     Set ``enabled = false`` to disable. By default the agent also runs on
     polling-only deployments (``webhook_only = false``) so it works out of
@@ -676,6 +706,21 @@ class PRReviewerConfig(StrictBaseModel):
     # ``complex_reviewer = "opencode"``.
     opencode_label: str = "opencode-review"
     opencode_mention: str = "@opencode-agent"
+    # Label/mention used for the CodeRabbit comment-trigger stub. The
+    # CodeRabbit GitHub App reads ``@coderabbitai`` mentions; caretaker
+    # only posts the trigger and harvests the response (parser stub).
+    coderabbit_label: str = "coderabbit-review"
+    coderabbit_mention: str = "@coderabbitai review"
+    # Settings for the pr-agent CLI backend (``complex_reviewer = "pr_agent"``).
+    pr_agent: PRAgentBackendConfig = Field(default_factory=PRAgentBackendConfig)
+    # Backends caretaker is allowed to dispatch to. Only specs in this
+    # list can be selected via ``complex_reviewer``; misconfiguration
+    # surfaces at startup rather than at PR-review time. Stub backends
+    # (``coderabbit``, ``greptile``) are registered in the spec registry
+    # but absent here by default — opt them in explicitly.
+    enabled_backends: list[str] = Field(
+        default_factory=lambda: ["claude_code", "opencode", "pr_agent"]
+    )
     # Maximum diff lines fetched for inline review (excess is truncated).
     max_diff_lines: int = 2000
     # Whether to post per-file inline comments (in addition to the review body).
