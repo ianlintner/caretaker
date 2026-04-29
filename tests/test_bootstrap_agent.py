@@ -147,9 +147,7 @@ def _fake_github(
 @pytest.mark.asyncio
 async def test_bootstrap_skips_when_marker_already_present() -> None:
     client = _fake_github(marker_present=True)
-    agent = BootstrapAgent(
-        github=client, owner="acme", repo="demo", backend_url="https://b.example"
-    )
+    agent = BootstrapAgent(github=client, owner="acme", repo="demo")
     report = await agent.run(event_payload={"repositories_added": [{"full_name": "acme/demo"}]})
     assert report.prs_opened == []
     assert "acme/demo" in report.prs_skipped_existing
@@ -157,23 +155,17 @@ async def test_bootstrap_skips_when_marker_already_present() -> None:
     client.create_branch.assert_not_awaited()
     client.create_or_update_file.assert_not_awaited()
     client.create_pull_request.assert_not_awaited()
-    # Variables are still set (idempotent) so a re-run can repair config.
-    client.set_repo_variable.assert_awaited()
+    # No repo variables to set — there is no consumer-side workflow to feed.
+    client.set_repo_variable.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_opens_pr_and_sets_variable_for_fresh_repo() -> None:
+async def test_bootstrap_opens_pr_for_fresh_repo() -> None:
     client = _fake_github(marker_present=False)
-    agent = BootstrapAgent(
-        github=client,
-        owner="acme",
-        repo="demo",
-        backend_url="https://backend.example.com",
-    )
+    agent = BootstrapAgent(github=client, owner="acme", repo="demo")
     report = await agent.run(event_payload={"repositories_added": [{"full_name": "acme/demo"}]})
 
     assert report.prs_opened == [("acme/demo", 7)]
-    assert any(name.endswith("CARETAKER_BACKEND_URL") for name in report.variables_set)
 
     # Branch was created.
     client.create_branch.assert_awaited_once()
@@ -183,13 +175,15 @@ async def test_bootstrap_opens_pr_and_sets_variable_for_fresh_repo() -> None:
     assert args[2] == "caretaker/bootstrap"
     assert args[3] == "deadbeef"
 
-    # Each scaffolded file was committed (version + workflow + config + 3 personas + copilot).
+    # Each scaffolded file was committed (version + config + 3 personas + copilot).
+    # Notably NOT .github/workflows/maintainer.yml — there is no consumer-side
+    # workflow any more; backend executes everything via App webhooks.
     paths_committed = [
         call.kwargs.get("path") or (call.args[2] if len(call.args) > 2 else None)
         for call in client.create_or_update_file.call_args_list
     ]
     assert ".github/maintainer/.version" in paths_committed
-    assert ".github/workflows/maintainer.yml" in paths_committed
+    assert ".github/workflows/maintainer.yml" not in paths_committed
     assert ".github/maintainer/config.yml" in paths_committed
     assert ".github/agents/maintainer-pr.md" in paths_committed
     assert ".github/agents/maintainer-issue.md" in paths_committed
@@ -202,19 +196,15 @@ async def test_bootstrap_opens_pr_and_sets_variable_for_fresh_repo() -> None:
     assert pr_kwargs["head"] == "caretaker/bootstrap"
     assert pr_kwargs["base"] == "main"
 
-    # Repo variable was set.
-    client.set_repo_variable.assert_any_await(
-        "acme", "demo", "CARETAKER_BACKEND_URL", "https://backend.example.com"
-    )
+    # No repo variables set — the workflow that needed them is gone.
+    client.set_repo_variable.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_appends_block_to_existing_copilot_instructions() -> None:
     existing = "# Project guidelines\n\nDo not commit secrets.\n"
     client = _fake_github(marker_present=False, copilot_instructions_existing=existing)
-    agent = BootstrapAgent(
-        github=client, owner="acme", repo="demo", backend_url="https://b.example"
-    )
+    agent = BootstrapAgent(github=client, owner="acme", repo="demo")
     await agent.run(event_payload={"repositories_added": [{"full_name": "acme/demo"}]})
 
     # Find the copilot-instructions write; verify it merged with the existing content.
@@ -233,9 +223,7 @@ async def test_bootstrap_appends_block_to_existing_copilot_instructions() -> Non
 async def test_bootstrap_skips_copilot_append_if_already_present() -> None:
     existing = "## Caretaker\n\nAlready set up.\n"
     client = _fake_github(marker_present=False, copilot_instructions_existing=existing)
-    agent = BootstrapAgent(
-        github=client, owner="acme", repo="demo", backend_url="https://b.example"
-    )
+    agent = BootstrapAgent(github=client, owner="acme", repo="demo")
     await agent.run(event_payload={"repositories_added": [{"full_name": "acme/demo"}]})
 
     matching = [
@@ -250,13 +238,7 @@ async def test_bootstrap_skips_copilot_append_if_already_present() -> None:
 @pytest.mark.asyncio
 async def test_bootstrap_dry_run_writes_nothing() -> None:
     client = _fake_github(marker_present=False)
-    agent = BootstrapAgent(
-        github=client,
-        owner="acme",
-        repo="demo",
-        backend_url="https://b.example",
-        dry_run=True,
-    )
+    agent = BootstrapAgent(github=client, owner="acme", repo="demo", dry_run=True)
     report = await agent.run(event_payload={"repositories_added": [{"full_name": "acme/demo"}]})
     assert report.prs_opened == []
     client.create_branch.assert_not_awaited()

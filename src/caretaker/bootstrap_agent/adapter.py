@@ -52,13 +52,12 @@ class BootstrapAgentAdapter(BaseAgent):
             extra={
                 "prs_opened": report.prs_opened,
                 "prs_skipped_existing": report.prs_skipped_existing,
-                "variables_set": report.variables_set,
             },
         )
 
     def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
         # The bootstrap agent's results are operational metadata rather
         # than fleet-health metrics, so we don't fold them into RunSummary
-        # counters. The PRs and variables are visible in the run log /
-        # admin SPA via ``result.extra``.
+        # counters. The PRs are visible in the run log / admin SPA via
+        # ``result.extra``.
         return None
