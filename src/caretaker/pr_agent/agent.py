@@ -1095,17 +1095,23 @@ class PRAgent:
         ``is_maintainer_bot_pr`` keys off ``chore/releases-json-*`` and
         ``chore/*`` from ``github-actions[bot]``.
         """
-        if not (
-            getattr(pr, "is_caretaker_pr", False) or getattr(pr, "is_maintainer_bot_pr", False)
-        ):
+        _is_caretaker_type = getattr(pr, "is_caretaker_pr", False) or getattr(
+            pr, "is_maintainer_bot_pr", False
+        )
+        _is_opted_in = pr.has_label(self._config.auto_merge.merge_opt_in_label)
+        if not _is_caretaker_type and not _is_opted_in:
             logger.warning(
-                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR (head_ref=%r)",
+                "PR #%d: refusing auto-approve — not a caretaker / maintainer-bot PR "
+                "or merge-opted-in PR (head_ref=%r)",
                 pr.number,
                 getattr(pr, "head_ref", ""),
             )
             report.waiting.append(pr.number)
             return tracking
-        if not self._config.review.auto_approve_caretaker_prs:
+        _allowed = (_is_caretaker_type and self._config.review.auto_approve_caretaker_prs) or (
+            _is_opted_in and self._config.review.auto_approve_opted_in_prs
+        )
+        if not _allowed:
             report.waiting.append(pr.number)
             return tracking
         if tracking.last_approved_sha and tracking.last_approved_sha == pr.head_sha:

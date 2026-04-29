@@ -508,9 +508,17 @@ def evaluate_pr(
     # that are not formal CHANGES_REQUESTED but still carry actionable feedback.
     # Once a fix has been requested, don't re-request — the old bot comments are
     # permanent and would otherwise block the PR forever.
+    #
+    # For caretaker/maintainer-bot PRs and for any PR the human has explicitly
+    # opted into auto-merge (via @caretaker merge / caretaker:merge label),
+    # COMMENT-type bot reviews without approval markers don't warrant a Copilot
+    # dispatch — no changes were explicitly requested and the PR is either
+    # machine-generated or the human already decided to merge.
     if review_eval.has_automated_comments:
-        if current_state == PRTrackingState.FIX_REQUESTED:
-            # Fix was already requested for these comments — proceed to merge check
+        _is_opted_in = auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label)
+        _skip_dispatch = _is_opted_in or pr.is_caretaker_pr or pr.is_maintainer_bot_pr
+        if current_state == PRTrackingState.FIX_REQUESTED or _skip_dispatch:
+            # Fix was already requested or dispatch is not warranted — proceed
             pass
         else:
             return PRStateEvaluation(
@@ -522,18 +530,21 @@ def evaluate_pr(
                 recommended_action="request_review_fix",
             )
 
-    # Auto-approve caretaker-authored or maintainer-bot PRs when:
-    # - CI is green
-    # - No CHANGES_REQUESTED reviews
-    # - Not yet approved (prevents duplicate approval submissions)
-    # - No fix already in-flight (would re-approve while Copilot is still working)
+    # Auto-approve when CI is green and no blocking reviews exist for:
+    # - caretaker-authored PRs (claude/ or caretaker/ branch prefix)
+    # - maintainer-bot PRs (e.g. chore/releases-json-* from github-actions[bot])
+    # - any PR explicitly opted into auto-merge via caretaker:merge label
+    # Not yet approved (prevents duplicate approval submissions).
+    # No fix already in-flight (would re-approve while Copilot is still working).
     # The caretaker GitHub App is a different identity from the PR author, so
     # its APPROVE satisfies the required-review gate.
-    # Maintainer-bot PRs (e.g. chore/releases-json-*) contain only mechanical,
-    # workflow-generated changes and are equally safe to auto-approve.
     if (
         ci.status == CIStatus.PASSING
-        and (pr.is_caretaker_pr or pr.is_maintainer_bot_pr)
+        and (
+            pr.is_caretaker_pr
+            or pr.is_maintainer_bot_pr
+            or (auto_merge is not None and pr.has_label(auto_merge.merge_opt_in_label))
+        )
         and not review_eval.changes_requested
         and not review_eval.approved
         and current_state != PRTrackingState.FIX_REQUESTED

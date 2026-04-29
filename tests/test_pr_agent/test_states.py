@@ -733,6 +733,105 @@ class TestRequestReviewApprove:
         assert _auto_merge_allows(pr, AutoMergeConfig(maintainer_bot_prs=False)) is False
 
 
+# ── Opted-in PR auto-approve and dispatch-loop prevention ────────────
+
+
+class TestOptedInPRAutoApprove:
+    """Human PRs with the merge opt-in label are routed to auto-approve
+    and must not trigger a Copilot dispatch loop from COMMENT-type bot reviews."""
+
+    def _passing_run(self) -> object:
+        return make_check_run("ci", CheckStatus.COMPLETED, CheckConclusion.SUCCESS)
+
+    def test_opted_in_pr_routes_to_auto_approve(self) -> None:
+        """A human PR with caretaker:merge label and CI green → request_review_approve."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import Label
+
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [],
+            PRTrackingState.CI_PASSING,
+            auto_merge=AutoMergeConfig(),
+        )
+        assert result.recommended_action == "request_review_approve"
+
+    def test_opted_in_pr_bot_comment_does_not_trigger_dispatch(self) -> None:
+        """A COMMENTED bot review on an opted-in PR must NOT dispatch request_review_fix."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import Label, User
+
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        bot_review = make_review(
+            user=User(login="the-care-taker[bot]", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Looks reasonable to me; no changes requested.",
+        )
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [bot_review],
+            PRTrackingState.CI_PASSING,
+            auto_merge=AutoMergeConfig(),
+        )
+        assert result.recommended_action != "request_review_fix"
+
+    def test_caretaker_pr_bot_comment_does_not_trigger_dispatch(self) -> None:
+        """A COMMENTED bot review on a caretaker PR must NOT trigger request_review_fix."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(head_ref="claude/fix-something")
+        bot_review = make_review(
+            user=User(login="the-care-taker[bot]", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Code looks fine, merging.",
+        )
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [bot_review],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action != "request_review_fix"
+        assert result.recommended_action == "request_review_approve"
+
+    def test_opted_in_pr_changes_requested_still_blocks(self) -> None:
+        """CHANGES_REQUESTED on an opted-in PR still blocks merge."""
+        from caretaker.config import AutoMergeConfig
+        from caretaker.github_client.models import Label
+
+        pr = make_pr(labels=[Label(name="caretaker:merge")])
+        blocker = make_review(state=ReviewState.CHANGES_REQUESTED, body="Must fix this")
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [blocker],
+            PRTrackingState.CI_PASSING,
+            auto_merge=AutoMergeConfig(),
+        )
+        assert result.recommended_action == "request_review_fix"
+
+    def test_non_opted_in_human_pr_still_dispatches_for_bot_comments(self) -> None:
+        """A plain human PR (no opt-in label) still triggers request_review_fix for bot comments."""
+        from caretaker.github_client.models import User
+
+        pr = make_pr(head_ref="feature/my-thing")
+        bot_review = make_review(
+            user=User(login="copilot-pull-request-reviewer", id=99, type="Bot"),
+            state=ReviewState.COMMENTED,
+            body="Consider adding error handling here.",
+        )
+        result = evaluate_pr(
+            pr,
+            [self._passing_run()],
+            [bot_review],
+            PRTrackingState.CI_PASSING,
+        )
+        assert result.recommended_action == "request_review_fix"
+
+
 # ── Bot CheckRun + comment-marker approvals (PR #609 regression) ─────
 
 
