@@ -550,9 +550,7 @@ class PRAgent:
         # evaluation below sees it. Re-fetch the PR to pick up the updated
         # label list — the extra API call is only made when the command fires.
         if await self._apply_merge_command(pr, issue_comments):
-            refreshed = await self._github.get_pull_request(
-                self._owner, self._repo, pr.number
-            )
+            refreshed = await self._github.get_pull_request(self._owner, self._repo, pr.number)
             if refreshed is not None:
                 pr = refreshed
 

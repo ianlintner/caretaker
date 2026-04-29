@@ -2556,7 +2556,6 @@ class TestApplyMergeCommand:
 
     async def test_custom_opt_in_label_respected(self) -> None:
         from caretaker.config import AutoMergeConfig
-
         from caretaker.pr_agent.agent import PRAgent
 
         github = AsyncMock()
