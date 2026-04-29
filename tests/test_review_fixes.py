@@ -202,7 +202,7 @@ def test_file_template_raises_when_root_missing(monkeypatch: pytest.MonkeyPatch)
         lambda: [ba.Path("/nonexistent/a"), ba.Path("/nonexistent/b")],
     )
     with pytest.raises(TemplateNotFoundError) as excinfo:
-        _file_template(".github/workflows/maintainer.yml")
+        _file_template(".github/maintainer/config.yml")
     msg = str(excinfo.value)
     assert "looked at" in msg
     assert "CARETAKER_BOOTSTRAP_TEMPLATES_DIR" in msg
