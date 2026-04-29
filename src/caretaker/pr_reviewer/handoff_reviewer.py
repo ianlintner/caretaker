@@ -33,6 +33,7 @@ OPENCODE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-handoff -->"
 PR_AGENT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-pr-agent-handoff -->"
 CODERABBIT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-coderabbit-handoff -->"
 GREPTILE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-greptile-handoff -->"
+CLAUDE_CODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-claude-code-local-handoff -->"
 
 # Invocation models a backend can use:
 #   - ``comment_trigger``: caretaker labels the PR + posts a mention
@@ -118,9 +119,14 @@ def _build_specs() -> dict[str, HandoffReviewerSpec]:
     }
     # ``backends`` package depends on this module's marker constants, so
     # importing it at module top-level would create a circular import.
-    from caretaker.pr_reviewer.backends import coderabbit, greptile, pr_agent
+    from caretaker.pr_reviewer.backends import (
+        claude_code_local,
+        coderabbit,
+        greptile,
+        pr_agent,
+    )
 
-    for spec in (pr_agent.SPEC, coderabbit.SPEC, greptile.SPEC):
+    for spec in (pr_agent.SPEC, coderabbit.SPEC, greptile.SPEC, claude_code_local.SPEC):
         specs[spec.backend] = spec
     return specs
 
@@ -308,6 +314,7 @@ def known_backends() -> list[str]:
 
 
 __all__ = [
+    "CLAUDE_CODE_LOCAL_REVIEW_MARKER",
     "CLAUDE_CODE_REVIEW_MARKER",
     "CODERABBIT_REVIEW_MARKER",
     "GREPTILE_REVIEW_MARKER",
