@@ -373,8 +373,14 @@ def _auto_merge_allows(pr: PullRequest, auto_merge: AutoMergeConfig | None) -> b
     that's user-confusing ("ready" but nothing happens). When ``auto_merge``
     is ``None`` (caller didn't thread the config in), the gate is disabled
     for backwards compatibility.
+
+    The ``merge_opt_in_label`` (default ``caretaker:merge``) overrides the
+    per-type default for any individual PR — a human can add the label
+    directly or post ``@caretaker merge`` to have caretaker apply it.
     """
     if auto_merge is None:
+        return True
+    if pr.has_label(auto_merge.merge_opt_in_label):
         return True
     if pr.is_copilot_pr:
         return auto_merge.copilot_prs

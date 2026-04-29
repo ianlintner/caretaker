@@ -32,10 +32,16 @@
           "properties": {
             "copilot_prs": { "type": "boolean" },
             "dependabot_prs": { "type": "boolean" },
+            "caretaker_prs": { "type": "boolean" },
+            "maintainer_bot_prs": { "type": "boolean" },
             "human_prs": { "type": "boolean" },
             "merge_method": {
               "type": "string",
               "enum": ["squash", "merge", "rebase"]
+            },
+            "merge_opt_in_label": {
+              "type": "string",
+              "description": "Label that opts any individual PR into auto-merge, overriding human_prs=false. Applied automatically when a human posts '@caretaker merge'. Default: caretaker:merge"
             }
           }
         },

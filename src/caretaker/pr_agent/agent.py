@@ -63,6 +63,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Matches "@caretaker merge", "@the-care-taker merge", or "/caretaker merge"
+# posted by a human (non-bot) commenter as an explicit opt-in for auto-merge.
+_MERGE_COMMAND_RE = re.compile(
+    r"(?:@(?:the-care-taker|caretaker)|/caretaker)\s+merge\b",
+    re.IGNORECASE,
+)
+
 
 def _readiness_verdicts_agree(a: Readiness, b: Readiness) -> bool:
     """Compare two :class:`Readiness` verdicts at the decision level.
@@ -481,6 +488,37 @@ class PRAgent:
             f"``{action}``. {verdict.explanation}"
         )
 
+    async def _apply_merge_command(
+        self,
+        pr: PullRequest,
+        issue_comments: list[Any],
+    ) -> bool:
+        """Add the merge opt-in label when a human posts ``@caretaker merge``.
+
+        Returns True when the label was freshly applied so the caller can
+        re-fetch the PR and pick up the updated label list before evaluation.
+        Skips silently when the label is already present.
+        """
+        label = self._config.auto_merge.merge_opt_in_label
+        if pr.has_label(label):
+            return False
+        for comment in issue_comments:
+            user = getattr(comment, "user", None)
+            login = getattr(user, "login", "") if user else ""
+            if login and is_automated(login):
+                continue
+            body = getattr(comment, "body", "") or ""
+            if _MERGE_COMMAND_RE.search(body):
+                await self._github.add_labels(self._owner, self._repo, pr.number, [label])
+                logger.info(
+                    "PR #%d: applied %r label via @caretaker merge command by %s",
+                    pr.number,
+                    label,
+                    login,
+                )
+                return True
+        return False
+
     async def _process_pr(
         self, pr: PullRequest, tracking: TrackedPR, report: PRAgentReport
     ) -> TrackedPR:
@@ -507,6 +545,16 @@ class PRAgent:
                 type(exc).__name__,
                 exc,
             )
+
+        # Handle @caretaker merge command: add the opt-in label so the
+        # evaluation below sees it. Re-fetch the PR to pick up the updated
+        # label list — the extra API call is only made when the command fires.
+        if await self._apply_merge_command(pr, issue_comments):
+            refreshed = await self._github.get_pull_request(
+                self._owner, self._repo, pr.number
+            )
+            if refreshed is not None:
+                pr = refreshed
 
         # Evaluate PR state (shared by both the stuck-PR gate and the
         # main action ladder below).

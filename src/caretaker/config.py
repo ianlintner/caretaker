@@ -103,6 +103,10 @@ class AutoMergeConfig(StrictBaseModel):
     maintainer_bot_prs: bool = True
     human_prs: bool = False
     merge_method: Literal["squash", "merge", "rebase"] = "squash"
+    # Label that opts any individual PR into auto-merge regardless of its
+    # author type. Applied automatically when a human posts "@caretaker merge"
+    # on the PR, or can be added manually. Overrides human_prs=false.
+    merge_opt_in_label: str = "caretaker:merge"
 
 
 class CopilotConfig(StrictBaseModel):
