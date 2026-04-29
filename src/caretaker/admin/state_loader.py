@@ -41,6 +41,11 @@ _DEFAULT_INTERVAL_SECONDS = 60
 # cutoff leaves a little slack around cron-adjacent schedules.
 _PROMOTION_COOLDOWN = timedelta(hours=23)
 
+# Fleet repo auto-discovery cooldown — iterating all fleet clients and
+# fetching orchestrator state per repo is expensive (one GitHub API
+# round-trip per repo). Run once every 30 minutes.
+_FLEET_SYNC_COOLDOWN = timedelta(minutes=30)
+
 
 def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
     """Start the admin state refresh loop, or return ``None`` if unconfigured."""
@@ -106,6 +111,9 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
     # level timestamp. ``None`` means "never run" which is always
     # eligible on the next tick.
     last_promotion_at: datetime | None = None
+    # Fleet auto-discovery — throttles the full-client-iteration pass so
+    # we don't hammer GitHub for 185 repos on every 60-second tick.
+    last_fleet_sync_at: datetime | None = None
 
     async def _sync_graph(state) -> None:  # type: ignore[no-untyped-def]
         """Best-effort Neo4j sync. Swallows all errors — graph is optional."""
@@ -134,6 +142,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
 
             counts = await GraphBuilder(persistent_store).full_sync(
                 state,
+                insight_store=data.insight_store,
                 causal_store=data.causal_store,
                 repo=f"{owner}/{name}",
             )
@@ -178,6 +187,82 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
                     )
         except Exception:
             logger.warning("Fleet graph sync failed", exc_info=True)
+
+    async def _sync_fleet_repos() -> None:
+        """Auto-discover repos from the fleet store and sync graph for each.
+
+        The primary watched repo (``CARETAKER_ADMIN_WATCHED_REPO``) is
+        handled by the main loop on every tick. This function iterates
+        ALL fleet-registry clients and attempts a state load + graph
+        sync for each one that is NOT the primary repo.
+
+        Each client sync is best-effort: repos the GitHub App
+        installation cannot access are silently skipped. The pass runs
+        on a 30-minute cooldown to avoid GitHub API rate limits.
+        """
+        nonlocal last_fleet_sync_at
+        if persistent_store is None:
+            return
+        now = datetime.now(UTC)
+        if last_fleet_sync_at is not None and (now - last_fleet_sync_at < _FLEET_SYNC_COOLDOWN):
+            return
+        try:
+            from caretaker.fleet.store import get_store as _get_fleet_store
+            from caretaker.graph.builder import GraphBuilder
+            from caretaker.state.tracker import StateTracker as _StateTracker
+
+            fleet_store = _get_fleet_store()
+            clients = await fleet_store.list_clients()
+            if not clients:
+                logger.debug("Fleet store returned zero clients; nothing to auto-discover")
+                return
+
+            synced = 0
+            skipped = 0
+            primary_slug = f"{owner}/{name}"
+            for client in clients:
+                if client.repo == primary_slug:
+                    continue
+                try:
+                    client_owner, client_name = client.repo.split("/", 1)
+                except ValueError:
+                    logger.debug("Fleet client slug not owner/repo: %r", client.repo)
+                    continue
+                try:
+                    async with GitHubClient(credentials_provider=provider) as github:
+                        client_state = await _StateTracker(github, client_owner, client_name).load()
+                        try:
+                            await data.causal_store.refresh_from_github(
+                                github, client_owner, client_name, client_state
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Causal store refresh failed for %s", client.repo, exc_info=True
+                            )
+                    await GraphBuilder(persistent_store).full_sync(
+                        client_state,
+                        insight_store=data.insight_store,
+                        causal_store=data.causal_store,
+                        repo=client.repo,
+                    )
+                    synced += 1
+                except Exception:
+                    logger.debug(
+                        "Fleet repo sync failed for %s (may lack GitHub App access)",
+                        client.repo,
+                        exc_info=True,
+                    )
+                    skipped += 1
+
+            last_fleet_sync_at = now
+            logger.info(
+                "Fleet repos auto-discovered: %d synced, %d skipped (%d total clients)",
+                synced,
+                skipped,
+                len(clients),
+            )
+        except Exception:
+            logger.warning("Fleet repo auto-discovery failed", exc_info=True)
 
     async def _maybe_run_compaction() -> None:
         """Fire :func:`compaction.run_nightly` at most once per 24h.
@@ -240,6 +325,7 @@ def build_refresh_task(data: AdminDataAccess) -> asyncio.Task[None] | None:
                         len(state.run_history),
                     )
                 await _sync_graph(state)
+                await _sync_fleet_repos()
                 await _maybe_run_compaction()
             except asyncio.CancelledError:
                 raise
