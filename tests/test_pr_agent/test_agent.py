@@ -2208,6 +2208,54 @@ class TestTerminalReadinessOnCloseMerge:
         report2, tracked2 = await agent.run(tracked, pr_number=609)
         github.create_check_run.assert_not_awaited()
 
+    async def test_run_finalizes_readiness_check_for_untracked_merged_pr(self) -> None:
+        """run() with pr_number for a merged PR that was never tracked
+        (state save lost between open and merge, or the PR closed before
+        the first agent run could persist tracking) must still finalize
+        the readiness check — otherwise it dangles ``in_progress`` forever.
+
+        Live incident: caretaker-qa#79. Opened 2026-04-28T08:53Z, merged
+        2026-04-28T23:18Z. Never appeared in ``tracked_prs`` (the state
+        snapshot at 00:15Z next day had 36 entries, none for #79). The
+        ``caretaker/pr-readiness`` check at the head SHA stayed
+        ``in_progress`` with no terminal conclusion because the merge-time
+        finalize gate at ``_run`` line 228 was guarded by
+        ``tracking is not None and not tracking.readiness_check_finalized``.
+        """
+        from datetime import UTC, datetime
+
+        github = AsyncMock()
+        merged_pr = make_pr(
+            number=79,
+            head_ref="copilot/upgrade",
+            merged=True,
+            state=PRState.CLOSED,
+        )
+        merged_pr.head_sha = "b23447de"
+        merged_pr.merged_at = datetime(2026, 4, 28, 23, 18, tzinfo=UTC)
+        github.get_pull_request = AsyncMock(return_value=merged_pr)
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 7})
+
+        agent = self._agent(github)
+        # Critical: tracked_prs is EMPTY — this PR was never tracked.
+        tracked: dict[int, TrackedPR] = {}
+
+        report, tracked = await agent.run(tracked, pr_number=79)
+
+        # Finalization must happen even though tracking didn't exist on entry.
+        github.create_check_run.assert_awaited_once()
+        assert github.create_check_run.call_args.kwargs["conclusion"] == "success"
+        # A tracking entry should have been lazily created and marked finalized
+        # so a subsequent run() is a no-op (idempotency preserved).
+        assert 79 in tracked
+        assert tracked[79].readiness_check_finalized is True
+
+        # Replay the merge event: must NOT re-publish the check.
+        github.create_check_run.reset_mock()
+        await agent.run(tracked, pr_number=79)
+        github.create_check_run.assert_not_awaited()
+
 
 class TestTerminalReadinessOnEscalation:
     """An escalated PR has been handed off to humans — the readiness

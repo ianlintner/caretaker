@@ -224,8 +224,17 @@ class PRAgent:
                 # forever, like it did on PR #609). One-shot finalization
                 # gated by ``readiness_check_finalized`` so we don't repost
                 # on every subsequent webhook for the same PR.
+                #
+                # Synthesise tracking when none exists so a PR that closed
+                # before the first agent run could persist tracking still
+                # gets its readiness check terminated. caretaker-qa#79 hit
+                # this: opened 2026-04-28T08:53Z, merged 23:18Z, never
+                # appeared in tracked_prs, and the readiness check at the
+                # head SHA stayed ``in_progress`` indefinitely.
                 tracking = tracked_prs.get(pr.number)
-                if tracking is not None and not tracking.readiness_check_finalized:
+                if tracking is None:
+                    tracking = TrackedPR(number=pr.number)
+                if not tracking.readiness_check_finalized:
                     try:
                         await self._finalize_readiness_check(pr, tracking)
                     except Exception as exc:  # noqa: BLE001 — never fail the agent
@@ -235,7 +244,7 @@ class PRAgent:
                             type(exc).__name__,
                             exc,
                         )
-                    tracked_prs[pr.number] = tracking
+                tracked_prs[pr.number] = tracking
                 return report, tracked_prs
             open_prs = [pr]
         else:
