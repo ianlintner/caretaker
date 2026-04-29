@@ -105,6 +105,10 @@
         "auto_assign_features": { "type": "boolean" },
         "auto_close_stale_days": { "type": "integer", "minimum": 1 },
         "auto_close_questions": { "type": "boolean" },
+        "triage_gate": {
+          "type": "boolean",
+          "description": "When true, new issues are parked in TRIAGED on the first agent cycle (with a summary comment and caretaker:triaged label) before being dispatched to a coding agent on the next cycle. Prevents duplicate/spam issues from being immediately assigned. Default: false."
+        },
         "labels": {
           "type": "object",
           "additionalProperties": false,

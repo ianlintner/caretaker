@@ -200,6 +200,13 @@ class IssueAgentConfig(StrictBaseModel):
     auto_close_stale_days: int = 30
     auto_close_questions: bool = True
     labels: IssueAgentLabels = Field(default_factory=IssueAgentLabels)
+    # When True, new issues are parked in TRIAGED on the first agent cycle
+    # (with a triage-summary comment and the caretaker:triaged label) and
+    # only dispatched to a coding agent on a subsequent cycle. This prevents
+    # duplicate/spam issues from being immediately assigned before dedup
+    # checks have run. Defaults to False for backward compatibility —
+    # operators opt in per-repo via .github/maintainer/config.yml.
+    triage_gate: bool = False
 
 
 class TriageConfig(StrictBaseModel):
