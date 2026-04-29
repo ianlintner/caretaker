@@ -85,21 +85,21 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
     except Exception:
         logger.debug("OpenTelemetry bootstrap skipped", exc_info=True)
 
-    # Prometheus metrics (paved-path SKILL §1-§10). RED-floor HTTP
-    # metrics + http_client_* + db_client_* + worker_* are emitted
-    # unconditionally; /metrics is served on a separate cluster-internal
-    # port (default 9090) so scraping never contends with user traffic.
+    # Prometheus /metrics ASGI sidecar — owns a uvicorn task on the
+    # event loop, so it has to start in lifespan. The middleware that
+    # populates the counters it scrapes is registered at module scope
+    # (right after ``app = FastAPI(...)`` below) because Starlette
+    # rejects ``add_middleware`` once startup begins.
     try:
-        from caretaker.observability import init_metrics, start_metrics_server
+        from caretaker.observability import start_metrics_server
 
-        init_metrics(application, service="caretaker-mcp")
         metrics_port = int(os.environ.get("CARETAKER_METRICS_PORT", "9090"))
         # Opt out by setting the port to 0 — useful for in-process
         # tests that don't want a background asyncio server.
         if metrics_port > 0:
             application.state.metrics_server_task = start_metrics_server(port=metrics_port)
     except Exception:
-        logger.warning("Prometheus metrics init failed", exc_info=True)
+        logger.warning("Prometheus metrics server start failed", exc_info=True)
 
     # Configure shared OAuth2 bearer-token auth used by the fleet
     # heartbeat endpoint (and any future authenticated public
@@ -596,6 +596,19 @@ app = FastAPI(
     version=_PKG_VERSION,
     lifespan=_lifespan,
 )
+
+# Prometheus RED-floor HTTP middleware (paved-path SKILL §1-§10). Must
+# register at app construction — Starlette rejects ``add_middleware``
+# after lifespan startup begins, so calling this from inside ``_lifespan``
+# raises ``RuntimeError: Cannot add middleware after an application has
+# started``. The /metrics ASGI sidecar that scrapes the counters this
+# middleware populates is started from lifespan instead (see above).
+try:
+    from caretaker.observability import init_metrics
+
+    init_metrics(app, service="caretaker-mcp")
+except Exception:
+    logger.warning("Prometheus metrics init failed", exc_info=True)
 
 
 # ── Delivery dedup ───────────────────────────────────────────────

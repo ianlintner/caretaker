@@ -64,6 +64,12 @@ def _clean_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backend_main, "_dedup", LocalDedup())
 
 
+@pytest.fixture(autouse=True)
+def _disable_metrics_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent metrics server from starting on port 9090 during tests."""
+    monkeypatch.setenv("CARETAKER_METRICS_PORT", "0")
+
+
 @pytest.fixture()
 def with_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CARETAKER_GITHUB_APP_WEBHOOK_SECRET", WEBHOOK_SECRET)
