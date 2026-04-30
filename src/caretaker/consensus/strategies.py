@@ -307,23 +307,12 @@ class AlwaysTwoModels:
                 reason="primary, secondary, and every tiebreaker errored",
             )
 
-        # If tiebreaker exists, prefer it. When it agrees with a surviving
-        # prior verdict on the agreement fields, surface the agreement-winner
-        # as the final_model (so traces show "two models agreed on X");
-        # otherwise the tiebreaker itself is the deciding vote.
+        # Tiebreaker exists — it's the verdict we ship, regardless of
+        # whether it agreed with a prior or cast a fresh deciding vote.
+        # ``final_model`` always points at the model that produced the
+        # shipped verdict so cost/latency/bug triage stays unambiguous.
+        # Agreement information remains reconstructable from ``attempts``.
         if tiebreaker_verdict is not None and tiebreaker_attempt is not None:
-            for verdict, attempt in candidates[:-1]:  # exclude tiebreaker self
-                if _agree(tiebreaker_verdict, verdict, ctx.agreement_fields):
-                    return ConsensusResult(
-                        verdict=tiebreaker_verdict,
-                        trace=ConsensusTrace(
-                            strategy=self.name,
-                            attempts=attempts,
-                            escalated=True,
-                            final_model=attempt.model,
-                        ),
-                    )
-            # No prior agreement — tiebreaker casts the deciding vote.
             return ConsensusResult(
                 verdict=tiebreaker_verdict,
                 trace=ConsensusTrace(
@@ -334,18 +323,18 @@ class AlwaysTwoModels:
                 ),
             )
 
-        # Fall back to highest-confidence among all candidates.
-        def _conf(item: tuple[Any, ModelAttempt]) -> float:
-            return item[1].confidence if item[1].confidence is not None else 0.0
-
-        winner_verdict, winner_attempt = max(candidates, key=_conf)
-        return ConsensusResult(
-            verdict=winner_verdict,
-            trace=ConsensusTrace(
-                strategy=self.name,
-                attempts=attempts,
-                escalated=True,
-                final_model=winner_attempt.model,
+        # Tiebreaker tier exhausted (or absent) AND we lack two-model agreement.
+        # The strategy's contract is "two models must agree (or a tiebreaker
+        # breaks the tie)" — silently shipping the higher-confidence verdict
+        # would contradict that. Raise ConsensusUnavailable so the wrapping
+        # @shadow_decision falls through to the legacy heuristic, which on
+        # readiness returns "block-merge" (the safe default).
+        raise ConsensusUnavailable(
+            strategy=self.name,
+            attempts=attempts,
+            reason=(
+                "two-model disagreement and tiebreaker tier exhausted; "
+                "consensus contract requires agreement or a casting vote"
             ),
         )
 

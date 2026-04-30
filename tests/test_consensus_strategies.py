@@ -265,8 +265,10 @@ async def test_atm_promotes_tiebreaker_when_one_model_errors() -> None:
     result = await strategy.run(ctx)
     # Two votes ('fake-anthropic' + 'literal-tiebreaker') agree on 'ready'.
     assert result.verdict.label == "ready"
-    # Final model is the surviving primary (it was the agreement winner).
-    assert result.trace.final_model in ("fake-anthropic", "literal-tiebreaker")
+    # final_model is always the model that produced the shipped verdict.
+    # Here the tiebreaker agreed with the surviving primary, so the
+    # tiebreaker's verdict shipped → final_model is the tiebreaker.
+    assert result.trace.final_model == "literal-tiebreaker"
 
 
 @pytest.mark.asyncio
@@ -307,3 +309,51 @@ async def test_atm_compares_full_verdict_when_agreement_fields_empty() -> None:
     )
     result = await strategy.run(ctx)
     assert result.trace.escalated is False
+
+
+@pytest.mark.asyncio
+async def test_atm_raises_when_disagreement_and_no_tiebreaker_tier() -> None:
+    """When primary and secondary disagree and there's no tiebreaker tier, raise.
+
+    The AlwaysTwoModels contract is "two models must agree (or a tiebreaker
+    breaks the tie)." With only escalation[0] configured and the two voters
+    disagreeing, we lack both. Raise ConsensusUnavailable so the caller
+    falls back to the safe default (e.g. block-merge for readiness).
+    """
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [_Verdict(label="not_ready", confidence=0.85)],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt"],  # no tiebreaker tier
+        agreement=["label"],
+    )
+    with pytest.raises(ConsensusUnavailable):
+        await strategy.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_atm_raises_when_disagreement_and_tiebreaker_tier_exhausted() -> None:
+    """Same as above but with a tiebreaker tier where every entry errors."""
+    err = StructuredCompleteError(raw_text="", validation_error=RuntimeError("nope"))
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [_Verdict(label="not_ready", confidence=0.85)],
+            "literal-tiebreaker": [err],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt", "literal-tiebreaker"],
+        agreement=["label"],
+    )
+    with pytest.raises(ConsensusUnavailable):
+        await strategy.run(ctx)
