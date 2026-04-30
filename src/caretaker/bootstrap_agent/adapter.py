@@ -13,7 +13,7 @@ from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.bootstrap_agent.agent import BootstrapAgent
 
 if TYPE_CHECKING:
-    from caretaker.state.models import OrchestratorState, RunSummary
+    from caretaker.state.models import OrchestratorState
 
 
 class BootstrapAgentAdapter(BaseAgent):
@@ -54,10 +54,3 @@ class BootstrapAgentAdapter(BaseAgent):
                 "prs_skipped_existing": report.prs_skipped_existing,
             },
         )
-
-    def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
-        # The bootstrap agent's results are operational metadata rather
-        # than fleet-health metrics, so we don't fold them into RunSummary
-        # counters. The PRs are visible in the run log / admin SPA via
-        # ``result.extra``.
-        return None

@@ -84,10 +84,13 @@ class BaseAgent(ABC):
             An ``AgentResult`` summarising what happened.
         """
 
-    @abstractmethod
-    def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
+    def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:  # noqa: B027
         """Map this agent's result fields onto the shared ``RunSummary``.
 
         This keeps summary-field knowledge co-located with the agent that
         produces it, rather than in the orchestrator.
+
+        Override when the agent writes fields into ``RunSummary``. The default
+        no-op is correct for agents whose results are surfaced only through
+        ``result.extra`` or the run log.
         """

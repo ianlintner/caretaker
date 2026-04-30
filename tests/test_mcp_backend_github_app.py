@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from caretaker.mcp_backend.main import app
-from caretaker.state.dedup import LocalDedup
+from caretaker.state.webhook_dedup import LocalDedup
 
 # ── helpers ---------------------------------------------------------------
 

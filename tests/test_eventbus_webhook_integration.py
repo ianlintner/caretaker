@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 import caretaker.mcp_backend.main as backend_main
 from caretaker.eventbus.base import EventBusError
 from caretaker.eventbus.local import LocalEventBus
-from caretaker.state.dedup import LocalDedup
+from caretaker.state.webhook_dedup import LocalDedup
 
 WEBHOOK_SECRET = "supersecret-test-value"
 

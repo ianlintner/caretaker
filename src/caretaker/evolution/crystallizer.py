@@ -63,14 +63,13 @@ _CATEGORY_PATTERNS: list[tuple[str, str]] = [
 # FailureCategory onto one of ``CATEGORY_CI`` / ``CATEGORY_BUILD`` /
 # ``CATEGORY_SECURITY``.
 #
-# TODO(T-A10, crystallizer_category): FailureTriage has no ``security``
-# analogue, so the candidate can never produce ``CATEGORY_SECURITY``
-# even when the legacy regex would (``secret``/``vuln``/``cve``/
-# ``dependabot``/``snyk``). Those notes fall through to ``CATEGORY_CI``
-# in the candidate path — shadow-mode disagreement records will surface
-# how often this happens. If the rate is non-trivial, extend
-# :data:`FailureCategory` with a ``security`` row before flipping
-# ``mode=enforce``.
+# FailureTriage has no ``security`` analogue, so the candidate path never
+# produces ``CATEGORY_SECURITY`` even when the legacy regex would (matches:
+# ``secret``, ``vuln``, ``cve``, ``dependabot``, ``snyk``). Those fall
+# through to ``CATEGORY_CI`` in the candidate path. Shadow-mode disagreement
+# records will surface the frequency. If it is non-trivial, extend
+# :data:`FailureCategory` with a ``security`` row before setting
+# ``executor_routing mode=enforce``.
 _FAILURE_CATEGORY_TO_STORE: dict[FailureCategory, str] = {
     "test": CATEGORY_CI,
     "lint": CATEGORY_CI,

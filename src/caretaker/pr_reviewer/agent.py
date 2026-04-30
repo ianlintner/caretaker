@@ -39,7 +39,7 @@ from caretaker.pr_reviewer.routing import decide
 from caretaker.state.models import TrackedPR
 
 if TYPE_CHECKING:
-    from caretaker.state.models import OrchestratorState, RunSummary
+    from caretaker.state.models import OrchestratorState
 
 
 @shadow_decision("executor_routing", compare=executor_routes_agree)
@@ -574,6 +574,3 @@ class PRReviewerAgent(BaseAgent):
                 exc,
             )
             return None
-
-    def apply_summary(self, result: AgentResult, summary: RunSummary) -> None:
-        pass
