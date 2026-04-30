@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from caretaker.guardrails.policy import GuardrailsConfig, MergeRollbackConfig
 
@@ -335,6 +335,39 @@ class AgenticBotIdentityConfig(StrictBaseModel):
     llm_cache_max_size: int = 1_000
 
 
+class ModelPoolConfig(StrictBaseModel):
+    """Capability-tag → concrete-model registry consumed by the consensus engine.
+
+    Tags are operator-defined; common values: ``fast``, ``reasoning_anthropic``,
+    ``reasoning_alt``, ``cheap``. Per-site
+    :class:`ConsensusDomainConfig.primary` / ``escalation`` accept either a
+    tag or a literal model string accepted by the LLM router.
+
+    The pool stays empty by default — sites that don't opt into consensus
+    never look at it.
+    """
+
+    pool: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of capability tag → concrete model string. Every value "
+            "must be a non-empty string accepted by the LLM router (e.g. "
+            "'claude-sonnet-4-6', 'openai/gpt-4o', 'azure_ai/gpt-4o')."
+        ),
+    )
+
+    @field_validator("pool")
+    @classmethod
+    def _no_empty_values(cls, value: dict[str, str]) -> dict[str, str]:
+        for tag, model in value.items():
+            if not isinstance(model, str) or not model:
+                raise ValueError(
+                    f"pool tag {tag!r} maps to invalid value {model!r}; "
+                    "every tag must resolve to a non-empty model string"
+                )
+        return value
+
+
 class LLMConfig(StrictBaseModel):
     # Allow population by either the new canonical name ``llm_enabled`` or the
     # legacy name ``claude_enabled`` so existing configs keep working. We
@@ -387,6 +420,9 @@ class LLMConfig(StrictBaseModel):
     # Fallback model chain — only used when provider="litellm".  Each entry is
     # a LiteLLM-format model string tried in order if the primary call fails.
     fallback_models: list[str] = Field(default_factory=list)
+    # Capability-tag → model registry consumed by the consensus engine.
+    # Empty by default; populated when a site opts into consensus.
+    model_pool: ModelPoolConfig = Field(default_factory=ModelPoolConfig)
     # Number of retries for ``ClaudeClient.structured_complete`` when the model
     # returns malformed JSON or a payload that fails pydantic validation.
     # Set to 0 to disable the self-correcting retry loop.
