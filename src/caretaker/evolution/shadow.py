@@ -104,6 +104,27 @@ SHADOW_DECISIONS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# Diagnostic counter: surfaces decisions where the per-site ``compare_fn``
+# returned ``agree`` (so the primary agreement rate counted them as agree)
+# but a strict equality check on the full verdict disagreed. The per-site
+# compare functions are deliberately loose — they ignore descriptive fields
+# like ``stuck_reason`` / ``blockers`` / ``summary`` so the disagreement
+# rate reflects only behaviour-affecting changes — but loose comparisons
+# can hide LLM drift in stated reasoning. This counter lets operators see
+# that drift without inflating the primary metric the enforce-gate keys on.
+#
+# Cardinality: one series per ``name`` (currently 10); strictly additive
+# to the SHADOW_DECISIONS_TOTAL budget.
+SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL = Counter(
+    "caretaker_shadow_semantic_disagreements_total",
+    (
+        "Shadow-mode decisions where the loose compare_fn returned agree "
+        "but a strict equality check on the full verdict disagreed."
+    ),
+    ["name"],
+    registry=REGISTRY,
+)
+
 
 # ── Ring buffer + record model ───────────────────────────────────────────
 
@@ -184,6 +205,21 @@ class ShadowDecisionRecord(BaseModel):
             "router's ``llm.default_model`` at the time of the call. "
             "``None`` when the decorator was unable to determine a model "
             "(e.g. candidate errored before issuing an LLM request)."
+        ),
+    )
+    # Diagnostic field: set to ``True`` when the loose ``compare_fn`` agreed
+    # but a strict equality check on the full verdict disagreed. ``None``
+    # whenever the strict check is not meaningful — when the loose compare
+    # itself disagreed (already captured by ``outcome=="disagree"``), when
+    # the candidate errored, or when no comparison happened (off / enforce
+    # modes). Operators query this to spot LLM drift in descriptive fields
+    # (``stuck_reason``, ``blockers``, ``summary``) that the per-site
+    # compare deliberately ignores.
+    semantic_disagreement: bool | None = Field(
+        default=None,
+        description=(
+            "True when the loose compare returned agree but strict equality "
+            "disagreed. ``None`` when the strict check is not applicable."
         ),
     )
 
@@ -581,6 +617,18 @@ def shadow_decision(
                     f"!= candidate={_short_repr(candidate_verdict)}"
                 )
             )
+            # Diagnostic: when the loose compare returned agree, also run a
+            # strict equality check on the full verdict. A True result
+            # means the LLM and legacy disagree on descriptive fields the
+            # per-site compare deliberately ignores (e.g. ``stuck_reason``,
+            # ``blockers``, free-text rationale). The primary agreement rate
+            # is unchanged — this just surfaces drift the gate would miss.
+            semantic_disagreement: bool | None = None
+            if agreed:
+                strict_agreed = _default_compare(legacy_result, candidate_verdict)
+                if not strict_agreed:
+                    semantic_disagreement = True
+                    SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name=name).inc()
             record = ShadowDecisionRecord(
                 id=str(uuid.uuid4()),
                 name=name,
@@ -594,6 +642,7 @@ def shadow_decision(
                 context_json=_serialise_context(ctx_dict),
                 legacy_model=default_model,
                 candidate_model=candidate_model,
+                semantic_disagreement=semantic_disagreement,
             )
             write_shadow_decision(record)
             SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome=outcome).inc()
@@ -617,6 +666,7 @@ def _short_repr(value: Any, *, limit: int = 120) -> str:
 
 __all__ = [
     "SHADOW_DECISIONS_TOTAL",
+    "SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL",
     "ShadowDecisionRecord",
     "ShadowMode",
     "ShadowOutcome",
