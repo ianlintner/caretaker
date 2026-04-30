@@ -724,6 +724,36 @@ class TestReviewFixLifecycle:
         agent._copilot_bridge.request_review_fix.assert_awaited_once()
         assert updated.state == PRTrackingState.FIX_REQUESTED
 
+    async def test_stale_copilot_attempts_reset_before_review_fix_dispatch(self) -> None:
+        """Long-lived PR with aged-out copilot_attempts gets the review-fix
+        dispatch instead of immediately escalating.
+
+        The retry-window reset originally only fired on the CI-fix path, so a
+        PR that exhausted CI fix attempts months ago but is now seeing its
+        first review-fix today would escalate purely because of the un-reset
+        counter. After the reset is shared across both dispatch paths, the
+        counter zeros and the dispatch lands as attempt 1.
+        """
+        from datetime import timedelta
+
+        pr = make_pr(number=23, user=User(login="dev", id=5, type="User"))
+        tracking = TrackedPR(
+            number=23,
+            copilot_attempts=2,
+            last_copilot_attempt_at=datetime.now(UTC) - timedelta(hours=72),
+        )
+        config = make_config(max_retries=2)
+        config.copilot.retry_window_hours = 24
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
+        agent._copilot_bridge.request_review_fix.assert_awaited_once()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+        assert 23 in report.fix_requested
+        assert 23 not in report.escalated
+        # Counter reset to 0, then bumped to 1 by this dispatch.
+        assert updated.copilot_attempts == 1
+
 
 # ── _process_pr state persistence ─────────────────────────────────────
 

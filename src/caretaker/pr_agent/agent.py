@@ -858,6 +858,36 @@ class PRAgent:
         # Check if any result comment exists after the last task
         return all(not comment.is_maintainer_result for comment in ordered[last_task_idx + 1 :])
 
+    def _maybe_reset_copilot_attempts(self, pr_number: int, tracking: TrackedPR) -> None:
+        """Reset stale ``copilot_attempts`` when the prior attempt is too old.
+
+        Shared between :meth:`_handle_ci_fix` and :meth:`_handle_review_fix` so
+        both dispatch paths see the same counter state. Without this, a
+        long-lived PR that exhausted CI fix attempts months ago could
+        immediately escalate on its first review-fix dispatch, because the
+        review path would read the un-reset counter.
+        """
+        window_h = self._config.copilot.retry_window_hours
+        if (
+            window_h <= 0
+            or tracking.copilot_attempts == 0
+            or tracking.last_copilot_attempt_at is None
+        ):
+            return
+        last = tracking.last_copilot_attempt_at
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
+        if age_h >= window_h:
+            logger.info(
+                "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
+                "outside %dh retry window)",
+                pr_number,
+                age_h,
+                window_h,
+            )
+            tracking.copilot_attempts = 0
+
     async def _handle_ci_fix(
         self,
         pr: PullRequest,
@@ -887,25 +917,7 @@ class PRAgent:
         # E3: when the prior attempt is older than retry_window_hours, reset
         # the attempt counter — old failures shouldn't compound to escalation
         # on long-lived PRs that genuinely needed time.
-        window_h = self._config.copilot.retry_window_hours
-        if (
-            window_h > 0
-            and tracking.copilot_attempts > 0
-            and tracking.last_copilot_attempt_at is not None
-        ):
-            last = tracking.last_copilot_attempt_at
-            if last.tzinfo is None:
-                last = last.replace(tzinfo=UTC)
-            age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
-            if age_h >= window_h:
-                logger.info(
-                    "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
-                    "outside %dh retry window)",
-                    pr.number,
-                    age_h,
-                    window_h,
-                )
-                tracking.copilot_attempts = 0
+        self._maybe_reset_copilot_attempts(pr.number, tracking)
 
         # Check if we've exceeded Copilot retry limit
         if tracking.copilot_attempts >= self._config.copilot.max_retries:
@@ -1259,6 +1271,13 @@ class PRAgent:
                 report.escalated.append(pr.number)
                 return tracking
             # verdict == FIX or APPROVE — fall through to Copilot dispatch
+
+        # Reset stale copilot_attempts before reading. The counter is shared
+        # with the CI-fix dispatcher; without this, a PR that exhausted CI
+        # fix attempts months ago could escalate on its first review-fix
+        # today purely because the prior attempts had aged out of the
+        # retry window but were still being counted.
+        self._maybe_reset_copilot_attempts(pr.number, tracking)
 
         attempt = tracking.copilot_attempts + 1
         if attempt > self._config.copilot.max_retries:
