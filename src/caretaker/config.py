@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from caretaker.guardrails.policy import GuardrailsConfig, MergeRollbackConfig
 
@@ -335,6 +335,39 @@ class AgenticBotIdentityConfig(StrictBaseModel):
     llm_cache_max_size: int = 1_000
 
 
+class ModelPoolConfig(StrictBaseModel):
+    """Capability-tag → concrete-model registry consumed by the consensus engine.
+
+    Tags are operator-defined; common values: ``fast``, ``reasoning_anthropic``,
+    ``reasoning_alt``, ``cheap``. Per-site
+    :class:`ConsensusDomainConfig.primary` / ``escalation`` accept either a
+    tag or a literal model string accepted by the LLM router.
+
+    The pool stays empty by default — sites that don't opt into consensus
+    never look at it.
+    """
+
+    pool: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of capability tag → concrete model string. Every value "
+            "must be a non-empty string accepted by the LLM router (e.g. "
+            "'claude-sonnet-4-6', 'openai/gpt-4o', 'azure_ai/gpt-4o')."
+        ),
+    )
+
+    @field_validator("pool")
+    @classmethod
+    def _no_empty_values(cls, value: dict[str, str]) -> dict[str, str]:
+        for tag, model in value.items():
+            if not isinstance(model, str) or not model:
+                raise ValueError(
+                    f"pool tag {tag!r} maps to invalid value {model!r}; "
+                    "every tag must resolve to a non-empty model string"
+                )
+        return value
+
+
 class LLMConfig(StrictBaseModel):
     # Allow population by either the new canonical name ``llm_enabled`` or the
     # legacy name ``claude_enabled`` so existing configs keep working. We
@@ -387,6 +420,9 @@ class LLMConfig(StrictBaseModel):
     # Fallback model chain — only used when provider="litellm".  Each entry is
     # a LiteLLM-format model string tried in order if the primary call fails.
     fallback_models: list[str] = Field(default_factory=list)
+    # Capability-tag → model registry consumed by the consensus engine.
+    # Empty by default; populated when a site opts into consensus.
+    model_pool: ModelPoolConfig = Field(default_factory=ModelPoolConfig)
     # Number of retries for ``ClaudeClient.structured_complete`` when the model
     # returns malformed JSON or a payload that fails pydantic validation.
     # Set to 0 to disable the self-correcting retry loop.
@@ -1394,6 +1430,62 @@ class AgenticEnforceGateConfig(StrictBaseModel):
     )
 
 
+class ConsensusDomainConfig(StrictBaseModel):
+    """Per-decision-site consensus engine configuration.
+
+    Attached as an optional field to :class:`AgenticDomainConfig`. When
+    ``None``, the existing single-model path runs (no engine involved).
+    Sites opt in by setting this in YAML.
+
+    Tag values resolve through :class:`LLMConfig.model_pool`. Literal model
+    strings (anything not a known tag) pass through unchanged to the LLM
+    router.
+    """
+
+    strategy: Literal["tiered_confidence", "always_two_models"] = "tiered_confidence"
+    primary: str = Field(
+        default="fast",
+        description="Capability tag or literal model string for the primary call.",
+    )
+    escalation: list[str] = Field(
+        default_factory=lambda: ["reasoning_anthropic"],
+        description=(
+            "Ordered tags/literals for escalation. TieredConfidence consults "
+            "every entry on low-confidence; AlwaysTwoModels uses [0] as the "
+            "second voter and [1:] as tiebreakers."
+        ),
+    )
+    confidence_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="TieredConfidence escalates when verdict.confidence < this.",
+    )
+    agreement_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Field names compared for AlwaysTwoModels agreement. Empty list "
+            "means compare full verdicts via ==. For readiness, set to "
+            "['verdict'] so only the closed-enum field has to match."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_strategy_specific(self) -> ConsensusDomainConfig:
+        if self.strategy == "always_two_models":
+            if not self.escalation:
+                raise ValueError(
+                    "always_two_models requires escalation[0] (no second model configured)"
+                )
+            if self.escalation[0] == self.primary:
+                raise ValueError(
+                    f"always_two_models requires escalation[0] ({self.escalation[0]!r}) "
+                    f"to be distinct from primary ({self.primary!r}); use a different "
+                    "tag or literal model so the two-model gate consults distinct models"
+                )
+        return self
+
+
 class AgenticDomainConfig(StrictBaseModel):
     """Per-decision-site knobs for the Phase 2 agentic migration.
 
@@ -1423,6 +1515,10 @@ class AgenticDomainConfig(StrictBaseModel):
     model_override: str | None = None
     # Optional per-site max-tokens override; only consumed when model_override is set.
     max_tokens_override: int | None = None
+    # Optional consensus engine config. When set, the site routes its LLM
+    # path through the engine; when None, the existing single-model path
+    # (claude.structured_complete) runs unchanged.
+    consensus: ConsensusDomainConfig | None = None
 
 
 class IssueTriageAgenticConfig(AgenticDomainConfig):
@@ -1467,6 +1563,12 @@ class AgenticConfig(StrictBaseModel):
     dispatch_guard: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     executor_routing: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     crystallizer_category: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    # Foundry's pre/post-flight sizing gate. Today the gate is a pure
+    # heuristic (file count + line count). With a non-None ``consensus``
+    # field, borderline cases consult the engine to judge whether a diff
+    # in the gray zone is mechanical (route to Foundry) or genuinely
+    # complex (escalate to Copilot).
+    size_classifier: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
 
 
 class MaintainerConfig(StrictBaseModel):

@@ -117,6 +117,107 @@ def test_record_response_headers_no_throttle_on_healthy_remaining() -> None:
     assert get_cooldown().is_blocked() is False
 
 
+# ── Cooldown self-heal ─────────────────────────────────────────────────
+
+
+def test_self_heal_clears_stale_cooldown_when_remaining_is_healthy() -> None:
+    """A 403/429 sets a long cooldown; a later 200 with healthy remaining
+    must clear it. Reproduces the production incident where a stale
+    cooldown blocked agent dispatch despite ``X-RateLimit-Remaining``
+    showing the bucket had refilled (PR #657 deferred ~1h)."""
+    cd = get_cooldown()
+    # Engage a long cooldown (the kind a sticky 403 would create).
+    cd.mark_blocked(time.time() + 3500, reason="HTTP 403 rate-limited")
+    assert cd.is_blocked() is True
+
+    # A fresh successful response shows the bucket is healthy.
+    resp = _resp({"X-RateLimit-Remaining": "11491"}, status=200)
+    record_response_headers(resp)
+
+    assert cd.is_blocked() is False
+    assert cd.snapshot()["last_remaining"] == 11491
+    assert cd.snapshot()["reason"] == ""
+
+
+def test_self_heal_does_not_clear_when_remaining_is_low() -> None:
+    """A genuinely-throttled cooldown must stay engaged when remaining
+    is still below the healthy threshold — clearing here would let the
+    agent burn the rest of the budget."""
+    cd = get_cooldown()
+    cd.mark_blocked(time.time() + 60, reason="HTTP 429 rate-limited")
+
+    # Remaining=20 is above the soft-throttle floor (15) but below the
+    # healthy floor (100) — cooldown must persist.
+    resp = _resp({"X-RateLimit-Remaining": "20"}, status=200)
+    record_response_headers(resp)
+
+    assert cd.is_blocked() is True
+    assert cd.snapshot()["last_remaining"] == 20
+
+
+def test_self_heal_clears_then_soft_throttle_does_not_re_engage_at_healthy() -> None:
+    """The self-heal clears, the soft-throttle does NOT re-engage at the
+    healthy reading. Net result: cooldown is fully off."""
+    cd = get_cooldown()
+    cd.mark_blocked(time.time() + 600, reason="HTTP 429 rate-limited")
+
+    resp = _resp({"X-RateLimit-Remaining": "5000"}, status=200)
+    record_response_headers(resp)
+
+    assert cd.is_blocked() is False
+    # Soft-throttle floor is 15, so 5000 is comfortably above it.
+
+
+def test_self_heal_no_op_when_already_unblocked() -> None:
+    """maybe_clear_if_healthy on an unblocked cooldown is a no-op."""
+    cd = get_cooldown()
+    assert cd.is_blocked() is False
+
+    cleared = cd.maybe_clear_if_healthy(5000)
+
+    assert cleared is False
+    assert cd.is_blocked() is False
+
+
+def test_self_heal_no_op_when_naturally_expired() -> None:
+    """An already-expired cooldown is not considered self-healed."""
+    cd = get_cooldown()
+    # Set a block in the past — already expired by the time we observe.
+    cd.mark_blocked(time.time() - 1, reason="stale")
+    cleared = cd.maybe_clear_if_healthy(5000)
+    assert cleared is False
+
+
+def test_self_heal_returns_true_only_on_actual_clear() -> None:
+    cd = get_cooldown()
+    cd.mark_blocked(time.time() + 100, reason="active")
+
+    # Below threshold → False, no clear.
+    assert cd.maybe_clear_if_healthy(50) is False
+    assert cd.is_blocked() is True
+
+    # Above threshold → True, cleared.
+    assert cd.maybe_clear_if_healthy(500) is True
+    assert cd.is_blocked() is False
+
+    # Subsequent call on already-cleared cooldown → False.
+    assert cd.maybe_clear_if_healthy(500) is False
+
+
+def test_self_heal_threshold_is_configurable_per_call() -> None:
+    """The healthy_threshold kwarg lets ops override the env-derived default."""
+    cd = get_cooldown()
+    cd.mark_blocked(time.time() + 100, reason="active")
+
+    # Caller demands a much higher bar — 50 is below it, no clear.
+    assert cd.maybe_clear_if_healthy(50, healthy_threshold=1000) is False
+    assert cd.is_blocked() is True
+
+    # Below the default threshold (100) but above an explicit lower bar.
+    assert cd.maybe_clear_if_healthy(50, healthy_threshold=10) is True
+    assert cd.is_blocked() is False
+
+
 # ── Client integration ───────────────────────────────────────────────
 
 

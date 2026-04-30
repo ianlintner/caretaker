@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 _LOW_REMAINING_THRESHOLD = int(os.environ.get("CARETAKER_RL_LOW_THRESHOLD", "15"))
 _SOFT_BACKOFF_SECONDS = float(os.environ.get("CARETAKER_RL_SOFT_BACKOFF_SECONDS", "2.0"))
 _MAX_COOLDOWN_SECONDS = float(os.environ.get("CARETAKER_RL_MAX_COOLDOWN_SECONDS", "3600"))
+# Threshold at which an active cooldown is considered stale and self-healed.
+# When ``X-RateLimit-Remaining`` exceeds this on a fresh response while we're
+# still in a cooldown window, the prior block came from a 403/429 whose reset
+# has effectively elapsed (GitHub refilled the bucket) — keep blocking
+# wastes time. Tuned well above the soft-throttle threshold so a single
+# successful call doesn't repeatedly toggle the cooldown.
+_HEALTHY_REMAINING_THRESHOLD = int(os.environ.get("CARETAKER_RL_HEALTHY_THRESHOLD", "100"))
 
 
 class RateLimitCooldown:
@@ -93,6 +100,54 @@ class RateLimitCooldown:
     def update_remaining(self, remaining: int) -> None:
         with self._lock:
             self._last_remaining = remaining
+
+    def maybe_clear_if_healthy(
+        self,
+        current_remaining: int,
+        *,
+        healthy_threshold: int = _HEALTHY_REMAINING_THRESHOLD,
+        now: float | None = None,
+    ) -> bool:
+        """Clear an active cooldown when the live rate-limit budget is healthy.
+
+        Called from :func:`record_response_headers` after every successful
+        response that carries ``X-RateLimit-Remaining``. Without this, a
+        cooldown set by a single 403/429 with a far-future reset header
+        would stick for up to :data:`_MAX_COOLDOWN_SECONDS` (1 hour by
+        default) even after GitHub's bucket refilled — silently deferring
+        every agent dispatch in that window.
+
+        We only clear when:
+        * we are currently blocked (``_blocked_until`` in the future), and
+        * the freshly-observed ``current_remaining`` is well above the
+          soft-throttle floor (``healthy_threshold``, default 100).
+
+        Any subsequent rate-limit hit will re-engage the cooldown
+        immediately via :func:`record_rate_limit_response`, so the worst
+        case for a false-positive clear is one extra request before we
+        re-block.
+
+        Returns ``True`` when the cooldown was cleared.
+        """
+        now = now if now is not None else time.time()
+        with self._lock:
+            if self._blocked_until <= now:
+                return False  # already expired naturally
+            if current_remaining < healthy_threshold:
+                return False
+            previous_until = self._blocked_until
+            previous_reason = self._reason
+            self._blocked_until = 0.0
+            self._reason = ""
+        logger.info(
+            "GitHub rate-limit cooldown self-healed: remaining=%d ≥ threshold=%d "
+            "(would have blocked for another %.0fs, prior reason=%r)",
+            current_remaining,
+            healthy_threshold,
+            previous_until - now,
+            previous_reason,
+        )
+        return True
 
     def reset(self) -> None:
         """Test helper — clear all state."""
@@ -170,10 +225,19 @@ def record_response_headers(response: httpx.Response) -> None:
 
     Called on the success path so we notice budget exhaustion *before*
     the next request rather than after.
+
+    Also self-heals a stale cooldown: if we're currently blocked but the
+    response's ``X-RateLimit-Remaining`` shows the bucket has refilled,
+    clear the cooldown so subsequent agent dispatches aren't gated by a
+    timer that has effectively elapsed. See
+    :meth:`RateLimitCooldown.maybe_clear_if_healthy`.
     """
     _blocked_until, remaining = parse_rate_limit_headers(response)
     if remaining is not None:
         _COOLDOWN.update_remaining(remaining)
+        # Self-heal BEFORE the soft-throttle check so a healthy reading
+        # clears a stale block before we'd consider re-engaging one.
+        _COOLDOWN.maybe_clear_if_healthy(remaining)
         _publish_rate_limit_metrics()
         if remaining <= _LOW_REMAINING_THRESHOLD:
             # Soft throttle: add a small blocking window so bursts don't

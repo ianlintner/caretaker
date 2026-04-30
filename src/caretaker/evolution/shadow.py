@@ -207,6 +207,15 @@ class ShadowDecisionRecord(BaseModel):
             "(e.g. candidate errored before issuing an LLM request)."
         ),
     )
+    consensus_trace_json: str | None = Field(
+        default=None,
+        description=(
+            "JSON-serialised :class:`caretaker.consensus.ConsensusTrace` for "
+            "decisions that ran through the consensus engine. ``None`` for "
+            "legacy-only decisions and for sites where ``AgenticDomainConfig."
+            "consensus`` is None."
+        ),
+    )
     # Diagnostic field, tri-state:
     #
     # * ``True``  — strict equality check ran and disagreed (LLM drift in
@@ -271,6 +280,9 @@ def write_shadow_decision(record: ShadowDecisionRecord) -> None:
         # normalises the empty-string back to ``None`` on read.
         "legacy_model": record.legacy_model or "",
         "candidate_model": record.candidate_model or "",
+        # Empty string when None so Neo4j storage doesn't have to special-case
+        # NULLs; admin API normalises empty string back to None on read.
+        "consensus_trace_json": record.consensus_trace_json or "",
     }
     stats = writer.stats()
     if stats.get("enabled"):
