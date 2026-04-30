@@ -384,6 +384,35 @@ async def evaluate_pr_readiness_llm(
         memory_block = await _build_memory_block_for_readiness(context, retriever)
 
     prompt = build_readiness_prompt(context, memory_block=memory_block)
+
+    # Consensus engine routing — when a process-wide engine is configured for
+    # the "readiness" site, route through the engine. Otherwise fall back to
+    # the existing single-model direct path. Imported lazily so module import
+    # stays cheap and circular-import-safe.
+    from caretaker.consensus import active as consensus_active
+    from caretaker.consensus.result import ConsensusUnavailable
+
+    engine = consensus_active.get_active_engine()
+    if engine is not None and engine.has_site("readiness"):
+        try:
+            result = await engine.decide(
+                site_name="readiness",
+                schema=Readiness,
+                system_prompt=_READINESS_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                feature="pr_readiness",
+            )
+        except ConsensusUnavailable as exc:
+            logger.info(
+                "evaluate_pr_readiness_llm: consensus unavailable for PR #%s: %s",
+                context.pr.number,
+                exc,
+            )
+            return None
+        return result.verdict
+
+    # No engine configured for this site — direct single-model path
+    # (existing behaviour).
     try:
         # Pass ``model`` through only when the override is set so the
         # default feature-resolution path stays unchanged for operators
