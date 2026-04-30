@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeVar
 
+from caretaker.consensus.metrics import CONSENSUS_DECISION_SECONDS
 from caretaker.consensus.strategies import (
     AlwaysTwoModels,
     Strategy,
@@ -129,7 +130,8 @@ class ConsensusEngine:
             claude=self._claude,
             max_tokens=max_tokens,
         )
-        return await strategy_cls().run(ctx)
+        with CONSENSUS_DECISION_SECONDS.labels(site=site_name, strategy=site.strategy).time():
+            return await strategy_cls().run(ctx)
 
 
 __all__ = [
