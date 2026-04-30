@@ -2793,6 +2793,37 @@ class TestSelfChainingOrchestration:
         ]
         assert 42 in targets, f"cascade should have closed issue #42; targets={targets}"
 
+    async def test_in_loop_merge_releases_ownership_in_same_cycle(self) -> None:
+        """After self-chain merges, ownership archive fires in the same call.
+
+        Without mutating ``pr.merged`` after the in-loop merge, the
+        ``should_release_ownership(pr, tracking, "merged")`` predicate would
+        see ``pr.merged=False`` (the value from when we fetched the PR) and
+        defer release to the next cycle. The handler now updates the PR
+        object so ownership archives immediately.
+        """
+        from caretaker.pr_agent.agent import PRAgentReport
+        from caretaker.state.models import OwnershipState
+
+        agent, github = await self._build_agent()
+        pr = self._make_green_caretaker_pr(number=110)
+        # Pretend ownership was claimed on a prior cycle.
+        tracking = TrackedPR(
+            number=110,
+            ownership_state=OwnershipState.OWNED,
+            ownership_acquired_at=datetime.now(UTC),
+        )
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # Merge happened.
+        assert tracking.state == PRTrackingState.MERGED
+        # PR object was mutated so ownership saw the merge.
+        assert pr.merged is True
+        # Ownership released in the same cycle.
+        assert tracking.ownership_state == OwnershipState.RELEASED
+
     async def test_merge_skips_cascade_when_no_tracked_issues(self) -> None:
         """When run() was called without tracked_issues, the cascade hop is skipped."""
         from caretaker.pr_agent.agent import PRAgentReport

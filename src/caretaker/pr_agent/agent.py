@@ -687,17 +687,19 @@ class PRAgent:
 
         # Self-chaining driver: dispatch the action ladder, then opportunistically
         # re-enter for internal-only transitions (auto-approve → merge → cascade).
-        # Bounded by ``_MAX_SELF_CHAIN_HOPS`` so a misclassification cannot spiral.
+        # ``_MAX_SELF_CHAIN_HOPS`` bounds the total dispatches per cycle so a
+        # misclassification cannot spiral. The longest legitimate chain is
+        # approve → merge → cascade = 3 dispatches.
         action: str = evaluation.recommended_action
         current_evaluation = evaluation
-        for hop in range(_MAX_SELF_CHAIN_HOPS + 1):
+        for dispatch_index in range(_MAX_SELF_CHAIN_HOPS):
             tracking = await self._dispatch_pr_action(
                 pr, action, current_evaluation, reviews, tracking, report
             )
-            next_step = self._next_self_chain_step(action, tracking, report)
+            next_step = self._next_self_chain_step(action, pr, current_evaluation, tracking)
             if next_step is None:
                 break
-            if hop >= _MAX_SELF_CHAIN_HOPS:
+            if dispatch_index == _MAX_SELF_CHAIN_HOPS - 1:
                 logger.warning(
                     "PR #%d: self-chain hop cap (%d) reached after action=%r; "
                     "yielding to next cycle",
@@ -708,11 +710,11 @@ class PRAgent:
                 break
             next_action, next_evaluation = next_step
             logger.info(
-                "PR #%d: self-chaining %r → %r (hop %d)",
+                "PR #%d: self-chaining %r → %r (chain step %d)",
                 pr.number,
                 action,
                 next_action,
-                hop + 1,
+                dispatch_index + 1,
             )
             action = next_action
             current_evaluation = next_evaluation
@@ -766,97 +768,55 @@ class PRAgent:
     def _next_self_chain_step(
         self,
         prev_action: str,
+        pr: PullRequest,
+        prev_evaluation: PRStateEvaluation,
         tracking: TrackedPR,
-        report: PRAgentReport,
     ) -> tuple[str, PRStateEvaluation] | None:
         """Decide whether to self-chain another action without yielding.
 
         Returns ``(next_action, evaluation_to_pass)`` for the chained step,
-        or ``None`` when the cycle should end (external wait, terminal state,
-        or the action just dispatched isn't a self-chain trigger).
+        or ``None`` when the cycle should end (external wait, terminal
+        state, or the action just dispatched isn't a self-chain trigger).
 
-        The ``evaluation`` returned is the same object as the input; chained
-        actions either don't read it (``cascade``) or read fields the prior
-        action's success implies are still valid (``merge`` reads CI/reviews
-        — auto-approve doesn't change CI, and the approval we just submitted
-        only adds to ``reviews.approved``). We don't re-fetch GitHub.
+        The chained evaluation is built by patching the prior evaluation's
+        ``reviews`` field so the merge handler sees the approval we just
+        submitted, while keeping the real ``pr``, ``ci``, and ``readiness``
+        fields intact. No GitHub re-fetch; the prior action's success
+        implies CI / draft / mergeable are unchanged.
         """
         # Auto-approve succeeded → state is MERGE_READY → merge.
         if (
             prev_action == "request_review_approve"
             and tracking.state == PRTrackingState.MERGE_READY
         ):
-            # Synthetic evaluation: the prior evaluation's CI is still valid
-            # (we only wrote a review), and reviews.approved is now True.
-            # ``evaluate_merge`` reads ``ci.status`` and ``reviews.changes_requested``
-            # — both unaffected by our APPROVE — plus the approved flag we
-            # just established by submitting the review.
-            from caretaker.pr_agent.states import (
-                CIEvaluation,
-                CIStatus,
-                PRStateEvaluation,
-                ReviewEvaluation,
-            )
+            from dataclasses import replace as dataclass_replace
 
-            synthetic = PRStateEvaluation(
-                pr=None,  # type: ignore[arg-type]  # _handle_merge only reads ci/reviews
-                ci=CIEvaluation(
-                    status=CIStatus.PASSING,
-                    failed_runs=[],
-                    pending_runs=[],
-                    passed_runs=[],
-                    action_required_runs=[],
-                    all_completed=True,
-                ),
-                reviews=ReviewEvaluation(
-                    changes_requested=False,
-                    approved=True,
-                    pending=False,
-                    blocking_reviews=[],
-                    approving_reviews=[],
-                ),
+            patched_reviews = dataclass_replace(
+                prev_evaluation.reviews,
+                approved=True,
+                changes_requested=False,
+            )
+            patched = dataclass_replace(
+                prev_evaluation,
+                reviews=patched_reviews,
                 recommended_state=PRTrackingState.MERGE_READY,
                 recommended_action="merge",
             )
-            return ("merge", synthetic)
+            return ("merge", patched)
 
-        # Caretaker-driven merge succeeded → fire per-PR cascade if we have
-        # the issue state to act on. Skipped when ``run()`` was called without
-        # ``tracked_issues`` (tests, single-PR utilities) — the bulk triage
-        # cascade still covers those PRs on its own cycle.
+        # Caretaker-driven merge succeeded → fire per-PR cascade if we
+        # have the issue state to act on. Skipped when ``run()`` was
+        # called without ``tracked_issues`` (tests, single-PR utilities)
+        # — the bulk triage cascade still covers those PRs on its own
+        # cycle. The cascade handler does not read ``evaluation``; we
+        # pass the prior evaluation purely to keep the dispatcher's
+        # signature uniform.
         if (
             prev_action == "merge"
             and tracking.state == PRTrackingState.MERGED
             and self._tracked_issues is not None
         ):
-            from caretaker.pr_agent.states import (
-                CIEvaluation,
-                CIStatus,
-                PRStateEvaluation,
-                ReviewEvaluation,
-            )
-
-            placeholder = PRStateEvaluation(
-                pr=None,  # type: ignore[arg-type]  # cascade handler doesn't read this
-                ci=CIEvaluation(
-                    status=CIStatus.PASSING,
-                    failed_runs=[],
-                    pending_runs=[],
-                    passed_runs=[],
-                    action_required_runs=[],
-                    all_completed=True,
-                ),
-                reviews=ReviewEvaluation(
-                    changes_requested=False,
-                    approved=True,
-                    pending=False,
-                    blocking_reviews=[],
-                    approving_reviews=[],
-                ),
-                recommended_state=PRTrackingState.MERGED,
-                recommended_action="cascade",
-            )
-            return ("cascade", placeholder)
+            return ("cascade", prev_evaluation)
 
         return None
 
@@ -1011,6 +971,14 @@ class PRAgent:
             logger.info("PR #%d merged via %s", pr.number, result.method)
             tracking.state = PRTrackingState.MERGED
             tracking.merged_at = datetime.now(UTC)
+            # Mutate the PR object so downstream logic in this same cycle
+            # (notably ``_handle_ownership`` → ``should_release_ownership``)
+            # sees the merge happened. Without this, ownership archive
+            # would lag by one cycle waiting for GitHub to refresh
+            # ``pr.merged``. Safe to mutate here because ``pr`` was fetched
+            # for this cycle and is not reused after this method returns.
+            pr.merged = True
+            pr.state = PRState.CLOSED
             # Attribution: caretaker's merge authority closed this PR.
             # `caretaker_merged` implies `caretaker_touched`; we set
             # both through the shared helper so the
