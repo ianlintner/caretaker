@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from caretaker.config import ConsensusDomainConfig, LLMConfig, ModelPoolConfig
+from caretaker.config import (
+    AgenticConfig,
+    AgenticDomainConfig,
+    ConsensusDomainConfig,
+    LLMConfig,
+    ModelPoolConfig,
+)
 
 
 def test_model_pool_config_defaults_empty() -> None:
@@ -75,3 +81,21 @@ def test_confidence_threshold_bounded() -> None:
         ConsensusDomainConfig(confidence_threshold=1.5)
     with pytest.raises(ValidationError):
         ConsensusDomainConfig(confidence_threshold=-0.1)
+
+
+def test_agentic_domain_consensus_default_none() -> None:
+    cfg = AgenticDomainConfig()
+    assert cfg.consensus is None
+
+
+def test_agentic_domain_accepts_consensus() -> None:
+    consensus = ConsensusDomainConfig(strategy="tiered_confidence")
+    cfg = AgenticDomainConfig(consensus=consensus)
+    assert cfg.consensus is consensus
+
+
+def test_agentic_config_has_size_classifier_slot() -> None:
+    cfg = AgenticConfig()
+    assert isinstance(cfg.size_classifier, AgenticDomainConfig)
+    assert cfg.size_classifier.mode == "off"
+    assert cfg.size_classifier.consensus is None

@@ -1515,6 +1515,10 @@ class AgenticDomainConfig(StrictBaseModel):
     model_override: str | None = None
     # Optional per-site max-tokens override; only consumed when model_override is set.
     max_tokens_override: int | None = None
+    # Optional consensus engine config. When set, the site routes its LLM
+    # path through the engine; when None, the existing single-model path
+    # (claude.structured_complete) runs unchanged.
+    consensus: ConsensusDomainConfig | None = None
 
 
 class IssueTriageAgenticConfig(AgenticDomainConfig):
@@ -1559,6 +1563,12 @@ class AgenticConfig(StrictBaseModel):
     dispatch_guard: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     executor_routing: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     crystallizer_category: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
+    # Foundry's pre/post-flight sizing gate. Today the gate is a pure
+    # heuristic (file count + line count). With a non-None ``consensus``
+    # field, borderline cases consult the engine to judge whether a diff
+    # in the gray zone is mechanical (route to Foundry) or genuinely
+    # complex (escalate to Copilot).
+    size_classifier: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
 
 
 class MaintainerConfig(StrictBaseModel):
