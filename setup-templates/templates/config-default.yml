@@ -156,6 +156,41 @@ llm:
     - architectural_review
     - issue_decomposition
 
+  # Capability-tag → concrete-model registry consumed by the consensus engine.
+  # When a decision site opts into consensus (under `agentic.<site>.consensus`),
+  # tag values like `fast` / `reasoning_anthropic` resolve here. Empty by default.
+  model_pool:
+    pool: {}
+    # Example (commented out) — uncomment + edit for your provider mix:
+    # pool:
+    #   fast: claude-haiku-4-5
+    #   reasoning_anthropic: claude-sonnet-4-6
+    #   reasoning_alt: openai/gpt-4o
+    #   cheap: claude-haiku-4-5
+
+# Per-site consensus engine opt-in. Defaults are mode=off / consensus=null
+# so adding the `llm.model_pool` above does NOT change behaviour until a
+# site opts in. Uncomment + customize the examples below to enable.
+#
+# agentic:
+#   # Cross-provider two-model agreement on PR readiness verdicts.
+#   readiness:
+#     mode: enforce
+#     consensus:
+#       strategy: always_two_models
+#       primary: reasoning_anthropic
+#       escalation: [reasoning_alt]
+#       agreement_fields: [verdict]
+#
+#   # Cheap-fast tier with reasoning escalation on low-confidence calls.
+#   size_classifier:
+#     mode: enforce
+#     consensus:
+#       strategy: tiered_confidence
+#       primary: fast
+#       escalation: [reasoning_anthropic]
+#       confidence_threshold: 0.7
+
 # Optional: foundry-backed in-process coding executor.
 # When foundry.enabled is false (default), every coding task continues to be
 # routed to @copilot via the existing comment protocol — zero behavior change.
