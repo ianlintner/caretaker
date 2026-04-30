@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from caretaker.guardrails.policy import GuardrailsConfig, MergeRollbackConfig
 
@@ -1428,6 +1428,62 @@ class AgenticEnforceGateConfig(StrictBaseModel):
             "against the most recent :mod:`caretaker.eval.store` report."
         ),
     )
+
+
+class ConsensusDomainConfig(StrictBaseModel):
+    """Per-decision-site consensus engine configuration.
+
+    Attached as an optional field to :class:`AgenticDomainConfig`. When
+    ``None``, the existing single-model path runs (no engine involved).
+    Sites opt in by setting this in YAML.
+
+    Tag values resolve through :class:`LLMConfig.model_pool`. Literal model
+    strings (anything not a known tag) pass through unchanged to the LLM
+    router.
+    """
+
+    strategy: Literal["tiered_confidence", "always_two_models"] = "tiered_confidence"
+    primary: str = Field(
+        default="fast",
+        description="Capability tag or literal model string for the primary call.",
+    )
+    escalation: list[str] = Field(
+        default_factory=lambda: ["reasoning_anthropic"],
+        description=(
+            "Ordered tags/literals for escalation. TieredConfidence consults "
+            "every entry on low-confidence; AlwaysTwoModels uses [0] as the "
+            "second voter and [1:] as tiebreakers."
+        ),
+    )
+    confidence_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="TieredConfidence escalates when verdict.confidence < this.",
+    )
+    agreement_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Field names compared for AlwaysTwoModels agreement. Empty list "
+            "means compare full verdicts via ==. For readiness, set to "
+            "['verdict'] so only the closed-enum field has to match."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_strategy_specific(self) -> ConsensusDomainConfig:
+        if self.strategy == "always_two_models":
+            if not self.escalation:
+                raise ValueError(
+                    "always_two_models requires escalation[0] (no second model configured)"
+                )
+            if self.escalation[0] == self.primary:
+                raise ValueError(
+                    f"always_two_models requires escalation[0] ({self.escalation[0]!r}) "
+                    f"to be distinct from primary ({self.primary!r}); use a different "
+                    "tag or literal model so the two-model gate consults distinct models"
+                )
+        return self
 
 
 class AgenticDomainConfig(StrictBaseModel):
