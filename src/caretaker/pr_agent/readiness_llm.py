@@ -378,6 +378,11 @@ async def evaluate_pr_readiness_llm(
     harness A/B pattern (see docs/plans/2026-Q2-agentic-migration.md).
     ``max_tokens`` is the matching per-site override; ``None`` means
     "use the feature's resolved default".
+
+    When the consensus engine is configured for the "readiness" site, the
+    ``model`` parameter is ignored — strategies own per-tier model selection
+    through their capability-tag config. The ``max_tokens`` parameter is still
+    honoured (passed through to every per-tier model call).
     """
     memory_block: str | None = None
     if retriever is not None:
@@ -394,6 +399,12 @@ async def evaluate_pr_readiness_llm(
 
     engine = consensus_active.get_active_engine()
     if engine is not None and engine.has_site("readiness"):
+        # Thread ``max_tokens`` through to the engine when the call site
+        # set a per-site cap; otherwise let ``engine.decide`` use its own
+        # default (mirrors the direct-path treatment a few lines below).
+        engine_kwargs: dict[str, Any] = {}
+        if max_tokens is not None:
+            engine_kwargs["max_tokens"] = max_tokens
         try:
             result = await engine.decide(
                 site_name="readiness",
@@ -401,6 +412,7 @@ async def evaluate_pr_readiness_llm(
                 system_prompt=_READINESS_SYSTEM_PROMPT,
                 user_prompt=prompt,
                 feature="pr_readiness",
+                **engine_kwargs,
             )
         except ConsensusUnavailable as exc:
             logger.info(

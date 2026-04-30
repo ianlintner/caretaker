@@ -66,17 +66,23 @@ class _FakePR:
 
 
 def _build_ctx() -> Any:
-    """Build a PRReadinessContext sufficient for build_readiness_prompt to render."""
+    """Build a PRReadinessContext sufficient for build_readiness_prompt to render.
+
+    Constructed via the real dataclass constructor (rather than ``__new__``)
+    so future required fields surface as a constructor TypeError instead of
+    silently leaving the test stub partially populated. ``pr`` is duck-typed
+    — ``PullRequest`` is a TYPE_CHECKING-only annotation on the dataclass.
+    """
     from caretaker.pr_agent.readiness_llm import PRReadinessContext
 
-    ctx = PRReadinessContext.__new__(PRReadinessContext)
-    object.__setattr__(ctx, "pr", _FakePR())
-    object.__setattr__(ctx, "check_runs", [])
-    object.__setattr__(ctx, "reviews", [])
-    object.__setattr__(ctx, "linked_issues", [])
-    object.__setattr__(ctx, "repo_slug", "owner/repo")
-    object.__setattr__(ctx, "is_solo_maintainer", True)
-    return ctx
+    return PRReadinessContext(
+        pr=_FakePR(),  # type: ignore[arg-type]  # duck-typed; PullRequest is TYPE_CHECKING-only
+        check_runs=[],
+        reviews=[],
+        linked_issues=[],
+        repo_slug="owner/repo",
+        is_solo_maintainer=True,
+    )
 
 
 @pytest.mark.asyncio
