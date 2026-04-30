@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from caretaker.claude_code_executor import (
+from caretaker.coding_agents.handoff import (
     CLAUDE_CODE_HANDOFF_MARKER,
-    ClaudeCodeExecutor,
+)
+from caretaker.coding_agents.handoff import (
+    ClaudeCodeAgent as ClaudeCodeExecutor,
 )
 from caretaker.config import (
     ClaudeCodeExecutorConfig,

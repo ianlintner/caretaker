@@ -267,8 +267,8 @@ class UpgradePlanner:
         self._owner = owner
         self._repo = repo
         self._issues = GitHubIssueTools(github, owner, repo)
-        # TODO(foundry-phase-2): route non-breaking upgrade tasks through
-        # this dispatcher instead of creating @copilot-assigned issues.
+        # Dispatcher is wired in but unused: non-breaking upgrades currently
+        # create @copilot-assigned issues rather than routing through Foundry.
         self._dispatcher = dispatcher
 
     @property

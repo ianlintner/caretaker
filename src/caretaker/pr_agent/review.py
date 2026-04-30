@@ -150,9 +150,12 @@ class ReviewAnalysis:
     :class:`ReviewClassification`; when the shadow decision runs under
     ``mode=off`` (the default) the legacy adapter sets it from the
     keyword ladder. Downstream code should branch on ``severity ==
-    "blocker"`` rather than re-deriving it from the comment text —
-    TODO: once ``mode=enforce`` is the default, collapse ``comment_type``
-    and expose only the structured classification.
+    "blocker"`` rather than re-deriving it from the comment text.
+
+    ``comment_type`` is retained for backward compatibility with the legacy
+    PR agent and Copilot bridge. Once ``executor_routing`` shadow mode is
+    promoted to ``enforce``, ``comment_type`` and ``complexity`` can be
+    removed in favour of the structured ``classification`` field.
     """
 
     reviewer: str

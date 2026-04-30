@@ -52,8 +52,8 @@ from caretaker.github_app import (
 )
 from caretaker.github_client.rate_limit import get_cooldown
 from caretaker.observability.metrics import record_error, record_webhook_event
-from caretaker.state.dedup import LocalDedup, RedisDedup, build_dedup
 from caretaker.state.token_broker import build_token_broker
+from caretaker.state.webhook_dedup import LocalDedup, RedisDedup, build_dedup
 
 logger = logging.getLogger(__name__)
 

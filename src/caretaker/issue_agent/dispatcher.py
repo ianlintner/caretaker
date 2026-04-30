@@ -73,8 +73,8 @@ class IssueDispatcher:
         self._owner = owner
         self._repo = repo
         self._issues = GitHubIssueTools(github, owner, repo)
-        # TODO(foundry-phase-2): route FEATURE_SMALL / BUG_SIMPLE tasks
-        # through this dispatcher once we have an issue-to-PR decomposer.
+        # Dispatcher is wired in but unused: FEATURE_SMALL / BUG_SIMPLE routing
+        # requires an issue-to-PR decomposer that does not exist yet.
         self._dispatcher = dispatcher
 
     @property

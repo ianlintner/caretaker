@@ -148,11 +148,3 @@ async def test_claude_code_uses_legacy_marker() -> None:
     assert CLAUDE_CODE_HANDOFF_MARKER in body
     assert OPENCODE_HANDOFF_MARKER not in body
     assert "@claude" in body
-
-
-def test_claude_code_executor_legacy_alias() -> None:
-    """``ClaudeCodeExecutor`` is a deprecation alias for ``ClaudeCodeAgent``."""
-    from caretaker.claude_code_executor import ClaudeCodeAgent as Aliased
-    from caretaker.claude_code_executor import ClaudeCodeExecutor
-
-    assert ClaudeCodeExecutor is Aliased

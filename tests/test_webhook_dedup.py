@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from caretaker.state.dedup import LocalDedup, build_dedup
+from caretaker.state.webhook_dedup import LocalDedup, build_dedup
 
 
 class TestLocalDedup:
@@ -58,7 +58,7 @@ class TestBuildDedup:
 
     def test_returns_redis_dedup_when_redis_url_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
-        from caretaker.state.dedup import RedisDedup
+        from caretaker.state.webhook_dedup import RedisDedup
 
         dedup = build_dedup()
         assert isinstance(dedup, RedisDedup)
