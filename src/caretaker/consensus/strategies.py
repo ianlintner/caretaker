@@ -19,6 +19,7 @@ from caretaker.consensus.metrics import (
     CONSENSUS_DISAGREEMENT_TOTAL,
     CONSENSUS_UNAVAILABLE_TOTAL,
 )
+from caretaker.consensus.provider_pool import ProviderPoolError
 from caretaker.consensus.result import ConsensusResult, ConsensusUnavailable
 from caretaker.consensus.trace import ConsensusTrace, ModelAttempt
 from caretaker.llm.claude import StructuredCompleteError
@@ -34,6 +35,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="BaseModel")
+
+# Sentinel for missing-field detection in ``_agree``. Module-level so the
+# two ``getattr`` calls share the same instance — using ``object()`` inline
+# would create two distinct sentinels that never compare equal, causing
+# spurious tiebreaker escalations on any verdict schema that lacks an
+# ``agreement_fields`` entry.
+_MISSING_FIELD = object()
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,25 @@ async def _call_one(
             max_tokens=ctx.max_tokens,
         )
     except StructuredCompleteError as exc:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return None, ModelAttempt(
+            model=model,
+            tag=tag,
+            latency_ms=latency_ms,
+            confidence=None,
+            verdict_summary=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001 — capture unexpected errors in audit trail
+        # Network errors, auth failures, asyncio cancellations, etc.
+        # Without this, AlwaysTwoModels' asyncio.gather would lose the
+        # other leg's result when one leg errored unexpectedly.
+        logger.warning(
+            "Unexpected error in _call_one for site=%s model=%s: %s",
+            ctx.site_name,
+            model,
+            exc,
+        )
         latency_ms = int((time.monotonic() - started) * 1000)
         return None, ModelAttempt(
             model=model,
@@ -228,7 +255,7 @@ def _agree(a: Any, b: Any, fields: Sequence[str]) -> bool:
         except Exception:  # noqa: BLE001 — exotic __eq__ that raises
             return False
     for field_name in fields:
-        if getattr(a, field_name, object()) != getattr(b, field_name, object()):
+        if getattr(a, field_name, _MISSING_FIELD) != getattr(b, field_name, _MISSING_FIELD):
             return False
     return True
 
@@ -247,10 +274,14 @@ class AlwaysTwoModels:
     3. Else (disagreement, or one errored) call ``escalation[1:]`` in
        order until the next available model produces a verdict — that's
        the tiebreaker.
-    4. Tiebreaker's verdict ships if it agrees with at least one of the
-       prior verdicts on the agreement fields; otherwise the highest-
-       confidence verdict among all attempts wins.
-    5. If every model errored, raise :class:`ConsensusUnavailable`.
+    4. Tiebreaker's verdict ships unconditionally when present — the
+       tiebreaker IS the casting vote, regardless of whether it happens
+       to agree with a prior. ``final_model`` always points at the model
+       that produced the shipped verdict so cost/latency/bug-triage stays
+       unambiguous; agreement information remains reconstructable from
+       the ``attempts`` list.
+    5. If every model errored (or primary+secondary disagreed AND every
+       tiebreaker errored), raise :class:`ConsensusUnavailable`.
     """
 
     name: str = "always_two_models"
@@ -266,8 +297,20 @@ class AlwaysTwoModels:
 
         # Resolve primary first; resolve escalation[0] distinctly.
         primary_model, _ = ctx.pool.resolve(ctx.primary)
-        # Validate distinctness (raises if same concrete model).
-        ctx.pool.resolve_distinct(ctx.escalation[0], different_from=primary_model)
+        # Validate distinctness — primary and escalation[0] must resolve to
+        # different concrete models for two-model agreement to be meaningful.
+        # On misconfiguration (two tags pointing at the same model), surface
+        # ConsensusUnavailable so the wrapping @shadow_decision falls through
+        # to the legacy heuristic instead of crashing.
+        try:
+            ctx.pool.resolve_distinct(ctx.escalation[0], different_from=primary_model)
+        except ProviderPoolError as exc:
+            CONSENSUS_UNAVAILABLE_TOTAL.labels(site=ctx.site_name).inc()
+            raise ConsensusUnavailable(
+                strategy=self.name,
+                attempts=[],
+                reason=f"pool misconfiguration: {exc}",
+            ) from exc
 
         # Run primary + secondary in parallel.
         first_call = _call_one(ctx, tag_or_literal=ctx.primary)

@@ -191,6 +191,32 @@ def diagnose_consensus_config(config: MaintainerConfig) -> list[str]:
                 f"which is not present in llm.model_pool.pool"
             )
 
+    # Validate AlwaysTwoModels distinctness: when strategy is always_two_models,
+    # primary and escalation[0] must resolve to DIFFERENT concrete models. A
+    # pool with two tags pointing at the same model would silently consult
+    # one model twice rather than achieving two-model agreement.
+    for site_name in site_names:
+        domain = getattr(config.agentic, site_name, None)
+        if domain is None:
+            continue
+        consensus_cfg = getattr(domain, "consensus", None)
+        if consensus_cfg is None:
+            continue
+        if consensus_cfg.strategy != "always_two_models":
+            continue
+        if not consensus_cfg.escalation:
+            continue
+        primary_resolved = pool.get(consensus_cfg.primary, consensus_cfg.primary)
+        secondary_resolved = pool.get(consensus_cfg.escalation[0], consensus_cfg.escalation[0])
+        if primary_resolved == secondary_resolved:
+            issues.append(
+                f"site {site_name!r} uses always_two_models but primary "
+                f"({consensus_cfg.primary!r}) and escalation[0] "
+                f"({consensus_cfg.escalation[0]!r}) both resolve to "
+                f"{primary_resolved!r} — two-model agreement requires distinct "
+                f"concrete models"
+            )
+
     return issues
 
 

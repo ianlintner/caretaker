@@ -342,7 +342,7 @@ class Orchestrator:
                 sorted(self._consensus_engine.site_names()),
             )
         else:
-            consensus_active.reset_for_tests()
+            consensus_active.clear()
 
         self._state_tracker = StateTracker(github, owner, repo)
 

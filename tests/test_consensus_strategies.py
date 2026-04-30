@@ -357,3 +357,44 @@ async def test_atm_raises_when_disagreement_and_tiebreaker_tier_exhausted() -> N
     )
     with pytest.raises(ConsensusUnavailable):
         await strategy.run(ctx)
+
+
+def test_agree_treats_missing_fields_as_match() -> None:
+    """When both verdicts lack a configured agreement field, _agree returns True."""
+    from caretaker.consensus.strategies import _agree
+
+    class _Bare(BaseModel):
+        label: str
+
+    a = _Bare(label="x")
+    b = _Bare(label="x")
+    # Neither has 'verdict' — _agree should not report disagreement.
+    assert _agree(a, b, ["verdict"]) is True
+
+
+@pytest.mark.asyncio
+async def test_atm_raises_consensus_unavailable_on_pool_misconfiguration() -> None:
+    """When pool maps two distinct tags to the same model, raise ConsensusUnavailable.
+
+    Without this guard, ProviderPoolError (a ValueError) would propagate uncaught
+    past the @shadow_decision wrapper's safe-default fallback.
+    """
+    claude = _FakeClaude(responses={})
+    # Two tags both resolve to "fake-same".
+    pool = ProviderPool({"primary_tag": "fake-same", "secondary_tag": "fake-same"})
+    ctx = StrategyContext(
+        site_name="readiness",
+        schema=_Verdict,
+        system_prompt="sys",
+        user_prompt="user",
+        feature="readiness",
+        primary="primary_tag",
+        escalation=["secondary_tag"],
+        confidence_threshold=0.7,
+        agreement_fields=["label"],
+        pool=pool,
+        claude=claude,
+    )
+    with pytest.raises(ConsensusUnavailable) as excinfo:
+        await AlwaysTwoModels().run(ctx)
+    assert "pool misconfiguration" in str(excinfo.value)

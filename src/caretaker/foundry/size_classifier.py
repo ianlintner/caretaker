@@ -232,8 +232,6 @@ async def decide_post(
         return legacy
 
     total_lines = insertions + deletions
-    files_borderline = borderline_low_files <= files_changed <= borderline_high_files
-    lines_borderline = borderline_low_lines <= total_lines <= borderline_high_lines
 
     if files_changed < borderline_low_files and total_lines < borderline_low_lines:
         # Well under both floors — fast path.
@@ -247,9 +245,6 @@ async def decide_post(
                 f"lines={total_lines}; escalating without engine consult"
             ),
         )
-
-    if not (files_borderline or lines_borderline):
-        return legacy  # in mixed gray-zones we trust the legacy gate
 
     return await _engine_consult_or_fallback(
         site="size_classifier",

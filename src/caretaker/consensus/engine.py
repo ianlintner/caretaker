@@ -44,7 +44,7 @@ class SiteConfig:
     agreement_fields: list[str]
 
 
-@dataclass
+@dataclass(frozen=True)
 class EngineConfig:
     """Top-level engine configuration."""
 

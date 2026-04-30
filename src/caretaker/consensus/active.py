@@ -32,11 +32,21 @@ def get_active_engine() -> ConsensusEngine | None:
         return _active
 
 
-def reset_for_tests() -> None:
-    """Clear the active engine. Used by test fixtures."""
+def clear() -> None:
+    """Clear the active engine — production-safe equivalent of reset_for_tests.
+
+    Used by the orchestrator when re-instantiating without a configured
+    consensus engine, so stale singleton state doesn't leak across
+    construction cycles. ``reset_for_tests`` is kept as a backward-compat
+    alias for test fixtures.
+    """
     global _active  # noqa: PLW0603 — process singleton.
     with _lock:
         _active = None
 
 
-__all__ = ["configure", "get_active_engine", "reset_for_tests"]
+# Keep the original name as an alias for test code that already imports it.
+reset_for_tests = clear
+
+
+__all__ = ["clear", "configure", "get_active_engine", "reset_for_tests"]

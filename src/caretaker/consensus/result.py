@@ -40,7 +40,8 @@ class ConsensusUnavailable(RuntimeError):  # noqa: N818 — intentional public n
         reason: str,
     ) -> None:
         self.strategy = strategy
-        self.attempts = attempts
+        # Defensive copy so caller-side mutations don't corrupt the trace.
+        self.attempts = list(attempts)
         self.reason = reason
         super().__init__(f"consensus unavailable [{strategy}]: {reason}")
 
