@@ -34,8 +34,8 @@ from caretaker.foundry.prompts import build_prompt
 from caretaker.foundry.size_classifier import (
     ClassifierResult,
     Decision,
-    post_flight,
-    pre_flight,
+    decide_post,
+    decide_pre,
 )
 from caretaker.foundry.tool_loop import ToolLoopError, run_tool_loop
 from caretaker.foundry.tools import ToolContext, build_tool_registry
@@ -262,7 +262,7 @@ class FoundryExecutor:
         head_repo = pr.head_repo_full_name or f"{self._owner}/{self._repo}"
         base_repo = pr.base_repo_full_name or f"{self._owner}/{self._repo}"
 
-        pre = pre_flight(
+        pre = await decide_pre(
             task_type=task.task_type.value,
             allowed_task_types=self._config.allowed_task_types,
             head_repo_full_name=head_repo,
@@ -351,7 +351,7 @@ class FoundryExecutor:
 
                 # Post-flight sizing gate
                 diff_stats = await workspace.diff_stat()
-                post = post_flight(
+                post = await decide_post(
                     files_changed=diff_stats["files_changed"],
                     insertions=diff_stats["insertions"],
                     deletions=diff_stats["deletions"],

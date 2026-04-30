@@ -129,6 +129,97 @@ class DoctorReport:
         }
 
 
+# ── Consensus engine config validation ─────────────────────────────────
+
+
+def diagnose_consensus_config(config: MaintainerConfig) -> list[str]:
+    """Return human-readable issues with the consensus engine configuration.
+
+    Each entry is a single-sentence issue. Empty list means the consensus
+    configuration is internally consistent. Caller decides whether to log
+    warnings or fail-fast.
+
+    Heuristic for "literal vs tag": a string containing ``/`` or any digit
+    (model versioning, e.g. ``claude-sonnet-4-6``, ``haiku-4-5``) is
+    treated as a literal model identifier and its absence from
+    ``llm.model_pool.pool`` is not an error. Everything else looks like a
+    capability tag — if it isn't in the pool, surface the issue so a typo
+    like ``reasoning_antropic`` fails fast at startup rather than at
+    decision time.
+    """
+    issues: list[str] = []
+    pool = config.llm.model_pool.pool
+
+    site_names = (
+        "readiness",
+        "ci_triage",
+        "review_classification",
+        "issue_triage",
+        "cascade",
+        "stuck_pr",
+        "bot_identity",
+        "dispatch_guard",
+        "executor_routing",
+        "crystallizer_category",
+        "size_classifier",
+    )
+
+    def _is_literal(value: str) -> bool:
+        if "/" in value:
+            return True
+        # Treat anything containing a digit (model versioning, e.g.
+        # "claude-sonnet-4-6", "haiku-4-5") as a likely literal; pure
+        # tags don't contain version digits.
+        return bool(value) and any(c.isdigit() for c in value)
+
+    for site_name in site_names:
+        domain = getattr(config.agentic, site_name, None)
+        if domain is None:
+            continue
+        consensus_cfg = getattr(domain, "consensus", None)
+        if consensus_cfg is None:
+            continue
+        labelled: list[tuple[str, str]] = [("primary", consensus_cfg.primary)]
+        labelled.extend((f"escalation[{i}]", v) for i, v in enumerate(consensus_cfg.escalation))
+        for label, value in labelled:
+            if value in pool:
+                continue
+            if _is_literal(value):
+                continue
+            issues.append(
+                f"site {site_name!r} {label} references tag {value!r} "
+                f"which is not present in llm.model_pool.pool"
+            )
+
+    # Validate AlwaysTwoModels distinctness: when strategy is always_two_models,
+    # primary and escalation[0] must resolve to DIFFERENT concrete models. A
+    # pool with two tags pointing at the same model would silently consult
+    # one model twice rather than achieving two-model agreement.
+    for site_name in site_names:
+        domain = getattr(config.agentic, site_name, None)
+        if domain is None:
+            continue
+        consensus_cfg = getattr(domain, "consensus", None)
+        if consensus_cfg is None:
+            continue
+        if consensus_cfg.strategy != "always_two_models":
+            continue
+        if not consensus_cfg.escalation:
+            continue
+        primary_resolved = pool.get(consensus_cfg.primary, consensus_cfg.primary)
+        secondary_resolved = pool.get(consensus_cfg.escalation[0], consensus_cfg.escalation[0])
+        if primary_resolved == secondary_resolved:
+            issues.append(
+                f"site {site_name!r} uses always_two_models but primary "
+                f"({consensus_cfg.primary!r}) and escalation[0] "
+                f"({consensus_cfg.escalation[0]!r}) both resolve to "
+                f"{primary_resolved!r} — two-model agreement requires distinct "
+                f"concrete models"
+            )
+
+    return issues
+
+
 # ── Config → env-var references ────────────────────────────────────────
 
 
