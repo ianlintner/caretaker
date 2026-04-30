@@ -17,7 +17,7 @@ from caretaker.identity import is_automated
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
-from caretaker.pr_agent.merge import evaluate_merge
+from caretaker.pr_agent.merge import evaluate_merge, perform_merge
 from caretaker.pr_agent.ownership import (
     build_status_comment,
     claim_ownership,
@@ -748,46 +748,17 @@ class PRAgent:
         tracking: TrackedPR,
         report: PRAgentReport,
     ) -> TrackedPR:
-        """Attempt to merge a PR that's ready."""
+        """Attempt to merge a PR that's ready.
+
+        Routes through :func:`caretaker.pr_agent.merge.perform_merge` so the
+        post-merge ``checkpoint_and_rollback`` guard can fire when the
+        ``merge_rollback`` config block is enabled. With that block off
+        (the default) ``perform_merge`` is functionally identical to the
+        prior direct-API call.
+        """
         merge_decision = evaluate_merge(pr, evaluation.ci, evaluation.reviews, self._config)
 
-        if merge_decision.should_merge:
-            try:
-                success = await self._github.merge_pull_request(
-                    self._owner,
-                    self._repo,
-                    pr.number,
-                    method=merge_decision.method,
-                )
-            except GitHubAPIError as exc:
-                # 405 = branch-protection rules not met (missing review/status check)
-                # 409 = merge conflict
-                # 422 = unprocessable (e.g. head ref out of date)
-                if exc.status_code in (405, 409, 422):
-                    logger.warning(
-                        "PR #%d cannot be merged yet (HTTP %d): %s",
-                        pr.number,
-                        exc.status_code,
-                        exc,
-                    )
-                    report.waiting.append(pr.number)
-                    return tracking
-                raise
-            if success:
-                logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
-                tracking.state = PRTrackingState.MERGED
-                tracking.merged_at = datetime.now(UTC)
-                # Attribution: caretaker's merge authority closed this PR.
-                # `caretaker_merged` implies `caretaker_touched`; we set
-                # both through the shared helper so the
-                # ``last_caretaker_action_at`` cutoff moves forward.
-                _mark_caretaker_touched(tracking)
-                tracking.caretaker_merged = True
-                report.merged.append(pr.number)
-            else:
-                logger.warning("PR #%d merge failed", pr.number)
-                report.errors.append(f"PR #{pr.number}: merge failed")
-        else:
+        if not merge_decision.should_merge:
             logger.info(
                 "PR #%d not eligible for auto-merge: %s",
                 pr.number,
@@ -813,7 +784,52 @@ class PRAgent:
                     pr.is_copilot_pr,
                 )
             report.waiting.append(pr.number)
+            return tracking
 
+        # Non-transient API errors bubble up — perform_merge re-raises them
+        # so the caller (orchestrator) can surface a real failure. Transient
+        # errors (405/409/422) are caught inside perform_merge and returned
+        # as ``transient_api_error`` results.
+        result = await perform_merge(
+            pr,
+            merge_decision,
+            github=self._github,
+            config=self._config,
+            owner=self._owner,
+            repo=self._repo,
+        )
+
+        if result.merged:
+            logger.info("PR #%d merged via %s", pr.number, result.method)
+            tracking.state = PRTrackingState.MERGED
+            tracking.merged_at = datetime.now(UTC)
+            # Attribution: caretaker's merge authority closed this PR.
+            # `caretaker_merged` implies `caretaker_touched`; we set
+            # both through the shared helper so the
+            # ``last_caretaker_action_at`` cutoff moves forward.
+            _mark_caretaker_touched(tracking)
+            tracking.caretaker_merged = True
+            report.merged.append(pr.number)
+            # Surface a base-CI rollback as an error for the operator. The
+            # merge itself stands; perform_merge's rollback closure has
+            # already opened a tracking issue tagged ``caretaker:rollback``.
+            if result.rollback_outcome is not None and result.rollback_outcome.value in (
+                "rolled_back",
+                "rollback_failed",
+            ):
+                report.errors.append(
+                    f"PR #{pr.number}: post-merge rollback fired "
+                    f"({result.rollback_outcome.value}); see caretaker:rollback issue"
+                )
+            return tracking
+
+        if result.reason.startswith("transient_api_error"):
+            logger.warning("PR #%d cannot be merged yet: %s", pr.number, result.reason)
+            report.waiting.append(pr.number)
+            return tracking
+
+        logger.warning("PR #%d merge failed: %s", pr.number, result.reason)
+        report.errors.append(f"PR #{pr.number}: merge failed")
         return tracking
 
     async def _has_pending_task_comment(self, pr_number: int) -> bool:

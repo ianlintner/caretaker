@@ -21,6 +21,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Status codes treated as "wait and retry" rather than hard merge failures.
+# 405: branch protection rules not satisfied (e.g. missing approving review,
+#      required status check still pending).
+# 409: merge conflict.
+# 422: head ref out of date / unprocessable entity.
+_TRANSIENT_MERGE_STATUS_CODES = (405, 409, 422)
+
 
 @dataclass
 class MergeDecision:
@@ -175,10 +182,14 @@ async def perform_merge(
     The function always calls :meth:`GitHubClient.merge_pull_request`.
     When ``config.merge_rollback.enabled`` is ``True`` it then wraps a
     5-minute polling window around the base-branch CI; if CI flips red
-    inside the window the merge is reverted via a ``git revert`` PR (the
-    caller-supplied rollback closure; we do not execute git operations
-    from inside the guardrail — see ``docs/r-and-d/A5.md`` for the
-    fast-follow-up that wires the revert automation).
+    inside the window the rollback callable fires.
+
+    Error handling: transient merge errors (HTTP 405 / 409 / 422 — branch
+    protection, conflict, head-out-of-date) are caught and surfaced as a
+    ``transient_api_error`` :class:`MergeExecution` so callers can put
+    the PR back in the waiting queue. Other :class:`GitHubAPIError`
+    statuses bubble up — those represent real failures the operator
+    needs to see.
 
     The rollback callable this function supplies is a **placeholder** —
     on verify-failure it opens an issue tagged ``caretaker:rollback`` so
@@ -203,12 +214,24 @@ async def perform_merge(
             method=decision.method,
         )
     except GitHubAPIError as exc:
-        logger.warning("perform_merge: merge_pull_request raised %s for #%d", exc, pr.number)
-        return MergeExecution(
-            merged=False,
-            method=decision.method,
-            reason=f"api_error: {exc}",
-        )
+        # Transient codes: branch-protection (405), merge conflict (409),
+        # head-out-of-date / unprocessable (422). These are normal "try
+        # again next cycle" conditions — surface as a non-merged result.
+        # Anything else (5xx, auth, rate-limit) is a real problem and
+        # should bubble to the caller.
+        if exc.status_code in _TRANSIENT_MERGE_STATUS_CODES:
+            logger.warning(
+                "perform_merge: transient %d for #%d: %s",
+                exc.status_code,
+                pr.number,
+                exc,
+            )
+            return MergeExecution(
+                merged=False,
+                method=decision.method,
+                reason=f"transient_api_error: {exc}",
+            )
+        raise
 
     if not merged:
         return MergeExecution(
