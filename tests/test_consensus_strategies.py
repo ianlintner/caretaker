@@ -158,3 +158,21 @@ async def test_tiered_recovers_when_only_primary_errors() -> None:
     assert result.verdict.label == "ready"
     assert result.trace.escalated is True
     assert claude.calls == ["fake-fast", "fake-strong"]
+
+
+@pytest.mark.asyncio
+async def test_tiered_primary_wins_ties() -> None:
+    """When primary and escalation tie on confidence, primary wins (cheaper default)."""
+    claude = _FakeClaude(
+        responses={
+            "fake-fast": [_Verdict(label="ready", confidence=0.85)],
+            "fake-strong": [_Verdict(label="not_ready", confidence=0.85)],
+        },
+    )
+    strategy = TieredConfidence()
+    ctx = _ctx(claude, primary="fast", escalation=["reasoning_anthropic"], threshold=0.9)
+    result = await strategy.run(ctx)
+    assert result.verdict.label == "ready"
+    assert result.trace.final_model == "fake-fast"
+    # escalation still ran (primary was below threshold), so escalated=True
+    assert result.trace.escalated is True

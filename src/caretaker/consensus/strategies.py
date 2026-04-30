@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="BaseModel")
 
 
-@dataclass
+@dataclass(frozen=True)
 class StrategyContext:
     """Inputs shared across every strategy invocation.
 
@@ -64,7 +64,7 @@ class Strategy(Protocol):
 
 def _verdict_summary(verdict: Any) -> str:
     """Short, JSON-safe summary of a verdict for the audit trail."""
-    for field_name in ("verdict", "label", "decision", "category"):
+    for field_name in ("verdict", "label", "decision", "category", "stuck_reason"):
         value = getattr(verdict, field_name, None)
         if isinstance(value, str):
             return value[:100]
@@ -181,9 +181,13 @@ class TieredConfidence:
             )
 
         # If escalation produced anything, take the highest-confidence.
-        candidate_pool: list[tuple[Any, ModelAttempt]] = list(escalation_verdicts)
+        # Primary appears first so it wins ties — Python's ``max`` returns
+        # the first maximum, which matches operator intuition (ship the
+        # cheaper default unless escalation is strictly stronger).
+        candidate_pool: list[tuple[Any, ModelAttempt]] = []
         if primary_verdict is not None:
             candidate_pool.append((primary_verdict, primary_attempt))
+        candidate_pool.extend(escalation_verdicts)
 
         def _conf(item: tuple[Any, ModelAttempt]) -> float:
             return item[1].confidence if item[1].confidence is not None else 0.0
