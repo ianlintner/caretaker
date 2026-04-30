@@ -197,3 +197,27 @@ async def test_engine_has_site_returns_true_for_configured_site() -> None:
     )
     assert engine.has_site("readiness") is True
     assert engine.has_site("size_classifier") is False
+
+
+def test_engine_site_names_returns_all_configured_sites() -> None:
+    """``site_names()`` returns every configured site as a frozenset."""
+    engine = _engine(
+        _FakeClaude(),
+        sites={
+            "readiness": SiteConfig(
+                strategy="tiered_confidence",
+                primary="fast",
+                escalation=["reasoning_anthropic"],
+                confidence_threshold=0.7,
+                agreement_fields=[],
+            ),
+            "size_classifier": SiteConfig(
+                strategy="tiered_confidence",
+                primary="fast",
+                escalation=["reasoning_anthropic"],
+                confidence_threshold=0.7,
+                agreement_fields=[],
+            ),
+        },
+    )
+    assert engine.site_names() == frozenset({"readiness", "size_classifier"})

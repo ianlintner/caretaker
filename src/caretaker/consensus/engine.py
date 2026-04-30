@@ -75,6 +75,14 @@ class ConsensusEngine:
         """
         return name in self._config.sites
 
+    def site_names(self) -> frozenset[str]:
+        """Return the names of all configured decision sites.
+
+        Public accessor used by the orchestrator's startup log line so
+        callers don't need to read the private ``_config`` attribute.
+        """
+        return frozenset(self._config.sites)
+
     async def decide(
         self,
         *,

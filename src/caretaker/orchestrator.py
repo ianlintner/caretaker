@@ -43,6 +43,7 @@ from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
     from caretaker.coding_agents.registry import CodingAgentRegistry
+    from caretaker.consensus.engine import ConsensusEngine
     from caretaker.evolution.insight_store import InsightStore
     from caretaker.goals.models import GoalEvaluation
     from caretaker.llm.claude import ClaudeClient
@@ -259,6 +260,56 @@ def _build_credentials_provider(
         return app_provider
 
 
+_CONSENSUS_SITE_NAMES: tuple[str, ...] = (
+    "readiness",
+    "ci_triage",
+    "review_classification",
+    "issue_triage",
+    "cascade",
+    "stuck_pr",
+    "bot_identity",
+    "dispatch_guard",
+    "executor_routing",
+    "crystallizer_category",
+    "size_classifier",
+)
+
+
+def _build_consensus_engine(config: MaintainerConfig) -> ConsensusEngine | None:
+    """Build a ConsensusEngine from the configured sites, or return None.
+
+    Walks every :class:`AgenticDomainConfig` on :class:`AgenticConfig` and
+    collects the ones with a non-None ``consensus`` field. If none opt in,
+    no engine is built and the existing single-model paths run unchanged.
+    """
+    from caretaker.consensus.engine import ConsensusEngine, EngineConfig, SiteConfig
+    from caretaker.consensus.provider_pool import ProviderPool
+    from caretaker.llm.claude import ClaudeClient
+
+    sites: dict[str, SiteConfig] = {}
+    for site_name in _CONSENSUS_SITE_NAMES:
+        domain = getattr(config.agentic, site_name, None)
+        if domain is None:
+            continue
+        consensus_cfg = getattr(domain, "consensus", None)
+        if consensus_cfg is None:
+            continue
+        sites[site_name] = SiteConfig(
+            strategy=consensus_cfg.strategy,
+            primary=consensus_cfg.primary,
+            escalation=list(consensus_cfg.escalation),
+            confidence_threshold=consensus_cfg.confidence_threshold,
+            agreement_fields=list(consensus_cfg.agreement_fields),
+        )
+
+    if not sites:
+        return None
+
+    pool = ProviderPool(dict(config.llm.model_pool.pool))
+    claude = ClaudeClient(config=config.llm)
+    return ConsensusEngine(config=EngineConfig(pool=pool, sites=sites), claude=claude)
+
+
 class Orchestrator:
     """Central orchestrator that coordinates all agents."""
 
@@ -274,6 +325,25 @@ class Orchestrator:
         self._owner = owner
         self._repo = repo
         self._llm = LLMRouter(config.llm)
+
+        # ── Consensus engine (Phase 3 of agentic migration) ────────────
+        from caretaker.consensus import active as consensus_active
+        from caretaker.evolution import shadow_config
+
+        # Install the agentic config so @shadow_decision can resolve modes.
+        # This was previously only set in tests; production runs need it too.
+        shadow_config.configure_maintainer(config)
+
+        self._consensus_engine = _build_consensus_engine(config)
+        if self._consensus_engine is not None:
+            consensus_active.configure(self._consensus_engine)
+            logger.info(
+                "Consensus engine active for sites: %s",
+                sorted(self._consensus_engine.site_names()),
+            )
+        else:
+            consensus_active.reset_for_tests()
+
         self._state_tracker = StateTracker(github, owner, repo)
 
         # Memory backend — configured persistence backend (MongoDB when enabled)
