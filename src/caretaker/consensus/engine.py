@@ -66,6 +66,15 @@ class ConsensusEngine:
         self._config = config
         self._claude = claude
 
+    def has_site(self, name: str) -> bool:
+        """Return True when ``name`` is a configured decision site.
+
+        Call sites that wire the engine into existing single-model paths
+        check this before delegating, so they stay on the legacy direct
+        path when the engine is configured but not for their site.
+        """
+        return name in self._config.sites
+
     async def decide(
         self,
         *,

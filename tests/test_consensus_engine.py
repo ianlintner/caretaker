@@ -119,7 +119,7 @@ async def test_engine_routes_to_always_two_models() -> None:
 @pytest.mark.asyncio
 async def test_engine_raises_for_unknown_site() -> None:
     engine = _engine(_FakeClaude(), sites={})
-    with pytest.raises(KeyError, match="unknown_site"):
+    with pytest.raises(KeyError, match=r"site 'unknown_site'"):
         await engine.decide(
             site_name="unknown_site",
             schema=_Verdict,
@@ -171,7 +171,7 @@ async def test_engine_raises_for_unknown_strategy() -> None:
             ),
         },
     )
-    with pytest.raises(ValueError, match="unknown_strategy"):
+    with pytest.raises(ValueError, match=r"unknown consensus strategy 'unknown_strategy'"):
         await engine.decide(
             site_name="readiness",
             schema=_Verdict,
@@ -179,3 +179,21 @@ async def test_engine_raises_for_unknown_strategy() -> None:
             user_prompt="user",
             feature="readiness",
         )
+
+
+@pytest.mark.asyncio
+async def test_engine_has_site_returns_true_for_configured_site() -> None:
+    engine = _engine(
+        _FakeClaude(),
+        sites={
+            "readiness": SiteConfig(
+                strategy="tiered_confidence",
+                primary="fast",
+                escalation=["reasoning_anthropic"],
+                confidence_threshold=0.7,
+                agreement_fields=[],
+            ),
+        },
+    )
+    assert engine.has_site("readiness") is True
+    assert engine.has_site("size_classifier") is False
