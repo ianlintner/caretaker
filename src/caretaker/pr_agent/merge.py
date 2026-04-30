@@ -46,12 +46,18 @@ class MergeExecution:
     land; the rollback opens a revert PR) and ``rollback_outcome`` will
     be :attr:`RollbackOutcome.ROLLED_BACK` or
     :attr:`RollbackOutcome.ROLLBACK_FAILED`.
+
+    ``is_transient`` is set to ``True`` only when the merge attempt
+    failed with a status code in :data:`_TRANSIENT_MERGE_STATUS_CODES`
+    (405 / 409 / 422). Callers should put the PR back in their waiting
+    queue rather than treating these as hard failures.
     """
 
     merged: bool
     method: str
     rollback_outcome: RollbackOutcome | None = None
     reason: str = ""
+    is_transient: bool = False
 
 
 def evaluate_merge(
@@ -230,6 +236,7 @@ async def perform_merge(
                 merged=False,
                 method=decision.method,
                 reason=f"transient_api_error: {exc}",
+                is_transient=True,
             )
         raise
 

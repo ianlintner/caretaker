@@ -13,6 +13,7 @@ from caretaker.config import MergeAuthorityMode
 from caretaker.evolution.shadow import shadow_decision
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
+from caretaker.guardrails import RollbackOutcome
 from caretaker.identity import is_automated
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
@@ -813,9 +814,9 @@ class PRAgent:
             # Surface a base-CI rollback as an error for the operator. The
             # merge itself stands; perform_merge's rollback closure has
             # already opened a tracking issue tagged ``caretaker:rollback``.
-            if result.rollback_outcome is not None and result.rollback_outcome.value in (
-                "rolled_back",
-                "rollback_failed",
+            if result.rollback_outcome in (
+                RollbackOutcome.ROLLED_BACK,
+                RollbackOutcome.ROLLBACK_FAILED,
             ):
                 report.errors.append(
                     f"PR #{pr.number}: post-merge rollback fired "
@@ -823,7 +824,7 @@ class PRAgent:
                 )
             return tracking
 
-        if result.reason.startswith("transient_api_error"):
+        if result.is_transient:
             logger.warning("PR #%d cannot be merged yet: %s", pr.number, result.reason)
             report.waiting.append(pr.number)
             return tracking

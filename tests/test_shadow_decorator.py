@@ -193,10 +193,11 @@ async def test_shadow_loose_agree_with_strict_disagree_records_semantic_disagree
     assert after - before == 1
 
 
-async def test_shadow_strict_agree_leaves_semantic_disagreement_none() -> None:
-    """When legacy and candidate are byte-identical the strict check
-    agrees and the semantic_disagreement flag stays None — the diagnostic
-    counter must not fire on every cycle."""
+async def test_shadow_strict_agree_records_semantic_disagreement_false() -> None:
+    """When legacy and candidate are byte-identical the strict check ran
+    and agreed — the flag is False (not None), so operators can tell
+    'check ran and matched' apart from 'check not applicable'. The
+    diagnostic counter must not fire."""
     from caretaker.evolution.shadow import SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL
 
     _set_mode("readiness", "shadow")
@@ -217,7 +218,7 @@ async def test_shadow_strict_agree_leaves_semantic_disagreement_none() -> None:
 
     records = recent_records()
     assert records[0].outcome == "agree"
-    assert records[0].semantic_disagreement is None
+    assert records[0].semantic_disagreement is False
     assert after == before
 
 

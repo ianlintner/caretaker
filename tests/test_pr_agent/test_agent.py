@@ -905,6 +905,71 @@ class TestHandleMergeBranchProtection:
 
         assert exc_info.value.status_code == 500
 
+    async def test_post_merge_rollback_surfaces_in_report_errors(self) -> None:
+        """When the rollback wrapper fires (base CI red post-merge), the
+        merge itself stands but a tracking entry must surface in
+        ``report.errors`` so an operator notices. ``report.merged`` still
+        lists the PR number — the merge is not undone."""
+        from caretaker.guardrails import RollbackOutcome
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.merge import MergeExecution
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReviewEvaluation,
+        )
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=13, user=copilot_user)
+        tracking = TrackedPR(number=13)
+        config = make_config()
+
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        ci_eval = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[make_check_run(name="lint", conclusion=CheckConclusion.SUCCESS)],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        review_eval = ReviewEvaluation(
+            changes_requested=False,
+            approved=True,
+            pending=False,
+            blocking_reviews=[],
+            approving_reviews=[],
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=review_eval,
+            recommended_state=PRTrackingState.MERGE_READY,
+            recommended_action="merge",
+        )
+
+        # Stub perform_merge to simulate a post-merge rollback firing.
+        async def fake_perform_merge(*_args: object, **_kwargs: object) -> MergeExecution:
+            return MergeExecution(
+                merged=True,
+                method="squash",
+                rollback_outcome=RollbackOutcome.ROLLED_BACK,
+                reason="all green at evaluation",
+            )
+
+        report = PRAgentReport()
+        from unittest.mock import patch
+
+        with patch("caretaker.pr_agent.agent.perform_merge", side_effect=fake_perform_merge):
+            updated = await agent._handle_merge(pr, evaluation, tracking, report)
+
+        assert updated.state == PRTrackingState.MERGED
+        assert 13 in report.merged
+        assert any("post-merge rollback fired" in e and "rolled_back" in e for e in report.errors)
+
 
 # ── Comment deduplication ────────────────────────────────────────────
 

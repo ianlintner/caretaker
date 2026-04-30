@@ -207,19 +207,26 @@ class ShadowDecisionRecord(BaseModel):
             "(e.g. candidate errored before issuing an LLM request)."
         ),
     )
-    # Diagnostic field: set to ``True`` when the loose ``compare_fn`` agreed
-    # but a strict equality check on the full verdict disagreed. ``None``
-    # whenever the strict check is not meaningful — when the loose compare
-    # itself disagreed (already captured by ``outcome=="disagree"``), when
-    # the candidate errored, or when no comparison happened (off / enforce
-    # modes). Operators query this to spot LLM drift in descriptive fields
-    # (``stuck_reason``, ``blockers``, ``summary``) that the per-site
-    # compare deliberately ignores.
+    # Diagnostic field, tri-state:
+    #
+    # * ``True``  — strict equality check ran and disagreed (LLM drift in
+    #   descriptive fields like ``stuck_reason`` / ``blockers`` / free-text
+    #   summary that the per-site compare deliberately ignores).
+    # * ``False`` — strict equality check ran and agreed (verdicts are
+    #   byte-identical at the field level; this is the all-clear state).
+    # * ``None``  — strict check did not run, e.g. the loose compare
+    #   itself disagreed (already captured by ``outcome=="disagree"``),
+    #   the candidate errored, or no comparison happened at all (off /
+    #   enforce modes).
+    #
+    # Operators querying drift can filter on ``semantic_disagreement is
+    # True`` without false positives from "not applicable" rows, and can
+    # tell "we never checked" from "we checked and it matched".
     semantic_disagreement: bool | None = Field(
         default=None,
         description=(
-            "True when the loose compare returned agree but strict equality "
-            "disagreed. ``None`` when the strict check is not applicable."
+            "True when the loose compare agreed but strict equality "
+            "disagreed; False when both agreed; None when not applicable."
         ),
     )
 
@@ -618,16 +625,15 @@ def shadow_decision(
                 )
             )
             # Diagnostic: when the loose compare returned agree, also run a
-            # strict equality check on the full verdict. A True result
-            # means the LLM and legacy disagree on descriptive fields the
-            # per-site compare deliberately ignores (e.g. ``stuck_reason``,
-            # ``blockers``, free-text rationale). The primary agreement rate
-            # is unchanged — this just surfaces drift the gate would miss.
+            # strict equality check on the full verdict. The flag is
+            # tri-state — see :class:`ShadowDecisionRecord`. The primary
+            # agreement rate is unchanged; this just surfaces drift in
+            # descriptive fields that the gate would miss.
             semantic_disagreement: bool | None = None
             if agreed:
                 strict_agreed = _default_compare(legacy_result, candidate_verdict)
-                if not strict_agreed:
-                    semantic_disagreement = True
+                semantic_disagreement = not strict_agreed
+                if semantic_disagreement:
                     SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name=name).inc()
             record = ShadowDecisionRecord(
                 id=str(uuid.uuid4()),
