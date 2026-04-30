@@ -160,6 +160,90 @@ async def test_shadow_custom_compare_function() -> None:
     assert records[0].outcome == "agree"
 
 
+async def test_shadow_loose_agree_with_strict_disagree_records_semantic_disagreement() -> None:
+    """When the per-site compare returns agree but a strict equality check
+    on the full verdict disagrees, the record's ``semantic_disagreement``
+    flag is set to True and the diagnostic counter increments. Primary
+    agreement-rate is unchanged."""
+    from caretaker.evolution.shadow import SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL
+
+    _set_mode("review_classification", "shadow")
+
+    def compare(a: Any, b: Any) -> bool:
+        return a["label"] == b["label"]
+
+    @shadow_decision("review_classification", compare=compare)
+    async def decide(*, legacy: Any, candidate: Any, context: Any = None) -> dict[str, str]:
+        raise AssertionError("wrapper drives")
+
+    async def legacy() -> dict[str, str]:
+        return {"label": "nit", "rationale": "no issues"}
+
+    async def candidate() -> dict[str, str]:
+        return {"label": "nit", "rationale": "different wording"}
+
+    before = SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name="review_classification")._value.get()
+    await decide(legacy=legacy, candidate=candidate)
+    after = SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name="review_classification")._value.get()
+
+    records = recent_records()
+    assert len(records) == 1
+    assert records[0].outcome == "agree"
+    assert records[0].semantic_disagreement is True
+    assert after - before == 1
+
+
+async def test_shadow_strict_agree_records_semantic_disagreement_false() -> None:
+    """When legacy and candidate are byte-identical the strict check ran
+    and agreed — the flag is False (not None), so operators can tell
+    'check ran and matched' apart from 'check not applicable'. The
+    diagnostic counter must not fire."""
+    from caretaker.evolution.shadow import SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL
+
+    _set_mode("readiness", "shadow")
+
+    @shadow_decision("readiness")
+    async def decide(*, legacy: Any, candidate: Any, context: Any = None) -> str:
+        raise AssertionError("wrapper drives")
+
+    async def legacy() -> str:
+        return "ready"
+
+    async def candidate() -> str:
+        return "ready"
+
+    before = SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name="readiness")._value.get()
+    await decide(legacy=legacy, candidate=candidate)
+    after = SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name="readiness")._value.get()
+
+    records = recent_records()
+    assert records[0].outcome == "agree"
+    assert records[0].semantic_disagreement is False
+    assert after == before
+
+
+async def test_shadow_loose_disagree_leaves_semantic_disagreement_none() -> None:
+    """When the loose compare itself disagrees, the strict check is moot
+    — the disagreement is already captured by ``outcome=='disagree'`` and
+    the semantic flag stays None."""
+    _set_mode("ci_triage", "shadow")
+
+    @shadow_decision("ci_triage")
+    async def decide(*, legacy: Any, candidate: Any, context: Any = None) -> str:
+        raise AssertionError("wrapper drives")
+
+    async def legacy() -> str:
+        return "test"
+
+    async def candidate() -> str:
+        return "lint"
+
+    await decide(legacy=legacy, candidate=candidate)
+    records = recent_records()
+    assert records[0].outcome == "disagree"
+    assert records[0].semantic_disagreement is None
+
+
 # ── Decorator: shadow / candidate raises ─────────────────────────────────
 
 

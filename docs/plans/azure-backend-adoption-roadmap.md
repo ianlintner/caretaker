@@ -372,7 +372,7 @@ Every phase should produce:
 - Previous phase's exit criteria fully met.
 - No unresolved P1/P2 alerts in the last 7 days tied to previous phase.
 - Config schema additions merged and documented in
-  [`docs/configuration.md`](./configuration.md).
+  [`docs/configuration.md`](../configuration.md).
 
 ---
 
