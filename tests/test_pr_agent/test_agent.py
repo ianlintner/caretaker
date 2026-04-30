@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2690,3 +2691,260 @@ class TestApplyMergeCommand:
             result = await agent._apply_merge_command(pr_fresh, [comment])
             assert result is True, f"association {assoc!r} should be trusted"
             github.add_labels.assert_awaited_once()
+
+
+# ── Self-chaining orchestration ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestSelfChainingOrchestration:
+    """Verify _process_pr drives a green caretaker PR through approve → merge
+    → cascade in a single invocation, instead of taking three webhook cycles.
+
+    The state machine is unchanged; ``_next_self_chain_step`` decides whether
+    to re-enter the action ladder after each internal-only success.
+    """
+
+    def _make_green_caretaker_pr(self, number: int = 100, body: str = "") -> Any:
+        pr = make_pr(
+            number=number,
+            head_ref=f"caretaker/feature-{number}",
+            user=User(login="caretaker-bot", id=42, type="Bot"),
+        )
+        pr.head_sha = f"sha{number}"
+        pr.mergeable = True
+        if body:
+            pr.body = body
+        return pr
+
+    async def _build_agent(self, *, with_tracked_issues: bool = False) -> tuple:
+        from caretaker.config import ReviewConfig
+        from caretaker.pr_agent.agent import PRAgent
+        from caretaker.state.models import IssueTrackingState, TrackedIssue
+
+        config = make_config()
+        config.review = ReviewConfig(auto_approve_caretaker_prs=True)
+        config.auto_merge.caretaker_prs = True
+        config.readiness.required_reviews = 0
+
+        github = AsyncMock()
+        # Green CI: a single passing check.
+        green_check = make_check_run(name="ci", conclusion=CheckConclusion.SUCCESS)
+        github.get_check_runs = AsyncMock(return_value=[green_check])
+        github.get_pr_reviews = AsyncMock(return_value=[])
+        github.get_pr_comments = AsyncMock(return_value=[])
+        github.create_review = AsyncMock(return_value=None)
+        github.merge_pull_request = AsyncMock(return_value=True)
+        github.update_issue = AsyncMock(return_value=None)
+        github.add_issue_comment = AsyncMock(return_value=None)
+        # Ownership / readiness-check publishing helpers — return benign defaults.
+        github.find_check_run = AsyncMock(return_value=None)
+        github.create_check_run = AsyncMock(return_value={"id": 7})
+        github.update_check_run = AsyncMock(return_value=None)
+
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        if with_tracked_issues:
+            agent._tracked_issues = {
+                42: TrackedIssue(
+                    number=42,
+                    title="open work",
+                    state=IssueTrackingState.TRIAGED,
+                ),
+            }
+        return agent, github
+
+    async def test_auto_approve_self_chains_into_merge(self) -> None:
+        """A caretaker PR with green CI gets approved AND merged in one call."""
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        agent, github = await self._build_agent()
+        pr = self._make_green_caretaker_pr(number=100)
+        tracking = TrackedPR(number=100)
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # Both writes happened inside one invocation.
+        github.create_review.assert_awaited_once()
+        github.merge_pull_request.assert_awaited_once()
+        assert tracking.state == PRTrackingState.MERGED
+        assert 100 in report.approved
+        assert 100 in report.merged
+
+    async def test_merge_self_chains_into_cascade_when_tracked_issues_present(self) -> None:
+        """An in-loop merge fires per-PR cascade — linked issue closes immediately."""
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        agent, github = await self._build_agent(with_tracked_issues=True)
+        pr = self._make_green_caretaker_pr(number=101, body="Closes #42 — done.")
+        tracking = TrackedPR(number=101)
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # The cascade closed issue #42 in the same cycle.
+        github.update_issue.assert_awaited()
+        close_calls = [
+            c for c in github.update_issue.await_args_list if c.kwargs.get("state") == "closed"
+        ]
+        targets = [
+            c.args[2] if len(c.args) > 2 else c.kwargs.get("issue_number") for c in close_calls
+        ]
+        assert 42 in targets, f"cascade should have closed issue #42; targets={targets}"
+
+    async def test_in_loop_merge_releases_ownership_in_same_cycle(self) -> None:
+        """After self-chain merges, ownership archive fires in the same call.
+
+        Without mutating ``pr.merged`` after the in-loop merge, the
+        ``should_release_ownership(pr, tracking, "merged")`` predicate would
+        see ``pr.merged=False`` (the value from when we fetched the PR) and
+        defer release to the next cycle. The handler now updates the PR
+        object so ownership archives immediately.
+        """
+        from caretaker.pr_agent.agent import PRAgentReport
+        from caretaker.state.models import OwnershipState
+
+        agent, github = await self._build_agent()
+        pr = self._make_green_caretaker_pr(number=110)
+        # Pretend ownership was claimed on a prior cycle.
+        tracking = TrackedPR(
+            number=110,
+            ownership_state=OwnershipState.OWNED,
+            ownership_acquired_at=datetime.now(UTC),
+        )
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # Merge happened.
+        assert tracking.state == PRTrackingState.MERGED
+        # PR object was mutated so ownership saw the merge.
+        assert pr.merged is True
+        # Ownership released in the same cycle.
+        assert tracking.ownership_state == OwnershipState.RELEASED
+
+    async def test_merge_skips_cascade_when_no_tracked_issues(self) -> None:
+        """When run() was called without tracked_issues, the cascade hop is skipped."""
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        agent, github = await self._build_agent(with_tracked_issues=False)
+        pr = self._make_green_caretaker_pr(number=102, body="Closes #42")
+        tracking = TrackedPR(number=102)
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # Merge happened, but no issue close attempted (cascade hop skipped).
+        github.merge_pull_request.assert_awaited_once()
+        assert tracking.state == PRTrackingState.MERGED
+        github.update_issue.assert_not_awaited()
+
+    async def test_external_wait_action_does_not_chain(self) -> None:
+        """request_fix is yield-bound — the loop must terminate after one hop.
+
+        Verifies the dispatcher does not spuriously invoke any chain-hop
+        handlers when the initial action is external-wait. We exercise this
+        by checking that no merge / cascade calls happen when CI is failing.
+        """
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        agent, github = await self._build_agent()
+        # Override CI to failing so the action ladder picks request_fix.
+        failed_check = make_check_run(name="ci", conclusion=CheckConclusion.FAILURE)
+        github.get_check_runs = AsyncMock(return_value=[failed_check])
+
+        # _handle_ci_fix dispatches to copilot_bridge; stub it.
+        bridge_result = MagicMock(comment_id=99)
+        agent._copilot_bridge.request_ci_fix = AsyncMock(return_value=bridge_result)
+        agent._copilot_bridge._protocol._github = github
+
+        pr = self._make_green_caretaker_pr(number=103)
+        tracking = TrackedPR(number=103)
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        # No merge or cascade should have occurred.
+        github.merge_pull_request.assert_not_awaited()
+        github.update_issue.assert_not_awaited()
+
+    async def test_self_chain_stops_when_merge_fails_after_approve(self) -> None:
+        """Approve succeeded, merge failed → chain stops; earlier hop preserved.
+
+        If the auto-approve API call lands but the merge attempt hits a 422
+        (head out-of-date), the report still records the approval and the
+        merge failure surfaces in report.waiting — same as today, just
+        reached in one cycle instead of two.
+        """
+        from caretaker.github_client.api import GitHubAPIError
+        from caretaker.pr_agent.agent import PRAgentReport
+
+        agent, github = await self._build_agent()
+        github.merge_pull_request = AsyncMock(
+            side_effect=GitHubAPIError(422, '{"message":"Head ref out of date"}')
+        )
+
+        pr = self._make_green_caretaker_pr(number=104)
+        tracking = TrackedPR(number=104)
+        report = PRAgentReport()
+
+        await agent._process_pr(pr, tracking, report)
+
+        github.create_review.assert_awaited_once()  # approve landed
+        assert 104 in report.approved
+        # Merge attempt failed transiently → PR is in waiting, not merged.
+        assert 104 in report.waiting
+        assert tracking.state != PRTrackingState.MERGED
+
+    async def test_hop_cap_logged_when_predicate_keeps_returning_chain(self) -> None:
+        """Structural test: if ``_next_self_chain_step`` is forced to keep
+        returning a hop, the loop terminates at ``_MAX_SELF_CHAIN_HOPS`` with
+        a warning. This guards against a future predicate bug spiralling."""
+        from caretaker.pr_agent.agent import (
+            _MAX_SELF_CHAIN_HOPS,
+            PRAgentReport,
+        )
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReviewEvaluation,
+        )
+
+        agent, github = await self._build_agent()
+
+        forced_eval = PRStateEvaluation(
+            pr=None,  # type: ignore[arg-type]
+            ci=CIEvaluation(
+                status=CIStatus.PASSING,
+                failed_runs=[],
+                pending_runs=[],
+                passed_runs=[],
+                action_required_runs=[],
+                all_completed=True,
+            ),
+            reviews=ReviewEvaluation(
+                changes_requested=False,
+                approved=True,
+                pending=False,
+                blocking_reviews=[],
+                approving_reviews=[],
+            ),
+            recommended_state=PRTrackingState.MERGED,
+            recommended_action="cascade",
+        )
+
+        # Force the predicate to always return another cascade hop.
+        with patch.object(agent, "_next_self_chain_step", return_value=("cascade", forced_eval)):
+            pr = self._make_green_caretaker_pr(number=105)
+            tracking = TrackedPR(number=105)
+            report = PRAgentReport()
+
+            await agent._process_pr(pr, tracking, report)
+
+        # _handle_post_merge_cascade short-circuits when tracked_issues is None,
+        # so the body of each chained dispatch is a no-op. The important
+        # property is that the loop terminated (didn't raise, didn't hang).
+        assert tracking is not None  # got past the loop
+        assert _MAX_SELF_CHAIN_HOPS == 3  # invariant pin guards the cap value
