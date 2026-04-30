@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from caretaker.consensus.provider_pool import ProviderPool
 from caretaker.consensus.result import ConsensusUnavailable
 from caretaker.consensus.strategies import (
+    AlwaysTwoModels,
     StrategyContext,
     TieredConfidence,
 )
@@ -176,3 +177,133 @@ async def test_tiered_primary_wins_ties() -> None:
     assert result.trace.final_model == "fake-fast"
     # escalation still ran (primary was below threshold), so escalated=True
     assert result.trace.escalated is True
+
+
+# ── AlwaysTwoModels ───────────────────────────────────────────────────────
+
+
+def _atm_ctx(
+    claude: _FakeClaude, *, primary: str, escalation: list[str], agreement: list[str]
+) -> StrategyContext:
+    return StrategyContext(
+        site_name="readiness",
+        schema=_Verdict,
+        system_prompt="sys",
+        user_prompt="user",
+        feature="readiness",
+        primary=primary,
+        escalation=escalation,
+        confidence_threshold=0.7,
+        agreement_fields=agreement,
+        pool=ProviderPool({"reasoning_anthropic": "fake-anthropic", "reasoning_alt": "fake-alt"}),
+        claude=claude,
+    )
+
+
+@pytest.mark.asyncio
+async def test_atm_ships_primary_when_models_agree() -> None:
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [_Verdict(label="ready", confidence=0.85)],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt"],
+        agreement=["label"],
+    )
+    result = await strategy.run(ctx)
+    assert result.verdict.label == "ready"
+    assert result.trace.escalated is False
+    assert result.trace.final_model == "fake-anthropic"
+    # Both must have been called (in parallel).
+    assert sorted(claude.calls) == ["fake-alt", "fake-anthropic"]
+
+
+@pytest.mark.asyncio
+async def test_atm_escalates_to_tiebreaker_on_disagreement() -> None:
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [_Verdict(label="not_ready", confidence=0.85)],
+            "literal-tiebreaker": [_Verdict(label="needs_human", confidence=0.7)],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt", "literal-tiebreaker"],
+        agreement=["label"],
+    )
+    result = await strategy.run(ctx)
+    assert result.verdict.label == "needs_human"
+    assert result.trace.escalated is True
+    assert result.trace.final_model == "literal-tiebreaker"
+
+
+@pytest.mark.asyncio
+async def test_atm_promotes_tiebreaker_when_one_model_errors() -> None:
+    err = StructuredCompleteError(raw_text="", validation_error=RuntimeError("nope"))
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [err],
+            "literal-tiebreaker": [_Verdict(label="ready", confidence=0.85)],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt", "literal-tiebreaker"],
+        agreement=["label"],
+    )
+    result = await strategy.run(ctx)
+    # Two votes ('fake-anthropic' + 'literal-tiebreaker') agree on 'ready'.
+    assert result.verdict.label == "ready"
+    # Final model is the surviving primary (it was the agreement winner).
+    assert result.trace.final_model in ("fake-anthropic", "literal-tiebreaker")
+
+
+@pytest.mark.asyncio
+async def test_atm_raises_when_both_initial_models_error() -> None:
+    err = StructuredCompleteError(raw_text="", validation_error=RuntimeError("nope"))
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [err],
+            "fake-alt": [err],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt"],
+        agreement=["label"],
+    )
+    with pytest.raises(ConsensusUnavailable):
+        await strategy.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_atm_compares_full_verdict_when_agreement_fields_empty() -> None:
+    """With agreement_fields=[], the strategy compares full verdicts via __eq__."""
+    claude = _FakeClaude(
+        responses={
+            "fake-anthropic": [_Verdict(label="ready", confidence=0.9)],
+            "fake-alt": [_Verdict(label="ready", confidence=0.9)],
+        },
+    )
+    strategy = AlwaysTwoModels()
+    ctx = _atm_ctx(
+        claude,
+        primary="reasoning_anthropic",
+        escalation=["reasoning_alt"],
+        agreement=[],
+    )
+    result = await strategy.run(ctx)
+    assert result.trace.escalated is False

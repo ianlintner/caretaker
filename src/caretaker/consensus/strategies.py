@@ -8,6 +8,7 @@ errored out. The engine selects a strategy by name from
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -204,7 +205,153 @@ class TieredConfidence:
         )
 
 
+# ── AlwaysTwoModels ───────────────────────────────────────────────────────
+
+
+def _agree(a: Any, b: Any, fields: Sequence[str]) -> bool:
+    """Decide whether two verdicts agree on the configured fields."""
+    if not fields:
+        try:
+            return bool(a == b)
+        except Exception:  # noqa: BLE001 — exotic __eq__ that raises
+            return False
+    for field_name in fields:
+        if getattr(a, field_name, object()) != getattr(b, field_name, object()):
+            return False
+    return True
+
+
+@dataclass
+class AlwaysTwoModels:
+    """Two-model agreement strategy with tiebreaker escalation.
+
+    Order of operations:
+
+    1. Call ``primary`` and ``escalation[0]`` in parallel. The escalation
+       tag must resolve to a different concrete model than ``primary``;
+       :func:`ProviderPool.resolve_distinct` enforces this.
+    2. If both succeed and agree on ``agreement_fields`` (or full verdict
+       if the list is empty), ship primary's verdict.
+    3. Else (disagreement, or one errored) call ``escalation[1:]`` in
+       order until the next available model produces a verdict — that's
+       the tiebreaker.
+    4. Tiebreaker's verdict ships if it agrees with at least one of the
+       prior verdicts on the agreement fields; otherwise the highest-
+       confidence verdict among all attempts wins.
+    5. If every model errored, raise :class:`ConsensusUnavailable`.
+    """
+
+    name: str = "always_two_models"
+
+    async def run(self, ctx: StrategyContext) -> ConsensusResult[Any]:
+        if not ctx.escalation:
+            raise ConsensusUnavailable(
+                strategy=self.name,
+                attempts=[],
+                reason="always_two_models requires escalation[0] (no second model configured)",
+            )
+
+        # Resolve primary first; resolve escalation[0] distinctly.
+        primary_model, _ = ctx.pool.resolve(ctx.primary)
+        # Validate distinctness (raises if same concrete model).
+        ctx.pool.resolve_distinct(ctx.escalation[0], different_from=primary_model)
+
+        # Run primary + secondary in parallel.
+        first_call = _call_one(ctx, tag_or_literal=ctx.primary)
+        second_call = _call_one(ctx, tag_or_literal=ctx.escalation[0])
+        (primary_verdict, primary_attempt), (second_verdict, second_attempt) = await asyncio.gather(
+            first_call, second_call
+        )
+        attempts: list[ModelAttempt] = [primary_attempt, second_attempt]
+
+        # Both succeed and agree → ship primary.
+        if (
+            primary_verdict is not None
+            and second_verdict is not None
+            and _agree(primary_verdict, second_verdict, ctx.agreement_fields)
+        ):
+            return ConsensusResult(
+                verdict=primary_verdict,
+                trace=ConsensusTrace(
+                    strategy=self.name,
+                    attempts=attempts,
+                    escalated=False,
+                    final_model=primary_attempt.model,
+                ),
+            )
+
+        # Disagreement OR a leg errored → run tiebreaker tier.
+        tiebreaker_verdict: Any | None = None
+        tiebreaker_attempt: ModelAttempt | None = None
+        for entry in ctx.escalation[1:]:
+            verdict, attempt = await _call_one(ctx, tag_or_literal=entry)
+            attempts.append(attempt)
+            if verdict is not None:
+                tiebreaker_verdict = verdict
+                tiebreaker_attempt = attempt
+                break
+
+        # Promote whatever's available to a winner.
+        candidates: list[tuple[Any, ModelAttempt]] = []
+        if primary_verdict is not None:
+            candidates.append((primary_verdict, primary_attempt))
+        if second_verdict is not None:
+            candidates.append((second_verdict, second_attempt))
+        if tiebreaker_verdict is not None and tiebreaker_attempt is not None:
+            candidates.append((tiebreaker_verdict, tiebreaker_attempt))
+
+        if not candidates:
+            raise ConsensusUnavailable(
+                strategy=self.name,
+                attempts=attempts,
+                reason="primary, secondary, and every tiebreaker errored",
+            )
+
+        # If tiebreaker exists, prefer it. When it agrees with a surviving
+        # prior verdict on the agreement fields, surface the agreement-winner
+        # as the final_model (so traces show "two models agreed on X");
+        # otherwise the tiebreaker itself is the deciding vote.
+        if tiebreaker_verdict is not None and tiebreaker_attempt is not None:
+            for verdict, attempt in candidates[:-1]:  # exclude tiebreaker self
+                if _agree(tiebreaker_verdict, verdict, ctx.agreement_fields):
+                    return ConsensusResult(
+                        verdict=tiebreaker_verdict,
+                        trace=ConsensusTrace(
+                            strategy=self.name,
+                            attempts=attempts,
+                            escalated=True,
+                            final_model=attempt.model,
+                        ),
+                    )
+            # No prior agreement — tiebreaker casts the deciding vote.
+            return ConsensusResult(
+                verdict=tiebreaker_verdict,
+                trace=ConsensusTrace(
+                    strategy=self.name,
+                    attempts=attempts,
+                    escalated=True,
+                    final_model=tiebreaker_attempt.model,
+                ),
+            )
+
+        # Fall back to highest-confidence among all candidates.
+        def _conf(item: tuple[Any, ModelAttempt]) -> float:
+            return item[1].confidence if item[1].confidence is not None else 0.0
+
+        winner_verdict, winner_attempt = max(candidates, key=_conf)
+        return ConsensusResult(
+            verdict=winner_verdict,
+            trace=ConsensusTrace(
+                strategy=self.name,
+                attempts=attempts,
+                escalated=True,
+                final_model=winner_attempt.model,
+            ),
+        )
+
+
 __all__ = [
+    "AlwaysTwoModels",
     "Strategy",
     "StrategyContext",
     "TieredConfidence",
