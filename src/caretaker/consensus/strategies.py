@@ -14,6 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+from caretaker.consensus.metrics import (
+    CONSENSUS_DECISIONS_TOTAL,
+    CONSENSUS_DISAGREEMENT_TOTAL,
+    CONSENSUS_UNAVAILABLE_TOTAL,
+)
 from caretaker.consensus.result import ConsensusResult, ConsensusUnavailable
 from caretaker.consensus.trace import ConsensusTrace, ModelAttempt
 from caretaker.llm.claude import StructuredCompleteError
@@ -156,6 +161,9 @@ class TieredConfidence:
             and primary_attempt.confidence is not None
             and primary_attempt.confidence >= ctx.confidence_threshold
         ):
+            CONSENSUS_DECISIONS_TOTAL.labels(
+                site=ctx.site_name, strategy=self.name, outcome="primary_shipped"
+            ).inc()
             return ConsensusResult(
                 verdict=primary_verdict,
                 trace=ConsensusTrace(
@@ -175,6 +183,7 @@ class TieredConfidence:
                 escalation_verdicts.append((verdict, attempt))
 
         if not escalation_verdicts and primary_verdict is None:
+            CONSENSUS_UNAVAILABLE_TOTAL.labels(site=ctx.site_name).inc()
             raise ConsensusUnavailable(
                 strategy=self.name,
                 attempts=attempts,
@@ -194,6 +203,9 @@ class TieredConfidence:
             return item[1].confidence if item[1].confidence is not None else 0.0
 
         winner_verdict, winner_attempt = max(candidate_pool, key=_conf)
+        CONSENSUS_DECISIONS_TOTAL.labels(
+            site=ctx.site_name, strategy=self.name, outcome="escalated"
+        ).inc()
         return ConsensusResult(
             verdict=winner_verdict,
             trace=ConsensusTrace(
@@ -245,6 +257,7 @@ class AlwaysTwoModels:
 
     async def run(self, ctx: StrategyContext) -> ConsensusResult[Any]:
         if not ctx.escalation:
+            CONSENSUS_UNAVAILABLE_TOTAL.labels(site=ctx.site_name).inc()
             raise ConsensusUnavailable(
                 strategy=self.name,
                 attempts=[],
@@ -270,6 +283,9 @@ class AlwaysTwoModels:
             and second_verdict is not None
             and _agree(primary_verdict, second_verdict, ctx.agreement_fields)
         ):
+            CONSENSUS_DECISIONS_TOTAL.labels(
+                site=ctx.site_name, strategy=self.name, outcome="primary_shipped"
+            ).inc()
             return ConsensusResult(
                 verdict=primary_verdict,
                 trace=ConsensusTrace(
@@ -281,6 +297,15 @@ class AlwaysTwoModels:
             )
 
         # Disagreement OR a leg errored → run tiebreaker tier.
+        # Only count "true disagreement" (both succeeded, disagreed) — not
+        # degradations where one leg errored. That's what the counter is for.
+        if (
+            primary_verdict is not None
+            and second_verdict is not None
+            and not _agree(primary_verdict, second_verdict, ctx.agreement_fields)
+        ):
+            CONSENSUS_DISAGREEMENT_TOTAL.labels(site=ctx.site_name).inc()
+
         tiebreaker_verdict: Any | None = None
         tiebreaker_attempt: ModelAttempt | None = None
         for entry in ctx.escalation[1:]:
@@ -301,6 +326,7 @@ class AlwaysTwoModels:
             candidates.append((tiebreaker_verdict, tiebreaker_attempt))
 
         if not candidates:
+            CONSENSUS_UNAVAILABLE_TOTAL.labels(site=ctx.site_name).inc()
             raise ConsensusUnavailable(
                 strategy=self.name,
                 attempts=attempts,
@@ -313,6 +339,9 @@ class AlwaysTwoModels:
         # shipped verdict so cost/latency/bug triage stays unambiguous.
         # Agreement information remains reconstructable from ``attempts``.
         if tiebreaker_verdict is not None and tiebreaker_attempt is not None:
+            CONSENSUS_DECISIONS_TOTAL.labels(
+                site=ctx.site_name, strategy=self.name, outcome="tiebreaker_shipped"
+            ).inc()
             return ConsensusResult(
                 verdict=tiebreaker_verdict,
                 trace=ConsensusTrace(
@@ -329,6 +358,7 @@ class AlwaysTwoModels:
         # would contradict that. Raise ConsensusUnavailable so the wrapping
         # @shadow_decision falls through to the legacy heuristic, which on
         # readiness returns "block-merge" (the safe default).
+        CONSENSUS_UNAVAILABLE_TOTAL.labels(site=ctx.site_name).inc()
         raise ConsensusUnavailable(
             strategy=self.name,
             attempts=attempts,
