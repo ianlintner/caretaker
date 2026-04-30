@@ -54,3 +54,4 @@ strict: true
 
 exclude_docs: |
   *-plan.md
+  pr-flows-diagrams.md

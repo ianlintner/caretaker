@@ -724,6 +724,36 @@ class TestReviewFixLifecycle:
         agent._copilot_bridge.request_review_fix.assert_awaited_once()
         assert updated.state == PRTrackingState.FIX_REQUESTED
 
+    async def test_stale_copilot_attempts_reset_before_review_fix_dispatch(self) -> None:
+        """Long-lived PR with aged-out copilot_attempts gets the review-fix
+        dispatch instead of immediately escalating.
+
+        The retry-window reset originally only fired on the CI-fix path, so a
+        PR that exhausted CI fix attempts months ago but is now seeing its
+        first review-fix today would escalate purely because of the un-reset
+        counter. After the reset is shared across both dispatch paths, the
+        counter zeros and the dispatch lands as attempt 1.
+        """
+        from datetime import timedelta
+
+        pr = make_pr(number=23, user=User(login="dev", id=5, type="User"))
+        tracking = TrackedPR(
+            number=23,
+            copilot_attempts=2,
+            last_copilot_attempt_at=datetime.now(UTC) - timedelta(hours=72),
+        )
+        config = make_config(max_retries=2)
+        config.copilot.retry_window_hours = 24
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
+        agent._copilot_bridge.request_review_fix.assert_awaited_once()
+        assert updated.state == PRTrackingState.FIX_REQUESTED
+        assert 23 in report.fix_requested
+        assert 23 not in report.escalated
+        # Counter reset to 0, then bumped to 1 by this dispatch.
+        assert updated.copilot_attempts == 1
+
 
 # ── _process_pr state persistence ─────────────────────────────────────
 
@@ -874,6 +904,71 @@ class TestHandleMergeBranchProtection:
             await self._run_handle_merge(pr, tracking, config, merge_side_effect=exc)
 
         assert exc_info.value.status_code == 500
+
+    async def test_post_merge_rollback_surfaces_in_report_errors(self) -> None:
+        """When the rollback wrapper fires (base CI red post-merge), the
+        merge itself stands but a tracking entry must surface in
+        ``report.errors`` so an operator notices. ``report.merged`` still
+        lists the PR number — the merge is not undone."""
+        from caretaker.guardrails import RollbackOutcome
+        from caretaker.pr_agent.agent import PRAgent, PRAgentReport
+        from caretaker.pr_agent.merge import MergeExecution
+        from caretaker.pr_agent.states import (
+            CIEvaluation,
+            CIStatus,
+            PRStateEvaluation,
+            ReviewEvaluation,
+        )
+
+        copilot_user = User(login="copilot[bot]", id=1, type="Bot")
+        pr = make_pr(number=13, user=copilot_user)
+        tracking = TrackedPR(number=13)
+        config = make_config()
+
+        github = AsyncMock()
+        agent = PRAgent(github=github, owner="o", repo="r", config=config)
+
+        ci_eval = CIEvaluation(
+            status=CIStatus.PASSING,
+            failed_runs=[],
+            pending_runs=[],
+            passed_runs=[make_check_run(name="lint", conclusion=CheckConclusion.SUCCESS)],
+            action_required_runs=[],
+            all_completed=True,
+        )
+        review_eval = ReviewEvaluation(
+            changes_requested=False,
+            approved=True,
+            pending=False,
+            blocking_reviews=[],
+            approving_reviews=[],
+        )
+        evaluation = PRStateEvaluation(
+            pr=pr,
+            ci=ci_eval,
+            reviews=review_eval,
+            recommended_state=PRTrackingState.MERGE_READY,
+            recommended_action="merge",
+        )
+
+        # Stub perform_merge to simulate a post-merge rollback firing.
+        async def fake_perform_merge(*_args: object, **_kwargs: object) -> MergeExecution:
+            return MergeExecution(
+                merged=True,
+                method="squash",
+                rollback_outcome=RollbackOutcome.ROLLED_BACK,
+                reason="all green at evaluation",
+            )
+
+        report = PRAgentReport()
+        from unittest.mock import patch
+
+        with patch("caretaker.pr_agent.agent.perform_merge", side_effect=fake_perform_merge):
+            updated = await agent._handle_merge(pr, evaluation, tracking, report)
+
+        assert updated.state == PRTrackingState.MERGED
+        assert 13 in report.merged
+        assert any("post-merge rollback fired" in e and "rolled_back" in e for e in report.errors)
 
 
 # ── Comment deduplication ────────────────────────────────────────────

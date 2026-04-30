@@ -13,11 +13,12 @@ from caretaker.config import MergeAuthorityMode
 from caretaker.evolution.shadow import shadow_decision
 from caretaker.github_client.api import GitHubAPIError
 from caretaker.github_client.models import PRState
+from caretaker.guardrails import RollbackOutcome
 from caretaker.identity import is_automated
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.ci_triage import FailureType, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
-from caretaker.pr_agent.merge import evaluate_merge
+from caretaker.pr_agent.merge import evaluate_merge, perform_merge
 from caretaker.pr_agent.ownership import (
     build_status_comment,
     claim_ownership,
@@ -748,46 +749,17 @@ class PRAgent:
         tracking: TrackedPR,
         report: PRAgentReport,
     ) -> TrackedPR:
-        """Attempt to merge a PR that's ready."""
+        """Attempt to merge a PR that's ready.
+
+        Routes through :func:`caretaker.pr_agent.merge.perform_merge` so the
+        post-merge ``checkpoint_and_rollback`` guard can fire when the
+        ``merge_rollback`` config block is enabled. With that block off
+        (the default) ``perform_merge`` is functionally identical to the
+        prior direct-API call.
+        """
         merge_decision = evaluate_merge(pr, evaluation.ci, evaluation.reviews, self._config)
 
-        if merge_decision.should_merge:
-            try:
-                success = await self._github.merge_pull_request(
-                    self._owner,
-                    self._repo,
-                    pr.number,
-                    method=merge_decision.method,
-                )
-            except GitHubAPIError as exc:
-                # 405 = branch-protection rules not met (missing review/status check)
-                # 409 = merge conflict
-                # 422 = unprocessable (e.g. head ref out of date)
-                if exc.status_code in (405, 409, 422):
-                    logger.warning(
-                        "PR #%d cannot be merged yet (HTTP %d): %s",
-                        pr.number,
-                        exc.status_code,
-                        exc,
-                    )
-                    report.waiting.append(pr.number)
-                    return tracking
-                raise
-            if success:
-                logger.info("PR #%d merged via %s", pr.number, merge_decision.method)
-                tracking.state = PRTrackingState.MERGED
-                tracking.merged_at = datetime.now(UTC)
-                # Attribution: caretaker's merge authority closed this PR.
-                # `caretaker_merged` implies `caretaker_touched`; we set
-                # both through the shared helper so the
-                # ``last_caretaker_action_at`` cutoff moves forward.
-                _mark_caretaker_touched(tracking)
-                tracking.caretaker_merged = True
-                report.merged.append(pr.number)
-            else:
-                logger.warning("PR #%d merge failed", pr.number)
-                report.errors.append(f"PR #{pr.number}: merge failed")
-        else:
+        if not merge_decision.should_merge:
             logger.info(
                 "PR #%d not eligible for auto-merge: %s",
                 pr.number,
@@ -813,7 +785,52 @@ class PRAgent:
                     pr.is_copilot_pr,
                 )
             report.waiting.append(pr.number)
+            return tracking
 
+        # Non-transient API errors bubble up — perform_merge re-raises them
+        # so the caller (orchestrator) can surface a real failure. Transient
+        # errors (405/409/422) are caught inside perform_merge and returned
+        # as ``transient_api_error`` results.
+        result = await perform_merge(
+            pr,
+            merge_decision,
+            github=self._github,
+            config=self._config,
+            owner=self._owner,
+            repo=self._repo,
+        )
+
+        if result.merged:
+            logger.info("PR #%d merged via %s", pr.number, result.method)
+            tracking.state = PRTrackingState.MERGED
+            tracking.merged_at = datetime.now(UTC)
+            # Attribution: caretaker's merge authority closed this PR.
+            # `caretaker_merged` implies `caretaker_touched`; we set
+            # both through the shared helper so the
+            # ``last_caretaker_action_at`` cutoff moves forward.
+            _mark_caretaker_touched(tracking)
+            tracking.caretaker_merged = True
+            report.merged.append(pr.number)
+            # Surface a base-CI rollback as an error for the operator. The
+            # merge itself stands; perform_merge's rollback closure has
+            # already opened a tracking issue tagged ``caretaker:rollback``.
+            if result.rollback_outcome in (
+                RollbackOutcome.ROLLED_BACK,
+                RollbackOutcome.ROLLBACK_FAILED,
+            ):
+                report.errors.append(
+                    f"PR #{pr.number}: post-merge rollback fired "
+                    f"({result.rollback_outcome.value}); see caretaker:rollback issue"
+                )
+            return tracking
+
+        if result.is_transient:
+            logger.warning("PR #%d cannot be merged yet: %s", pr.number, result.reason)
+            report.waiting.append(pr.number)
+            return tracking
+
+        logger.warning("PR #%d merge failed: %s", pr.number, result.reason)
+        report.errors.append(f"PR #{pr.number}: merge failed")
         return tracking
 
     async def _has_pending_task_comment(self, pr_number: int) -> bool:
@@ -841,6 +858,36 @@ class PRAgent:
 
         # Check if any result comment exists after the last task
         return all(not comment.is_maintainer_result for comment in ordered[last_task_idx + 1 :])
+
+    def _maybe_reset_copilot_attempts(self, pr_number: int, tracking: TrackedPR) -> None:
+        """Reset stale ``copilot_attempts`` when the prior attempt is too old.
+
+        Shared between :meth:`_handle_ci_fix` and :meth:`_handle_review_fix` so
+        both dispatch paths see the same counter state. Without this, a
+        long-lived PR that exhausted CI fix attempts months ago could
+        immediately escalate on its first review-fix dispatch, because the
+        review path would read the un-reset counter.
+        """
+        window_h = self._config.copilot.retry_window_hours
+        if (
+            window_h <= 0
+            or tracking.copilot_attempts == 0
+            or tracking.last_copilot_attempt_at is None
+        ):
+            return
+        last = tracking.last_copilot_attempt_at
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
+        if age_h >= window_h:
+            logger.info(
+                "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
+                "outside %dh retry window)",
+                pr_number,
+                age_h,
+                window_h,
+            )
+            tracking.copilot_attempts = 0
 
     async def _handle_ci_fix(
         self,
@@ -871,25 +918,7 @@ class PRAgent:
         # E3: when the prior attempt is older than retry_window_hours, reset
         # the attempt counter — old failures shouldn't compound to escalation
         # on long-lived PRs that genuinely needed time.
-        window_h = self._config.copilot.retry_window_hours
-        if (
-            window_h > 0
-            and tracking.copilot_attempts > 0
-            and tracking.last_copilot_attempt_at is not None
-        ):
-            last = tracking.last_copilot_attempt_at
-            if last.tzinfo is None:
-                last = last.replace(tzinfo=UTC)
-            age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
-            if age_h >= window_h:
-                logger.info(
-                    "PR #%d: resetting copilot_attempts (last attempt %.1fh ago, "
-                    "outside %dh retry window)",
-                    pr.number,
-                    age_h,
-                    window_h,
-                )
-                tracking.copilot_attempts = 0
+        self._maybe_reset_copilot_attempts(pr.number, tracking)
 
         # Check if we've exceeded Copilot retry limit
         if tracking.copilot_attempts >= self._config.copilot.max_retries:
@@ -1243,6 +1272,13 @@ class PRAgent:
                 report.escalated.append(pr.number)
                 return tracking
             # verdict == FIX or APPROVE — fall through to Copilot dispatch
+
+        # Reset stale copilot_attempts before reading. The counter is shared
+        # with the CI-fix dispatcher; without this, a PR that exhausted CI
+        # fix attempts months ago could escalate on its first review-fix
+        # today purely because the prior attempts had aged out of the
+        # retry window but were still being counted.
+        self._maybe_reset_copilot_attempts(pr.number, tracking)
 
         attempt = tracking.copilot_attempts + 1
         if attempt > self._config.copilot.max_retries:

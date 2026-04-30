@@ -104,6 +104,27 @@ SHADOW_DECISIONS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# Diagnostic counter: surfaces decisions where the per-site ``compare_fn``
+# returned ``agree`` (so the primary agreement rate counted them as agree)
+# but a strict equality check on the full verdict disagreed. The per-site
+# compare functions are deliberately loose — they ignore descriptive fields
+# like ``stuck_reason`` / ``blockers`` / ``summary`` so the disagreement
+# rate reflects only behaviour-affecting changes — but loose comparisons
+# can hide LLM drift in stated reasoning. This counter lets operators see
+# that drift without inflating the primary metric the enforce-gate keys on.
+#
+# Cardinality: one series per ``name`` (currently 10); strictly additive
+# to the SHADOW_DECISIONS_TOTAL budget.
+SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL = Counter(
+    "caretaker_shadow_semantic_disagreements_total",
+    (
+        "Shadow-mode decisions where the loose compare_fn returned agree "
+        "but a strict equality check on the full verdict disagreed."
+    ),
+    ["name"],
+    registry=REGISTRY,
+)
+
 
 # ── Ring buffer + record model ───────────────────────────────────────────
 
@@ -184,6 +205,28 @@ class ShadowDecisionRecord(BaseModel):
             "router's ``llm.default_model`` at the time of the call. "
             "``None`` when the decorator was unable to determine a model "
             "(e.g. candidate errored before issuing an LLM request)."
+        ),
+    )
+    # Diagnostic field, tri-state:
+    #
+    # * ``True``  — strict equality check ran and disagreed (LLM drift in
+    #   descriptive fields like ``stuck_reason`` / ``blockers`` / free-text
+    #   summary that the per-site compare deliberately ignores).
+    # * ``False`` — strict equality check ran and agreed (verdicts are
+    #   byte-identical at the field level; this is the all-clear state).
+    # * ``None``  — strict check did not run, e.g. the loose compare
+    #   itself disagreed (already captured by ``outcome=="disagree"``),
+    #   the candidate errored, or no comparison happened at all (off /
+    #   enforce modes).
+    #
+    # Operators querying drift can filter on ``semantic_disagreement is
+    # True`` without false positives from "not applicable" rows, and can
+    # tell "we never checked" from "we checked and it matched".
+    semantic_disagreement: bool | None = Field(
+        default=None,
+        description=(
+            "True when the loose compare agreed but strict equality "
+            "disagreed; False when both agreed; None when not applicable."
         ),
     )
 
@@ -581,6 +624,17 @@ def shadow_decision(
                     f"!= candidate={_short_repr(candidate_verdict)}"
                 )
             )
+            # Diagnostic: when the loose compare returned agree, also run a
+            # strict equality check on the full verdict. The flag is
+            # tri-state — see :class:`ShadowDecisionRecord`. The primary
+            # agreement rate is unchanged; this just surfaces drift in
+            # descriptive fields that the gate would miss.
+            semantic_disagreement: bool | None = None
+            if agreed:
+                strict_agreed = _default_compare(legacy_result, candidate_verdict)
+                semantic_disagreement = not strict_agreed
+                if semantic_disagreement:
+                    SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL.labels(name=name).inc()
             record = ShadowDecisionRecord(
                 id=str(uuid.uuid4()),
                 name=name,
@@ -594,6 +648,7 @@ def shadow_decision(
                 context_json=_serialise_context(ctx_dict),
                 legacy_model=default_model,
                 candidate_model=candidate_model,
+                semantic_disagreement=semantic_disagreement,
             )
             write_shadow_decision(record)
             SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome=outcome).inc()
@@ -617,6 +672,7 @@ def _short_repr(value: Any, *, limit: int = 120) -> str:
 
 __all__ = [
     "SHADOW_DECISIONS_TOTAL",
+    "SHADOW_SEMANTIC_DISAGREEMENTS_TOTAL",
     "ShadowDecisionRecord",
     "ShadowMode",
     "ShadowOutcome",
