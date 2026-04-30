@@ -55,6 +55,13 @@ spec:
             - containerPort: 9090
               name: metrics
           env:
+            # Force Python to flush stdout/stderr line by line. Without this,
+            # block buffering hides startup logs in `kubectl logs` until the
+            # buffer fills — which made the 2026-04-30 lifespan-hang incident
+            # invisible for 12 minutes. See docs/2026-04-30-caretaker-webhook-
+            # silence-postmortem.md.
+            - name: PYTHONUNBUFFERED
+              value: "1"
             # ── OpenTelemetry — point at the in-cluster collector ────
             # The collector is at otel-collector.default.svc:4317 (gRPC),
             # which fans out to Tempo with tail-sampling. ``caretaker-mcp``
@@ -280,6 +287,18 @@ spec:
               # The bounded in-flight cap in github_app/dispatcher.py keeps
               # this from masking a real leak.
               memory: "512Mi"
+          # startupProbe gates liveness/readiness during initial startup.
+          # FastAPI lifespan can take longer than the liveness window
+          # (failureThreshold=3 × periodSeconds=15 = 45s) on cold-cache
+          # OIDC discovery / Mongo / Neo4j connect; without startupProbe
+          # liveness would crashloop a slow but healthy pod.
+          # 30 × 10s = 5min budget for the app to bind /health.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
