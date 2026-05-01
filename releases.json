@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.27.0",
+      "min_compatible": "0.26.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.27.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.27.0 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.26.2 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/645\n* feat: human PR merge opt-in via label and @caretaker merge comment by @ianlintner in https://github.com/ianlintner/caretaker/pull/647\n* feat: two-phase triage gate for issue dispatch (prevent dupe/spam queue) by @ianlintner in https://github.com/ianlintner/caretaker/pull/648\n* feat(pr-reviewer): pluggable third-party backends + pr-agent integration by @ianlintner in https://github.com/ianlintner/caretaker/pull/650\n* feat(pr-reviewer): claude_code_local backend \u2014 claude CLI in caretaker pod by @ianlintner in https://github.com/ianlintner/caretaker/pull/651\n* chore(bootstrap): retire consumer-side maintainer.yml by @ianlintner in https://github.com/ianlintner/caretaker/pull/646\n* [WIP] Update documentation to match current state by @Codex in https://github.com/ianlintner/caretaker/pull/653\n* refactor: reduce dead code, clean up stubs, rename dedup modules by @ianlintner in https://github.com/ianlintner/caretaker/pull/654\n* Audit PR flows + 3 follow-ups: rollback wire-up, retry-window symmetry, shadow drift metric by @ianlintner in https://github.com/ianlintner/caretaker/pull/655\n* docs(plans): LLM consensus engine design by @ianlintner in https://github.com/ianlintner/caretaker/pull/656\n* feat(pr_agent): orchestrator self-chaining for internal-only transitions by @ianlintner in https://github.com/ianlintner/caretaker/pull/657\n* fix(rate_limit): self-heal stale GitHub cooldown when bucket is healthy by @ianlintner in https://github.com/ianlintner/caretaker/pull/659\n* feat(consensus): LLM consensus engine for tiered/multi-model decisions by @ianlintner in https://github.com/ianlintner/caretaker/pull/660\n* docs(plans): LLM consensus engine implementation plan by @ianlintner in https://github.com/ianlintner/caretaker/pull/658\n* docs(pla",
+      "breaking": false
+    },
+    {
       "version": "0.26.2",
       "min_compatible": "0.26.1",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.26.2",
