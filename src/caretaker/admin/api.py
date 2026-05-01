@@ -6,6 +6,7 @@ All endpoints require an authenticated OIDC session (enforced via the
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,8 @@ from caretaker.admin.data import (  # noqa: TC001 (runtime-resolved response mod
     AdminDataAccess,
     PaginatedResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -310,3 +313,77 @@ async def get_causal_descendants(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Causal event {event_id} not found")
     return result
+
+
+# ── Rate-limit cooldown introspection / reset ─────────────────────────────
+#
+# Operator hatches added after the 2026-04-30 webhook-silence incident.
+# A stuck rate-limit cooldown could only be cleared by restarting the pod
+# before this — see docs/2026-04-30-caretaker-webhook-silence-postmortem.md
+# for context. POST /reset is the surgical override; GET /cooldown is for
+# checking state without making changes.
+
+
+@router.get("/cooldown")
+async def get_cooldown_state(
+    _user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Return the current GitHub rate-limit cooldown snapshot.
+
+    Reflects the in-memory state of the running process; reading this from
+    a load-balanced replica returns that replica's view (consistent with
+    Prometheus metrics, which also expose per-replica state).
+    """
+    from caretaker.github_client.rate_limit import get_cooldown as _get_cooldown
+
+    cd = _get_cooldown()
+    snap = cd.snapshot()
+    return {
+        "blocked": cd.is_blocked(),
+        "seconds_remaining": int(snap.get("seconds_remaining") or 0),
+        "blocked_until": snap.get("blocked_until"),
+        "last_remaining": snap.get("last_remaining"),
+        "reason": snap.get("reason") or "",
+    }
+
+
+@router.post("/cooldown/reset")
+async def reset_cooldown_state(
+    user: UserInfo = Depends(require_session),
+) -> dict[str, Any]:
+    """Clear the GitHub rate-limit cooldown immediately.
+
+    Surgical alternative to ``kubectl rollout restart``. Logs the operator
+    who triggered the reset for audit. Returns the post-reset snapshot.
+
+    Side-effects:
+    - In-memory ``_blocked_until`` reset to 0.
+    - ``last_remaining`` cleared (next response from GitHub repopulates it).
+    - Subsequent webhook deliveries that arrive at this replica will dispatch
+      again, instead of being deferred with ``outcome=deferred_cooldown``.
+    """
+    from caretaker.github_client.rate_limit import get_cooldown as _get_cooldown
+
+    cd = _get_cooldown()
+    prior_blocked = cd.is_blocked()
+    prior_seconds = int(cd.seconds_remaining())
+    cd.reset()
+
+    logger.info(
+        "Rate-limit cooldown manually reset by operator=%s (was_blocked=%s "
+        "prior_seconds_remaining=%s)",
+        user.email,
+        prior_blocked,
+        prior_seconds,
+    )
+
+    snap = cd.snapshot()
+    return {
+        "blocked": False,
+        "seconds_remaining": 0,
+        "blocked_until": snap.get("blocked_until"),
+        "last_remaining": snap.get("last_remaining"),
+        "reason": snap.get("reason") or "",
+        "prior_blocked": prior_blocked,
+        "prior_seconds_remaining": prior_seconds,
+    }
