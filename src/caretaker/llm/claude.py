@@ -136,13 +136,25 @@ class ClaudeClient:
     # ── Internal routing ─────────────────────────────────────────────────────
 
     def _resolve_feature(self, feature: str, default_max_tokens: int) -> tuple[str, int]:
-        """Return the (model, max_tokens) pair for a feature."""
+        """Return the (model, max_tokens) pair for a feature.
+
+        Resolution order:
+          1. Operator's feature_models[feature] override.
+          2. Caretaker's DEFAULT_FEATURE_MODELS_BY_PROVIDER[provider][feature].
+          3. Legacy DEFAULT_FEATURE_MODELS[feature] (Anthropic-flavored defaults).
+          4. config.default_model + the caller-supplied default_max_tokens.
+        """
         if self._config is None:
             return _LEGACY_FEATURE_DEFAULTS.get(feature, (_FALLBACK_MODEL, default_max_tokens))
 
-        from caretaker.config import DEFAULT_FEATURE_MODELS
+        from caretaker.config import (
+            DEFAULT_FEATURE_MODELS,
+            DEFAULT_FEATURE_MODELS_BY_PROVIDER,
+        )
 
-        base = DEFAULT_FEATURE_MODELS.get(feature, {})
+        # Provider-aware default first; fall back to legacy Anthropic-flavored map.
+        by_provider = DEFAULT_FEATURE_MODELS_BY_PROVIDER.get(self._config.provider, {})
+        base = by_provider.get(feature) or DEFAULT_FEATURE_MODELS.get(feature, {})
         override = self._config.feature_models.get(feature)
 
         model: str = str(base.get("model") or self._config.default_model)

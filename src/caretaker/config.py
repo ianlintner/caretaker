@@ -314,6 +314,40 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     "migration_plan": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 5000},
 }
 
+# Provider-aware default feature models. Consulted by ClaudeClient._resolve_feature
+# BEFORE the legacy DEFAULT_FEATURE_MODELS table when the provider matches.
+# Operator's feature_models config still wins over both.
+#
+# Why per-provider rather than a single map: Anthropic operators don't want
+# openrouter/-prefixed strings injected, and OpenRouter operators don't want
+# bare 'claude-sonnet-4-5' strings (LiteLLM would route those Anthropic-direct,
+# silently bypassing OpenRouter and breaking cost/billing/rate-limits).
+DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] = {
+    "openrouter": {
+        "ci_log_analysis": {
+            "model": "openrouter/deepseek/deepseek-r1",
+            "max_tokens": 2000,
+        },
+        "principal_architecture_review": {
+            "model": "openrouter/anthropic/claude-opus-4.6",
+            "max_tokens": 4000,
+        },
+        "upgrade_impact_analysis": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 3000,
+        },
+        "migration_analysis": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 4000,
+        },
+        "migration_plan": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 5000,
+        },
+        # Other features fall through to default_model.
+    },
+}
+
 
 class FeatureModelConfig(StrictBaseModel):
     """Per-feature model override."""

@@ -176,6 +176,59 @@ class TestFeatureModelResolution:
         assert provider.calls[0].model == "claude-sonnet-4-5"
 
 
+# ── _resolve_feature per-provider routing ────────────────────────────────────
+
+
+class TestResolveFeature:
+    def test_resolve_feature_uses_openrouter_default_for_migration_analysis(self) -> None:
+        """When provider='openrouter', migration_analysis resolves to the :online model."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == "openrouter/anthropic/claude-sonnet-4.6:online"
+        assert max_tokens == 4000
+
+    def test_resolve_feature_uses_legacy_default_for_anthropic_provider(self) -> None:
+        """When provider='anthropic', migration_analysis resolves to the legacy Claude default."""
+        from caretaker.config import DEFAULT_REASONING_MODEL
+
+        config = LLMConfig(provider="anthropic")
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == DEFAULT_REASONING_MODEL
+        assert max_tokens == 4000
+
+    def test_resolve_feature_operator_override_beats_openrouter_default(self) -> None:
+        """Operator's feature_models override is authoritative; :online is NOT re-appended."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+            feature_models={
+                "migration_analysis": FeatureModelConfig(
+                    model="openrouter/google/gemini-2.0-flash",
+                    max_tokens=2000,
+                ),
+            },
+        )
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == "openrouter/google/gemini-2.0-flash"
+        assert max_tokens == 2000
+
+    def test_resolve_feature_unknown_feature_falls_through_to_default_model(self) -> None:
+        """A feature with no entry in either default map falls back to default_model."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        model, _ = client._resolve_feature("not_a_real_feature", default_max_tokens=1500)
+        assert model == "openrouter/anthropic/claude-sonnet-4.6"
+
+
 # ── Provider factory ─────────────────────────────────────────────────────────
 
 
