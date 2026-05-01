@@ -239,6 +239,25 @@ def test_default_model_openrouter_ok_when_key_present() -> None:
     assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.OK
 
 
+def test_openrouter_alias_open_router_satisfies_canonical_row() -> None:
+    """OPEN_ROUTER_API_KEY satisfies the OPENROUTER_API_KEY check (single OK row)."""
+    config = _load_config(
+        {
+            "llm": {
+                "provider": "openrouter",
+                "default_model": "openrouter/anthropic/claude-sonnet-4.6",
+            }
+        }
+    )
+    env = {"GITHUB_TOKEN": "x", "OPEN_ROUTER_API_KEY": "sk-or-v1-test-alias"}
+    rows = _llm_rows(check_env_secrets(config, env))
+    names = [r.name for r in rows]
+    # Only one row, under the canonical name.
+    assert names.count("OPENROUTER_API_KEY") == 1
+    assert "OPEN_ROUTER_API_KEY" not in names
+    assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.OK
+
+
 def test_openrouter_in_fallback_only_warns_not_fails() -> None:
     """openrouter/ model only in fallback_models → WARN, not FAIL."""
     config = _load_config(

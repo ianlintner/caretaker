@@ -169,7 +169,7 @@ features (CI log triage, architectural review, upgrade impact, etc.).
 | --- | --- |
 | `anthropic` | Direct Anthropic SDK with `ANTHROPIC_API_KEY`. Default. |
 | `litellm` | Multi-provider routing (Anthropic, OpenAI, Vertex, Azure OpenAI, Azure AI Foundry, Bedrock, Ollama, Mistral, Cohere, Groq). Each provider's env vars apply. |
-| `openrouter` | LiteLLM under the hood, but pinned to OpenRouter via `OPENROUTER_API_KEY`. Strict `openrouter/`-prefix model strings. |
+| `openrouter` | LiteLLM under the hood, but pinned to OpenRouter via `OPENROUTER_API_KEY` (or its alias `OPEN_ROUTER_API_KEY`). Strict `openrouter/`-prefix model strings. |
 
 ### Per-feature model routing
 
@@ -220,11 +220,25 @@ See [openrouter.ai/models](https://openrouter.ai/models) for the
 current model list. Model IDs occasionally rename; if Caretaker's
 shipped defaults stop resolving, override them in `feature_models`.
 
+### Accepted env var names
+
+Caretaker accepts either of the following for the OpenRouter credential:
+
+- `OPENROUTER_API_KEY` — canonical, what LiteLLM and OpenRouter's own
+  docs use.
+- `OPEN_ROUTER_API_KEY` — common operator-side variant.
+
+Whichever is set will be mirrored onto the canonical name at provider
+construction so downstream consumers (LiteLLM) find it. The `caretaker
+doctor` check renders one row under the canonical name and treats
+either alias as satisfying it.
+
 ### Deployment note (k8s)
 
 For Caretaker deployments running on Kubernetes (e.g. the Azure setup
-referenced from this project), the `OPENROUTER_API_KEY` must be
-available in the runtime environment. The recommended pattern is a
-`SealedSecret` sourced from your local environment and committed to
-your manifests repository before merging the Caretaker code change
-that depends on the key.
+referenced from this project), `OPENROUTER_API_KEY` must be available
+in the runtime environment. In the live AKS setup the value lives in
+the `openclaw-kv-301919` Azure Key Vault as `OPENROUTER-API-KEY` and is
+projected into the `caretaker-secrets` Kubernetes Secret under key
+`openrouter-api-key`; the deployment manifests in `infra/k8s/` mount
+that key as the `OPENROUTER_API_KEY` env var with `optional: true`.

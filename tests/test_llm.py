@@ -280,8 +280,9 @@ class TestProviderFactory:
         assert isinstance(p, LiteLLMProvider)
 
     def test_build_provider_openrouter_warns_when_key_missing(self, monkeypatch, caplog) -> None:
-        """build_provider('openrouter') warns specifically about OPENROUTER_API_KEY."""
+        """build_provider('openrouter') warns when no accepted env var is set."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
         with caplog.at_level("WARNING"):
             build_provider("openrouter")
         messages = " ".join(rec.getMessage() for rec in caplog.records)
@@ -290,12 +291,33 @@ class TestProviderFactory:
     def test_build_provider_openrouter_no_warning_when_key_present(
         self, monkeypatch, caplog
     ) -> None:
-        """No 'OPENROUTER_API_KEY' warning when the env var is set."""
+        """No warning when the canonical env var is set."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
         with caplog.at_level("WARNING"):
             build_provider("openrouter")
         messages = " ".join(rec.getMessage() for rec in caplog.records)
-        assert "OPENROUTER_API_KEY is not set" not in messages
+        assert "no OpenRouter API key" not in messages
+
+    def test_build_provider_openrouter_accepts_open_router_alias(self, monkeypatch, caplog) -> None:
+        """OPEN_ROUTER_API_KEY alias satisfies the openrouter provider check."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-v1-test-alias")
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "no OpenRouter API key" not in messages
+        # And the alias is mirrored onto the canonical name LiteLLM reads.
+        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-v1-test-alias"
+
+    def test_build_provider_openrouter_warns_when_no_alias_set(self, monkeypatch, caplog) -> None:
+        """Warning lists both accepted env var names so operators see the choice."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "OPENROUTER_API_KEY" in messages
+        assert "OPEN_ROUTER_API_KEY" in messages
 
     def test_build_provider_openrouter_without_litellm_returns_null(self, monkeypatch) -> None:
         """build_provider('openrouter') returns NullProvider when litellm missing."""
@@ -364,6 +386,19 @@ class TestLiteLLMProvider:
         ):
             p = LiteLLMProvider()
             # Mock the internal _acompletion so it appears the package is installed
+            p._acompletion = MagicMock()
+            assert p.available is True
+
+    def test_litellm_provider_available_with_only_open_router_alias(self) -> None:
+        """LiteLLMProvider.available accepts the OPEN_ROUTER_API_KEY alias too."""
+        with patch.dict(
+            os.environ,
+            {
+                "OPEN_ROUTER_API_KEY": "sk-or-v1-test",
+            },
+            clear=True,
+        ):
+            p = LiteLLMProvider()
             p._acompletion = MagicMock()
             assert p.available is True
 

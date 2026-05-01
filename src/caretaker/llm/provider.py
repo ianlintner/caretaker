@@ -38,6 +38,33 @@ from caretaker.observability.metrics import record_llm_cache_usage
 logger = logging.getLogger(__name__)
 
 
+# Accepted env var names for the OpenRouter API key. ``OPENROUTER_API_KEY``
+# is the canonical name LiteLLM (and OpenRouter's own docs) read; the
+# underscore-separated form is a common operator variant. Both are
+# accepted; whichever is set will be mirrored onto the canonical name
+# at provider construction so downstream consumers find it.
+OPENROUTER_API_KEY_ENV: str = "OPENROUTER_API_KEY"
+OPENROUTER_API_KEY_ALIASES: tuple[str, ...] = (
+    OPENROUTER_API_KEY_ENV,
+    "OPEN_ROUTER_API_KEY",
+)
+
+
+def resolve_openrouter_api_key() -> str | None:
+    """Return the OpenRouter API key from any accepted env var name.
+
+    Mirrors the resolved value onto :data:`OPENROUTER_API_KEY_ENV` so
+    LiteLLM (which only consults the canonical name internally) finds
+    it regardless of which alias the operator set.
+    """
+    for name in OPENROUTER_API_KEY_ALIASES:
+        value = os.environ.get(name)
+        if value:
+            os.environ.setdefault(OPENROUTER_API_KEY_ENV, value)
+            return value
+    return None
+
+
 # Models that support Anthropic prompt caching via the ``cache_control`` content-
 # block annotation.  We key off substring matches because both the Anthropic
 # native SDK (``claude-*``) and LiteLLM-routed variants (``anthropic/claude-*``,
@@ -326,7 +353,7 @@ class LiteLLMProvider:
                 "COHERE_API_KEY",
                 "GROQ_API_KEY",
                 "OLLAMA_API_BASE",
-                "OPENROUTER_API_KEY",
+                *OPENROUTER_API_KEY_ALIASES,
             )
         )
 
@@ -725,10 +752,14 @@ def build_provider(
             return NullProvider()
         # Targeted warning so operators see the exact env var to set
         # rather than LiteLLM's generic "no credentials" message.
-        if not os.environ.get("OPENROUTER_API_KEY"):
+        # ``resolve_openrouter_api_key`` also mirrors any accepted alias
+        # onto the canonical OPENROUTER_API_KEY name LiteLLM reads.
+        if resolve_openrouter_api_key() is None:
             logger.warning(
-                "provider='openrouter' but OPENROUTER_API_KEY is not set; "
-                "LLM features will fall back to their non-LLM paths"
+                "provider='openrouter' but no OpenRouter API key is set "
+                "(checked %s); LLM features will fall back to their "
+                "non-LLM paths",
+                " or ".join(OPENROUTER_API_KEY_ALIASES),
             )
         return provider
     if name == "litellm":

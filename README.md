@@ -193,7 +193,8 @@ Add `ANTHROPIC_API_KEY` to unlock enhanced AI features:
 
 ### Optional: OpenRouter Integration
 
-Add `OPENROUTER_API_KEY` and set `provider: openrouter` in
+Set `OPENROUTER_API_KEY` (or its accepted alias `OPEN_ROUTER_API_KEY`)
+and `provider: openrouter` in
 `.github/maintainer/config.yml` to route LLM calls through
 [OpenRouter](https://openrouter.ai), which gives you:
 
