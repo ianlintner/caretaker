@@ -4,14 +4,12 @@ A :class:`ConsensusTrace` is the authoritative serialised audit for one
 ``engine.decide(...)`` call. It records every model attempt — including
 errors — in attempt order, plus the final model whose verdict was shipped.
 
-The schema is **designed** to be JSON-serialised onto
+The schema is JSON-serialised onto
 :attr:`ShadowDecisionRecord.consensus_trace_json` for persistence and
-surfaced through the existing admin API. End-to-end wire-up — capturing
-the trace from ``engine.decide`` and flowing it through the
-``@shadow_decision`` decorator — is a follow-up; today the field exists
-on :class:`ShadowDecisionRecord` but is left ``None`` by the call sites
-(readiness, size_classifier). Tracked as a follow-up after this PR
-merges.
+surfaced through the existing admin API. The wire-up uses a ContextVar
+(:data:`caretaker.consensus.trace_context.current_trace_var`) that
+``engine.decide`` sets on success and ``@shadow_decision`` reads when
+writing the decision record.
 
 Both types are :class:`pydantic.BaseModel` for cheap roundtrip; values
 are scalar so the persisted JSON is grep-friendly.

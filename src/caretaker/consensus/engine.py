@@ -131,7 +131,14 @@ class ConsensusEngine:
             max_tokens=max_tokens,
         )
         with CONSENSUS_DECISION_SECONDS.labels(site=site_name, strategy=site.strategy).time():
-            return await strategy_cls().run(ctx)
+            result: ConsensusResult[T] = await strategy_cls().run(ctx)
+        # Stamp the trace onto the contextvar so the wrapping
+        # ``@shadow_decision`` decorator can serialise it onto the
+        # ShadowDecisionRecord — see consensus.trace_context.
+        from caretaker.consensus.trace_context import current_trace_var
+
+        current_trace_var.set(result.trace)
+        return result
 
 
 __all__ = [
