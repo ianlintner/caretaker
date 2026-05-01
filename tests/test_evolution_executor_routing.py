@@ -472,9 +472,13 @@ class TestShadowDecoratorIntegration:
 
         verdict = await decide(legacy=legacy, candidate=candidate)
         assert verdict.path == "claude_code"
-        # enforced_candidate outcome is counted but not persisted as a
-        # disagreement record.
-        assert recent_records() == []
+        # enforced_candidate outcome is now persisted as a record so the
+        # consensus trace (when present) flows onto the audit trail; the
+        # candidate verdict is captured but legacy is not run.
+        records = recent_records()
+        assert len(records) == 1
+        assert records[0].outcome == "enforced_candidate"
+        assert records[0].mode == "enforce"
 
     async def test_enforce_mode_falls_through_on_none(self) -> None:
         _set_routing_mode("enforce")

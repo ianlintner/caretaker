@@ -86,7 +86,10 @@ ShadowOutcome = Literal[
   counter exists purely so dashboards can prove the mode switch is
   live.
 * ``enforced_candidate`` — ``mode == "enforce"`` and the candidate
-  succeeded; no legacy comparison happened.
+  succeeded; no legacy comparison happened. A record IS written for
+  this outcome (carrying the consensus trace via
+  ``consensus_trace_json``) so audit trails are complete on
+  enforce-mode sites.
 """
 
 
@@ -446,6 +449,27 @@ def _serialise_verdict(verdict: Any) -> str:
         return json.dumps({"repr": repr(verdict)})
 
 
+def _read_trace_json() -> str | None:
+    """Read the current consensus trace from the contextvar, if any.
+
+    Returns the JSON-serialised trace, or ``None`` when no engine
+    decision was made during this task's execution. Imports lazily so
+    the shadow module stays independent of the consensus module — only
+    sites that actually use the engine pay the import cost.
+    """
+    try:
+        from caretaker.consensus.trace_context import current_trace_var
+    except Exception:
+        return None
+    trace = current_trace_var.get()
+    if trace is None:
+        return None
+    try:
+        return trace.model_dump_json()
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
 def _serialise_context(context: dict[str, Any] | None) -> str:
     if not context:
         return "{}"
@@ -556,6 +580,12 @@ def shadow_decision(
 
             # ── enforce ────────────────────────────────────────────
             if mode == "enforce":
+                enforce_repo_slug = ""
+                if isinstance(context, dict):
+                    raw_repo = context.get("repo_slug", "")
+                    enforce_repo_slug = str(raw_repo) if raw_repo is not None else ""
+                enforce_ctx_dict = context if isinstance(context, dict) else None
+
                 try:
                     candidate_result = await _maybe_await(candidate(*args, **_candidate_kwargs()))
                 except Exception as exc:  # noqa: BLE001 — enforce must fall through
@@ -569,7 +599,24 @@ def shadow_decision(
                     SHADOW_DECISIONS_TOTAL.labels(
                         name=name, mode=mode, outcome="candidate_error"
                     ).inc()
-                    return cast("T", await _maybe_await(legacy(*args, **kwargs)))
+                    legacy_result = cast("T", await _maybe_await(legacy(*args, **kwargs)))
+                    err_record = ShadowDecisionRecord(
+                        id=str(uuid.uuid4()),
+                        name=name,
+                        repo_slug=enforce_repo_slug,
+                        run_at=datetime.now(UTC),
+                        outcome="candidate_error",
+                        mode=mode,
+                        legacy_verdict_json=_serialise_verdict(legacy_result),
+                        candidate_verdict_json=None,
+                        disagreement_reason=f"candidate_error: {type(exc).__name__}: {exc}",
+                        context_json=_serialise_context(enforce_ctx_dict),
+                        legacy_model=default_model,
+                        candidate_model=candidate_model,
+                        consensus_trace_json=_read_trace_json(),
+                    )
+                    write_shadow_decision(err_record)
+                    return legacy_result
 
                 if candidate_result is None:
                     logger.warning(
@@ -580,11 +627,44 @@ def shadow_decision(
                     SHADOW_DECISIONS_TOTAL.labels(
                         name=name, mode=mode, outcome="candidate_error"
                     ).inc()
-                    return cast("T", await _maybe_await(legacy(*args, **kwargs)))
+                    legacy_result = cast("T", await _maybe_await(legacy(*args, **kwargs)))
+                    err_record = ShadowDecisionRecord(
+                        id=str(uuid.uuid4()),
+                        name=name,
+                        repo_slug=enforce_repo_slug,
+                        run_at=datetime.now(UTC),
+                        outcome="candidate_error",
+                        mode=mode,
+                        legacy_verdict_json=_serialise_verdict(legacy_result),
+                        candidate_verdict_json=None,
+                        disagreement_reason="candidate returned None",
+                        context_json=_serialise_context(enforce_ctx_dict),
+                        legacy_model=default_model,
+                        candidate_model=candidate_model,
+                        consensus_trace_json=_read_trace_json(),
+                    )
+                    write_shadow_decision(err_record)
+                    return legacy_result
 
                 SHADOW_DECISIONS_TOTAL.labels(
                     name=name, mode=mode, outcome="enforced_candidate"
                 ).inc()
+                enforced_record = ShadowDecisionRecord(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    repo_slug=enforce_repo_slug,
+                    run_at=datetime.now(UTC),
+                    outcome="enforced_candidate",
+                    mode=mode,
+                    legacy_verdict_json="null",
+                    candidate_verdict_json=_serialise_verdict(candidate_result),
+                    disagreement_reason=None,
+                    context_json=_serialise_context(enforce_ctx_dict),
+                    legacy_model=default_model,
+                    candidate_model=candidate_model,
+                    consensus_trace_json=_read_trace_json(),
+                )
+                write_shadow_decision(enforced_record)
                 return cast("T", candidate_result)
 
             # ── shadow ─────────────────────────────────────────────
@@ -621,6 +701,7 @@ def shadow_decision(
                     context_json=_serialise_context(ctx_dict),
                     legacy_model=default_model,
                     candidate_model=candidate_model,
+                    consensus_trace_json=_read_trace_json(),
                 )
                 write_shadow_decision(err_record)
                 SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome="candidate_error").inc()
@@ -661,6 +742,7 @@ def shadow_decision(
                 legacy_model=default_model,
                 candidate_model=candidate_model,
                 semantic_disagreement=semantic_disagreement,
+                consensus_trace_json=_read_trace_json(),
             )
             write_shadow_decision(record)
             SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome=outcome).inc()
