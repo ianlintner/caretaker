@@ -362,6 +362,7 @@ class LiteLLMProvider:
             extra_attrs={
                 "caretaker.llm.feature": request.feature,
                 "caretaker.llm.router": "litellm",
+                **({"caretaker.llm.online": True} if request.model.endswith(":online") else {}),
             },
         ) as span:
             response = await self._acompletion(**kwargs)
@@ -455,6 +456,7 @@ class LiteLLMProvider:
                 "caretaker.llm.feature": request.feature,
                 "caretaker.llm.router": "litellm",
                 "caretaker.llm.tool_count": len(tools),
+                **({"caretaker.llm.online": True} if request.model.endswith(":online") else {}),
             },
         ) as _tool_span:
             response = await self._acompletion(**kwargs)
