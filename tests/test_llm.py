@@ -228,6 +228,23 @@ class TestResolveFeature:
         model, _ = client._resolve_feature("not_a_real_feature", default_max_tokens=1500)
         assert model == "openrouter/anthropic/claude-sonnet-4.6"
 
+    def test_resolve_feature_openrouter_falls_through_to_legacy_for_unmapped_features(
+        self,
+    ) -> None:
+        """Under openrouter, unmapped features fall back to DEFAULT_FEATURE_MODELS."""
+        from caretaker.config import DEFAULT_FEATURE_MODELS
+
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        # ci_triage is in DEFAULT_FEATURE_MODELS but NOT in
+        # DEFAULT_FEATURE_MODELS_BY_PROVIDER["openrouter"].
+        model, max_tokens = client._resolve_feature("ci_triage", default_max_tokens=1)
+        assert model == DEFAULT_FEATURE_MODELS["ci_triage"]["model"]
+        assert max_tokens == DEFAULT_FEATURE_MODELS["ci_triage"]["max_tokens"]
+
 
 # ── Provider factory ─────────────────────────────────────────────────────────
 

@@ -332,6 +332,9 @@ DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] =
             "model": "openrouter/anthropic/claude-opus-4.6",
             "max_tokens": 4000,
         },
+        # upgrade_impact_analysis has no DEFAULT_FEATURE_MODELS entry; Anthropic
+        # operators resolve it to LLMConfig.default_model. The :online suffix is
+        # OpenRouter-specific (web-grounded search before completion).
         "upgrade_impact_analysis": {
             "model": "openrouter/anthropic/claude-sonnet-4.6:online",
             "max_tokens": 3000,
@@ -344,7 +347,8 @@ DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] =
             "model": "openrouter/anthropic/claude-sonnet-4.6:online",
             "max_tokens": 5000,
         },
-        # Other features fall through to default_model.
+        # Other features fall through to DEFAULT_FEATURE_MODELS (legacy) or
+        # default_model — see ClaudeClient._resolve_feature for precedence.
     },
 }
 
