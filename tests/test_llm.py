@@ -246,6 +246,21 @@ class TestLiteLLMProvider:
             else:
                 assert p.available is False
 
+    def test_litellm_provider_available_with_only_openrouter_key(self) -> None:
+        """LiteLLMProvider.available must return True when only OPENROUTER_API_KEY is set."""
+        # Clear every other credential the allowlist checks, leaving only OpenRouter.
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "sk-or-v1-test",
+            },
+            clear=True,
+        ):
+            p = LiteLLMProvider()
+            # Mock the internal _acompletion so it appears the package is installed
+            p._acompletion = MagicMock()
+            assert p.available is True
+
     def test_fallback_models_passed_through(self) -> None:
         p = LiteLLMProvider(fallback_models=["openai/gpt-4o", "vertex_ai/gemini-1.5-pro"])
         assert p._fallback_models == ["openai/gpt-4o", "vertex_ai/gemini-1.5-pro"]

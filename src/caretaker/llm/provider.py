@@ -326,6 +326,7 @@ class LiteLLMProvider:
                 "COHERE_API_KEY",
                 "GROQ_API_KEY",
                 "OLLAMA_API_BASE",
+                "OPENROUTER_API_KEY",
             )
         )
 
