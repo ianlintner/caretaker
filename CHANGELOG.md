@@ -6,6 +6,35 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **OpenRouter integration with per-feature model routing and `:online`
+  web-grounded analysis.** New `provider: openrouter` value for
+  `LLMConfig` constructs a `LiteLLMProvider` configured for OpenRouter
+  credentials. Caretaker ships per-feature defaults via
+  `DEFAULT_FEATURE_MODELS_BY_PROVIDER["openrouter"]`: `ci_log_analysis`
+  → DeepSeek R1, `principal_architecture_review` → Claude Opus 4.6,
+  and `upgrade_impact_analysis` / `migration_analysis` /
+  `migration_plan` → Claude Sonnet 4.6 with the `:online` suffix so
+  release-note and breaking-change context comes from current web
+  sources rather than stale model knowledge. Operator's
+  `feature_models[*]` overrides still win over shipped defaults.
+
+  Strict prefix validation under `provider: openrouter` rejects bare
+  Anthropic-style model strings at config load (the most common
+  misconfig — copy-pasting an Anthropic config). The `caretaker
+  doctor` preflight recognises the `openrouter/` prefix and renders
+  appropriate severity (FAIL for primary models, WARN for
+  fallback-only). Spans on `:online` requests carry
+  `caretaker.llm.online=true` so cost dashboards can break out
+  web-grounded spend.
+
+  Both `OPENROUTER_API_KEY` (canonical) and `OPEN_ROUTER_API_KEY`
+  (operator variant) are accepted; whichever is set is mirrored onto
+  the canonical name LiteLLM reads. Live AKS deployment wires the key
+  from Azure Key Vault (`openclaw-kv-301919`) into
+  `caretaker-secrets:openrouter-api-key` and onto the
+  `OPENROUTER_API_KEY` env var on the MCP and agent-worker pods with
+  `optional: true`.
+
 - **Pre-dispatch comment gate for the GitHub App webhook receiver.**
   New module `caretaker.github_app.comment_gate` runs in front of
   `WebhookDispatcher.dispatch` for `issue_comment`,
