@@ -473,6 +473,38 @@ class LLMConfig(StrictBaseModel):
     # without a breaking change because callers read through this model.
     bot_identity: AgenticBotIdentityConfig = Field(default_factory=AgenticBotIdentityConfig)
 
+    @model_validator(mode="after")
+    def _validate_openrouter_prefix(self) -> LLMConfig:
+        """When provider='openrouter', every model string must use the openrouter/ prefix.
+
+        Prevents the silent bypass to Anthropic-direct that LiteLLM performs
+        when given a bare 'claude-*' string — that bypass breaks billing,
+        rate limits, and observability against the operator's intent.
+        """
+        if self.provider != "openrouter":
+            return self
+
+        bad: list[tuple[str, str]] = []
+        if not self.default_model.startswith("openrouter/"):
+            bad.append(("llm.default_model", self.default_model))
+        for feature, override in self.feature_models.items():
+            if override.model and not override.model.startswith("openrouter/"):
+                bad.append((f"llm.feature_models.{feature}.model", override.model))
+        for i, m in enumerate(self.fallback_models):
+            if m and not m.startswith("openrouter/"):
+                bad.append((f"llm.fallback_models[{i}]", m))
+
+        if bad:
+            offenders = "\n  ".join(f"{path} = {value!r}" for path, value in bad)
+            raise ValueError(
+                f"provider='openrouter' requires every model string to start with "
+                f"'openrouter/'. Offending fields:\n  {offenders}\n"
+                f"Fix each one (e.g. 'openrouter/anthropic/claude-sonnet-4.6') or "
+                f"change provider to 'litellm' if you intentionally want to mix "
+                f"non-openrouter prefixes."
+            )
+        return self
+
 
 class OrchestratorConfig(StrictBaseModel):
     schedule: Literal["hourly", "daily", "weekly", "manual"] = "daily"

@@ -145,3 +145,99 @@ def test_llm_config_accepts_openrouter_provider():
         provider="openrouter", default_model="openrouter/anthropic/claude-sonnet-4.6"
     )
     assert config.provider == "openrouter"
+
+
+def test_openrouter_provider_rejects_bare_default_model():
+    """provider='openrouter' must reject default_model lacking the openrouter/ prefix."""
+    from pydantic import ValidationError
+
+    from caretaker.config import LLMConfig
+
+    with pytest.raises(ValidationError, match="openrouter/"):
+        LLMConfig(provider="openrouter", default_model="claude-sonnet-4-5")
+
+
+def test_openrouter_provider_rejects_bare_feature_model():
+    """provider='openrouter' must reject feature_models entries lacking the prefix."""
+    from pydantic import ValidationError
+
+    from caretaker.config import FeatureModelConfig, LLMConfig
+
+    with pytest.raises(ValidationError, match="openrouter/"):
+        LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+            feature_models={
+                "ci_log_analysis": FeatureModelConfig(model="claude-haiku-4-5"),
+            },
+        )
+
+
+def test_openrouter_provider_rejects_bare_fallback_model():
+    """provider='openrouter' must reject fallback_models entries lacking the prefix."""
+    from pydantic import ValidationError
+
+    from caretaker.config import LLMConfig
+
+    with pytest.raises(ValidationError, match="openrouter/"):
+        LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+            fallback_models=["claude-haiku-4-5"],
+        )
+
+
+def test_openrouter_provider_accepts_all_prefixed_models():
+    """A fully-prefixed OpenRouter config validates cleanly."""
+    from caretaker.config import FeatureModelConfig, LLMConfig
+
+    config = LLMConfig(
+        provider="openrouter",
+        default_model="openrouter/anthropic/claude-sonnet-4.6",
+        feature_models={
+            "ci_log_analysis": FeatureModelConfig(model="openrouter/deepseek/deepseek-r1"),
+        },
+        fallback_models=["openrouter/google/gemini-2.0-flash"],
+    )
+    assert config.provider == "openrouter"
+
+
+def test_anthropic_provider_still_accepts_bare_models():
+    """Strict prefix check must NOT apply when provider != openrouter."""
+    from caretaker.config import LLMConfig
+
+    config = LLMConfig(provider="anthropic", default_model="claude-sonnet-4-5")
+    assert config.default_model == "claude-sonnet-4-5"
+
+
+def test_litellm_provider_still_accepts_mixed_prefixes():
+    """provider='litellm' must accept any prefix shape; only openrouter is strict."""
+    from caretaker.config import LLMConfig
+
+    config = LLMConfig(
+        provider="litellm",
+        default_model="azure_ai/gpt-4o",
+        fallback_models=["claude-sonnet-4-5", "openai/gpt-4o-mini"],
+    )
+    assert config.provider == "litellm"
+
+
+def test_openrouter_validator_lists_all_offenders():
+    """The error message lists every offending field, not just the first."""
+    from pydantic import ValidationError
+
+    from caretaker.config import FeatureModelConfig, LLMConfig
+
+    with pytest.raises(ValidationError) as exc_info:
+        LLMConfig(
+            provider="openrouter",
+            default_model="claude-sonnet-4-5",  # offender 1
+            feature_models={
+                "ci_log_analysis": FeatureModelConfig(model="gpt-4o"),  # offender 2
+            },
+            fallback_models=["claude-haiku-4-5"],  # offender 3
+        )
+    msg = str(exc_info.value)
+    assert "llm.default_model" in msg
+    assert "llm.feature_models.ci_log_analysis.model" in msg
+    assert "llm.fallback_models[0]" in msg
