@@ -201,22 +201,85 @@ def test_timed_op_records_failure_outcome() -> None:
     assert series._value.get() >= 1
 
 
-def test_rate_limit_cooldown_gauge_updates_from_rate_limit_module() -> None:
-    """`_publish_rate_limit_metrics` mirrors cooldown state onto the gauge."""
+def test_rate_limit_cooldown_gauge_reflects_live_state_per_scrape() -> None:
+    """Each scrape reads the current cooldown snapshot, not a stale push.
+
+    The metric is exposed by a custom collector
+    (:class:`_LiveRateLimitCooldownCollector`) so its value at scrape
+    time t is ``max(0, blocked_until - t)``. We assert that:
+
+    * after engaging a future-dated block, the next scrape returns a
+      positive value, and
+    * after :meth:`reset_for_tests` clears the block, a subsequent
+      scrape returns ``0`` — i.e. the value tracks state without
+      anyone re-publishing it.
+    """
     from caretaker.github_client.rate_limit import (
-        _publish_rate_limit_metrics,
         get_cooldown,
         reset_for_tests,
     )
-    from caretaker.observability.metrics import RATE_LIMIT_COOLDOWN_SECONDS
+    from caretaker.observability.metrics import REGISTRY, get_service_label
+
+    # Make sure the service label is set so the collector emits it
+    # under the expected name. Cheap and idempotent.
+    _build_instrumented_app()
+    service = get_service_label()
+
+    def _scrape_cooldown_seconds() -> float:
+        # ``get_sample_value`` walks every registered collector, calls
+        # collect(), and returns the matching sample — exactly the same
+        # path Prometheus exercises during a real scrape.
+        value = REGISTRY.get_sample_value(
+            "caretaker_rate_limit_cooldown_seconds",
+            {"service": service, "peer_service": "github"},
+        )
+        return 0.0 if value is None else float(value)
 
     reset_for_tests()
+    assert _scrape_cooldown_seconds() == 0.0
 
     cooldown = get_cooldown()
     cooldown.mark_blocked(until=9999999999.0, reason="test")
-    _publish_rate_limit_metrics()
+    assert _scrape_cooldown_seconds() > 0
 
-    gauge = RATE_LIMIT_COOLDOWN_SECONDS.labels(service="caretaker-test", peer_service="github")
-    assert gauge._value.get() > 0
+    reset_for_tests()
+    # No setter call needed — a fresh scrape sees the cleared snapshot.
+    assert _scrape_cooldown_seconds() == 0.0
+
+
+def test_rate_limit_cooldown_gauge_ticks_down_across_scrapes() -> None:
+    """The collector recomputes ``seconds_remaining`` at each scrape.
+
+    Two scrapes taken at increasing wall-clock times against the same
+    ``blocked_until`` must return monotonically decreasing values.
+    """
+    import time as _time
+
+    from caretaker.github_client.rate_limit import (
+        get_cooldown,
+        reset_for_tests,
+    )
+    from caretaker.observability.metrics import REGISTRY, get_service_label
+
+    _build_instrumented_app()
+    service = get_service_label()
+
+    reset_for_tests()
+    cooldown = get_cooldown()
+    # 60 seconds out is enough that scrape jitter can't dominate.
+    cooldown.mark_blocked(until=_time.time() + 60.0, reason="test")
+
+    def _scrape() -> float:
+        value = REGISTRY.get_sample_value(
+            "caretaker_rate_limit_cooldown_seconds",
+            {"service": service, "peer_service": "github"},
+        )
+        assert value is not None
+        return float(value)
+
+    first = _scrape()
+    _time.sleep(0.05)
+    second = _scrape()
+    assert second < first, f"cooldown gauge did not tick down across scrapes: {first} -> {second}"
 
     reset_for_tests()

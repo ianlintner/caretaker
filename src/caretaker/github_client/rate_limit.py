@@ -271,24 +271,26 @@ def record_rate_limit_response(response: httpx.Response, *, status_code: int) ->
 
 
 def _publish_rate_limit_metrics() -> None:
-    """Mirror the cooldown snapshot into the Prometheus gauges.
+    """Mirror the rate-limit-remaining snapshot onto the Prometheus gauge.
 
-    The import is deferred so that the ``rate_limit`` module stays
-    dependency-free when :mod:`caretaker.observability.metrics` is not
-    yet importable (e.g. during partial test collection).
+    The cooldown-seconds metric is **not** pushed from here. It is exposed
+    via a custom collector (:class:`caretaker.observability.metrics.
+    _LiveRateLimitCooldownCollector`) that re-reads
+    :meth:`RateLimitCooldown.snapshot` at every Prometheus scrape, so the
+    value tracks wall-clock progress through the cooldown window without a
+    background pusher. Only ``X-RateLimit-Remaining`` (an event-driven
+    quantity) is mirrored eagerly here.
+
+    The import is deferred so the ``rate_limit`` module stays
+    dependency-free when :mod:`caretaker.observability.metrics` is not yet
+    importable (e.g. during partial test collection).
     """
     try:
-        from caretaker.observability.metrics import (
-            set_rate_limit_cooldown,
-            set_rate_limit_remaining,
-        )
+        from caretaker.observability.metrics import set_rate_limit_remaining
     except Exception:  # pragma: no cover - observability must never cascade
         return
     try:
         snap = _COOLDOWN.snapshot()
-        seconds_remaining = snap.get("seconds_remaining")
-        if isinstance(seconds_remaining, int | float):
-            set_rate_limit_cooldown("github", float(seconds_remaining))
         last_remaining = snap.get("last_remaining")
         if isinstance(last_remaining, int):
             set_rate_limit_remaining("github", last_remaining)

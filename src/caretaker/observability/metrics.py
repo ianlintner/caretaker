@@ -49,9 +49,10 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from prometheus_client.core import GaugeMetricFamily
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from fastapi import FastAPI
 
@@ -200,13 +201,70 @@ ORCHESTRATOR_SOFT_FAIL_TOTAL = Counter(
 )
 
 # ── Rate limit visibility ────────────────────────────────────────────
+#
+# ``caretaker_rate_limit_cooldown_seconds`` is intrinsically time-varying:
+# the value at scrape time t should be ``max(0, blocked_until - t)``. A
+# static :class:`Gauge` that we ``.set()`` once when the cooldown engages
+# would freeze at the initial value and never tick down — Prometheus would
+# scrape the same N for the entire window, and dashboards/alerts couldn't
+# tell whether the cooldown is still ticking or has long elapsed without a
+# refresh event firing. We therefore expose this metric via a custom
+# :class:`prometheus_client.core.Collector` that re-derives the remaining
+# seconds from :func:`caretaker.github_client.rate_limit.get_cooldown` on
+# every scrape — see :class:`_LiveRateLimitCooldownCollector` below.
 
-RATE_LIMIT_COOLDOWN_SECONDS = Gauge(
-    "caretaker_rate_limit_cooldown_seconds",
-    "Seconds remaining in the GitHub rate-limit cooldown window.",
-    ["service", "peer_service"],
-    registry=REGISTRY,
-)
+
+class _LiveRateLimitCooldownCollector:
+    """Collector that yields the cooldown gauge with a live value per scrape.
+
+    Reads :class:`RateLimitCooldown.snapshot` from the rate-limit module
+    on every :meth:`collect` call, so the exposed value tracks wall-clock
+    progress through the cooldown window without anyone needing to
+    re-publish the metric on a timer. The import is deferred so this
+    module stays importable when the rate_limit module isn't loaded
+    (e.g. partial-collection unit tests).
+
+    Reference: https://prometheus.github.io/client_python/collector/custom/
+    """
+
+    _METRIC_NAME = "caretaker_rate_limit_cooldown_seconds"
+    _DESCRIPTION = "Seconds remaining in the GitHub rate-limit cooldown window."
+    _LABELS = ("service", "peer_service")
+    _PEER = "github"
+
+    def collect(self) -> Iterator[GaugeMetricFamily]:
+        # Lazy import — keep the metrics module loadable when the rate
+        # limit module hasn't been imported yet.
+        try:
+            from caretaker.github_client.rate_limit import get_cooldown
+        except Exception:  # pragma: no cover - observability never cascades
+            return
+
+        value = 0.0
+        try:
+            snap = get_cooldown().snapshot()
+            raw = snap.get("seconds_remaining", 0.0)
+            if isinstance(raw, int | float):
+                value = float(max(0.0, float(raw)))
+        except Exception:  # pragma: no cover
+            value = 0.0
+
+        family = GaugeMetricFamily(
+            self._METRIC_NAME,
+            self._DESCRIPTION,
+            labels=list(self._LABELS),
+        )
+        family.add_metric([_SERVICE_LABEL, self._PEER], value)
+        yield family
+
+
+# Instance is registered with :data:`REGISTRY` so ``/metrics`` includes
+# it. We keep the public name ``RATE_LIMIT_COOLDOWN_SECONDS`` (formerly a
+# :class:`Gauge`) bound to the collector so external code that introspects
+# via the registry continues to work.
+RATE_LIMIT_COOLDOWN_SECONDS = _LiveRateLimitCooldownCollector()
+REGISTRY.register(RATE_LIMIT_COOLDOWN_SECONDS)
+
 
 RATE_LIMIT_REMAINING = Gauge(
     "caretaker_rate_limit_remaining",
@@ -722,13 +780,6 @@ def record_orchestrator_soft_fail(category: str = "transient") -> None:
     ORCHESTRATOR_SOFT_FAIL_TOTAL.labels(service=_SERVICE_LABEL, category=category).inc()
 
 
-def set_rate_limit_cooldown(peer_service: str, seconds_remaining: float) -> None:
-    """Publish the current rate-limit cooldown window size (seconds)."""
-    RATE_LIMIT_COOLDOWN_SECONDS.labels(service=_SERVICE_LABEL, peer_service=peer_service).set(
-        max(0.0, seconds_remaining)
-    )
-
-
 def set_rate_limit_remaining(peer_service: str, remaining: int) -> None:
     """Publish the last ``X-RateLimit-Remaining`` value for ``peer_service``."""
     RATE_LIMIT_REMAINING.labels(service=_SERVICE_LABEL, peer_service=peer_service).set(
@@ -877,7 +928,6 @@ __all__ = [
     "record_pr_outcome",
     "record_webhook_event",
     "record_worker_job",
-    "set_rate_limit_cooldown",
     "set_rate_limit_remaining",
     "set_worker_queue_depth",
     "start_metrics_server",
