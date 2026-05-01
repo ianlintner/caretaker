@@ -380,6 +380,7 @@ def collect_env_references(config: MaintainerConfig) -> list[EnvReference]:
 # :func:`_env_vars_for_model`.
 _MODEL_PREFIX_ENV_MAP: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Longest / most specific first.
+    ("openrouter/", ("OPENROUTER_API_KEY",)),
     ("ollama_chat/", ("OLLAMA_API_BASE",)),
     ("vertex_ai/", ("GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_PROJECT")),
     ("azure_ai/", ("AZURE_AI_API_KEY", "AZURE_AI_API_BASE")),
