@@ -482,6 +482,49 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         application.state.eventbus_consume_task = None
         application.state.eventbus_reaper_task = None
 
+    # ── Rate-limit cooldown self-heal task ───────────────────────────
+    #
+    # Runs every 60s. If the cooldown is engaged, probes GitHub's
+    # /rate_limit endpoint (which doesn't consume budget) and feeds the
+    # response through record_response_headers. The self-heal in
+    # RateLimitCooldown.maybe_clear_if_healthy then clears the cooldown
+    # when the live bucket is healthy. Without this, a stuck cooldown
+    # would only release when _blocked_until elapses — see
+    # docs/2026-04-30-caretaker-webhook-silence-postmortem.md.
+    application.state.cooldown_self_heal_task = None
+    try:
+        from caretaker.github_client.rate_limit import start_cooldown_self_heal_task
+
+        if _token_broker is not None:
+            installation_id_str = os.environ.get("CARETAKER_GITHUB_APP_INSTALLATION_ID", "").strip()
+            if installation_id_str:
+                installation_id = int(installation_id_str)
+                broker = _token_broker
+
+                async def _token_fetcher() -> str | None:
+                    try:
+                        token = await broker.get_token(installation_id)
+                        return token.token if token is not None else None
+                    except Exception:
+                        logger.debug("cooldown self-heal token mint failed", exc_info=True)
+                        return None
+
+                application.state.cooldown_self_heal_task = start_cooldown_self_heal_task(
+                    token_fetcher=_token_fetcher,
+                )
+                logger.info(
+                    "Rate-limit cooldown self-heal task started (installation=%s)",
+                    installation_id,
+                )
+            else:
+                logger.info(
+                    "CARETAKER_GITHUB_APP_INSTALLATION_ID not set — cooldown self-heal disabled"
+                )
+        else:
+            logger.info("Token broker not configured — cooldown self-heal disabled")
+    except Exception:
+        logger.warning("Failed to start cooldown self-heal task", exc_info=True)
+
     # ── Reconciliation scheduler ─────────────────────────────────────
     #
     # Replaces the per-repo cron in the heavy maintainer.yml with a
@@ -551,7 +594,12 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             await sweeper
 
     # Cancel the event-bus consumer + reaper, then close the bus client.
-    for attr in ("eventbus_consume_task", "eventbus_reaper_task", "scheduler_task"):
+    for attr in (
+        "eventbus_consume_task",
+        "eventbus_reaper_task",
+        "scheduler_task",
+        "cooldown_self_heal_task",
+    ):
         task_handle = getattr(application.state, attr, None)
         if task_handle is not None:
             task_handle.cancel()

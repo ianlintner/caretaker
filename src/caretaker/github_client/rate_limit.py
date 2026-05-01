@@ -13,6 +13,7 @@ skipping the action, deferring to next cycle, or hard-failing.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -21,6 +22,8 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import httpx
 
 logger = logging.getLogger(__name__)
@@ -293,6 +296,85 @@ def _publish_rate_limit_metrics() -> None:
         pass
 
 
+# ── Self-heal background task ─────────────────────────────────────────────
+
+
+async def _default_http_get(url: str, *, token: str, timeout: float = 5.0) -> httpx.Response:
+    """Perform a single GET against GitHub with the App's installation token.
+
+    Extracted so tests can inject a stub. Production wiring uses this default.
+    """
+    import httpx as _httpx
+
+    async with _httpx.AsyncClient(timeout=timeout) as client:
+        return await client.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+
+
+def start_cooldown_self_heal_task(
+    *,
+    token_fetcher: Callable[[], Awaitable[str | None]],
+    http_get: Callable[..., Awaitable[httpx.Response]] | None = None,
+    interval_seconds: float = 60.0,
+    rate_limit_url: str = "https://api.github.com/rate_limit",
+) -> asyncio.Task[None]:
+    """Start a background task that self-heals stuck cooldowns.
+
+    GitHub's ``/rate_limit`` endpoint does NOT consume budget against the
+    rate limit, so this task is safe to run frequently. It only fires a
+    request when the cooldown is currently engaged; otherwise it's a
+    no-op tick.
+
+    The implementation is intentionally narrow:
+
+    - On each tick, check ``_COOLDOWN.is_blocked()``. If False, skip.
+    - Else fetch an installation token via ``token_fetcher`` (provided
+      by the caller because token plumbing varies — tests inject a stub,
+      production wires the App's token broker).
+    - Send a single GET to ``rate_limit_url`` with the token. Pass the
+      response through :func:`record_response_headers`. That call will
+      invoke :meth:`RateLimitCooldown.maybe_clear_if_healthy` which is
+      what actually clears the cooldown when the live bucket is healthy.
+
+    All exceptions are caught and logged so a transient network failure
+    or token mint hiccup never crashes the loop.
+
+    Returns the :class:`asyncio.Task`. The caller is expected to keep a
+    reference (else GC may cancel it) and cancel it in shutdown.
+    """
+    effective_http_get: Callable[..., Awaitable[httpx.Response]] = (
+        http_get if http_get is not None else _default_http_get
+    )
+
+    async def _loop() -> None:
+        while True:
+            try:
+                if _COOLDOWN.is_blocked():
+                    token = await token_fetcher()
+                    if token is None:
+                        logger.debug(
+                            "cooldown self-heal: no installation token available; "
+                            "skipping this tick (cooldown remains engaged)"
+                        )
+                    else:
+                        response = await effective_http_get(rate_limit_url, token=token)
+                        record_response_headers(response)
+            except Exception:
+                logger.warning(
+                    "cooldown self-heal iteration failed; will retry next tick",
+                    exc_info=True,
+                )
+            await asyncio.sleep(interval_seconds)
+
+    return asyncio.create_task(_loop(), name="rate-limit-self-heal")
+
+
 __all__ = [
     "RateLimitCooldown",
     "get_cooldown",
@@ -300,4 +382,5 @@ __all__ = [
     "record_rate_limit_response",
     "record_response_headers",
     "reset_for_tests",
+    "start_cooldown_self_heal_task",
 ]
