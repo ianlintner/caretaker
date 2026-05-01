@@ -157,3 +157,74 @@ Caretaker supports optional remote capability expansion via Model Context Protoc
 - `mcp`: Configures connection to a remote MCP backend service. Must be enabled to route capabilities.
 - `azure`: Allows using Azure Managed Identity for secure access to remote backends and resources.
 - `telemetry`: Enables telemetry scaffolding for remote tool calls and latency. At present this is stub/debug instrumentation and does not export data to Azure Application Insights.
+
+## LLM provider selection
+
+The `llm` block selects which provider executes Caretaker's analysis
+features (CI log triage, architectural review, upgrade impact, etc.).
+
+### Supported providers
+
+| `provider` | Description |
+| --- | --- |
+| `anthropic` | Direct Anthropic SDK with `ANTHROPIC_API_KEY`. Default. |
+| `litellm` | Multi-provider routing (Anthropic, OpenAI, Vertex, Azure OpenAI, Azure AI Foundry, Bedrock, Ollama, Mistral, Cohere, Groq). Each provider's env vars apply. |
+| `openrouter` | LiteLLM under the hood, but pinned to OpenRouter via `OPENROUTER_API_KEY`. Strict `openrouter/`-prefix model strings. |
+
+### Per-feature model routing
+
+`feature_models` overrides the model used for a specific analysis
+feature. Caretaker ships a per-provider default map; operator entries
+win over both.
+
+```yaml
+llm:
+  provider: openrouter
+  default_model: openrouter/anthropic/claude-sonnet-4.6
+  feature_models:
+    ci_log_analysis:
+      model: openrouter/deepseek/deepseek-r1
+      max_tokens: 2500
+    architectural_review:
+      model: openrouter/anthropic/claude-opus-4.6
+```
+
+### Strict prefix rule under `provider: openrouter`
+
+When `provider` is `openrouter`, every model string in `default_model`,
+every `feature_models[*].model`, and every `fallback_models` entry must
+begin with `openrouter/`. Caretaker raises a `ValidationError` at
+config-load otherwise. The error names every offending field with a
+fix suggestion.
+
+Without this rule, LiteLLM would silently route bare names like
+`claude-sonnet-4-5` to Anthropic-direct, breaking billing dashboards,
+rate limits, and observability against the operator's intent.
+
+### `:online` web-grounded analysis
+
+Append `:online` to any model string to enable OpenRouter's web search
+step before the completion. Caretaker's shipped defaults use this for
+`upgrade_impact_analysis`, `migration_analysis`, and `migration_plan`,
+where release notes and breaking-change advisories benefit from current
+external context.
+
+**Cost note:** `:online` adds approximately $4 per 1k searches on top
+of the model call. The OTel span attribute `caretaker.llm.online=true`
+lets cost dashboards filter web-grounded spend without parsing model
+strings downstream.
+
+### Browse OpenRouter's model catalogue
+
+See [openrouter.ai/models](https://openrouter.ai/models) for the
+current model list. Model IDs occasionally rename; if Caretaker's
+shipped defaults stop resolving, override them in `feature_models`.
+
+### Deployment note (k8s)
+
+For Caretaker deployments running on Kubernetes (e.g. the Azure setup
+referenced from this project), the `OPENROUTER_API_KEY` must be
+available in the runtime environment. The recommended pattern is a
+`SealedSecret` sourced from your local environment and committed to
+your manifests repository before merging the Caretaker code change
+that depends on the key.
