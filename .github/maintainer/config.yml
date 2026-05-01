@@ -162,29 +162,48 @@ escalation:
   labels: ["maintainer:escalated"]
 
 llm:
-  # Route through LiteLLM so any Azure AI Foundry / Azure OpenAI key works.
-  # provider: anthropic would require ANTHROPIC_API_KEY which is not used in
-  # this fleet — Claude is accessed via Azure AI Foundry (AZURE_AI_API_KEY).
-  provider: litellm
+  # Route through OpenRouter — single key (OPENROUTER_API_KEY) fronts 300+
+  # models from one credential. Strict prefix validation rejects any
+  # bare/non-openrouter model strings under provider=openrouter at config
+  # load (catches the common copy-paste misconfig where an Anthropic
+  # config gets pasted into an openrouter setup).
+  provider: openrouter
   claude_enabled: "true"
-  default_model: azure_ai/gpt-4.1-mini
+  default_model: openrouter/openai/gpt-4o-mini
   fallback_models:
-    - azure/gpt-4o
+    - openrouter/openai/gpt-4o-mini
+  # Most feature → model routing is supplied by the shipped
+  # DEFAULT_FEATURE_MODELS_BY_PROVIDER["openrouter"] map (see
+  # src/caretaker/config.py): ci_log_analysis → DeepSeek R1,
+  # principal_architecture_review → Claude Opus 4.6,
+  # upgrade_impact_analysis / migration_analysis / migration_plan →
+  # Claude Sonnet 4.6 with the :online suffix (web-grounded — release
+  # notes & breaking-change advisories come from current sources).
+  # Operator overrides below win over those shipped defaults.
   feature_models:
-    # Reasoning-heavy features — route to Claude via Azure AI Foundry for
-    # prompt-cache benefits (_supports_prompt_cache keys on "claude" substring).
+    # Reasoning-heavy on-PR review — top-tier Claude. Sonnet rather than
+    # Opus to keep the per-comment cost reasonable; principal_architecture_review
+    # (full-PR reviewer's reviewer) is the spot to spend Opus tokens.
     architectural_review:
-      model: azure_ai/claude-sonnet-4-5
-      max_tokens: 8000
-    principal_architecture_review:
-      model: azure_ai/claude-sonnet-4-5
+      model: openrouter/anthropic/claude-sonnet-4.6
       max_tokens: 8000
     issue_decomposition:
-      model: azure_ai/gpt-4.1
+      model: openrouter/openai/gpt-4o
       max_tokens: 4000
-    # Log grinding — fast + cheap
-    ci_log_analysis:
-      model: azure_ai/gpt-4.1-mini
+    # Features below have entries in the LEGACY DEFAULT_FEATURE_MODELS
+    # (bare claude-*-5 strings) but no per-provider override in
+    # DEFAULT_FEATURE_MODELS_BY_PROVIDER["openrouter"]. Without explicit
+    # entries here the resolver falls through to bare Claude strings,
+    # which under provider=openrouter would route Anthropic-direct
+    # (no key in this fleet) and fail. Pinning openrouter equivalents.
+    refactor_analysis:
+      model: openrouter/anthropic/claude-opus-4.6
+      max_tokens: 4000
+    analyze_review_comment:
+      model: openrouter/anthropic/claude-haiku-4.5
+      max_tokens: 1000
+    generate_reflection:
+      model: openrouter/anthropic/claude-sonnet-4.6
       max_tokens: 1500
   claude_features:
     - ci_log_analysis
