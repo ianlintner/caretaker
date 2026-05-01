@@ -191,6 +191,46 @@ Add `ANTHROPIC_API_KEY` to unlock enhanced AI features:
 - **Issue decomposition** — breaks down multi-faceted bugs
 - **Upgrade impact analysis** — assesses breaking change risk
 
+### Optional: OpenRouter Integration
+
+Set `OPENROUTER_API_KEY` (or its accepted alias `OPEN_ROUTER_API_KEY`)
+and `provider: openrouter` in
+`.github/maintainer/config.yml` to route LLM calls through
+[OpenRouter](https://openrouter.ai), which gives you:
+
+- **300+ models behind one key** — DeepSeek R1, Gemini, Llama, Qwen,
+  GLM, plus all the proprietary frontier models.
+- **Per-feature model routing** — pin different caretaker features to
+  different best-fit models via `feature_models`.
+- **Web-grounded analysis** — append `:online` to a model string to add
+  a web search step before the completion. Caretaker ships this as the
+  default for `upgrade_impact_analysis`, `migration_analysis`, and
+  `migration_plan` so release-note and breaking-change context comes
+  from current sources rather than stale model knowledge.
+
+Sample config:
+
+```yaml
+llm:
+  provider: openrouter
+  default_model: openrouter/anthropic/claude-sonnet-4.6
+  feature_models:
+    ci_log_analysis:
+      model: openrouter/deepseek/deepseek-r1
+    principal_architecture_review:
+      model: openrouter/anthropic/claude-opus-4.6
+```
+
+**Cost note:** `:online` adds OpenRouter's web-search step
+(~$4 per 1k searches) on top of the model call. The
+`caretaker.llm.online=true` OTel span attribute lets you break out
+web-grounded spend in cost dashboards.
+
+When `provider: openrouter` is set, every model string must begin
+with `openrouter/`. Caretaker rejects bare model names at
+config-load to prevent the silent bypass to Anthropic-direct that
+LiteLLM otherwise performs.
+
 ---
 
 ## What's new

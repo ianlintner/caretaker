@@ -203,3 +203,75 @@ def test_dedup_when_two_models_share_env() -> None:
     assert len(azure_ai_key_rows) == 1
     azure_ai_base_rows = [r for r in rows if r.name == "AZURE_AI_API_BASE"]
     assert len(azure_ai_base_rows) == 1
+
+
+def test_default_model_openrouter_requires_openrouter_key() -> None:
+    """openrouter/ default_model → FAIL on OPENROUTER_API_KEY when env empty."""
+    config = _load_config(
+        {
+            "llm": {
+                "provider": "openrouter",
+                "default_model": "openrouter/anthropic/claude-sonnet-4.6",
+            }
+        }
+    )
+    rows = _llm_rows(check_env_secrets(config, {"GITHUB_TOKEN": "x"}))
+    names = {r.name for r in rows}
+    assert "OPENROUTER_API_KEY" in names
+    # No spurious ANTHROPIC_API_KEY row — the bare-model fallback must NOT
+    # match openrouter/anthropic/* because the openrouter/ prefix wins.
+    assert "ANTHROPIC_API_KEY" not in names
+    assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.FAIL
+
+
+def test_default_model_openrouter_ok_when_key_present() -> None:
+    """openrouter/ default_model with OPENROUTER_API_KEY set → OK."""
+    config = _load_config(
+        {
+            "llm": {
+                "provider": "openrouter",
+                "default_model": "openrouter/anthropic/claude-sonnet-4.6",
+            }
+        }
+    )
+    env = {"GITHUB_TOKEN": "x", "OPENROUTER_API_KEY": "sk-or-v1-test"}
+    rows = _llm_rows(check_env_secrets(config, env))
+    assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.OK
+
+
+def test_openrouter_alias_open_router_satisfies_canonical_row() -> None:
+    """OPEN_ROUTER_API_KEY satisfies the OPENROUTER_API_KEY check (single OK row)."""
+    config = _load_config(
+        {
+            "llm": {
+                "provider": "openrouter",
+                "default_model": "openrouter/anthropic/claude-sonnet-4.6",
+            }
+        }
+    )
+    env = {"GITHUB_TOKEN": "x", "OPEN_ROUTER_API_KEY": "sk-or-v1-test-alias"}
+    rows = _llm_rows(check_env_secrets(config, env))
+    names = [r.name for r in rows]
+    # Only one row, under the canonical name.
+    assert names.count("OPENROUTER_API_KEY") == 1
+    assert "OPEN_ROUTER_API_KEY" not in names
+    assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.OK
+
+
+def test_openrouter_in_fallback_only_warns_not_fails() -> None:
+    """openrouter/ model only in fallback_models → WARN, not FAIL."""
+    config = _load_config(
+        {
+            "llm": {
+                "provider": "litellm",
+                "default_model": "anthropic/claude-sonnet-4.6",
+                "fallback_models": ["openrouter/anthropic/claude-sonnet-4.6"],
+            }
+        }
+    )
+    env = {"GITHUB_TOKEN": "x", "ANTHROPIC_API_KEY": "sk-ant-test"}
+    rows = _llm_rows(check_env_secrets(config, env))
+    names = {r.name for r in rows}
+    assert "OPENROUTER_API_KEY" in names
+    # Fallback-only owner_enabled=False → WARN.
+    assert _row(rows, "OPENROUTER_API_KEY").severity is Severity.WARN

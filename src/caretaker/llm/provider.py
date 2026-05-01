@@ -38,6 +38,33 @@ from caretaker.observability.metrics import record_llm_cache_usage
 logger = logging.getLogger(__name__)
 
 
+# Accepted env var names for the OpenRouter API key. ``OPENROUTER_API_KEY``
+# is the canonical name LiteLLM (and OpenRouter's own docs) read; the
+# underscore-separated form is a common operator variant. Both are
+# accepted; whichever is set will be mirrored onto the canonical name
+# at provider construction so downstream consumers find it.
+OPENROUTER_API_KEY_ENV: str = "OPENROUTER_API_KEY"
+OPENROUTER_API_KEY_ALIASES: tuple[str, ...] = (
+    OPENROUTER_API_KEY_ENV,
+    "OPEN_ROUTER_API_KEY",
+)
+
+
+def resolve_openrouter_api_key() -> str | None:
+    """Return the OpenRouter API key from any accepted env var name.
+
+    Mirrors the resolved value onto :data:`OPENROUTER_API_KEY_ENV` so
+    LiteLLM (which only consults the canonical name internally) finds
+    it regardless of which alias the operator set.
+    """
+    for name in OPENROUTER_API_KEY_ALIASES:
+        value = os.environ.get(name)
+        if value:
+            os.environ.setdefault(OPENROUTER_API_KEY_ENV, value)
+            return value
+    return None
+
+
 # Models that support Anthropic prompt caching via the ``cache_control`` content-
 # block annotation.  We key off substring matches because both the Anthropic
 # native SDK (``claude-*``) and LiteLLM-routed variants (``anthropic/claude-*``,
@@ -326,6 +353,7 @@ class LiteLLMProvider:
                 "COHERE_API_KEY",
                 "GROQ_API_KEY",
                 "OLLAMA_API_BASE",
+                *OPENROUTER_API_KEY_ALIASES,
             )
         )
 
@@ -361,6 +389,7 @@ class LiteLLMProvider:
             extra_attrs={
                 "caretaker.llm.feature": request.feature,
                 "caretaker.llm.router": "litellm",
+                **({"caretaker.llm.online": True} if request.model.endswith(":online") else {}),
             },
         ) as span:
             response = await self._acompletion(**kwargs)
@@ -454,6 +483,7 @@ class LiteLLMProvider:
                 "caretaker.llm.feature": request.feature,
                 "caretaker.llm.router": "litellm",
                 "caretaker.llm.tool_count": len(tools),
+                **({"caretaker.llm.online": True} if request.model.endswith(":online") else {}),
             },
         ) as _tool_span:
             response = await self._acompletion(**kwargs)
@@ -711,6 +741,30 @@ def build_provider(
     name = provider_name.lower().strip()
     if name == "anthropic":
         return AnthropicProvider(timeout=timeout)
+    if name == "openrouter":
+        # Alias: LiteLLM with explicit OpenRouter credential check.
+        # Resolve the credential first — this also mirrors any accepted
+        # alias (e.g. OPEN_ROUTER_API_KEY) onto the canonical
+        # OPENROUTER_API_KEY name LiteLLM reads. Done before the
+        # package check so the warning fires regardless of whether
+        # litellm is installed; operators benefit either way.
+        if resolve_openrouter_api_key() is None:
+            # Names listed inline (not interpolated) so CodeQL doesn't
+            # flag the warning as logging sensitive data — these are
+            # env-var *names*, never values.
+            logger.warning(
+                "provider='openrouter' but no OpenRouter API key is set "
+                "(checked OPENROUTER_API_KEY or OPEN_ROUTER_API_KEY); "
+                "LLM features will fall back to their non-LLM paths"
+            )
+        provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
+        if not provider.package_installed:
+            logger.warning(
+                "Configured provider 'openrouter' but litellm package is not installed; "
+                "install with `pip install litellm`"
+            )
+            return NullProvider()
+        return provider
     if name == "litellm":
         provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
         if not provider.package_installed:

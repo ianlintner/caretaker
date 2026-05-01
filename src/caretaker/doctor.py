@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from caretaker.github_client.scope_gap import is_scope_gap_message
+from caretaker.llm.provider import OPENROUTER_API_KEY_ALIASES
 
 if TYPE_CHECKING:
     from caretaker.config import MaintainerConfig
@@ -237,6 +238,12 @@ class EnvReference:
     owner_enabled: bool
     # Free-form description surfaced in the detail column.
     purpose: str
+    # Accepted alias env names for ``env_name``. The existence check in
+    # :func:`check_env_secrets` treats the env as present when ``env_name``
+    # *or any alias* is set. Used for credentials whose canonical name
+    # has a commonly-seen variant (e.g. OPENROUTER_API_KEY vs
+    # OPEN_ROUTER_API_KEY). Empty by default.
+    aliases: tuple[str, ...] = ()
 
 
 def collect_env_references(config: MaintainerConfig) -> list[EnvReference]:
@@ -380,6 +387,7 @@ def collect_env_references(config: MaintainerConfig) -> list[EnvReference]:
 # :func:`_env_vars_for_model`.
 _MODEL_PREFIX_ENV_MAP: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Longest / most specific first.
+    ("openrouter/", ("OPENROUTER_API_KEY",)),
     ("ollama_chat/", ("OLLAMA_API_BASE",)),
     ("vertex_ai/", ("GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_PROJECT")),
     ("azure_ai/", ("AZURE_AI_API_KEY", "AZURE_AI_API_BASE")),
@@ -522,11 +530,17 @@ def _collect_llm_env_references(config: MaintainerConfig) -> list[EnvReference]:
         for env_name in envs:
             existing = seen.get(env_name)
             if existing is None:
+                # Honor accepted alias env names so e.g. OPEN_ROUTER_API_KEY
+                # satisfies the OPENROUTER_API_KEY row.
+                aliases: tuple[str, ...] = ()
+                if env_name == OPENROUTER_API_KEY_ALIASES[0]:
+                    aliases = OPENROUTER_API_KEY_ALIASES[1:]
                 ref = EnvReference(
                     env_name=env_name,
                     config_path="llm.default_model / feature_models / fallback_models",
                     owner_enabled=owner_enabled,
                     purpose=_purpose(env_name, model, prefix),
+                    aliases=aliases,
                 )
                 seen[env_name] = ref
                 refs.append(ref)
@@ -539,6 +553,7 @@ def _collect_llm_env_references(config: MaintainerConfig) -> list[EnvReference]:
                     config_path=existing.config_path,
                     owner_enabled=True,
                     purpose=existing.purpose,
+                    aliases=existing.aliases,
                 )
                 # Replace in the ordered list too.
                 for i, r in enumerate(refs):
@@ -595,7 +610,7 @@ def check_env_secrets(config: MaintainerConfig, env: dict[str, str]) -> list[Che
         )
 
     for ref in refs:
-        present = bool(env.get(ref.env_name))
+        present = bool(env.get(ref.env_name)) or any(bool(env.get(alias)) for alias in ref.aliases)
         if present:
             severity = Severity.OK
             detail = f"{ref.purpose} present"
@@ -639,7 +654,7 @@ def _render_model_env_row(ref: EnvReference, env: dict[str, str]) -> CheckResult
             detail=ref.purpose,
             hint=ref.config_path,
         )
-    present = bool(env.get(ref.env_name))
+    present = bool(env.get(ref.env_name)) or any(bool(env.get(alias)) for alias in ref.aliases)
     if present:
         return CheckResult(
             category="llm",

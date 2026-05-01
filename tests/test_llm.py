@@ -176,6 +176,76 @@ class TestFeatureModelResolution:
         assert provider.calls[0].model == "claude-sonnet-4-5"
 
 
+# ── _resolve_feature per-provider routing ────────────────────────────────────
+
+
+class TestResolveFeature:
+    def test_resolve_feature_uses_openrouter_default_for_migration_analysis(self) -> None:
+        """When provider='openrouter', migration_analysis resolves to the :online model."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == "openrouter/anthropic/claude-sonnet-4.6:online"
+        assert max_tokens == 4000
+
+    def test_resolve_feature_uses_legacy_default_for_anthropic_provider(self) -> None:
+        """When provider='anthropic', migration_analysis resolves to the legacy Claude default."""
+        from caretaker.config import DEFAULT_REASONING_MODEL
+
+        config = LLMConfig(provider="anthropic")
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == DEFAULT_REASONING_MODEL
+        assert max_tokens == 4000
+
+    def test_resolve_feature_operator_override_beats_openrouter_default(self) -> None:
+        """Operator's feature_models override is authoritative; :online is NOT re-appended."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+            feature_models={
+                "migration_analysis": FeatureModelConfig(
+                    model="openrouter/google/gemini-2.0-flash",
+                    max_tokens=2000,
+                ),
+            },
+        )
+        client = ClaudeClient(config=config)
+        model, max_tokens = client._resolve_feature("migration_analysis", default_max_tokens=1)
+        assert model == "openrouter/google/gemini-2.0-flash"
+        assert max_tokens == 2000
+
+    def test_resolve_feature_unknown_feature_falls_through_to_default_model(self) -> None:
+        """A feature with no entry in either default map falls back to default_model."""
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        model, _ = client._resolve_feature("not_a_real_feature", default_max_tokens=1500)
+        assert model == "openrouter/anthropic/claude-sonnet-4.6"
+
+    def test_resolve_feature_openrouter_falls_through_to_legacy_for_unmapped_features(
+        self,
+    ) -> None:
+        """Under openrouter, unmapped features fall back to DEFAULT_FEATURE_MODELS."""
+        from caretaker.config import DEFAULT_FEATURE_MODELS
+
+        config = LLMConfig(
+            provider="openrouter",
+            default_model="openrouter/anthropic/claude-sonnet-4.6",
+        )
+        client = ClaudeClient(config=config)
+        # ci_triage is in DEFAULT_FEATURE_MODELS but NOT in
+        # DEFAULT_FEATURE_MODELS_BY_PROVIDER["openrouter"].
+        model, max_tokens = client._resolve_feature("ci_triage", default_max_tokens=1)
+        assert model == DEFAULT_FEATURE_MODELS["ci_triage"]["model"]
+        assert max_tokens == DEFAULT_FEATURE_MODELS["ci_triage"]["max_tokens"]
+
+
 # ── Provider factory ─────────────────────────────────────────────────────────
 
 
@@ -197,6 +267,64 @@ class TestProviderFactory:
         ):
             p = build_provider("litellm")
         assert isinstance(p, AnthropicProvider)
+
+    def test_build_provider_openrouter_returns_litellm(self, monkeypatch) -> None:
+        """build_provider('openrouter') returns a LiteLLMProvider instance."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with patch(
+            "caretaker.llm.provider.LiteLLMProvider.package_installed",
+            new=True,
+        ):
+            p = build_provider("openrouter")
+        assert p.name == "litellm"
+        assert isinstance(p, LiteLLMProvider)
+
+    def test_build_provider_openrouter_warns_when_key_missing(self, monkeypatch, caplog) -> None:
+        """build_provider('openrouter') warns when no accepted env var is set."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "OPENROUTER_API_KEY" in messages
+
+    def test_build_provider_openrouter_no_warning_when_key_present(
+        self, monkeypatch, caplog
+    ) -> None:
+        """No warning when the canonical env var is set."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "no OpenRouter API key" not in messages
+
+    def test_build_provider_openrouter_accepts_open_router_alias(self, monkeypatch, caplog) -> None:
+        """OPEN_ROUTER_API_KEY alias satisfies the openrouter provider check."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-v1-test-alias")
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "no OpenRouter API key" not in messages
+        # And the alias is mirrored onto the canonical name LiteLLM reads.
+        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-v1-test-alias"
+
+    def test_build_provider_openrouter_warns_when_no_alias_set(self, monkeypatch, caplog) -> None:
+        """Warning lists both accepted env var names so operators see the choice."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "OPENROUTER_API_KEY" in messages
+        assert "OPEN_ROUTER_API_KEY" in messages
+
+    def test_build_provider_openrouter_without_litellm_returns_null(self, monkeypatch) -> None:
+        """build_provider('openrouter') returns NullProvider when litellm missing."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with patch("caretaker.llm.provider.LiteLLMProvider.package_installed", new=False):
+            p = build_provider("openrouter")
+        assert isinstance(p, NullProvider)
 
 
 # ── AnthropicProvider availability ───────────────────────────────────────────
@@ -245,6 +373,34 @@ class TestLiteLLMProvider:
                 assert p.available is True
             else:
                 assert p.available is False
+
+    def test_litellm_provider_available_with_only_openrouter_key(self) -> None:
+        """LiteLLMProvider.available must return True when only OPENROUTER_API_KEY is set."""
+        # Clear every other credential the allowlist checks, leaving only OpenRouter.
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "sk-or-v1-test",
+            },
+            clear=True,
+        ):
+            p = LiteLLMProvider()
+            # Mock the internal _acompletion so it appears the package is installed
+            p._acompletion = MagicMock()
+            assert p.available is True
+
+    def test_litellm_provider_available_with_only_open_router_alias(self) -> None:
+        """LiteLLMProvider.available accepts the OPEN_ROUTER_API_KEY alias too."""
+        with patch.dict(
+            os.environ,
+            {
+                "OPEN_ROUTER_API_KEY": "sk-or-v1-test",
+            },
+            clear=True,
+        ):
+            p = LiteLLMProvider()
+            p._acompletion = MagicMock()
+            assert p.available is True
 
     def test_fallback_models_passed_through(self) -> None:
         p = LiteLLMProvider(fallback_models=["openai/gpt-4o", "vertex_ai/gemini-1.5-pro"])
@@ -787,3 +943,190 @@ class TestPromptCacheFailOpen:
         # open behaviour is the absence of the call at the provider level.
         annotated = _annotate_system_cache_control(messages)
         assert isinstance(annotated[0]["content"], list)
+
+
+# ── LiteLLMProvider :online span attributes ──────────────────────────────────
+
+
+class TestLiteLLMOnlineSpanAttribute:
+    """LiteLLMProvider tags spans with caretaker.llm.online for :online models."""
+
+    @pytest.mark.asyncio
+    async def test_litellm_complete_sets_online_attribute_on_online_model(
+        self, monkeypatch
+    ) -> None:
+        """LiteLLMProvider tags the span with caretaker.llm.online=True for :online models."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        captured_attrs: dict[str, object] = {}
+
+        class FakeSpan:
+            def set_attribute(self, key: str, value: object) -> None:
+                captured_attrs[key] = value
+
+            def record_response(self, **kwargs: Any) -> None:
+                pass
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_span(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            for k, v in (kwargs.get("extra_attrs") or {}).items():
+                captured_attrs[k] = v
+            yield FakeSpan()
+
+        monkeypatch.setattr("caretaker.llm.provider.llm_chat_span", fake_span)
+
+        async def fake_acompletion(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            class _Choice:
+                def __init__(self) -> None:
+                    class _Msg:
+                        content = "ok"
+
+                    self.message = _Msg()
+                    self.finish_reason = "stop"
+
+            class _Resp:
+                choices = [_Choice()]
+                usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+                id = "x"
+                model = "openrouter/anthropic/claude-sonnet-4.6:online"
+
+            return _Resp()
+
+        p = LiteLLMProvider()
+        if not p.package_installed:
+            pytest.skip("litellm package not installed")
+        p._acompletion = fake_acompletion  # type: ignore[assignment]
+
+        await p.complete(
+            LLMRequest(
+                feature="upgrade_impact_analysis",
+                prompt="hi",
+                model="openrouter/anthropic/claude-sonnet-4.6:online",
+                max_tokens=10,
+            )
+        )
+
+        assert captured_attrs.get("caretaker.llm.online") is True
+
+    @pytest.mark.asyncio
+    async def test_litellm_complete_omits_online_attribute_on_non_online_model(
+        self, monkeypatch
+    ) -> None:
+        """No caretaker.llm.online attribute when the model lacks the :online suffix."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        captured_attrs: dict[str, object] = {}
+
+        class FakeSpan:
+            def set_attribute(self, key: str, value: object) -> None:
+                captured_attrs[key] = value
+
+            def record_response(self, **kwargs: Any) -> None:
+                pass
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_span(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            for k, v in (kwargs.get("extra_attrs") or {}).items():
+                captured_attrs[k] = v
+            yield FakeSpan()
+
+        monkeypatch.setattr("caretaker.llm.provider.llm_chat_span", fake_span)
+
+        async def fake_acompletion(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            class _Choice:
+                def __init__(self) -> None:
+                    class _Msg:
+                        content = "ok"
+
+                    self.message = _Msg()
+                    self.finish_reason = "stop"
+
+            class _Resp:
+                choices = [_Choice()]
+                usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+                id = "x"
+                model = "openrouter/anthropic/claude-sonnet-4.6"
+
+            return _Resp()
+
+        p = LiteLLMProvider()
+        if not p.package_installed:
+            pytest.skip("litellm package not installed")
+        p._acompletion = fake_acompletion  # type: ignore[assignment]
+
+        await p.complete(
+            LLMRequest(
+                feature="ci_log_analysis",
+                prompt="hi",
+                model="openrouter/anthropic/claude-sonnet-4.6",
+                max_tokens=10,
+            )
+        )
+
+        assert "caretaker.llm.online" not in captured_attrs
+
+    @pytest.mark.asyncio
+    async def test_litellm_complete_with_tools_sets_online_attribute_on_online_model(
+        self, monkeypatch
+    ) -> None:
+        """complete_with_tools tags the span with caretaker.llm.online=True for :online models."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        captured_attrs: dict[str, object] = {}
+
+        class FakeSpan:
+            def set_attribute(self, key: str, value: object) -> None:
+                captured_attrs[key] = value
+
+            def record_response(self, **kwargs: Any) -> None:
+                pass
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_span(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            for k, v in (kwargs.get("extra_attrs") or {}).items():
+                captured_attrs[k] = v
+            yield FakeSpan()
+
+        monkeypatch.setattr("caretaker.llm.provider.llm_chat_span", fake_span)
+
+        async def fake_acompletion(**kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            class _Choice:
+                def __init__(self) -> None:
+                    class _Msg:
+                        content = "ok"
+                        tool_calls = None
+                        role = "assistant"
+
+                        def model_dump(self) -> dict[str, Any]:
+                            return {"role": "assistant", "content": "ok"}
+
+                    self.message = _Msg()
+                    self.finish_reason = "stop"
+
+            class _Resp:
+                choices = [_Choice()]
+                usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+                id = "x"
+                model = "openrouter/anthropic/claude-sonnet-4.6:online"
+
+            return _Resp()
+
+        p = LiteLLMProvider()
+        if not p.package_installed:
+            pytest.skip("litellm package not installed")
+        p._acompletion = fake_acompletion  # type: ignore[assignment]
+
+        await p.complete_with_tools(
+            LLMRequest(
+                feature="upgrade_impact_analysis",
+                prompt="hi",
+                model="openrouter/anthropic/claude-sonnet-4.6:online",
+                max_tokens=10,
+            ),
+            tools=[],
+        )
+
+        assert captured_attrs.get("caretaker.llm.online") is True

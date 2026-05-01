@@ -314,6 +314,44 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     "migration_plan": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 5000},
 }
 
+# Provider-aware default feature models. Consulted by ClaudeClient._resolve_feature
+# BEFORE the legacy DEFAULT_FEATURE_MODELS table when the provider matches.
+# Operator's feature_models config still wins over both.
+#
+# Why per-provider rather than a single map: Anthropic operators don't want
+# openrouter/-prefixed strings injected, and OpenRouter operators don't want
+# bare 'claude-sonnet-4-5' strings (LiteLLM would route those Anthropic-direct,
+# silently bypassing OpenRouter and breaking cost/billing/rate-limits).
+DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] = {
+    "openrouter": {
+        "ci_log_analysis": {
+            "model": "openrouter/deepseek/deepseek-r1",
+            "max_tokens": 2000,
+        },
+        "principal_architecture_review": {
+            "model": "openrouter/anthropic/claude-opus-4.6",
+            "max_tokens": 4000,
+        },
+        # upgrade_impact_analysis has no DEFAULT_FEATURE_MODELS entry; Anthropic
+        # operators resolve it to LLMConfig.default_model. The :online suffix is
+        # OpenRouter-specific (web-grounded search before completion).
+        "upgrade_impact_analysis": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 3000,
+        },
+        "migration_analysis": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 4000,
+        },
+        "migration_plan": {
+            "model": "openrouter/anthropic/claude-sonnet-4.6:online",
+            "max_tokens": 5000,
+        },
+        # Other features fall through to DEFAULT_FEATURE_MODELS (legacy) or
+        # default_model — see ClaudeClient._resolve_feature for precedence.
+    },
+}
+
 
 class FeatureModelConfig(StrictBaseModel):
     """Per-feature model override."""
@@ -409,7 +447,9 @@ class LLMConfig(StrictBaseModel):
     # Provider selection: "anthropic" (default, direct SDK) or "litellm"
     # (multi-provider: OpenAI, Vertex, Azure OpenAI, Azure AI Foundry,
     # Bedrock, Ollama, Mistral, Cohere, Groq, etc.)
-    provider: Literal["anthropic", "litellm"] = "anthropic"
+    # "openrouter" is an alias that resolves to LiteLLM under the hood but
+    # enforces openrouter/-prefixed model strings (see model_validator below).
+    provider: Literal["anthropic", "litellm", "openrouter"] = "anthropic"
     # Model used when a feature has no explicit override. For litellm this
     # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-1.5-pro").
     default_model: str = DEFAULT_MODEL
@@ -432,6 +472,38 @@ class LLMConfig(StrictBaseModel):
     # until a dedicated ``AgenticConfig`` lands (T-D1); may be promoted
     # without a breaking change because callers read through this model.
     bot_identity: AgenticBotIdentityConfig = Field(default_factory=AgenticBotIdentityConfig)
+
+    @model_validator(mode="after")
+    def _validate_openrouter_prefix(self) -> LLMConfig:
+        """When provider='openrouter', every model string must use the openrouter/ prefix.
+
+        Prevents the silent bypass to Anthropic-direct that LiteLLM performs
+        when given a bare 'claude-*' string — that bypass breaks billing,
+        rate limits, and observability against the operator's intent.
+        """
+        if self.provider != "openrouter":
+            return self
+
+        bad: list[tuple[str, str]] = []
+        if not self.default_model.startswith("openrouter/"):
+            bad.append(("llm.default_model", self.default_model))
+        for feature, override in self.feature_models.items():
+            if override.model and not override.model.startswith("openrouter/"):
+                bad.append((f"llm.feature_models.{feature}.model", override.model))
+        for i, m in enumerate(self.fallback_models):
+            if m and not m.startswith("openrouter/"):
+                bad.append((f"llm.fallback_models[{i}]", m))
+
+        if bad:
+            offenders = "\n  ".join(f"{path} = {value!r}" for path, value in bad)
+            raise ValueError(
+                f"provider='openrouter' requires every model string to start with "
+                f"'openrouter/'. Offending fields:\n  {offenders}\n"
+                f"Fix each one (e.g. 'openrouter/anthropic/claude-sonnet-4.6') or "
+                f"change provider to 'litellm' if you intentionally want to mix "
+                f"non-openrouter prefixes."
+            )
+        return self
 
 
 class OrchestratorConfig(StrictBaseModel):
