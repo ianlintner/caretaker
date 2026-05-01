@@ -743,6 +743,20 @@ def build_provider(
         return AnthropicProvider(timeout=timeout)
     if name == "openrouter":
         # Alias: LiteLLM with explicit OpenRouter credential check.
+        # Resolve the credential first — this also mirrors any accepted
+        # alias (e.g. OPEN_ROUTER_API_KEY) onto the canonical
+        # OPENROUTER_API_KEY name LiteLLM reads. Done before the
+        # package check so the warning fires regardless of whether
+        # litellm is installed; operators benefit either way.
+        if resolve_openrouter_api_key() is None:
+            # Names listed inline (not interpolated) so CodeQL doesn't
+            # flag the warning as logging sensitive data — these are
+            # env-var *names*, never values.
+            logger.warning(
+                "provider='openrouter' but no OpenRouter API key is set "
+                "(checked OPENROUTER_API_KEY or OPEN_ROUTER_API_KEY); "
+                "LLM features will fall back to their non-LLM paths"
+            )
         provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
         if not provider.package_installed:
             logger.warning(
@@ -750,17 +764,6 @@ def build_provider(
                 "install with `pip install litellm`"
             )
             return NullProvider()
-        # Targeted warning so operators see the exact env var to set
-        # rather than LiteLLM's generic "no credentials" message.
-        # ``resolve_openrouter_api_key`` also mirrors any accepted alias
-        # onto the canonical OPENROUTER_API_KEY name LiteLLM reads.
-        if resolve_openrouter_api_key() is None:
-            logger.warning(
-                "provider='openrouter' but no OpenRouter API key is set "
-                "(checked %s); LLM features will fall back to their "
-                "non-LLM paths",
-                " or ".join(OPENROUTER_API_KEY_ALIASES),
-            )
         return provider
     if name == "litellm":
         provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
