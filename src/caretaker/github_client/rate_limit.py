@@ -365,7 +365,7 @@ def start_cooldown_self_heal_task(
                     else:
                         response = await effective_http_get(rate_limit_url, token=token)
                         record_response_headers(response)
-            except Exception:  # pragma: no cover - defensive
+            except Exception:
                 logger.warning(
                     "cooldown self-heal iteration failed; will retry next tick",
                     exc_info=True,

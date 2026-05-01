@@ -292,12 +292,13 @@ spec:
           # (failureThreshold=3 × periodSeconds=15 = 45s) on cold-cache
           # OIDC discovery / Mongo / Neo4j connect; without startupProbe
           # liveness would crashloop a slow but healthy pod.
-          # 30 × 10s = 5min budget for the app to bind /health.
+          # 72 × 10s = 12min budget to match the worst-case startup
+          # observed during the 2026-04-30 incident.
           startupProbe:
             httpGet:
               path: /health
               port: 8000
-            failureThreshold: 30
+            failureThreshold: 72
             periodSeconds: 10
           livenessProbe:
             httpGet:

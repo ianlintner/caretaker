@@ -7,6 +7,7 @@ All endpoints require an authenticated OIDC session (enforced via the
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -341,9 +342,10 @@ async def get_cooldown_state(
     return {
         "blocked": cd.is_blocked(),
         "seconds_remaining": int(snap.get("seconds_remaining") or 0),
-        "blocked_until": snap.get("blocked_until"),
+        "blocked_until": snap.get("blocked_until") or None,
         "last_remaining": snap.get("last_remaining"),
         "reason": snap.get("reason") or "",
+        "replica": os.environ.get("HOSTNAME", "unknown"),
     }
 
 
@@ -381,9 +383,10 @@ async def reset_cooldown_state(
     return {
         "blocked": False,
         "seconds_remaining": 0,
-        "blocked_until": snap.get("blocked_until"),
+        "blocked_until": snap.get("blocked_until") or None,
         "last_remaining": snap.get("last_remaining"),
         "reason": snap.get("reason") or "",
         "prior_blocked": prior_blocked,
         "prior_seconds_remaining": prior_seconds,
+        "replica": os.environ.get("HOSTNAME", "unknown"),
     }
