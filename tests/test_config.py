@@ -135,3 +135,13 @@ pr_agent:
         repo_root = Path(__file__).resolve().parents[1]
         schema_path = repo_root / "schema" / "config.v1.schema.json"
         assert schema_path.exists()
+
+
+def test_llm_config_accepts_openrouter_provider():
+    """LLMConfig must accept provider='openrouter' as a recognized value."""
+    from caretaker.config import LLMConfig
+
+    config = LLMConfig(
+        provider="openrouter", default_model="openrouter/anthropic/claude-sonnet-4.6"
+    )
+    assert config.provider == "openrouter"

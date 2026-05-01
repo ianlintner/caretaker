@@ -409,7 +409,9 @@ class LLMConfig(StrictBaseModel):
     # Provider selection: "anthropic" (default, direct SDK) or "litellm"
     # (multi-provider: OpenAI, Vertex, Azure OpenAI, Azure AI Foundry,
     # Bedrock, Ollama, Mistral, Cohere, Groq, etc.)
-    provider: Literal["anthropic", "litellm"] = "anthropic"
+    # "openrouter" is an alias that resolves to LiteLLM under the hood but
+    # enforces openrouter/-prefixed model strings (see model_validator below).
+    provider: Literal["anthropic", "litellm", "openrouter"] = "anthropic"
     # Model used when a feature has no explicit override. For litellm this
     # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-1.5-pro").
     default_model: str = DEFAULT_MODEL
