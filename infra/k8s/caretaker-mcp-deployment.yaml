@@ -276,6 +276,12 @@ spec:
                   name: caretaker-secrets
                   key: anthropic-api-key
                   optional: true
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: openrouter-api-key
+                  optional: true
           resources:
             requests:
               cpu: "10m"
