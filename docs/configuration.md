@@ -185,7 +185,7 @@ llm:
     ci_log_analysis:
       model: openrouter/deepseek/deepseek-r1
       max_tokens: 2500
-    architectural_review:
+    principal_architecture_review:
       model: openrouter/anthropic/claude-opus-4.6
 ```
 
