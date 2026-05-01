@@ -198,6 +198,35 @@ class TestProviderFactory:
             p = build_provider("litellm")
         assert isinstance(p, AnthropicProvider)
 
+    def test_build_provider_openrouter_returns_litellm(self, monkeypatch) -> None:
+        """build_provider('openrouter') returns a LiteLLMProvider instance."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with patch(
+            "caretaker.llm.provider.LiteLLMProvider.package_installed",
+            new=True,
+        ):
+            p = build_provider("openrouter")
+        assert p.name == "litellm"
+        assert isinstance(p, LiteLLMProvider)
+
+    def test_build_provider_openrouter_warns_when_key_missing(self, monkeypatch, caplog) -> None:
+        """build_provider('openrouter') warns specifically about OPENROUTER_API_KEY."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "OPENROUTER_API_KEY" in messages
+
+    def test_build_provider_openrouter_no_warning_when_key_present(
+        self, monkeypatch, caplog
+    ) -> None:
+        """No 'OPENROUTER_API_KEY' warning when the env var is set."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with caplog.at_level("WARNING"):
+            build_provider("openrouter")
+        messages = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "OPENROUTER_API_KEY is not set" not in messages
+
 
 # ── AnthropicProvider availability ───────────────────────────────────────────
 

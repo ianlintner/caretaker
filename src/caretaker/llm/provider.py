@@ -712,6 +712,23 @@ def build_provider(
     name = provider_name.lower().strip()
     if name == "anthropic":
         return AnthropicProvider(timeout=timeout)
+    if name == "openrouter":
+        # Alias: LiteLLM with explicit OpenRouter credential check. We log
+        # a targeted warning rather than the generic "no credentials" one
+        # so operators see the exact env var to set.
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            logger.warning(
+                "provider='openrouter' but OPENROUTER_API_KEY is not set; "
+                "LLM features will fall back to their non-LLM paths"
+            )
+        provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
+        if not provider.package_installed:
+            logger.warning(
+                "Configured provider 'openrouter' but litellm package is not installed; "
+                "install with `pip install litellm`"
+            )
+            return NullProvider()
+        return provider
     if name == "litellm":
         provider = LiteLLMProvider(fallback_models=fallback_models, timeout=timeout)
         if not provider.package_installed:
