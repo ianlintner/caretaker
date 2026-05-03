@@ -25,7 +25,7 @@ from caretaker.github_client.models import (
     User,
 )
 from caretaker.pr_agent.states import ReadinessEvaluation
-from caretaker.state.models import PRTrackingState, TrackedPR
+from caretaker.state.models import OwnershipState, PRTrackingState, TrackedPR
 from tests.conftest import make_check_run, make_pr, make_review
 
 
@@ -493,7 +493,7 @@ class TestIsCopilotPR:
         assert not pr.is_copilot_pr
 
 
-# ── _handle_review_fix — no author gating ─────────────────────────────
+# ── _handle_review_fix — owned PRs only ───────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -669,7 +669,7 @@ class TestApproveWorkflows:
 
 @pytest.mark.asyncio
 class TestReviewFixLifecycle:
-    """Tests for _handle_review_fix — review fix request for any PR."""
+    """Tests for _handle_review_fix — review fix requests require ownership."""
 
     async def _run_handle_review_fix(self, pr, tracking: TrackedPR, config: PRAgentConfig) -> tuple:
         from caretaker.pr_agent.agent import PRAgent, PRAgentReport
@@ -691,22 +691,35 @@ class TestReviewFixLifecycle:
         updated = await agent._handle_review_fix(pr, [bot_review], tracking, report)
         return updated, report, agent
 
-    async def test_human_pr_gets_review_fix_requested(self) -> None:
-        """A human-authored PR must also get review fix requests (no author gating)."""
+    async def test_unowned_human_pr_skips_review_fix_dispatch(self) -> None:
+        """A non-owned human PR can be reviewed, but must not start a fix agent."""
         pr = make_pr(number=20, user=User(login="dev", id=5, type="User"))
         tracking = TrackedPR(number=20)
         config = make_config()
 
         updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
 
+        agent._copilot_bridge.request_review_fix.assert_not_awaited()
+        assert updated.state == PRTrackingState.DISCOVERED
+        assert 20 in report.waiting
+        assert report.fix_requested == []
+
+    async def test_owned_human_pr_gets_review_fix_requested(self) -> None:
+        """An owned human-authored PR may start a coding-agent review fix."""
+        pr = make_pr(number=24, user=User(login="dev", id=5, type="User"))
+        tracking = TrackedPR(number=24, ownership_state=OwnershipState.OWNED)
+        config = make_config()
+
+        updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
+
         agent._copilot_bridge.request_review_fix.assert_awaited_once()
         assert updated.state == PRTrackingState.FIX_REQUESTED
-        assert 20 in report.fix_requested
+        assert 24 in report.fix_requested
 
     async def test_copilot_swe_agent_pr_gets_review_fix_requested(self) -> None:
         """copilot-swe-agent[bot] authored PR gets review fix requests."""
         pr = make_pr(number=21, user=User(login="copilot-swe-agent[bot]", id=1, type="Bot"))
-        tracking = TrackedPR(number=21)
+        tracking = TrackedPR(number=21, ownership_state=OwnershipState.OWNED)
         config = make_config()
 
         updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
@@ -717,7 +730,7 @@ class TestReviewFixLifecycle:
     async def test_maintainer_pr_gets_review_fix_requested(self) -> None:
         """Maintainer-labeled PR gets review fix requests."""
         pr = make_pr(number=22, labels=[Label(name="maintainer:managed", color="")])
-        tracking = TrackedPR(number=22)
+        tracking = TrackedPR(number=22, ownership_state=OwnershipState.OWNED)
         config = make_config()
 
         updated, report, agent = await self._run_handle_review_fix(pr, tracking, config)
@@ -740,6 +753,7 @@ class TestReviewFixLifecycle:
         pr = make_pr(number=23, user=User(login="dev", id=5, type="User"))
         tracking = TrackedPR(
             number=23,
+            ownership_state=OwnershipState.OWNED,
             copilot_attempts=2,
             last_copilot_attempt_at=datetime.now(UTC) - timedelta(hours=72),
         )
@@ -790,7 +804,7 @@ class TestProcessPRStatePersistence:
 
         from caretaker.pr_agent.agent import PRAgentReport
 
-        tracking = TrackedPR(number=30)
+        tracking = TrackedPR(number=30, ownership_state=OwnershipState.OWNED)
         report = PRAgentReport()
         updated = await agent._process_pr(pr, tracking, report)
 
@@ -1088,7 +1102,7 @@ class TestCommentDeduplication:
         from tests.conftest import make_comment
 
         pr = make_pr(number=101, user=User(login="copilot[bot]", id=1, type="Bot"))
-        tracking = TrackedPR(number=101)
+        tracking = TrackedPR(number=101, ownership_state=OwnershipState.OWNED)
         config = make_config()
 
         github = AsyncMock()
