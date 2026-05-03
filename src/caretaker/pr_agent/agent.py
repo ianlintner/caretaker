@@ -1421,6 +1421,15 @@ class PRAgent:
             report.waiting.append(pr.number)
             return tracking
 
+        if tracking.ownership_state != OwnershipState.OWNED:
+            logger.info(
+                "PR #%d: review feedback present but PR is not caretaker-owned; "
+                "skipping coding-agent review fix",
+                pr.number,
+            )
+            report.waiting.append(pr.number)
+            return tracking
+
         # Before dispatching a fix, assess whether the review signals something
         # that cannot be fixed mechanically (infeasible / too large / architectural).
         if self._config.review.close_on_infeasible_review:
