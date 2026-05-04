@@ -373,15 +373,15 @@ async def dispatch_auto_fix(
         # at import time (and the resulting transitive load of every
         # backend's dependencies for callers that just want the
         # decision logic).
-        from caretaker.pr_reviewer.backends._workdir import (
-            WorkdirError,
-            prepare_workdir,
-        )
-
         # Pull GITHUB_TOKEN from env (caretaker process environment).
         # The auto-fix flow needs push access, so the token must be
         # present; if absent, fail fast with a clear error.
         import os as _os  # noqa: PLC0415 — local to keep top-of-module clean
+
+        from caretaker.pr_reviewer.backends._workdir import (
+            WorkdirError,
+            prepare_workdir,
+        )
 
         token = _os.environ.get("GITHUB_TOKEN", "").strip()
         if not token:

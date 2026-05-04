@@ -274,8 +274,8 @@ def test_run_git_sanitizes_token_in_error(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    from caretaker.pr_reviewer.backends._workdir import WorkdirError
     import caretaker.pr_reviewer.backends._workdir as _workdir_mod
+    from caretaker.pr_reviewer.backends._workdir import WorkdirError
 
     # Fake a subprocess that exits with returncode=128 (auth failure).
     fake_proc = MagicMock()

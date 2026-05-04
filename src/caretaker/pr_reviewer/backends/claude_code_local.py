@@ -131,7 +131,8 @@ Output ONE message with ONLY the following two parts, in order:
        "comments": [
          {"path": "src/foo.py", "line": 42, "body": "..."}
        ],
-       "issue_categories": ["lint", "format", "type", "test", "security", "correctness", "docs", "other"]
+       "issue_categories": ["lint", "format", "type", "test",
+                            "security", "correctness", "docs", "other"]
      }
      ```
 
@@ -333,7 +334,9 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
         "(Claude Code CLI in caretaker's pod)**\n\n"
         f"{summary or 'Claude returned no summary text.'}"
     )
-    return ReviewResult(summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories)
+    return ReviewResult(
+        summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories
+    )
 
 
 async def run(
