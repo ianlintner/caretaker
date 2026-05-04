@@ -113,7 +113,7 @@ class TestRouteFromPRReviewerLegacy:
     def test_score_above_threshold_maps_to_claude_code(self) -> None:
         decision = RoutingDecision(score=58, use_inline=False, reason="loc=800(+30)")
         route = route_from_pr_reviewer_legacy(decision)
-        assert route.path == "claude_code"
+        assert route.path == "opencode"
 
     def test_workflows_path_produces_sensitive_tags(self) -> None:
         decision = RoutingDecision(score=72, use_inline=False, reason="sensitive_files(+15)")
@@ -124,7 +124,7 @@ class TestRouteFromPRReviewerLegacy:
             file_count=1,
             file_paths=[".github/workflows/ci.yml"],
         )
-        assert route.path == "claude_code"
+        assert route.path == "opencode"
         assert "workflows_touched" in route.risk_tags
         assert "security_review_needed" in route.risk_tags
 
@@ -335,7 +335,7 @@ class TestWorkflowsTouchedRiskTags:
             file_count=1,
             file_paths=[".github/workflows/deploy.yml"],
         )
-        assert route.path == "claude_code"
+        assert route.path == "opencode"
         assert "workflows_touched" in route.risk_tags
         assert "security_review_needed" in route.risk_tags
 

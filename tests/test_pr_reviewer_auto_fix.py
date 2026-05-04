@@ -1,6 +1,18 @@
-"""Tests for the auto-fix dispatcher (classify_issue_categories, decide_auto_fix)."""
+"""Tests for the auto-fix dispatcher (classify_issue_categories, decide_auto_fix,
+dispatch_auto_fix).
+
+Coverage:
+- classify_issue_categories: reviewer-supplied vs heuristic categories
+- decide_auto_fix: eligibility gates and backend routing
+- parse_review_payload: issue_categories extraction/filtering
+- dispatch_auto_fix: counter invariants, lint paths, tracking updates
+"""
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from caretaker.pr_reviewer import auto_fix as _auto_fix
 from caretaker.pr_reviewer.inline_reviewer import ReviewResult
@@ -357,3 +369,136 @@ def test_parse_review_payload_empty_categories_when_absent():
     )
     result = _parse_review_payload(assistant_text)
     assert result.issue_categories == []
+
+
+# ── dispatch_auto_fix ─────────────────────────────────────────────────────────
+
+
+def _make_dispatch_review(**kwargs) -> ReviewResult:
+    return ReviewResult(
+        summary="lint errors found", verdict="REQUEST_CHANGES", comments=[], **kwargs
+    )
+
+
+def _make_dispatch_decision(**kwargs) -> _auto_fix.AutoFixDecision:
+    return _auto_fix.AutoFixDecision(
+        should_dispatch=True,
+        backend="deterministic_lint",
+        reason="test",
+        categories=["lint"],
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_increments_attempt_counter_before_fixer_runs(monkeypatch):
+    """auto_fix_attempts is incremented BEFORE the fixer runs.
+
+    Critical invariant: a crash mid-fix (here: missing GITHUB_TOKEN) still
+    consumes one attempt so the loop stays bounded.
+    """
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+    tracking = TrackedPR(number=1)
+
+    outcome = await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/1",
+        head_branch="feature/fix",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=1,
+        tracking=tracking,
+    )
+
+    assert not outcome.success
+    assert outcome.dispatched
+    assert "GITHUB_TOKEN" in outcome.error
+    assert tracking.auto_fix_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_deterministic_lint_no_changes_returns_failure(monkeypatch):
+    """When lint produces no diff, outcome.success=False with descriptive detail."""
+    import caretaker.pr_reviewer.auto_fix as _af_mod
+    import caretaker.pr_reviewer.backends._workdir as _wd
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(_wd, "prepare_workdir", AsyncMock(return_value=("/tmp/fake", MagicMock())))
+    monkeypatch.setattr(_wd, "cleanup_workdir", MagicMock())
+    monkeypatch.setattr(_af_mod, "run_deterministic_lint", AsyncMock(return_value=False))
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+    tracking = TrackedPR(number=2)
+
+    outcome = await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/2",
+        head_branch="feature/lint",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=2,
+        tracking=tracking,
+    )
+
+    assert outcome.dispatched
+    assert not outcome.success
+    assert "no changes" in outcome.detail
+    assert tracking.auto_fix_attempts == 1
+    # Status comment still posted so the author knows nothing changed.
+    github.upsert_issue_comment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_deterministic_lint_success_updates_tracking(monkeypatch):
+    """Successful lint fix: tracking gets the new HEAD SHA, outcome.success=True."""
+    import caretaker.pr_reviewer.auto_fix as _af_mod
+    import caretaker.pr_reviewer.backends._workdir as _wd
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    new_sha = "abc123def456abc1"
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(_wd, "prepare_workdir", AsyncMock(return_value=("/tmp/fake", MagicMock())))
+    monkeypatch.setattr(_wd, "cleanup_workdir", MagicMock())
+    monkeypatch.setattr(_af_mod, "run_deterministic_lint", AsyncMock(return_value=True))
+    monkeypatch.setattr(_af_mod, "commit_and_push", AsyncMock(return_value=new_sha))
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+    tracking = TrackedPR(number=3)
+
+    outcome = await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/3",
+        head_branch="feature/lint",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=3,
+        tracking=tracking,
+    )
+
+    assert outcome.dispatched
+    assert outcome.success
+    assert outcome.new_head_sha == new_sha
+    assert tracking.auto_fix_last_head_sha == new_sha
+    assert tracking.auto_fix_attempts == 1
+    github.upsert_issue_comment.assert_awaited_once()
