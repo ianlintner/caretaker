@@ -798,7 +798,7 @@ class AutoFixConfig(StrictBaseModel):
     validate each other's mistakes.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     # Hard cap on dispatched fixer attempts per PR. After this many
     # attempts without a green review, caretaker stops and escalates
     # rather than burning unbounded budget. Reset on a force-push that
@@ -811,6 +811,7 @@ class AutoFixConfig(StrictBaseModel):
     # anyway. Human-authored PRs always require the label.
     allowed_authors: list[str] = Field(
         default_factory=lambda: [
+            "ianlintner",
             "Copilot",
             "copilot-swe-agent[bot]",
             "github-actions[bot]",
