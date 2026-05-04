@@ -33,6 +33,7 @@ from caretaker.evolution.executor_routing import (
     route_from_pr_reviewer_legacy,
 )
 from caretaker.evolution.shadow import shadow_decision
+from caretaker.pr_reviewer import auto_fix as _auto_fix
 from caretaker.pr_reviewer import handoff_review_consumer, handoff_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
@@ -207,11 +208,36 @@ class PRReviewerAgent(BaseAgent):
             # tracking; that's fine — pr_agent and pr_reviewer share the
             # same dict.
             state.tracked_prs[pr_number] = tracking
-            if posted > 0:
+            if posted:
                 report.harvested.append(pr_number)
-                # Mark reviewed so future cycles skip both inline and
-                # hand-off paths. Best-effort — label-apply failure
-                # logs and continues so the harvest itself isn't lost.
+                # Check if any harvested review requests changes — dispatch auto-fix.
+                for review_result in posted:
+                    if review_result.verdict == "REQUEST_CHANGES":
+                        pr_author = (pr.get("user") or {}).get("login", "")
+                        head_branch = (pr.get("head") or {}).get("ref", "")
+                        pr_url = pr.get("html_url", "")
+                        fix_decision = _auto_fix.decide_auto_fix(
+                            review=review_result,
+                            config=cfg.auto_fix,
+                            pr_author=pr_author,
+                            pr_labels=pr_labels,
+                            tracking=tracking,
+                        )
+                        if fix_decision.should_dispatch:
+                            await _auto_fix.dispatch_auto_fix(
+                                decision=fix_decision,
+                                pr_url=pr_url,
+                                head_branch=head_branch,
+                                review=review_result,
+                                config=cfg,
+                                github=self._ctx.github,
+                                owner=owner,
+                                repo=repo,
+                                pr_number=pr_number,
+                                tracking=tracking,
+                            )
+                        break  # one REQUEST_CHANGES is enough to arm the fixer
+                # Always mark reviewed after harvest regardless of fix dispatch.
                 try:
                     reviewed_label = "caretaker:reviewed"
                     await self._ctx.github.ensure_label(
@@ -318,6 +344,33 @@ class PRReviewerAgent(BaseAgent):
                         post_inline_comments=cfg.post_inline_comments,
                         force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
                     )
+                    # Inline path auto-fix: if the LLM says REQUEST_CHANGES, dispatch fixer.
+                    if result.verdict == "REQUEST_CHANGES":
+                        _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
+                        pr_author = (pr.get("user") or {}).get("login", "")
+                        head_branch = (pr.get("head") or {}).get("ref", "")
+                        pr_url = pr.get("html_url", "")
+                        _decision = _auto_fix.decide_auto_fix(
+                            review=result,
+                            config=cfg.auto_fix,
+                            pr_author=pr_author,
+                            pr_labels=pr_labels,
+                            tracking=_tracking,
+                        )
+                        if _decision.should_dispatch:
+                            await _auto_fix.dispatch_auto_fix(
+                                decision=_decision,
+                                pr_url=pr_url,
+                                head_branch=head_branch,
+                                review=result,
+                                config=cfg,
+                                github=self._ctx.github,
+                                owner=owner,
+                                repo=repo,
+                                pr_number=pr_number,
+                                tracking=_tracking,
+                            )
+                            state.tracked_prs[pr_number] = _tracking
                     # Mark as reviewed
                     try:
                         reviewed_label = "caretaker:reviewed"
