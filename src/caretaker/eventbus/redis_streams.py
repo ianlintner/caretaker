@@ -30,6 +30,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from caretaker.eventbus.base import Event, EventBusError, EventHandler
+from caretaker.observability.metrics import set_eventbus_consumer_lag
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,14 @@ class RedisStreamsEventBus:
 
     # ── Consumer group bootstrap ────────────────────────────────────
 
+    # Maximum acceptable lag before the consumer group cursor is
+    # auto-reset to ``$`` (latest). When Redis OOM or a crash leaves
+    # the cursor stale, new events pile up undelivered. This threshold
+    # triggers a self-healing reset so the consumer loop doesn't stay
+    # stuck indefinitely. The skipped messages are scheduler ticks and
+    # CI noise — no user-facing actions are lost.
+    _MAX_ACCEPTABLE_LAG: int = 500
+
     async def ensure_group(self, stream: str, group: str) -> None:
         try:
             client = await self._get_client()
@@ -105,6 +114,7 @@ class RedisStreamsEventBus:
             except Exception as exc:
                 # BUSYGROUP -- group already exists. Anything else is a real error.
                 if "BUSYGROUP" in str(exc):
+                    await self._check_and_reset_lag(client, stream, group)
                     return
                 raise
         except Exception as exc:
@@ -112,6 +122,53 @@ class RedisStreamsEventBus:
             raise EventBusError(
                 f"ensure_group failed: stream={stream} group={group} err={exc!r}"
             ) from exc
+
+    async def _check_and_reset_lag(
+        self,
+        client: redis.asyncio.Redis[str],
+        stream: str,
+        group: str,
+    ) -> None:
+        """Auto-reset the consumer group cursor if lag exceeds threshold.
+
+        After a Redis OOM or pod crash, the group cursor can get stuck
+        behind the stream head. New events pile up undelivered because
+        XREADGROUP only delivers entries *after* last-delivered-id.
+        This method detects that condition on startup and resets the
+        cursor to ``$`` so the consumer loop immediately starts
+        processing new events.
+        """
+        try:
+            info = await client.xinfo_groups(stream)  # type: ignore[no-untyped-call]
+            for g in info:
+                if g.get("name") == group:
+                    lag = g.get("lag")
+                    if lag is not None and int(lag) > self._MAX_ACCEPTABLE_LAG:
+                        logger.warning(
+                            "eventbus: consumer group %s on %s has lag=%d "
+                            "(threshold=%d) — resetting cursor to latest",
+                            group,
+                            stream,
+                            lag,
+                            self._MAX_ACCEPTABLE_LAG,
+                        )
+                        await client.xgroup_setid(stream, group, "$")
+                        logger.info(
+                            "eventbus: consumer group %s cursor reset to $ (lag cleared)",
+                            group,
+                        )
+                        set_eventbus_consumer_lag(stream, group, 0)
+                    else:
+                        set_eventbus_consumer_lag(stream, group, int(lag) if lag is not None else 0)
+                    break
+        except Exception:
+            # Best-effort — don't block startup if XINFO fails.
+            logger.debug(
+                "eventbus: lag check failed for %s/%s (non-fatal)",
+                stream,
+                group,
+                exc_info=True,
+            )
 
     # ── Consumer loop ───────────────────────────────────────────────
 

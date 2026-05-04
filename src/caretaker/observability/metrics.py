@@ -165,6 +165,13 @@ WORKER_QUEUE_DEPTH = Gauge(
     registry=REGISTRY,
 )
 
+EVENTBUS_CONSUMER_LAG = Gauge(
+    "eventbus_consumer_lag",
+    "Number of undelivered messages between the consumer group cursor and stream head.",
+    ["service", "stream", "group"],
+    registry=REGISTRY,
+)
+
 # ── GitHub webhook dispatch (Phase 2 App) ─────────────────────────────
 #
 # Counts every webhook delivery that reaches the dispatcher, labelled by
@@ -750,6 +757,11 @@ def set_worker_queue_depth(queue: str, depth: int) -> None:
     WORKER_QUEUE_DEPTH.labels(service=_SERVICE_LABEL, queue=queue).set(float(depth))
 
 
+def set_eventbus_consumer_lag(stream: str, group: str, lag: int) -> None:
+    """Update the ``eventbus_consumer_lag`` gauge for a consumer group."""
+    EVENTBUS_CONSUMER_LAG.labels(service=_SERVICE_LABEL, stream=stream, group=group).set(float(lag))
+
+
 def record_webhook_event(event: str, mode: str, outcome: str) -> None:
     """Record a single GitHub webhook delivery handled by the dispatcher.
 
@@ -912,6 +924,8 @@ __all__ = [
     "WORKER_JOBS_TOTAL",
     "WORKER_JOB_DURATION_SECONDS",
     "WORKER_QUEUE_DEPTH",
+    "EVENTBUS_CONSUMER_LAG",
+    "set_eventbus_consumer_lag",
     "get_service_label",
     "init_metrics",
     "metrics_asgi_app",
