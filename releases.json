@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.27.1",
+      "min_compatible": "0.27.0",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.27.1",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.27.1 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.27.0 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/666\n* chore(config): switch dogfood LLM routing to provider=openrouter by @ianlintner in https://github.com/ianlintner/caretaker/pull/667\n* feat: enforce ownership requirement for review fix requests in PRAgent by @ianlintner in https://github.com/ianlintner/caretaker/pull/668\n* feat(pr-reviewer): auto-fix loop \u2014 dispatch fixer on REQUEST_CHANGES by @ianlintner in https://github.com/ianlintner/caretaker/pull/670\n* docs: reconcile CHANGELOG \u2014 2026-W19 by @the-care-taker[bot] in https://github.com/ianlintner/caretaker/pull/669\n* fix(deployment): update mcp backend image and adjust Redis stream max\u2026 by @ianlintner in https://github.com/ianlintner/caretaker/pull/671\n* feat(pr-reviewer): default complex_reviewer to opencode by @ianlintner in https://github.com/ianlintner/caretaker/pull/672\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.27.0...v0.27.1",
+      "breaking": false
+    },
+    {
       "version": "0.27.0",
       "min_compatible": "0.26.2",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.27.0",
