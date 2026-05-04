@@ -46,8 +46,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: mcp-backend
-          # Replace `your-acr.azurecr.io` with your Azure Container Registry hostname during deployment.
-          image: your-acr.azurecr.io/caretaker-mcp:v1.0.0
+          image: gabby.azurecr.io/caretaker-mcp:sha-45a944d
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -193,7 +192,11 @@ spec:
             # consumer task per replica drains the stream. Survives pod
             # restart; load-balanced across replicas via consumer group.
             - name: CARETAKER_EVENT_BUS_MAXLEN
-              value: "100000"
+              # Keep the Redis stream comfortably below the 400Mi Redis
+              # maxmemory cap. Large scheduler payloads previously filled
+              # Redis before reaching 100k entries, causing login session
+              # writes to fail with OutOfMemoryError.
+              value: "5000"
             - name: CARETAKER_EVENT_BUS_CLAIM_IDLE_MS
               value: "300000"
             - name: CARETAKER_EVENT_BUS_REAPER_INTERVAL_SECONDS

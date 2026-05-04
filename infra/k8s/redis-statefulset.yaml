@@ -47,7 +47,7 @@ spec:
             - --maxmemory
             - "400mb"
             - --maxmemory-policy
-            - "volatile-lru"
+            - "allkeys-lru"
           ports:
             - containerPort: 6379
               name: redis
