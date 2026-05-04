@@ -378,9 +378,6 @@ async def dispatch_auto_fix(
             prepare_workdir,
         )
 
-        token = (
-            auto_fix_cfg.deterministic_lint_commands and ""  # placeholder, overridden below
-        )
         # Pull GITHUB_TOKEN from env (caretaker process environment).
         # The auto-fix flow needs push access, so the token must be
         # present; if absent, fail fast with a clear error.
@@ -434,8 +431,8 @@ async def dispatch_auto_fix(
             fix_callable = getattr(backend_module, "fix_run", None)
             if fix_callable is None:
                 raise WorkdirError(
-                    f"backend {decision.backend!r} has no fix_run() — "
-                    "either implement it or remap the category to a backend that does"
+                    f"backend {decision.backend!r} module has no fix_run(); "
+                    "implement it or remap the category to a backend that does"
                 )
 
             backend_config = getattr(config, decision.backend, None)
@@ -516,12 +513,22 @@ def _resolve_backend_module(backend: str):  # type: ignore[no-untyped-def]
     typed as a dict of ``HandoffReviewerSpec`` — adding ``fix_run`` to
     the spec dataclass would force every backend to provide it,
     including stubs that don't make sense as fixers.
+
+    Raises ``WorkdirError`` for any backend not yet wired into this
+    resolver so the error message is actionable ("implement fix_run or
+    remap the category") rather than a generic AttributeError on None.
     """
     if backend == "claude_code_local":
         from caretaker.pr_reviewer.backends import claude_code_local  # noqa: PLC0415
 
         return claude_code_local
-    return None
+    from caretaker.pr_reviewer.backends._workdir import WorkdirError  # noqa: PLC0415
+
+    raise WorkdirError(
+        f"backend {backend!r} is not registered in _resolve_backend_module; "
+        "to use it as a fixer, add an entry here that returns the module "
+        "exposing fix_run(), or remap the category to an existing fixer backend"
+    )
 
 
 __all__ = [

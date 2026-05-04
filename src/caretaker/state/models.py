@@ -115,13 +115,16 @@ class TrackedPR(BaseModel):
     # REQUEST_CHANGES verdict on this PR. Bounded by
     # ``AutoFixConfig.max_attempts`` so a stubborn issue (or an
     # adversarial reviewer/fixer pair) can't burn unbounded budget.
-    # Resets on a manual approval, a force-push that resets the head SHA,
-    # or operator removal of the auto-fix label.
+    # NOTE: automatic counter reset on force-push / label removal is
+    # planned but not yet implemented; operators can reset manually by
+    # editing the state file.
     auto_fix_attempts: int = 0
-    # Head SHA the most recent auto-fix dispatch ran against. Used to
-    # detect "the agent committed a fix" — when ``auto_fix_attempts > 0``
-    # AND the current PR head SHA differs from this value, caretaker
-    # treats the loop as having advanced and re-runs review.
+    # Head SHA recorded at the end of the most recent successful
+    # auto-fix dispatch. Stored for future re-arming logic (planned):
+    # when the current PR head SHA differs from this value after
+    # ``auto_fix_attempts > 0``, the loop could be re-armed. That
+    # detection path is not yet implemented — this field is written
+    # but not read by the decision logic today.
     auto_fix_last_head_sha: str = ""
 
     # ── Attribution telemetry (R&D workstream A2) ────────────────────────

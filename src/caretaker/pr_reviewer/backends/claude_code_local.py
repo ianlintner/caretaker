@@ -130,7 +130,8 @@ Output ONE message with ONLY the following two parts, in order:
        "summary": "1–3 sentence overall assessment",
        "comments": [
          {"path": "src/foo.py", "line": 42, "body": "..."}
-       ]
+       ],
+       "issue_categories": ["lint", "format", "type", "test", "security", "correctness", "docs", "other"]
      }
      ```
 
@@ -138,7 +139,11 @@ Pick ``REQUEST_CHANGES`` only for blocking issues (security,
 correctness, broken tests). ``COMMENT`` for non-blocking observations.
 ``APPROVE`` only when you have no concerns at all. Cap inline
 ``comments`` at 8 entries; line numbers refer to the new file
-(right-hand side of the diff).
+(right-hand side of the diff). When verdict is ``REQUEST_CHANGES``,
+fill ``issue_categories`` with one or more of the allowed values above
+(ordered by impact, most dominant first) so the auto-fix dispatcher
+can route cheap issues (``lint``/``format``) to a deterministic fixer
+and expensive ones (``security``/``correctness``) to a heavy agent.
 """
 
 
@@ -315,12 +320,20 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
             ):
                 comments.append(InlineReviewComment(path=path, line=line, body=body.strip()))
 
+    raw_categories = payload.get("issue_categories") or []
+    issue_categories: list[str] = []
+    if isinstance(raw_categories, list):
+        _valid = {"lint", "format", "type", "test", "security", "correctness", "docs", "other"}
+        for c in raw_categories:
+            if isinstance(c, str) and c in _valid and c not in issue_categories:
+                issue_categories.append(c)
+
     body = (
         "**Review by claude_code_local "
         "(Claude Code CLI in caretaker's pod)**\n\n"
         f"{summary or 'Claude returned no summary text.'}"
     )
-    return ReviewResult(summary=body, verdict=verdict, comments=comments)
+    return ReviewResult(summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories)
 
 
 async def run(

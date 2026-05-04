@@ -214,3 +214,146 @@ def test_parse_review_payload_rejects_invalid_categories():
     result = parse_review_payload(body)
     assert result is not None
     assert result.issue_categories == ["lint"]  # INVALID_CATEGORY filtered out
+
+
+# ── always_run_heuristic merge logic ─────────────────────────────────────────
+
+
+def test_decide_always_run_heuristic_merges_categories():
+    """always_run_heuristic=True should add heuristic matches not already in LLM categories."""
+    cfg = _make_config(
+        allowed_authors=["bot[bot]"],
+        always_run_heuristic=True,
+    )
+    review = ReviewResult(
+        summary="Found ruff lint errors",
+        verdict="REQUEST_CHANGES",
+        comments=[],
+        issue_categories=["correctness"],  # LLM-supplied category
+    )
+    d = _auto_fix.decide_auto_fix(
+        review=review,
+        config=cfg,
+        pr_author="bot[bot]",
+        pr_labels=[],
+        tracking=_make_tracking(),
+    )
+    assert d.should_dispatch
+    # "correctness" was LLM-supplied; heuristic should add "lint" from summary text
+    assert "correctness" in (d.categories or [])
+    assert "lint" in (d.categories or [])
+
+
+def test_decide_always_run_heuristic_no_duplicates():
+    """always_run_heuristic=True must not duplicate categories already present."""
+    cfg = _make_config(
+        allowed_authors=["bot[bot]"],
+        always_run_heuristic=True,
+    )
+    review = ReviewResult(
+        summary="Found ruff lint errors",
+        verdict="REQUEST_CHANGES",
+        comments=[],
+        issue_categories=["lint"],  # already present — heuristic would also match "lint"
+    )
+    d = _auto_fix.decide_auto_fix(
+        review=review,
+        config=cfg,
+        pr_author="bot[bot]",
+        pr_labels=[],
+        tracking=_make_tracking(),
+    )
+    assert (d.categories or []).count("lint") == 1
+
+
+# ── _workdir.py token sanitization ───────────────────────────────────────────
+
+
+def test_run_git_sanitizes_token_in_error(monkeypatch):
+    """_run_git must not leak x-access-token credentials in WorkdirError messages."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from caretaker.pr_reviewer.backends._workdir import WorkdirError
+    import caretaker.pr_reviewer.backends._workdir as _workdir_mod
+
+    # Fake a subprocess that exits with returncode=128 (auth failure).
+    fake_proc = MagicMock()
+    fake_proc.returncode = 128
+
+    async def _fake_stream(proc, *, timeout_seconds, stdout_log, stderr_log):
+        return ("", "authentication failed")
+
+    monkeypatch.setattr(
+        _workdir_mod,
+        "stream_subprocess_output",
+        _fake_stream,
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=fake_proc),
+    )
+
+    async def _run():
+        try:
+            await _workdir_mod._run_git(
+                "clone",
+                "https://x-access-token:supersecrettoken@github.com/owner/repo.git",
+                "/tmp/dest",
+            )
+        except WorkdirError as exc:
+            return str(exc)
+        return ""
+
+    msg = asyncio.run(_run())
+    assert msg, "expected WorkdirError but got empty string"
+    assert "supersecrettoken" not in msg, f"token leaked in: {msg!r}"
+    assert "x-access-token:***@" in msg, f"sanitized placeholder missing in: {msg!r}"
+
+
+# ── claude_code_local _parse_review_payload issue_categories ─────────────────
+
+
+def test_parse_review_payload_extracts_issue_categories_claude_code_local():
+    """_parse_review_payload in claude_code_local should extract issue_categories."""
+    from caretaker.pr_reviewer.backends.claude_code_local import _parse_review_payload
+
+    assistant_text = (
+        "Some prose.\n\n"
+        "<!-- caretaker:review-result -->\n"
+        "```caretaker-review\n"
+        '{"verdict": "REQUEST_CHANGES", "summary": "Found lint issues.",'
+        ' "comments": [], "issue_categories": ["lint", "format"]}\n'
+        "```\n"
+    )
+    result = _parse_review_payload(assistant_text)
+    assert result.verdict == "REQUEST_CHANGES"
+    assert result.issue_categories == ["lint", "format"]
+
+
+def test_parse_review_payload_filters_invalid_categories_claude_code_local():
+    """_parse_review_payload should reject unknown category values."""
+    from caretaker.pr_reviewer.backends.claude_code_local import _parse_review_payload
+
+    assistant_text = (
+        "```caretaker-review\n"
+        '{"verdict": "REQUEST_CHANGES", "summary": "Issues.",'
+        ' "comments": [], "issue_categories": ["security", "NOT_VALID"]}\n'
+        "```\n"
+    )
+    result = _parse_review_payload(assistant_text)
+    assert result.issue_categories == ["security"]
+
+
+def test_parse_review_payload_empty_categories_when_absent():
+    """_parse_review_payload should default to [] when issue_categories not in payload."""
+    from caretaker.pr_reviewer.backends.claude_code_local import _parse_review_payload
+
+    assistant_text = (
+        "```caretaker-review\n"
+        '{"verdict": "APPROVE", "summary": "Looks good.", "comments": []}\n'
+        "```\n"
+    )
+    result = _parse_review_payload(assistant_text)
+    assert result.issue_categories == []

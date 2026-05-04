@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import urllib.parse
@@ -85,8 +86,9 @@ async def _run_git(
     except TimeoutError as exc:
         raise WorkdirError(f"git {args[0]} timed out after {timeout}s") from exc
     if proc.returncode != 0:
+        safe_args = [re.sub(r"x-access-token:[^@]+@", "x-access-token:***@", a) for a in args]
         raise WorkdirError(
-            f"git {' '.join(args)} exited {proc.returncode}: "
+            f"git {' '.join(safe_args)} exited {proc.returncode}: "
             f"{stderr.strip() or stdout.strip()[:500]}"
         )
     return stdout
