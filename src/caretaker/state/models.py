@@ -110,6 +110,20 @@ class TrackedPR(BaseModel):
     # integers so duplicates are impossible across re-runs.
     consumed_handoff_review_comment_ids: list[int] = Field(default_factory=list)
 
+    # Counter for the PR-reviewer auto-fix loop: how many times caretaker
+    # has already dispatched a fixer backend in response to a
+    # REQUEST_CHANGES verdict on this PR. Bounded by
+    # ``AutoFixConfig.max_attempts`` so a stubborn issue (or an
+    # adversarial reviewer/fixer pair) can't burn unbounded budget.
+    # Resets on a manual approval, a force-push that resets the head SHA,
+    # or operator removal of the auto-fix label.
+    auto_fix_attempts: int = 0
+    # Head SHA the most recent auto-fix dispatch ran against. Used to
+    # detect "the agent committed a fix" — when ``auto_fix_attempts > 0``
+    # AND the current PR head SHA differs from this value, caretaker
+    # treats the loop as having advanced and re-runs review.
+    auto_fix_last_head_sha: str = ""
+
     # ── Attribution telemetry (R&D workstream A2) ────────────────────────
     # Answer "did caretaker actually save human toil on this PR?" — a
     # per-PR audit trail that the weekly rollup aggregates into

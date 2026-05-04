@@ -34,12 +34,15 @@ import logging
 import os
 import re
 import shutil
-import tempfile
-import urllib.parse
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
+from caretaker.pr_reviewer.backends._workdir import (
+    WorkdirError,
+    cleanup_workdir,
+    parse_pr_url,
+    prepare_workdir,
+)
 from caretaker.pr_reviewer.handoff_reviewer import (
     CLAUDE_CODE_LOCAL_REVIEW_MARKER,
     HandoffReviewerSpec,
@@ -56,122 +59,41 @@ class ClaudeCodeLocalError(RuntimeError):
     """Raised when the local claude CLI run fails (clone, invocation, parse)."""
 
 
-@dataclass(frozen=True)
-class _ParsedPRURL:
-    owner: str
-    repo: str
-    number: int
+# Re-exported for backwards compatibility with callers (and existing
+# tests) that previously imported this from this module. New code
+# should import from ``backends._workdir`` directly.
+def _parse_pr_url(pr_url: str):  # type: ignore[no-untyped-def]
+    """Wrapper that translates ``WorkdirError`` → ``ClaudeCodeLocalError``.
 
-
-def _parse_pr_url(pr_url: str) -> _ParsedPRURL:
-    """Extract owner/repo/PR number from a github PR URL.
-
-    Accepts both ``https://github.com/owner/repo/pull/N`` (browser URL)
-    and ``https://api.github.com/repos/owner/repo/pulls/N`` (API URL)
-    so the caller doesn't need to normalise.
+    Preserves the original (pre-extraction) exception type so callers
+    that catch ``ClaudeCodeLocalError`` keep working after the parse
+    helper moved into ``backends._workdir``.
     """
-    parsed = urllib.parse.urlparse(pr_url)
-    parts = [p for p in parsed.path.split("/") if p]
-    # Browser form: owner/repo/pull/N
-    if len(parts) >= 4 and parts[-2] in {"pull", "pulls"}:
-        return _ParsedPRURL(owner=parts[-4], repo=parts[-3], number=int(parts[-1]))
-    # API form: repos/owner/repo/pulls/N
-    if len(parts) >= 5 and parts[0] == "repos" and parts[-2] in {"pull", "pulls"}:
-        return _ParsedPRURL(owner=parts[1], repo=parts[2], number=int(parts[-1]))
-    raise ClaudeCodeLocalError(f"cannot parse PR URL: {pr_url!r}")
-
-
-def _clone_url(parsed: _ParsedPRURL, *, github_token: str | None) -> str:
-    """Build the HTTPS clone URL, embedding the token when present.
-
-    Token-embedded clone is the standard pattern for GitHub Actions
-    runners; the token never lands on disk because git only uses it for
-    the HTTP exchange. If no token is configured, fall back to the
-    public URL — works for public repos, fails clearly for private.
-    """
-    if github_token:
-        return f"https://x-access-token:{github_token}@github.com/{parsed.owner}/{parsed.repo}.git"
-    return f"https://github.com/{parsed.owner}/{parsed.repo}.git"
-
-
-async def _run_git(
-    *args: str, cwd: str | None = None, timeout: int = 120, env: dict[str, str] | None = None
-) -> str:
-    """Run ``git <args>``, stream output, raise ``ClaudeCodeLocalError`` on failure."""
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
     try:
-        stdout, stderr = await stream_subprocess_output(
-            proc,
-            timeout_seconds=timeout,
-            stdout_log=lambda line: logger.info("git | %s", line),
-            stderr_log=lambda line: logger.info("git! %s", line),  # git uses stderr for progress
-        )
-    except TimeoutError as exc:
-        raise ClaudeCodeLocalError(f"git {args[0]} timed out after {timeout}s") from exc
-    if proc.returncode != 0:
-        raise ClaudeCodeLocalError(
-            f"git {' '.join(args)} exited {proc.returncode}: "
-            f"{stderr.strip() or stdout.strip()[:500]}"
-        )
-    return stdout
+        return parse_pr_url(pr_url)
+    except WorkdirError as exc:
+        raise ClaudeCodeLocalError(str(exc)) from exc
 
 
 async def _prepare_workdir(
     pr_url: str,
     *,
     config: ClaudeCodeLocalBackendConfig,
-) -> tuple[str, _ParsedPRURL]:
-    """Clone the repo + check out the PR head into a fresh temp dir.
-
-    Returns ``(workdir_path, parsed_url)``. Caller is responsible for
-    cleanup via :func:`_cleanup_workdir`.
-    """
-    parsed = _parse_pr_url(pr_url)
-    root = config.clone_workdir_root or None
-    workdir = tempfile.mkdtemp(prefix=f"caretaker-claude-{parsed.repo}-{parsed.number}-", dir=root)
-    logger.info(
-        "claude_code_local: workdir=%s for %s/%s#%d",
-        workdir,
-        parsed.owner,
-        parsed.repo,
-        parsed.number,
-    )
-
+    head_branch: str | None = None,
+) -> tuple[str, object]:
+    """Backend-flavoured wrapper around :func:`prepare_workdir`."""
     token = (config.extra_env.get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
-    clone_url = _clone_url(parsed, github_token=token)
-    # Clone shallow into an inner ``repo/`` so claude's cwd is the repo
-    # itself, not a wrapper dir. Use ``--quiet`` so we don't double-log
-    # progress (we already stream stderr).
-    repo_dir = os.path.join(workdir, "repo")
-    await _run_git(
-        "clone",
-        "--depth",
-        str(config.clone_depth),
-        "--quiet",
-        clone_url,
-        repo_dir,
+    return await prepare_workdir(
+        pr_url,
+        clone_depth=config.clone_depth,
+        workdir_root=config.clone_workdir_root or None,
+        head_branch=head_branch,
+        github_token=token or None,
     )
-    # Fetch the PR head ref into a local branch and check it out.
-    pr_ref = f"refs/pull/{parsed.number}/head"
-    await _run_git("fetch", "origin", f"{pr_ref}:caretaker/pr-head", cwd=repo_dir)
-    await _run_git("checkout", "caretaker/pr-head", cwd=repo_dir)
-    return repo_dir, parsed
 
 
-def _cleanup_workdir(workdir: str, *, keep: bool) -> None:
-    """Remove the workdir unless the operator asked to keep it for debugging."""
-    if keep:
-        logger.warning("claude_code_local: keeping workdir %s for inspection", workdir)
-        return
-    parent = os.path.dirname(workdir.rstrip("/"))
-    shutil.rmtree(parent, ignore_errors=True)
+def _cleanup_workdir(repo_dir: str, *, keep: bool) -> None:
+    cleanup_workdir(repo_dir, keep=keep)
 
 
 # TODO(reviewer-prompt): The prompt below is the highest-leverage knob
@@ -224,6 +146,9 @@ async def _invoke_claude(
     *,
     workdir: str,
     config: ClaudeCodeLocalBackendConfig,
+    prompt: str = "",
+    permission_mode_override: str | None = None,
+    allowed_tools_override: list[str] | None = None,
 ) -> str:
     """Spawn the claude CLI in ``workdir`` and return its stdout text.
 
@@ -231,6 +156,12 @@ async def _invoke_claude(
     line and can stream them through the logger as they arrive. The
     final ``result`` event contains the assistant's full message text,
     which the parser then walks.
+
+    ``prompt`` defaults to the review prompt; pass ``_FIX_PROMPT_TEMPLATE``-
+    interpolated text for fix mode. ``permission_mode_override`` /
+    ``allowed_tools_override`` are for fix mode where ``acceptEdits``
+    + ``Edit``/``Write`` tools are required for claude to actually
+    modify files.
     """
     resolved = shutil.which(config.cli_path) or config.cli_path
     if not os.path.isabs(resolved) and not shutil.which(resolved):
@@ -242,18 +173,21 @@ async def _invoke_claude(
     if config.extra_env:
         env.update(config.extra_env)
 
+    permission_mode = permission_mode_override or config.permission_mode
+    allowed_tools = allowed_tools_override or config.allowed_tools
+
     args = [
         resolved,
         "-p",
-        _REVIEW_PROMPT,
+        prompt or _REVIEW_PROMPT,
         "--output-format",
         "stream-json",
         "--verbose",  # required when using stream-json output
         "--permission-mode",
-        config.permission_mode,
+        permission_mode,
     ]
-    if config.allowed_tools:
-        args += ["--allowed-tools", " ".join(config.allowed_tools)]
+    if allowed_tools:
+        args += ["--allowed-tools", " ".join(allowed_tools)]
 
     logger.info("claude_code_local: invoking %s in %s", resolved, workdir)
     proc = await asyncio.create_subprocess_exec(
@@ -403,14 +337,103 @@ async def run(
     success = False
     try:
         workdir, _parsed = await _prepare_workdir(pr_url, config=config)
-        stream_stdout = await _invoke_claude(workdir=workdir, config=config)
+        stream_stdout = await _invoke_claude(workdir=workdir, config=config, prompt=_REVIEW_PROMPT)
         text = _extract_assistant_text(stream_stdout)
         result = _parse_review_payload(text)
         success = True
         return result
+    except WorkdirError as exc:
+        raise ClaudeCodeLocalError(str(exc)) from exc
     finally:
         if workdir is not None:
             _cleanup_workdir(workdir, keep=(not success and config.keep_workdir_on_failure))
+
+
+# TODO(fix-prompt): Like the review prompt above, the fix prompt is the
+# place to encode your repo's expectations for *how* a coding agent
+# should address review feedback (style, what's allowed to change vs
+# scope-creep limits, whether to add tests). Tune before turning the
+# auto-fix loop on for human PRs.
+_FIX_PROMPT_TEMPLATE = """\
+You are addressing review feedback on a pull request. The repo is
+already cloned and checked out to the PR's head branch in your current
+working directory; your edits commit directly to that branch.
+
+The reviewer's verdict was REQUEST_CHANGES with the following summary:
+
+---
+{summary}
+---
+
+{comments_section}
+
+Your job:
+  1. Address each issue. Make the smallest change that fixes the
+     concern; do not refactor unrelated code.
+  2. If a test was missing or broken, write/fix it.
+  3. Do NOT change behaviour beyond what the review asked for.
+  4. Run any obvious local validation (e.g. ``ruff check``,
+     ``ruff format``) before finishing if those tools are configured
+     in the repo.
+  5. After making changes, output one short summary line describing
+     what you changed. Do NOT output any JSON — caretaker handles the
+     commit + push.
+
+If you decide the review is incorrect or the change is unsafe to make
+automatically, output exactly the line ``CARETAKER_FIX_DECLINED:``
+followed by a one-sentence explanation, and make no file changes.
+"""
+
+
+def _build_fix_prompt(*, summary: str, comments: list[InlineReviewComment]) -> str:
+    """Render the fix-mode prompt with the reviewer's feedback embedded."""
+    if comments:
+        rendered = "\n".join(f"- `{c.path}:{c.line}` — {c.body}" for c in comments[:8])
+        comments_section = f"Inline comments:\n{rendered}\n"
+    else:
+        comments_section = "(no inline comments)\n"
+    return _FIX_PROMPT_TEMPLATE.format(
+        summary=summary.strip() or "(no summary)", comments_section=comments_section
+    )
+
+
+# Tools claude needs to actually edit files in fix mode. Caller can
+# narrow further via config.allowed_tools_for_fix (not yet exposed —
+# the default below is the minimum needed).
+_FIX_ALLOWED_TOOLS = ["Read", "Glob", "Grep", "Bash", "Edit", "Write"]
+
+
+async def fix_run(
+    *,
+    workdir: str,
+    review_summary: str,
+    review_comments: list[InlineReviewComment],
+    config: ClaudeCodeLocalBackendConfig,
+) -> str:
+    """Invoke claude in fix mode against an already-prepared workdir.
+
+    Unlike :func:`run`, this is given an existing workdir (the auto-fix
+    dispatcher prepared it with ``head_branch`` so a later push targets
+    the right branch). Returns the assistant's final summary text. The
+    caller decides whether to commit + push by inspecting ``git diff``
+    on the workdir afterward.
+
+    Raises :class:`ClaudeCodeLocalError` on subprocess failure or on the
+    sentinel ``CARETAKER_FIX_DECLINED:`` return so the dispatcher can
+    log "agent refused" rather than committing a no-op.
+    """
+    prompt = _build_fix_prompt(summary=review_summary, comments=review_comments)
+    stream_stdout = await _invoke_claude(
+        workdir=workdir,
+        config=config,
+        prompt=prompt,
+        permission_mode_override="acceptEdits",
+        allowed_tools_override=_FIX_ALLOWED_TOOLS,
+    )
+    text = _extract_assistant_text(stream_stdout).strip()
+    if text.startswith("CARETAKER_FIX_DECLINED:"):
+        raise ClaudeCodeLocalError(f"claude declined to fix: {text}")
+    return text or "(no summary)"
 
 
 # TODO(k8s-job-mode): When deploying to a fleet that runs many concurrent
@@ -439,5 +462,6 @@ SPEC = HandoffReviewerSpec(
 __all__ = [
     "SPEC",
     "ClaudeCodeLocalError",
+    "fix_run",
     "run",
 ]

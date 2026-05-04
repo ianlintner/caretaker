@@ -778,6 +778,82 @@ class ClaudeCodeLocalBackendConfig(StrictBaseModel):
     keep_workdir_on_failure: bool = False
 
 
+class AutoFixConfig(StrictBaseModel):
+    """Configuration for the PR-reviewer auto-fix loop.
+
+    When the reviewer returns ``REQUEST_CHANGES``, caretaker can dispatch
+    a *fixer* backend (a coding agent or a deterministic linter) to
+    address the feedback, push the result, and re-review. Disabled by
+    default — opt-in per PR via the ``opt_in_label`` (``caretaker:auto-fix``
+    by default), or opt-in per author via ``allowed_authors`` for
+    bot-only fleets.
+
+    Routing: each ``IssueCategory`` (lint, security, …) maps to a
+    backend name in ``category_to_fixer``. When the reviewer's verdict
+    omits categories, a keyword heuristic runs over the summary text;
+    when that also fails, ``default_fixer`` is used. Pairing a different
+    fixer than reviewer (e.g. reviewer=claude_code_local,
+    fixer=claude_code_local for security but ``deterministic_lint`` for
+    lint) avoids the trust-spiral where reviewer and fixer mutually
+    validate each other's mistakes.
+    """
+
+    enabled: bool = False
+    # Hard cap on dispatched fixer attempts per PR. After this many
+    # attempts without a green review, caretaker stops and escalates
+    # rather than burning unbounded budget. Reset on a force-push that
+    # changes the PR head SHA (so a human edit re-arms the loop).
+    max_attempts: int = 3
+    # Label that opts a single PR into the loop. Match exactly.
+    opt_in_label: str = "caretaker:auto-fix"
+    # PR authors that are auto-eligible *without* the opt-in label —
+    # typically bot accounts whose PRs are caretaker's responsibility
+    # anyway. Human-authored PRs always require the label.
+    allowed_authors: list[str] = Field(
+        default_factory=lambda: [
+            "Copilot",
+            "copilot-swe-agent[bot]",
+            "github-actions[bot]",
+            "dependabot[bot]",
+            "the-care-taker[bot]",
+        ]
+    )
+    # Map each issue category to the backend that handles it. Special
+    # value ``deterministic_lint`` runs ``ruff format && ruff check
+    # --fix`` (or the configured commands) instead of an LLM — cheap,
+    # zero-cost, no trust risk. Unknown categories or unmapped values
+    # fall back to ``default_fixer``.
+    category_to_fixer: dict[str, str] = Field(
+        default_factory=lambda: {
+            "lint": "deterministic_lint",
+            "format": "deterministic_lint",
+            "type": "claude_code_local",
+            "test": "claude_code_local",
+            "security": "claude_code_local",
+            "correctness": "claude_code_local",
+            "docs": "claude_code_local",
+            "other": "claude_code_local",
+        }
+    )
+    default_fixer: str = "claude_code_local"
+    # Commands run by the ``deterministic_lint`` fixer in order. Each is
+    # ``shell=False`` so list-of-args. Keep the set small and idempotent
+    # so repeated runs converge.
+    deterministic_lint_commands: list[list[str]] = Field(
+        default_factory=lambda: [
+            ["ruff", "format", "."],
+            ["ruff", "check", "--fix", "."],
+        ]
+    )
+    # Commit message used when caretaker pushes a fix. Append the
+    # category as a suffix when known.
+    fix_commit_message: str = "fix: address review feedback (caretaker auto-fix)"
+    # When True, caretaker checks the heuristic classifier even when the
+    # reviewer supplied ``issue_categories`` and merges the union.
+    # Default False — trust the LLM's classification when present.
+    always_run_heuristic: bool = False
+
+
 class PRAgentBackendConfig(StrictBaseModel):
     """Configuration for the ``pr_agent`` complex-reviewer backend.
 
@@ -873,6 +949,11 @@ class PRReviewerConfig(StrictBaseModel):
     claude_code_local: ClaudeCodeLocalBackendConfig = Field(
         default_factory=ClaudeCodeLocalBackendConfig
     )
+    # Auto-fix loop: when reviewer returns REQUEST_CHANGES, dispatch a
+    # fixer backend (coding agent or deterministic linter), push the
+    # result, re-review. Disabled by default; opt-in per-PR via
+    # ``caretaker:auto-fix`` label or per-author via allowed_authors.
+    auto_fix: AutoFixConfig = Field(default_factory=AutoFixConfig)
     # Backends caretaker is allowed to dispatch to. Only specs in this
     # list can be selected via ``complex_reviewer``; misconfiguration
     # surfaces at startup rather than at PR-review time. Stub backends
