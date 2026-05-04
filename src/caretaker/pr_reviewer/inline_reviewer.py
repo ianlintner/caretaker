@@ -31,6 +31,12 @@ Rules:
 - comments must reference the new file line (right side of the diff)
 - limit comments to at most 8 items; omit trivial nits
 - keep each comment body under 300 characters
+
+When verdict is REQUEST_CHANGES, also fill ``issue_categories`` with one
+or more of: lint, format, type, test, security, correctness, docs, other.
+This routes the auto-fix dispatcher: ``lint``/``format`` skip the LLM
+and run a deterministic fixer; ``security``/``correctness`` get a heavy
+agent. Order entries by impact — first one is the dominant category.
 """
 
 
@@ -40,6 +46,23 @@ class InlineReviewCommentModel(BaseModel):
     path: str = Field(..., description="Path of the file being commented on.")
     line: int = Field(..., description="Line number in the new file (right side of diff).")
     body: str = Field(..., description="Review comment body, under 300 characters.")
+
+
+# Auto-fix dispatch categories. Adding a new value here means caretaker
+# can route a fixer-mode dispatch differently for that category. Keep
+# the set small — the value of this field is letting the dispatcher pick
+# a *cheaper* fixer for mechanical issues (lint), not exhaustively
+# tagging every kind of feedback.
+IssueCategory = Literal[
+    "lint",
+    "format",
+    "type",
+    "test",
+    "security",
+    "correctness",
+    "docs",
+    "other",
+]
 
 
 class InlineReviewResult(BaseModel):
@@ -52,6 +75,15 @@ class InlineReviewResult(BaseModel):
     comments: list[InlineReviewCommentModel] = Field(
         default_factory=list,
         description="At most 8 line-scoped comments.",
+    )
+    issue_categories: list[IssueCategory] = Field(
+        default_factory=list,
+        description=(
+            "When verdict is REQUEST_CHANGES, classify the issues so the "
+            "auto-fix dispatcher can pick a cheap fixer (e.g. lint → "
+            "deterministic ruff run, security → heavy LLM agent). Order "
+            "by impact — first entry is the dominant category."
+        ),
     )
 
 
@@ -68,6 +100,11 @@ class ReviewResult:
     verdict: str  # APPROVE | COMMENT | REQUEST_CHANGES
     comments: list[InlineReviewComment] = field(default_factory=list)
     raw_response: str = ""
+    # Optional issue classification used by the auto-fix dispatcher.
+    # Empty list = unclassified; dispatcher falls back to the configured
+    # default fixer. Order is preserved so callers can prefer the first
+    # entry when picking exactly one fixer.
+    issue_categories: list[str] = field(default_factory=list)
 
 
 async def review(
@@ -138,4 +175,5 @@ async def review(
         verdict=payload.verdict,
         comments=comments,
         raw_response=payload.model_dump_json(),
+        issue_categories=list(payload.issue_categories),
     )

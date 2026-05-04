@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from caretaker.pr_reviewer.github_review import post_review
@@ -67,6 +67,10 @@ class _ParsedReview:
     summary: str
     verdict: str  # APPROVE | COMMENT | REQUEST_CHANGES
     comments: list[InlineReviewComment]
+    # Optional issue classification for the auto-fix dispatcher. Empty
+    # when the agent didn't include the field (older clients) or the
+    # value didn't validate.
+    issue_categories: list[str] = field(default_factory=list)
 
 
 def parse_review_payload(comment_body: str) -> _ParsedReview | None:
@@ -126,7 +130,22 @@ def parse_review_payload(comment_body: str) -> _ParsedReview | None:
         ):
             continue
         parsed_comments.append(InlineReviewComment(path=path, line=line, body=body.strip()))
-    return _ParsedReview(summary=summary.strip(), verdict=verdict, comments=parsed_comments)
+    raw_categories = payload.get("issue_categories") or []
+    parsed_categories: list[str] = []
+    if isinstance(raw_categories, list):
+        # Mirror inline_reviewer's IssueCategory values; reject anything
+        # else so a typo in the agent's reply doesn't poison the
+        # dispatcher with a category that has no fixer mapping.
+        valid = {"lint", "format", "type", "test", "security", "correctness", "docs", "other"}
+        for c in raw_categories:
+            if isinstance(c, str) and c in valid and c not in parsed_categories:
+                parsed_categories.append(c)
+    return _ParsedReview(
+        summary=summary.strip(),
+        verdict=verdict,
+        comments=parsed_comments,
+        issue_categories=parsed_categories,
+    )
 
 
 def _is_caretaker_authored(comment: Comment) -> bool:
@@ -161,20 +180,20 @@ async def consume_handoff_reviews(
     pr_number: int,
     head_sha: str,
     tracking: TrackedPR,
-) -> int:
+) -> list[ReviewResult]:
     """Scan the PR for unconsumed agent review replies and post them.
 
-    Returns the number of formal reviews posted. Idempotent: a comment
-    whose ID is already in ``tracking.consumed_handoff_review_comment_ids``
-    is skipped, and the ID is recorded only after a successful
-    ``post_review`` call so a transient API failure on one cycle is
-    automatically retried on the next.
+    Returns the list of formal reviews posted (empty on error or no new
+    reviews). Idempotent: a comment whose ID is already in
+    ``tracking.consumed_handoff_review_comment_ids`` is skipped, and the
+    ID is recorded only after a successful ``post_review`` call so a
+    transient API failure on one cycle is automatically retried on the next.
     """
     if not head_sha:
         # Without a commit SHA we can't anchor inline comments — skip
         # rather than post a review against the wrong base.
         logger.debug("handoff_review: PR #%d has no head_sha; skipping", pr_number)
-        return 0
+        return []
     try:
         comments = await github.get_pr_comments(owner, repo, pr_number)
     except Exception as exc:  # noqa: BLE001 — never fail the agent
@@ -185,10 +204,10 @@ async def consume_handoff_reviews(
             pr_number,
             exc,
         )
-        return 0
+        return []
 
     consumed_ids = set(tracking.consumed_handoff_review_comment_ids)
-    posted = 0
+    posted: list[ReviewResult] = []
     for comment in comments:
         if comment.id in consumed_ids:
             continue
@@ -231,6 +250,12 @@ async def consume_handoff_reviews(
             f"see [original reply](#issuecomment-{comment.id}) for full context._\n\n"
             f"{parsed.summary}"
         )
+        review_result = ReviewResult(
+            summary=attribution,
+            verdict=parsed.verdict,
+            comments=parsed.comments,
+            issue_categories=list(parsed.issue_categories),
+        )
         try:
             await post_review(
                 github=github,
@@ -238,11 +263,7 @@ async def consume_handoff_reviews(
                 repo=repo,
                 pr_number=pr_number,
                 commit_sha=head_sha,
-                result=ReviewResult(
-                    summary=attribution,
-                    verdict=parsed.verdict,
-                    comments=parsed.comments,
-                ),
+                result=review_result,
             )
         except Exception as exc:  # noqa: BLE001 — defensive
             logger.warning(
@@ -257,7 +278,7 @@ async def consume_handoff_reviews(
             continue
 
         tracking.consumed_handoff_review_comment_ids.append(comment.id)
-        posted += 1
+        posted.append(review_result)
         logger.info(
             "handoff_review: posted formal review for comment %d (%s) on %s/%s#%d "
             "(%d inline comments, verdict=%s)",

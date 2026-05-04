@@ -179,7 +179,7 @@ async def test_consume_posts_formal_review_and_records_consumed_id() -> None:
         tracking=tracking,
     )
 
-    assert posted == 1
+    assert len(posted) == 1
     github.create_review.assert_awaited_once()
     review_kwargs = github.create_review.await_args.kwargs
     assert review_kwargs["event"] == "COMMENT"
@@ -214,7 +214,7 @@ async def test_consume_is_idempotent_across_cycles() -> None:
         tracking=tracking,
     )
 
-    assert posted == 0
+    assert len(posted) == 0
     github.create_review.assert_not_awaited()
     # Still only one entry — we don't append duplicates.
     assert tracking.consumed_handoff_review_comment_ids == [42]
@@ -283,7 +283,7 @@ async def test_consume_skips_real_v0_24_0_invitation_with_example_payload() -> N
     # Despite the example being strictly-valid JSON (no ``//`` comments
     # in this fixture), the consumer must skip the invitation entirely
     # — it never reaches ``parse_review_payload``.
-    assert posted == 0
+    assert len(posted) == 0
     github.create_review.assert_not_awaited()
     # And we don't record the ID either; if a future change made the
     # invitation legitimately consumable (e.g. an opt-in self-review
@@ -322,7 +322,7 @@ async def test_consume_skips_caretaker_authored_comment() -> None:
         tracking=tracking,
     )
 
-    assert posted == 0
+    assert len(posted) == 0
     github.create_review.assert_not_awaited()
 
 
@@ -349,7 +349,7 @@ async def test_consume_records_id_for_malformed_payload() -> None:
         tracking=tracking,
     )
 
-    assert posted == 0
+    assert len(posted) == 0
     github.create_review.assert_not_awaited()
     assert tracking.consumed_handoff_review_comment_ids == [99]
 
@@ -373,7 +373,7 @@ async def test_consume_no_op_without_head_sha() -> None:
         tracking=tracking,
     )
 
-    assert posted == 0
+    assert len(posted) == 0
     github.get_pr_comments.assert_not_awaited()
     github.create_review.assert_not_awaited()
 
@@ -411,7 +411,7 @@ async def test_consume_post_review_failure_leaves_id_unconsumed() -> None:
     # consumer trusts post_review's return; the operator sees the
     # failure in post_review's logged warning. Idempotency still
     # protects against re-posting if create_review later succeeds.
-    assert posted == 1
+    assert len(posted) == 1
     assert tracking.consumed_handoff_review_comment_ids == [42]
 
 
@@ -461,7 +461,7 @@ async def test_consume_harvests_claude_reply_without_html_marker() -> None:
         tracking=tracking,
     )
 
-    assert posted == 1
+    assert len(posted) == 1
     github.create_review.assert_awaited_once()
     review_kwargs = github.create_review.await_args.kwargs
     assert review_kwargs["event"] == "COMMENT"
@@ -492,6 +492,6 @@ async def test_consume_skips_comments_without_response_marker() -> None:
         tracking=tracking,
     )
 
-    assert posted == 0
+    assert len(posted) == 0
     github.create_review.assert_not_awaited()
     assert tracking.consumed_handoff_review_comment_ids == []
