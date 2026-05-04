@@ -168,15 +168,15 @@ the cheapest executor that is *still safe* for the change and explain
 your reasoning in one short sentence.
 
 Rules:
-- ``path`` must be one of: inline, foundry, claude_code, copilot.
+- ``path`` must be one of: inline, foundry, claude_code, copilot, opencode.
   When the caller restricts candidate_paths, choose from that set only.
 - Prefer ``inline`` for small, non-sensitive code review where a single
   LLM review is sufficient.
 - Prefer ``foundry`` for small, well-scoped coding tasks (XS/S, few
   files, narrow blast radius).
-- Prefer ``claude_code`` or ``copilot`` for complex or sensitive
-  changes — anything touching CI workflows, auth/secrets, database
-  migrations, public APIs, or many packages.
+- Prefer ``opencode``, ``claude_code``, or ``copilot`` for complex or
+  sensitive changes — anything touching CI workflows, auth/secrets,
+  database migrations, public APIs, or many packages.
 - Populate ``risk_tags`` with the closed-enum tags that apply:
   * ``workflows_touched`` — any file under ``.github/workflows/``.
   * ``auth_touched``      — secrets, tokens, credentials, auth code.
@@ -363,13 +363,13 @@ def route_from_pr_reviewer_legacy(
     Maps the pr_reviewer score-threshold categories:
 
     * ``use_inline == True``  → :attr:`ExecutorRoute.path` == ``"inline"``.
-    * ``use_inline == False`` → :attr:`ExecutorRoute.path` == ``"claude_code"``.
+    * ``use_inline == False`` → :attr:`ExecutorRoute.path` == ``"opencode"``.
 
     The ``reason`` string preserves the legacy score + triggered rules
     verbatim so the shadow-mode disagreement feed can show exactly what
     the point system was thinking.
     """
-    path: ExecutorPath = "inline" if decision.use_inline else "claude_code"
+    path: ExecutorPath = "inline" if decision.use_inline else "opencode"
     risk_tags = _infer_risk_tags(
         file_paths=file_paths or [],
         additions=additions,

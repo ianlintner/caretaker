@@ -388,7 +388,7 @@ class PRReviewerAgent(BaseAgent):
                     return
 
         # Hand-off path — backend chosen by ``complex_reviewer`` (Claude
-        # Code, opencode, pr_agent, …). Falls back to claude_code if the
+        # Code, opencode, pr_agent, …). Falls back to opencode if the
         # configured backend isn't recognized or isn't enabled so a
         # misconfiguration doesn't silently skip review entirely.
         backend = decision.backend or cfg.complex_reviewer or "opencode"
@@ -401,13 +401,26 @@ class PRReviewerAgent(BaseAgent):
             )
             backend = "opencode"
         if cfg.enabled_backends and backend not in cfg.enabled_backends:
+            fallback = next(
+                (b for b in cfg.enabled_backends if b in handoff_reviewer.known_backends()),
+                None,
+            )
+            if fallback is None:
+                logger.error(
+                    "pr-reviewer: backend %r not in enabled_backends=%s and no "
+                    "known fallback is available — skipping review",
+                    backend,
+                    cfg.enabled_backends,
+                )
+                return
             logger.warning(
                 "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
-                "falling back to opencode",
+                "falling back to %r",
                 backend,
                 cfg.enabled_backends,
+                fallback,
             )
-            backend = "opencode"
+            backend = fallback
 
         spec = handoff_reviewer.get_spec(backend)
         if spec.invocation == "local_subprocess":
