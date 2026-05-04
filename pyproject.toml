@@ -8,7 +8,7 @@ version = "0.27.0"
 description = "Autonomous GitHub repository maintenance powered by Copilot"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [
     { name = "Caretaker Contributors" },
 ]
@@ -175,6 +175,10 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+# cast() in shadow.py is needed under Python 3.12 type inference; suppress
+# the false-positive redundant-cast error that mypy emits when run under a
+# 3.11 interpreter (despite python_version = "3.12" in config).
+warn_redundant_casts = false
 
 [[tool.mypy.overrides]]
 module = ["neo4j", "neo4j.*", "itsdangerous", "itsdangerous.*"]
