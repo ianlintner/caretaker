@@ -45,7 +45,7 @@ spec:
             - --appendonly
             - "yes"
             - --maxmemory
-            - "400mb"
+            - "1gb"
             - --maxmemory-policy
             - "allkeys-lru"
           ports:
@@ -57,10 +57,10 @@ spec:
           resources:
             requests:
               cpu: "10m"
-              memory: "128Mi"
+              memory: "256Mi"
             limits:
               cpu: "100m"
-              memory: "512Mi"
+              memory: "1280Mi"
           livenessProbe:
             tcpSocket:
               port: 6379

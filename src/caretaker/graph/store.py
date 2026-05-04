@@ -192,7 +192,8 @@ class GraphStore:
     ) -> SubGraph:
         """Return the neighborhood subgraph around a node."""
         query = (
-            "MATCH path = (start {id: $node_id})-[*1..$depth]-(neighbor) "
+            "MATCH path = (start)-[*1..$depth]-(neighbor) "
+            "WHERE start.id = $node_id "
             "RETURN nodes(path) AS nodes, relationships(path) AS rels"
         )
         seen_nodes: dict[str, GraphNode] = {}
