@@ -131,7 +131,45 @@ def _build_specs() -> dict[str, HandoffReviewerSpec]:
     return specs
 
 
-_SPECS: dict[str, HandoffReviewerSpec] = _build_specs()
+# Lazy cache. Eager evaluation at import time triggered a circular
+# import the moment a caller imported a backend module *before*
+# importing this one (each backend imports a marker constant from this
+# module, which would call ``_build_specs`` which then re-imported the
+# backend partially-loaded — leading to AttributeError on ``.SPEC``).
+# Computing on first use sidesteps the ordering hazard.
+_SPECS_CACHE: dict[str, HandoffReviewerSpec] | None = None
+
+
+def _get_specs() -> dict[str, HandoffReviewerSpec]:
+    global _SPECS_CACHE
+    if _SPECS_CACHE is None:
+        _SPECS_CACHE = _build_specs()
+    return _SPECS_CACHE
+
+
+# Backwards-compatible alias for callers that still touch ``_SPECS``
+# directly. Read-only — mutating the dict won't be re-applied across a
+# cache reset; use ``_reset_specs_cache_for_tests()`` instead.
+class _SpecsProxy:
+    def __getitem__(self, key: str) -> HandoffReviewerSpec:
+        return _get_specs()[key]
+
+    def get(
+        self, key: str, default: HandoffReviewerSpec | None = None
+    ) -> HandoffReviewerSpec | None:
+        return _get_specs().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in _get_specs()
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(_get_specs())
+
+    def __len__(self) -> int:
+        return len(_get_specs())
+
+
+_SPECS = _SpecsProxy()
 
 
 def _build_handoff_comment(

@@ -705,7 +705,7 @@ def shadow_decision(
                 )
                 write_shadow_decision(err_record)
                 SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome="candidate_error").inc()
-                return cast("T", legacy_result)
+                return cast("T", legacy_result)  # type: ignore[redundant-cast]
 
             agreed = compare_fn(legacy_result, candidate_verdict)
             outcome: ShadowOutcome = "agree" if agreed else "disagree"
@@ -746,7 +746,7 @@ def shadow_decision(
             )
             write_shadow_decision(record)
             SHADOW_DECISIONS_TOTAL.labels(name=name, mode=mode, outcome=outcome).inc()
-            return cast("T", legacy_result)
+            return cast("T", legacy_result)  # type: ignore[redundant-cast]
 
         return wrapper
 
