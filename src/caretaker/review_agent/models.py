@@ -1,6 +1,6 @@
 """Models and scorecard schemas for the Review Agent."""
 
-from datetime import datetime
+from datetime import datetime  # noqa: TC003
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
