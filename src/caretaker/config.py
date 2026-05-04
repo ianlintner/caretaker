@@ -923,10 +923,8 @@ class PRReviewerConfig(StrictBaseModel):
     routing_threshold: int = 40
     # Which BYOCA coding agent to use for complex PR reviews. Must match
     # a registered agent name (``claude_code``, ``opencode``, …) or the
-    # special value ``inline`` to keep everything inline. The default
-    # preserves the historical behaviour for existing consumers; switch
-    # to ``opencode`` when you want multi-provider review hand-off.
-    complex_reviewer: str = "claude_code"
+    # special value ``inline`` to keep everything inline.
+    complex_reviewer: str = "opencode"
     # Label/mention used for the claude-code-action hand-off.
     # Retained for backward-compatibility — read by the claude_code
     # reviewer dispatch path. New deployments should configure the

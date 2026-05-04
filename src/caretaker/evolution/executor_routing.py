@@ -61,13 +61,14 @@ logger = logging.getLogger(__name__)
 
 # ── Schema ───────────────────────────────────────────────────────────────
 
-ExecutorPath = Literal["inline", "foundry", "claude_code", "copilot"]
+ExecutorPath = Literal["inline", "foundry", "claude_code", "copilot", "opencode"]
 """Closed set of executor destinations.
 
 * ``inline`` — synchronous inline LLM review (pr-reviewer fast path).
 * ``foundry`` — caretaker's self-owned tool-loop executor (Foundry).
 * ``claude_code`` — claude-code-action hand-off (GitHub Action dispatch).
 * ``copilot`` — legacy Copilot task comment (the ultimate fallback).
+* ``opencode`` — sst/opencode GitHub Action hand-off.
 """
 
 RiskTag = Literal[

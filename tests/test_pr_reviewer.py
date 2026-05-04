@@ -580,3 +580,234 @@ async def test_execute_harvests_agent_review_and_skips_dispatch() -> None:
     # Agent result reports the harvest.
     assert result.extra["harvested"] == [99]
     assert result.processed == 1
+
+
+# ── auto-fix dispatch integration ────────────────────────────────────────────
+
+
+def _make_handoff_payload(verdict: str, categories: list[str] | None = None) -> str:
+    """Build an agent reply body for the handoff-review harvest path."""
+    from caretaker.pr_reviewer.handoff_reviewer import REVIEW_RESULT_MARKER
+
+    cats = f', "issue_categories": {categories!r}' if categories is not None else ""
+    return (
+        f"{REVIEW_RESULT_MARKER}\n"
+        "```caretaker-review\n"
+        f'{{"verdict": "{verdict}", "summary": "Review body.", "comments": []{cats}}}\n'
+        "```\n"
+    ).replace("'", '"')
+
+
+def _agent_comment(body: str, cid: int = 20):
+    from datetime import UTC, datetime
+
+    from caretaker.github_client.models import Comment as _Comment
+    from caretaker.github_client.models import User as _User
+
+    return _Comment(
+        id=cid,
+        user=_User(login="claude[bot]", id=1, type="Bot"),
+        body=body,
+        created_at=datetime(2026, 5, 3, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_harvest_request_changes_dispatches_auto_fix(monkeypatch) -> None:
+    """Harvested review with REQUEST_CHANGES + eligible author → dispatch_auto_fix called.
+
+    This pins the full harvest→auto-fix leg of the code-review cycle:
+    agent reply with verdict REQUEST_CHANGES + bot author eligible for auto-fix
+    → dispatch_auto_fix is invoked, reviewed label is still applied.
+    """
+    import caretaker.pr_reviewer.auto_fix as _af
+    from caretaker.config import AutoFixConfig
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.state.models import OrchestratorState
+
+    dispatch_mock = AsyncMock(
+        return_value=_af.AutoFixOutcome(dispatched=True, success=True, new_head_sha="new1")
+    )
+    monkeypatch.setattr(_af, "dispatch_auto_fix", dispatch_mock)
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+        auto_fix=AutoFixConfig(
+            enabled=True,
+            allowed_authors=["copilot-swe-agent[bot]"],
+        ),
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+
+    mock_ctx.github.get_pr_comments = AsyncMock(
+        return_value=[_agent_comment(_make_handoff_payload("REQUEST_CHANGES", ["lint"]))]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+    mock_ctx.github.upsert_issue_comment = AsyncMock()
+    mock_ctx.github.list_pull_request_files = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    result = await agent.execute(
+        state=state,
+        event_payload={
+            "action": "synchronize",
+            "pull_request": {
+                "number": 20,
+                "title": "Fix lint",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "abc123", "ref": "feature/lint-fix"},
+                "labels": [],
+                "user": {"login": "copilot-swe-agent[bot]"},
+                "html_url": "https://github.com/org/repo/pull/20",
+            },
+        },
+    )
+
+    dispatch_mock.assert_awaited_once()
+    # caretaker:reviewed still applied after auto-fix dispatch.
+    mock_ctx.github.add_labels.assert_awaited_once()
+    assert result.extra["harvested"] == [20]
+
+
+@pytest.mark.asyncio
+async def test_execute_harvest_comment_verdict_does_not_dispatch_auto_fix(monkeypatch) -> None:
+    """Harvested COMMENT review → dispatch_auto_fix must NOT be called.
+
+    Ensures the REQUEST_CHANGES guard in the harvest path is effective.
+    """
+    import caretaker.pr_reviewer.auto_fix as _af
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.state.models import OrchestratorState
+
+    dispatch_mock = AsyncMock()
+    monkeypatch.setattr(_af, "dispatch_auto_fix", dispatch_mock)
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+
+    mock_ctx.github.get_pr_comments = AsyncMock(
+        return_value=[_agent_comment(_make_handoff_payload("COMMENT"), cid=21)]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+    mock_ctx.github.list_pull_request_files = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    await agent.execute(
+        state=state,
+        event_payload={
+            "action": "synchronize",
+            "pull_request": {
+                "number": 21,
+                "title": "Add feature",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "def456", "ref": "feature/add"},
+                "labels": [],
+                "user": {"login": "human-dev"},
+                "html_url": "https://github.com/org/repo/pull/21",
+            },
+        },
+    )
+
+    dispatch_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_inline_review_request_changes_dispatches_auto_fix(monkeypatch) -> None:
+    """Inline LLM review returning REQUEST_CHANGES dispatches auto-fix for eligible authors.
+
+    Covers the inline path in _handle_pr: review → REQUEST_CHANGES →
+    decide_auto_fix approves → dispatch_auto_fix called.
+    """
+    import caretaker.pr_reviewer.auto_fix as _af
+    import caretaker.pr_reviewer.inline_reviewer as _inline
+    from caretaker.config import AutoFixConfig
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
+    from caretaker.state.models import OrchestratorState
+
+    dispatch_mock = AsyncMock(
+        return_value=_af.AutoFixOutcome(dispatched=True, success=True, new_head_sha="new2")
+    )
+    monkeypatch.setattr(_af, "dispatch_auto_fix", dispatch_mock)
+
+    inline_result = ReviewResult(
+        summary="Type errors found in module",
+        verdict="REQUEST_CHANGES",
+        comments=[],
+        issue_categories=["type"],
+    )
+    monkeypatch.setattr(_inline, "review", AsyncMock(return_value=inline_result))
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=True,
+        review_event="AUTO",
+        auto_fix=AutoFixConfig(
+            enabled=True,
+            allowed_authors=["copilot-swe-agent[bot]"],
+        ),
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = MagicMock()
+    mock_ctx.llm_router.available = True
+
+    # No handoff replies → harvest is a no-op, falls through to inline path.
+    mock_ctx.github.get_pr_comments = AsyncMock(return_value=[])
+    mock_ctx.github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "src/foo.py", "additions": 5, "deletions": 2}]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+    mock_ctx.github.upsert_issue_comment = AsyncMock()
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    result = await agent.execute(
+        state=state,
+        event_payload={
+            "action": "opened",
+            "pull_request": {
+                "number": 22,
+                "title": "Fix types",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "ghi789", "ref": "feature/types"},
+                "labels": [],
+                "user": {"login": "copilot-swe-agent[bot]"},
+                "html_url": "https://github.com/org/repo/pull/22",
+            },
+        },
+    )
+
+    dispatch_mock.assert_awaited_once()
+    assert result.extra["reviewed"] == [22]

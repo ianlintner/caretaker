@@ -391,23 +391,23 @@ class PRReviewerAgent(BaseAgent):
         # Code, opencode, pr_agent, …). Falls back to claude_code if the
         # configured backend isn't recognized or isn't enabled so a
         # misconfiguration doesn't silently skip review entirely.
-        backend = decision.backend or cfg.complex_reviewer or "claude_code"
+        backend = decision.backend or cfg.complex_reviewer or "opencode"
         if backend not in handoff_reviewer.known_backends():
             logger.warning(
                 "pr-reviewer: complex_reviewer=%r is not a known hand-off backend "
-                "(known: %s); falling back to claude_code",
+                "(known: %s); falling back to opencode",
                 backend,
                 ", ".join(handoff_reviewer.known_backends()),
             )
-            backend = "claude_code"
+            backend = "opencode"
         if cfg.enabled_backends and backend not in cfg.enabled_backends:
             logger.warning(
                 "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
-                "falling back to claude_code",
+                "falling back to opencode",
                 backend,
                 cfg.enabled_backends,
             )
-            backend = "claude_code"
+            backend = "opencode"
 
         spec = handoff_reviewer.get_spec(backend)
         if spec.invocation == "local_subprocess":
@@ -603,7 +603,7 @@ class PRReviewerAgent(BaseAgent):
                 files=route_files,
                 labels=pr_labels,
                 repo_slug=f"{self._ctx.owner}/{self._ctx.repo}",
-                candidate_paths=["inline", "claude_code"],
+                candidate_paths=["inline", "opencode"],
                 title=str(pr.get("title", "")),
                 body=str(pr.get("body") or ""),
             )
