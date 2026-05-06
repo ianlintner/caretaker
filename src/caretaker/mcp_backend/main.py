@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -910,6 +910,104 @@ async def health_check() -> dict[str, str]:
         "dispatch_mode": _get_dispatcher().mode.value,
         "github_app_configured": str(_token_broker is not None).lower(),
     }
+
+
+@app.get("/health/deep")
+async def health_check_deep() -> Response:
+    """Deep dependency probe for pre-deploy / operator-triggered diagnostics.
+
+    Concurrently probes ``git`` and ``opencode`` CLIs, Redis/Mongo/Neo4j
+    connectivity, and every OpenRouter model the PR-reviewer plans to use.
+    Returns HTTP 200 with ``status=ok|degraded`` when the core stack is up,
+    or 503 when any core dependency (git, opencode, redis, mongo, neo4j) is
+    failing — model-probe failures only surface as ``degraded``.
+
+    Kubelet keeps probing the cheap ``/health`` endpoint; this one is
+    intentionally heavier and rate-limited via a 1-hour model-probe cache.
+    """
+    # TODO(observability): build a Motor + Neo4j driver pool in _lifespan
+    # so this endpoint and the Phase 2 db.client.* OTel instrumentation
+    # share long-lived clients instead of constructing per-request.
+    from caretaker.observability.health import (
+        collect_models_to_probe,
+        gather_deep_health,
+    )
+
+    # Build mongo + neo4j clients on demand. Both are normally lazy-initialised
+    # by the agents that need them, so the deep-health endpoint owns its own
+    # short-lived clients to avoid coupling to ad-hoc app.state wiring. They
+    # cost a single TCP connection each and are closed before we return.
+    mongo_client: Any = None
+    mongo_url = os.environ.get("MONGODB_URL", "").strip()
+    if mongo_url:
+        try:
+            from motor.motor_asyncio import AsyncIOMotorClient
+
+            mongo_client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to construct mongo client for /health/deep", exc_info=True)
+
+    neo4j_driver: Any = None
+    neo4j_url = os.environ.get("NEO4J_URL", "").strip()
+    if neo4j_url:
+        try:
+            import neo4j
+
+            raw_auth = os.environ.get("NEO4J_AUTH", "neo4j/neo4j")
+            parts = raw_auth.split("/", 1)
+            auth = (parts[0], parts[1]) if len(parts) == 2 else ("neo4j", raw_auth)
+            neo4j_driver = neo4j.AsyncGraphDatabase.driver(neo4j_url, auth=auth)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to construct neo4j driver for /health/deep", exc_info=True)
+
+    redis_url = (
+        os.environ.get("REDIS_URL", "").strip()
+        or os.environ.get("CARETAKER_REDIS_URL", "").strip()
+        or "redis://redis:6379"
+    )
+
+    # Resolve models from the operator's loaded MaintainerConfig. Falls back
+    # to defaults when no config file is present.
+    try:
+        from caretaker.config import MaintainerConfig
+
+        cfg_path = os.environ.get("CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml")
+        # TODO(observability): cache the parsed MaintainerConfig with
+        # functools.lru_cache(maxsize=1) keyed on os.stat(path).st_mtime
+        # if /health/deep ever moves onto a hot kubelet probe path.
+        try:
+            cfg = MaintainerConfig.from_yaml(cfg_path)
+        except Exception:
+            cfg = MaintainerConfig()
+        models = collect_models_to_probe(
+            opencode_local=cfg.pr_reviewer.opencode_local,
+            llm=cfg.llm,
+        )
+        opencode_cli_path = cfg.pr_reviewer.opencode_local.cli_path
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to load config for /health/deep model list")
+        models = []
+        opencode_cli_path = "opencode"
+
+    try:
+        result = await gather_deep_health(
+            redis_url=redis_url,
+            mongo_client=mongo_client,
+            neo4j_driver=neo4j_driver,
+            models_to_probe=models,
+            opencode_cli_path=opencode_cli_path,
+            version=app.version,
+        )
+    finally:
+        if mongo_client is not None:
+            with suppress(Exception):
+                mongo_client.close()
+        if neo4j_driver is not None:
+            with suppress(Exception):
+                await neo4j_driver.close()
+
+    status_code = 503 if result["status"] == "fail" else 200
+    return JSONResponse(content=result, status_code=status_code)
 
 
 @app.get("/mcp/tools")
