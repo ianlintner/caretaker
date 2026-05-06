@@ -21,6 +21,7 @@ from caretaker.pr_reviewer.backends import opencode_local
 from caretaker.pr_reviewer.backends.opencode_local import (
     OpenCodeLocalNoEndpointsError,
     _parse_review_payload,
+    _resolve_tier_model,
 )
 
 
@@ -42,18 +43,35 @@ def _read_invoke_counter(model: str, mode: str, outcome: str) -> float:
 # ── _parse_review_payload fallback warning + counter ─────────────────────
 
 
-def test_parse_review_payload_fallback_records_parse_fallback_counter(caplog) -> None:
-    """When the ``caretaker-review`` JSON block is missing, log + counter fire."""
-    before = _read_invoke_counter("<unknown>", "other", "parse_fallback")
+def test_parse_review_payload_fallback_returns_was_fallback_flag(caplog) -> None:
+    """When the ``caretaker-review`` JSON block is missing, the fallback flag is True.
 
+    The metric is now recorded by the caller (``run`` / ``fix_run``)
+    with the real model + mode labels — see ``run()`` for the
+    matching ``record_opencode_invocation`` call. ``_parse_review_payload``
+    only signals "I took the fallback branch" via the bool.
+    """
     with caplog.at_level("WARNING"):
-        result = _parse_review_payload("Just prose, no JSON. Looks fine.")
+        result, was_fallback = _parse_review_payload("Just prose, no JSON. Looks fine.")
 
     assert result.verdict == "COMMENT"
-    after = _read_invoke_counter("<unknown>", "other", "parse_fallback")
-    assert after >= before + 1
+    assert was_fallback is True
     # The warning text mentions "fallback parse" so operators can grep.
     assert any("fallback parse" in rec.message for rec in caplog.records)
+
+
+def test_parse_review_payload_happy_path_returns_false_fallback_flag() -> None:
+    """A well-formed reply yields ``was_fallback=False``."""
+    text = (
+        "Some prose summary.\n\n"
+        "<!-- caretaker:review-result -->\n"
+        "```caretaker-review\n"
+        '{"verdict": "APPROVE", "summary": "lgtm", "comments": []}\n'
+        "```\n"
+    )
+    result, was_fallback = _parse_review_payload(text)
+    assert result.verdict == "APPROVE"
+    assert was_fallback is False
 
 
 # ── run() outcome wiring ──────────────────────────────────────────────────
@@ -146,3 +164,71 @@ async def test_run_records_no_endpoints_outcome(monkeypatch, fake_config) -> Non
         await opencode_local.run(pr_url="https://github.com/o/r/pull/3", config=fake_config)
     after = _read_invoke_counter("openrouter/test/model", "review", "no_endpoints")
     assert after >= before + 1
+
+
+# ── _resolve_tier_model ──────────────────────────────────────────────────
+
+
+def test_resolve_tier_model_uses_tier_map_entry() -> None:
+    tier_map = {"trivial": "cheap-model", "standard": "expensive-model"}
+    assert _resolve_tier_model("trivial", tier_map=tier_map, default="default") == "cheap-model"
+    assert (
+        _resolve_tier_model("standard", tier_map=tier_map, default="default") == "expensive-model"
+    )
+
+
+def test_resolve_tier_model_falls_back_when_tier_missing() -> None:
+    tier_map = {"trivial": "cheap-model"}
+    assert _resolve_tier_model("complex", tier_map=tier_map, default="default") == "default"
+
+
+def test_resolve_tier_model_falls_back_when_tier_is_none() -> None:
+    tier_map = {"trivial": "cheap-model"}
+    assert _resolve_tier_model(None, tier_map=tier_map, default="default") == "default"
+
+
+def test_resolve_tier_model_falls_back_when_entry_is_empty() -> None:
+    tier_map = {"trivial": ""}
+    assert _resolve_tier_model("trivial", tier_map=tier_map, default="default") == "default"
+
+
+# ── _invoke_opencode "No endpoints found" detection ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_invoke_opencode_raises_no_endpoints_on_stderr_match(
+    monkeypatch, fake_config
+) -> None:
+    """A non-zero return code + ``No endpoints found`` stderr → ``OpenCodeLocalNoEndpointsError``.
+
+    Exercises the actual stderr-pattern detection (rather than mocking
+    the exception itself) so a future refactor that drops the
+    string-match doesn't slip through with green tests.
+    """
+    fake_proc = MagicMock()
+    fake_proc.returncode = 1
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    monkeypatch.setattr(
+        opencode_local.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        opencode_local,
+        "stream_subprocess_output",
+        AsyncMock(
+            return_value=(
+                "",
+                "Error: No endpoints found for model openrouter/foo/bar",
+            )
+        ),
+    )
+    # Bypass the ``shutil.which`` lookup so the binary always "exists".
+    monkeypatch.setattr(opencode_local.shutil, "which", lambda _name: "/usr/bin/opencode")
+
+    with pytest.raises(OpenCodeLocalNoEndpointsError) as excinfo:
+        await opencode_local._invoke_opencode(
+            workdir="/tmp/fake", config=fake_config, prompt="hi", model_override=""
+        )
+    assert "No endpoints found" in str(excinfo.value)

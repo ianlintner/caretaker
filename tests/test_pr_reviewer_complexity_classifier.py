@@ -3,7 +3,6 @@
 Coverage:
 - fast_path_tier: deterministic short-circuits before any LLM call
 - classify: heuristic fallback when LLM is unavailable / errors
-- _resolve_tier_model: tier → model resolution with fallback
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from caretaker.evolution.executor_routing import ExecutorRouteContext, ExecutorRouteFile
-from caretaker.pr_reviewer.backends.opencode_local import _resolve_tier_model
 from caretaker.pr_reviewer.complexity_classifier import (
     ComplexityVerdict,
     classify,
@@ -126,32 +124,6 @@ async def test_classify_falls_back_on_llm_error() -> None:
     verdict = await classify(context=ctx, claude=claude)
     # Heuristic kicks in: 250 LOC → standard tier.
     assert verdict.tier == "standard"
-
-
-# ── _resolve_tier_model ─────────────────────────────────────────────────────
-
-
-def test_resolve_tier_model_uses_tier_map_entry() -> None:
-    tier_map = {"trivial": "cheap-model", "standard": "expensive-model"}
-    assert _resolve_tier_model("trivial", tier_map=tier_map, default="default") == "cheap-model"
-    assert (
-        _resolve_tier_model("standard", tier_map=tier_map, default="default") == "expensive-model"
-    )
-
-
-def test_resolve_tier_model_falls_back_when_tier_missing() -> None:
-    tier_map = {"trivial": "cheap-model"}
-    assert _resolve_tier_model("complex", tier_map=tier_map, default="default") == "default"
-
-
-def test_resolve_tier_model_falls_back_when_tier_is_none() -> None:
-    tier_map = {"trivial": "cheap-model"}
-    assert _resolve_tier_model(None, tier_map=tier_map, default="default") == "default"
-
-
-def test_resolve_tier_model_falls_back_when_entry_is_empty() -> None:
-    tier_map = {"trivial": ""}
-    assert _resolve_tier_model("trivial", tier_map=tier_map, default="default") == "default"
 
 
 # ── observability wire-up ───────────────────────────────────────────────────

@@ -169,15 +169,39 @@ def test_record_opencode_invocation_unknown_outcome_falls_back_to_other() -> Non
 
 
 def test_record_opencode_invocation_parse_fallback_outcome() -> None:
-    """The ``parse_fallback`` outcome is recorded by _parse_review_payload."""
-    record_opencode_invocation(model="<unknown>", mode="<unknown>", outcome="parse_fallback")
+    """The ``parse_fallback`` outcome is recorded by ``run()`` / ``fix_run()``.
+
+    ``_parse_review_payload`` no longer records the metric directly —
+    it returns a ``was_fallback`` bool and the caller records the
+    counter with the real model + mode labels. This test still
+    confirms the enum bucket exists end-to-end.
+    """
+    record_opencode_invocation(
+        model="openrouter/test/model", mode="review", outcome="parse_fallback"
+    )
     value = REGISTRY.get_sample_value(
         "caretaker_opencode_invocation_total",
         {
             "service": _service(),
-            "model": "<unknown>",
-            "mode": "other",  # "<unknown>" not in OPENCODE_MODES
+            "model": "openrouter/test/model",
+            "mode": "review",
             "outcome": "parse_fallback",
+        },
+    )
+    assert value is not None
+    assert value >= 1
+
+
+def test_record_opencode_invocation_declined_outcome() -> None:
+    """The ``declined`` outcome is bounded — fix_run records it on the sentinel branch."""
+    record_opencode_invocation(model="some/model", mode="fix", outcome="declined")
+    value = REGISTRY.get_sample_value(
+        "caretaker_opencode_invocation_total",
+        {
+            "service": _service(),
+            "model": "some/model",
+            "mode": "fix",
+            "outcome": "declined",
         },
     )
     assert value is not None
@@ -245,6 +269,32 @@ def test_record_auto_fix_dispatch_unknown_outcome_falls_back_to_other() -> None:
     assert value >= 1
 
 
+# ── _bound_or_other warn-once behaviour ──────────────────────────────
+
+
+def test_bound_or_other_warns_only_once_per_value_enum_pair(caplog) -> None:
+    """Hot-path callers passing the same off-enum value shouldn't flood the log."""
+    from caretaker.observability import metrics as m
+
+    # Reset the warn-once memo so this test is hermetic against
+    # earlier tests that may have warmed up the same key.
+    m._BOUND_OR_OTHER_WARNED.clear()
+
+    fake_enum = ("alpha", "beta")
+    with caplog.at_level("WARNING", logger="caretaker.observability.metrics"):
+        first = m._bound_or_other("nonsense", fake_enum)
+        second = m._bound_or_other("nonsense", fake_enum)
+
+    assert first == "other"
+    assert second == "other"
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.levelname == "WARNING" and "nonsense" in rec.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
 # ── enum constants are exported ──────────────────────────────────────
 
 
@@ -256,5 +306,13 @@ def test_bounded_enums_are_exported() -> None:
     assert "fast_path" in m.CLASSIFIER_SOURCES
     assert "review" in m.OPENCODE_MODES
     assert "ok" in m.OPENCODE_OUTCOMES
+    assert "declined" in m.OPENCODE_OUTCOMES
     assert "dispatched_success" in m.AUTO_FIX_OUTCOMES
     assert "APPROVE" in m.REVIEW_VERDICTS
+    # Non-LLM terminal states are part of the bounded REVIEW_VERDICTS
+    # enum so the audit log can record them without falling through to
+    # the noisy ``other`` bucket.
+    assert "skipped" in m.REVIEW_VERDICTS
+    assert "dispatched" in m.REVIEW_VERDICTS
+    assert "dispatch_failed" in m.REVIEW_VERDICTS
+    assert "none" in m.REVIEW_VERDICTS

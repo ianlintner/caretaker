@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -379,9 +379,29 @@ OPENCODE_OUTCOMES: tuple[str, ...] = (
     "timeout",
     "no_endpoints",
     "error",
+    # ``declined`` is the in-band sentinel ``CARETAKER_FIX_DECLINED:`` —
+    # opencode chose not to apply the requested change. Tracked
+    # separately from ``ok`` so the fix-mode success rate stays honest
+    # and the dashboard can graph "decline rate" directly.
+    "declined",
 )
 AUTO_FIX_OUTCOMES: tuple[str, ...] = ("dispatched_success", "dispatched_fail", "skipped")
-REVIEW_VERDICTS: tuple[str, ...] = ("APPROVE", "COMMENT", "REQUEST_CHANGES")
+# ``REVIEW_VERDICTS`` covers both real LLM verdicts (``APPROVE`` /
+# ``COMMENT`` / ``REQUEST_CHANGES``) **and** the terminal non-LLM
+# states emitted by the audit log (``skipped`` / ``dispatched`` /
+# ``dispatch_failed`` / ``none``). They're all bounded — letting the
+# dashboard distinguish "dispatched to opencode" from "skipped (draft)"
+# from a real "COMMENT" verdict without collapsing into a noisy
+# ``other`` bucket.
+REVIEW_VERDICTS: tuple[str, ...] = (
+    "APPROVE",
+    "COMMENT",
+    "REQUEST_CHANGES",
+    "skipped",
+    "dispatched",
+    "dispatch_failed",
+    "none",
+)
 
 PR_REVIEW_OUTCOME_TOTAL = Counter(
     "caretaker_pr_review_outcome_total",
@@ -936,6 +956,15 @@ def record_guardrail_rollback_fired(repo: str, reason: str) -> None:
     ).inc()
 
 
+# Memoises ``(value, id(allowed))`` pairs we've already warned about so
+# a hot caller passing the same off-enum value repeatedly only logs
+# once per process lifetime. The key uses ``id(allowed)`` (not the
+# tuple itself) because the canonical enum tuples are module-level
+# constants — same identity for every call — and ``id`` is O(1) where
+# the tuple equality check would walk the contents.
+_BOUND_OR_OTHER_WARNED: set[tuple[str, int]] = set()
+
+
 def _bound_or_other(value: str, allowed: tuple[str, ...]) -> str:
     """Return ``value`` when it's in ``allowed``, else ``"other"``.
 
@@ -944,14 +973,21 @@ def _bound_or_other(value: str, allowed: tuple[str, ...]) -> str:
     also never silently mints a new series — both effects are
     cardinality-eating bugs we'd rather see as a generic "other"
     bucket and a one-shot warning log.
+
+    The warning is emitted **at most once per ``(value, allowed)``
+    pair** so a hot loop that repeatedly passes the same off-enum
+    value doesn't flood the log.
     """
     if value in allowed:
         return value
-    logger.warning(
-        "metrics: enum value %r not in %s; recording under 'other'",
-        value,
-        allowed,
-    )
+    key = (value, id(allowed))
+    if key not in _BOUND_OR_OTHER_WARNED:
+        _BOUND_OR_OTHER_WARNED.add(key)
+        logger.warning(
+            "metrics: unbounded value %r for enum %s; bucketing as 'other'",
+            value,
+            allowed,
+        )
     return "other"
 
 
@@ -989,8 +1025,14 @@ def record_complexity_tier(tier: str, source: str) -> None:
     ).inc()
 
 
-def record_opencode_invocation(model: str, mode: str, outcome: str) -> None:
-    """Increment ``caretaker_opencode_invocation_total``."""
+def record_opencode_invocation(model: str, mode: Literal["review", "fix"], outcome: str) -> None:
+    """Increment ``caretaker_opencode_invocation_total``.
+
+    ``mode`` is typed as ``Literal["review", "fix"]`` so a typo at a
+    static call site is caught by mypy. The runtime
+    :func:`_bound_or_other` validation stays as defence-in-depth for
+    dynamic callers.
+    """
     OPENCODE_INVOCATION_TOTAL.labels(
         service=_SERVICE_LABEL,
         model=model or "unknown",

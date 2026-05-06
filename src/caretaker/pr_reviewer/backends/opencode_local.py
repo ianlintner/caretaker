@@ -246,8 +246,14 @@ async def _invoke_opencode(
 _RESULT_TEXT_RE = re.compile(r"```caretaker-review\s*\n(?P<json>.+?)\n\s*```", re.DOTALL)
 
 
-def _parse_review_payload(assistant_text: str) -> ReviewResult:
+def _parse_review_payload(assistant_text: str) -> tuple[ReviewResult, bool]:
     """Find the ``caretaker-review`` JSON block; fall back to a generic COMMENT review.
+
+    Returns ``(result, was_fallback)`` so the caller can record the
+    parse-fallback outcome with the real model + mode labels (instead
+    of double-counting via an in-function metric increment that loses
+    label fidelity). The WARNING log stays here — that's still useful
+    for log-based alerting independent of the metric.
 
     The fallback ensures a noisy or non-conforming opencode reply still
     produces *some* review on the PR rather than dropping the work.
@@ -260,21 +266,18 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
             len(assistant_text),
             assistant_text[:200],
         )
-        # Record under unknown model/mode because _parse_review_payload
-        # doesn't see those args; the caller (run / fix_run) will record
-        # the corresponding outcome with the real model + mode. This
-        # extra increment guarantees the warning is paired with a
-        # counter even if a future caller forgets to wrap.
-        record_opencode_invocation(model="<unknown>", mode="<unknown>", outcome="parse_fallback")
-        return ReviewResult(
-            summary=(
-                "**Review by opencode_local (fallback parse)**\n\n"
-                "opencode did not emit a structured `caretaker-review` JSON block; "
-                "its prose response is included below.\n\n"
-                f"{assistant_text.strip()[:4000]}"
+        return (
+            ReviewResult(
+                summary=(
+                    "**Review by opencode_local (fallback parse)**\n\n"
+                    "opencode did not emit a structured `caretaker-review` JSON block; "
+                    "its prose response is included below.\n\n"
+                    f"{assistant_text.strip()[:4000]}"
+                ),
+                verdict="COMMENT",
+                comments=[],
             ),
-            verdict="COMMENT",
-            comments=[],
+            True,
         )
     raw = match.group("json").strip()
     try:
@@ -329,8 +332,11 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
         "(opencode CLI in caretaker's pod)**\n\n"
         f"{summary or 'opencode returned no summary text.'}"
     )
-    return ReviewResult(
-        summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories
+    return (
+        ReviewResult(
+            summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories
+        ),
+        False,
     )
 
 
@@ -349,11 +355,6 @@ async def run(
     workdir: str | None = None
     success = False
     review_model = _resolve_tier_model(tier, tier_map=config.review_models, default=config.model)
-    # Track whether _parse_review_payload took the fallback path so we
-    # record the right outcome AROUND the invoke. The fallback parse
-    # itself fires a counter; we still want the run-level invocation
-    # outcome to reflect "parse_fallback" rather than "ok".
-    used_fallback = False
     try:
         workdir, _parsed = await _prepare_workdir(pr_url, config=config)
         stdout = await _invoke_opencode(
@@ -362,17 +363,16 @@ async def run(
             prompt=_REVIEW_PROMPT,
             model_override=review_model,
         )
-        # If the structured JSON block is missing, _parse_review_payload
-        # already logged + recorded the parse_fallback counter; we
-        # record the run-level outcome to match.
-        if _RESULT_TEXT_RE.search(stdout) is None:
-            used_fallback = True
-        result = _parse_review_payload(stdout)
+        # ``_parse_review_payload`` returns a (result, was_fallback)
+        # tuple so we record the outcome exactly once with the real
+        # model + mode labels (no in-function double-count).
+        result, used_fallback = _parse_review_payload(stdout)
         success = True
-        if not used_fallback:
-            record_opencode_invocation(model=review_model, mode="review", outcome="ok")
-        else:
-            record_opencode_invocation(model=review_model, mode="review", outcome="parse_fallback")
+        record_opencode_invocation(
+            model=review_model,
+            mode="review",
+            outcome="parse_fallback" if used_fallback else "ok",
+        )
         return result
     except OpenCodeLocalTimeoutError:
         record_opencode_invocation(model=review_model, mode="review", outcome="timeout")
@@ -477,10 +477,14 @@ async def fix_run(
         record_opencode_invocation(model=fix_model, mode="fix", outcome="error")
         raise
 
-    record_opencode_invocation(model=fix_model, mode="fix", outcome="ok")
+    # Inspect the in-band sentinel BEFORE recording the outcome so a
+    # decline doesn't pollute the success rate. ``declined`` is its
+    # own outcome bucket — see :data:`OPENCODE_OUTCOMES`.
     text = stdout.strip()
     if text.startswith("CARETAKER_FIX_DECLINED:"):
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="declined")
         raise OpenCodeLocalError(f"opencode declined to fix: {text}")
+    record_opencode_invocation(model=fix_model, mode="fix", outcome="ok")
     return text or "(no summary)"
 
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.evolution.executor_routing import (
@@ -225,15 +225,26 @@ class PRReviewerAgent(BaseAgent):
             duration_ms,
             auto_fix_dispatched,
             auto_fix_reason or "n/a",
+            # Every field that appears in the format string above is
+            # also surfaced here so structured-log consumers (Loki /
+            # JSON formatter) don't lose attributes that the human
+            # message includes. Field names match the metric labels
+            # where they overlap (``backend``, ``tier``, ``verdict``,
+            # ``repo``).
             extra={
                 "audit_event": "pr_review_complete",
                 "pr_number": pr_number,
                 "repo": repo_slug,
+                "pr_author": pr_author,
+                "is_caretaker_owned": is_caretaker_pr,
+                "routing_reason": routing_reason,
                 "verdict": verdict_label,
                 "tier": tier_label,
                 "backend": backend_label,
                 "model": model or "none",
                 "duration_ms": duration_ms,
+                "auto_fix_dispatched": auto_fix_dispatched,
+                "auto_fix_reason": auto_fix_reason or "n/a",
             },
         )
 
@@ -244,6 +255,11 @@ class PRReviewerAgent(BaseAgent):
         *,
         state: OrchestratorState,
     ) -> None:
+        # TODO(state-object): the local-variable bag below
+        # (``tier_label``, ``backend_label``, ``auto_fix_dispatched`` …)
+        # is approaching a state-machine. Refactor into a
+        # ``_PRReviewState`` dataclass once the next reviewer phase
+        # adds more transitions. Out of scope for phase 1A.
         cfg = self._ctx.config.pr_reviewer
         pr_number = int(pr.get("number", 0))
         owner = self._ctx.owner
@@ -331,7 +347,8 @@ class PRReviewerAgent(BaseAgent):
             if posted:
                 report.harvested.append(pr_number)
                 # Check if any harvested review requests changes — dispatch auto-fix.
-                harvested_verdict = posted[0].verdict if posted else None
+                # We're already inside ``if posted:`` so ``posted[0]`` is safe.
+                harvested_verdict = posted[0].verdict
                 for review_result in posted:
                     if review_result.verdict == "REQUEST_CHANGES":
                         head_branch = (pr.get("head") or {}).get("ref", "")
@@ -1006,7 +1023,11 @@ class PRReviewerAgent(BaseAgent):
         return getattr(self._ctx.config.pr_reviewer, backend, _EMPTY_BACKEND_CONFIG)
 
     def _resolve_backend_model(
-        self, backend: str, *, tier: ComplexityTier | None, mode: str
+        self,
+        backend: str,
+        *,
+        tier: ComplexityTier | None,
+        mode: Literal["review", "fix"],
     ) -> str | None:
         """Return the model id the backend would use for ``mode``+``tier``.
 
@@ -1014,6 +1035,10 @@ class PRReviewerAgent(BaseAgent):
         backend will route to (rather than the operator-pinned default
         even when a tier override is in play). Returns ``None`` when the
         backend doesn't expose a tier-aware model map.
+
+        TODO(backend-dispatch): replace the ``if backend == ...``
+        ladder with a dispatch table once a second tier-aware backend
+        lands. Out of scope for the phase 1A observability PR.
         """
         backend_cfg = self._resolve_local_backend_config(backend)
         if backend == "opencode_local":
