@@ -44,6 +44,15 @@ MODEL_PROBE_TTL_SECONDS: float = 3600.0
 _GIT_VERSION_RE = re.compile(r"git\s+version\s+(\S+)", re.IGNORECASE)
 _OPENCODE_VERSION_RE = re.compile(r"(\d+\.\d+\.\d+\S*)")
 
+# Brittle: depends on opencode/OpenRouter error wording. Update these
+# tokens (and the corresponding tests) if the upstream message format
+# changes. Confirmed against opencode CLI 1.14.39 / OpenRouter 2026-05.
+_OPENROUTER_NO_ENDPOINTS_TOKENS: tuple[str, ...] = ("No endpoints found",)
+_OPENROUTER_INSUFFICIENT_CREDITS_TOKENS: tuple[str, ...] = (
+    "Insufficient credits",
+    "insufficient credits",
+)
+
 
 # ── Cache ────────────────────────────────────────────────────────────────
 
@@ -62,6 +71,17 @@ class ModelProbeResult:
     """ISO-8601 timestamp of ``probed_at`` for human-readable surfacing."""
 
 
+# Module-level cache for model probe outcomes.
+#
+# Trade-offs intentionally taken:
+#
+# * No concurrency guard. Two simultaneous /health/deep requests for the same
+#   uncached model both spawn the opencode subprocess. Acceptable because the
+#   endpoint is operator-triggered and the cache TTL is one hour; if it ever
+#   moves onto a kubelet probe path, add an asyncio.Lock() per-key.
+# * Monotonic growth — entries are never evicted. Bounded by pod lifetime
+#   times the number of distinct models ever configured. Pruning is
+#   intentionally omitted.
 _model_probe_cache: dict[str, ModelProbeResult] = {}
 
 
@@ -262,10 +282,11 @@ async def _probe_single_model(
 
     # Pattern-match the most common OpenRouter failure modes so operators
     # can grep dashboards for "No endpoints found" and find every affected
-    # deploy at once.
-    if "No endpoints found" in stderr:
+    # deploy at once. Tokens are pulled from module-level constants; see
+    # the definitions for caveats on upstream wording drift.
+    if any(token in stderr for token in _OPENROUTER_NO_ENDPOINTS_TOKENS):
         return "fail: No endpoints found"
-    if "Insufficient credits" in stderr or "insufficient credits" in stderr:
+    if any(token in stderr for token in _OPENROUTER_INSUFFICIENT_CREDITS_TOKENS):
         return "fail: insufficient credits"
     first_line = next(
         (line for line in stderr.splitlines() if line.strip()),
@@ -409,7 +430,14 @@ def collect_models_to_probe(
 # ── Aggregator ───────────────────────────────────────────────────────────
 
 
-_CORE_CHECK_KEYS: tuple[str, ...] = ("git_cli", "opencode_cli", "redis", "mongo", "neo4j")
+_CORE_CHECK_KEYS: tuple[str, ...] = (
+    "config",
+    "git_cli",
+    "opencode_cli",
+    "redis",
+    "mongo",
+    "neo4j",
+)
 
 
 def _result_from(value: Any, fallback_error: str) -> dict[str, Any]:
@@ -429,8 +457,15 @@ async def gather_deep_health(
     models_to_probe: list[str],
     opencode_cli_path: str = "opencode",
     version: str = "",
+    config_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run all six checks concurrently and return the combined verdict."""
+    """Run all checks concurrently and return the combined verdict.
+
+    ``config_check`` records the outcome of loading ``MaintainerConfig`` —
+    a hard-fail surface so operators can see broken YAML at the top level
+    instead of having to infer it from an empty ``openrouter_models``.
+    Defaults to ``{"status": "ok"}`` for callers that don't care.
+    """
     core_results: list[Any] = await asyncio.gather(
         check_git_cli(),
         check_opencode_cli(),
@@ -464,6 +499,7 @@ async def gather_deep_health(
         }
 
     checks: dict[str, dict[str, Any]] = {
+        "config": config_check if config_check is not None else {"status": "ok"},
         "git_cli": git_check,
         "opencode_cli": opencode_check,
         "redis": redis_check,

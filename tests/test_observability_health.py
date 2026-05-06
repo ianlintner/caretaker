@@ -481,6 +481,7 @@ async def test_gather_deep_health_all_ok(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result["status"] == "ok"
     assert result["version"] == "0.28.4"
     assert set(result["checks"].keys()) == {
+        "config",
         "git_cli",
         "opencode_cli",
         "redis",
@@ -588,3 +589,66 @@ async def test_gather_deep_health_skips_model_probe_when_opencode_missing(
     assert result["checks"]["openrouter_models"]["status"] == "skipped"
     # Verify we never spawned an "opencode run ping" subprocess.
     assert all(cmd[0] != "opencode" or "run" not in cmd for cmd in call_log)
+
+
+@pytest.mark.asyncio
+async def test_gather_deep_health_fail_on_config_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing ``config`` check is a CORE fail → top-level ``fail``."""
+    _reset_cache_for_tests()
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _fake_subprocess_factory(returncode=0, stdout=b"git version 2.47.3\n"),
+    )
+
+    async def _fake_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "ok", "probed_at": None, "results": {}}
+
+    monkeypatch.setattr(health_module, "probe_openrouter_models", _fake_probe)
+
+    import redis.asyncio as redis_async
+
+    monkeypatch.setattr(redis_async, "Redis", _FakeRedisOk)
+
+    result = await gather_deep_health(
+        redis_url="redis://fake:6379",
+        mongo_client=_FakeMongoOk(),
+        neo4j_driver=_FakeNeo4jDriverOk(),
+        models_to_probe=[],
+        config_check={"status": "fail", "error": "broken yaml"},
+    )
+    assert result["status"] == "fail"
+    assert result["checks"]["config"] == {"status": "fail", "error": "broken yaml"}
+
+
+@pytest.mark.asyncio
+async def test_gather_deep_health_defaults_config_check_to_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers that don't pass ``config_check`` get an implicit ``ok`` entry."""
+    _reset_cache_for_tests()
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _fake_subprocess_factory(returncode=0, stdout=b"git version 2.47.3\n"),
+    )
+
+    async def _fake_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "ok", "probed_at": None, "results": {}}
+
+    monkeypatch.setattr(health_module, "probe_openrouter_models", _fake_probe)
+
+    import redis.asyncio as redis_async
+
+    monkeypatch.setattr(redis_async, "Redis", _FakeRedisOk)
+
+    result = await gather_deep_health(
+        redis_url="redis://fake:6379",
+        mongo_client=_FakeMongoOk(),
+        neo4j_driver=_FakeNeo4jDriverOk(),
+        models_to_probe=[],
+    )
+    assert result["checks"]["config"] == {"status": "ok"}
+    assert result["status"] == "ok"
