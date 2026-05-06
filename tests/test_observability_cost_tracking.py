@@ -98,13 +98,13 @@ def test_record_llm_cost_with_known_model(monkeypatch) -> None:
 
 
 def test_record_llm_cost_unknown_model_skips_and_warns(caplog, monkeypatch) -> None:
-    """An unknown model logs a one-shot info-level message and skips the cost increment."""
+    """An unknown model logs a one-shot warning-level message and skips the cost increment."""
     # Reset the warn-once memo so this test is independent of run order.
     monkeypatch.setattr(metrics_mod, "_LLM_PRICE_TABLE_MISSES_WARNED", set())
 
     unknown_model = "openrouter/test/never-priced-model-xyz"
     before = _read_cost(unknown_model)
-    with caplog.at_level(logging.INFO, logger=metrics_mod.logger.name):
+    with caplog.at_level(logging.WARNING, logger=metrics_mod.logger.name):
         record_llm_cost(unknown_model, prompt_tokens=10_000, completion_tokens=2_000)
         # Second call must NOT log again (warn-once memoisation).
         record_llm_cost(unknown_model, prompt_tokens=99, completion_tokens=99)
@@ -113,9 +113,10 @@ def test_record_llm_cost_unknown_model_skips_and_warns(caplog, monkeypatch) -> N
     # Cost counter unchanged.
     assert after == pytest.approx(before)
 
-    # Exactly one log record for this model.
+    # Exactly one log record for this model, at WARNING level.
     matching = [r for r in caplog.records if unknown_model in r.getMessage()]
     assert len(matching) == 1, f"expected 1 log for unknown model, got {len(matching)}"
+    assert matching[0].levelno == logging.WARNING
     assert "missing from LLM_PRICE_TABLE" in matching[0].getMessage()
 
 

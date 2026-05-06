@@ -1156,7 +1156,11 @@ def record_llm_cost(model: str, prompt_tokens: int, completion_tokens: int) -> N
     if price is None:
         if label_model not in _LLM_PRICE_TABLE_MISSES_WARNED:
             _LLM_PRICE_TABLE_MISSES_WARNED.add(label_model)
-            logger.info(
+            # WARNING (not INFO) so dashboard maintainers see this in
+            # their alert filters — an un-priced model means the USD
+            # cost panel under-counts. Still warn-once via the memo so
+            # a hot caller doesn't flood the log.
+            logger.warning(
                 "metrics: model %r missing from LLM_PRICE_TABLE; skipping cost "
                 "tracking (tokens still recorded). Add an entry in "
                 "caretaker.config.LLM_PRICE_TABLE to enable USD cost.",

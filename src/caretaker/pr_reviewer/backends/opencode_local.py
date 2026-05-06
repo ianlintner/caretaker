@@ -317,11 +317,25 @@ async def _invoke_opencode(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+
+        # Classifier: ``--format json`` emits 100-500 JSON events per
+        # review; logging every ``text``/``tool_use_*`` line at INFO
+        # turns pod logs into noise. Demote those event types to DEBUG
+        # while keeping step boundaries (``step_start``/``step_finish``),
+        # errors, and any non-JSON banner output at INFO so operators
+        # still see review progress live.
+        def _stdout_log(line: str) -> None:
+            stripped = line.lstrip()
+            if stripped.startswith('{"type":"text"') or stripped.startswith('{"type":"tool_'):
+                logger.debug("opencode | %s", _truncate(line, 400))
+            else:
+                logger.info("opencode | %s", _truncate(line, 400))
+
         try:
             stdout, stderr = await stream_subprocess_output(
                 proc,
                 timeout_seconds=config.timeout_seconds,
-                stdout_log=lambda line: logger.info("opencode | %s", _truncate(line, 400)),
+                stdout_log=_stdout_log,
                 stderr_log=lambda line: logger.warning("opencode! %s", line),
             )
         except TimeoutError as exc:
@@ -389,12 +403,19 @@ async def _invoke_opencode(
         if prompt_tokens > 0 or completion_tokens > 0:
             span.set_attribute("caretaker.llm.prompt_tokens", prompt_tokens)
             span.set_attribute("caretaker.llm.completion_tokens", completion_tokens)
-            with contextlib.suppress(Exception):
+            # ``record_llm_tokens`` and ``record_llm_cost`` already handle
+            # their own failure modes (lazy-import wrap, isinstance guards),
+            # so we don't blanket-suppress here. A narrow except keeps any
+            # truly surprising regression visible at DEBUG instead of
+            # silently swallowed.
+            try:
                 record_llm_usage(
                     model=model or "unknown",
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )
+            except Exception:  # pragma: no cover - defence in depth
+                logger.debug("metrics: record_llm_usage failed", exc_info=True)
         else:
             logger.debug(
                 "opencode_local: no token usage extracted from JSON stream "

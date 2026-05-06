@@ -397,6 +397,17 @@ DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] =
 # Convention: prices are ``(input_per_1m_tokens, output_per_1m_tokens)``.
 # Always quote both even if the provider charges the same for input and
 # output, so a future split doesn't silently break callers.
+#
+# **Cache token caveat (Anthropic):** Anthropic charges 1.25× the input
+# rate for ``cache_write`` tokens and 0.10× for ``cache_read`` tokens,
+# but this table doesn't model that. Both are folded into
+# ``prompt_tokens`` and counted at the input rate. For a cache-heavy
+# review on Anthropic models, the recorded USD cost can drift ±10-15%
+# from the true bill. If accuracy matters more than simplicity, extend
+# the entry to a ``dataclass(input, output, cache_read=None,
+# cache_write=None)`` and update
+# :func:`caretaker.observability.metrics.record_llm_cost` to use the
+# optional fields when present.
 LLM_PRICE_TABLE: dict[str, tuple[float, float]] = {
     # Google
     "openrouter/google/gemini-2.5-flash-lite": (0.10, 0.40),
