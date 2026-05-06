@@ -1,0 +1,119 @@
+name: opencode Review (gated)
+
+# DORMANT BY DEFAULT — this workflow does NOT auto-run on PR open/push.
+#
+# It fires only when something explicitly triggers it:
+#   1. Caretaker applies the ``opencode-review`` label (happens when
+#      ``pr_reviewer.complex_reviewer = "opencode"`` in caretaker config
+#      and a complex PR is dispatched).
+#   2. A human applies the same label manually.
+#   3. A human runs the workflow from the Actions tab (workflow_dispatch).
+#
+# To prefer the in-pod opencode_local backend (no consumer-side workflow
+# at all), set in ``.github/maintainer/config.yml``:
+#
+#     pr_reviewer:
+#       complex_reviewer: opencode_local
+#       enabled_backends: [claude_code, opencode, opencode_local, pr_agent]
+#
+# and never apply the ``opencode-review`` label. This workflow stays
+# present as a fallback / opt-in path; the backend is the default.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: number
+
+jobs:
+  opencode-review:
+    # Only run when the opencode-review label was just applied, or
+    # when the workflow was dispatched manually.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'opencode-review')
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve PR number
+        id: pr
+        run: |
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Preflight — check opencode provider keys are available
+        id: preflight
+        env:
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_KEY" ] && [ -z "$OPENAI_KEY" ] && [ -z "$OPENROUTER_KEY" ] && [ -z "$GROQ_KEY" ]; then
+            echo "::warning::No opencode provider key set — falling back to Copilot review"
+            echo "opencode_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "opencode_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run opencode review
+        id: opencode-review
+        if: steps.preflight.outputs.opencode_available == 'true'
+        continue-on-error: true
+        # Pinning to ``@latest`` is convenient but a supply-chain risk.
+        # Pin to a specific tag (``sst/opencode/github@v0.1.0``) or
+        # commit SHA before relying on this in production.
+        uses: sst/opencode/github@latest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        with:
+          model: anthropic/claude-sonnet-4
+          prompt: |
+            Review pull request ${{ github.repository }}#${{ steps.pr.outputs.number }}.
+            Focus on correctness, security, API contracts, and missing tests.
+            Post a review comment summary and inline comments where applicable.
+
+      - name: Fallback — request Copilot review
+        if: |
+          steps.preflight.outputs.opencode_available != 'true' ||
+          steps.opencode-review.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ steps.pr.outputs.number }}', 10);
+            const reason = '${{ steps.preflight.outputs.opencode_available }}' === 'true'
+              ? 'opencode review action failed'
+              : 'opencode provider keys unavailable';
+            core.info(`${reason} — requesting Copilot review for PR #${prNumber}`);
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                reviewers: ['copilot-pull-request-reviewer'],
+              });
+              core.info(`Requested Copilot review for PR #${prNumber}`);
+            } catch (error) {
+              core.warning(`Copilot review request failed: ${error.message}`);
+            }
