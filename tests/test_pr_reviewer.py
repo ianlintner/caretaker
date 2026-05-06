@@ -444,6 +444,51 @@ async def test_execute_skips_unhandled_action() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_emits_audit_log_on_skip_draft(caplog) -> None:
+    """A draft PR triggers the per-PR audit log line at INFO."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        trigger_actions=["opened"],
+        skip_draft=True,
+        skip_labels=[],
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+    mock_ctx.github = MagicMock()
+
+    agent = PRReviewerAgent(mock_ctx)
+    with caplog.at_level("INFO"):
+        await agent.execute(
+            state=MagicMock(),
+            event_payload={
+                "action": "opened",
+                "pull_request": {
+                    "number": 7,
+                    "title": "Draft",
+                    "body": "",
+                    "draft": True,
+                    "head": {"sha": "deadbeef"},
+                    "labels": [],
+                    "user": {"login": "human"},
+                },
+            },
+        )
+
+    assert any(
+        "pr_review_complete" in rec.message
+        and "repo=org/repo" in rec.message
+        and "pr=7" in rec.message
+        and "verdict=skipped" in rec.message
+        for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
+
+
+@pytest.mark.asyncio
 async def test_execute_processes_opened_action() -> None:
     """PR 'opened' action with trigger_actions=['opened'] → _handle_pr called."""
     from caretaker.pr_reviewer.agent import PRReviewerAgent

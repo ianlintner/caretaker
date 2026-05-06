@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from caretaker.evolution.executor_routing import ExecutorRouteContext, _detect_sensitive_hints
 from caretaker.llm.claude import StructuredCompleteError
+from caretaker.observability.metrics import record_complexity_tier
 
 if TYPE_CHECKING:
     from caretaker.llm.claude import ClaudeClient
@@ -190,15 +191,18 @@ async def classify(
     """
     fast = fast_path_tier(context=context, routing_decision=routing_decision)
     if fast is not None:
+        record_complexity_tier(tier=fast, source="fast_path")
         return ComplexityVerdict(tier=fast, reason="heuristic fast path", confidence=0.9)
 
     if claude is None or not getattr(claude, "available", True):
         # No LLM available; pick a safe tier from heuristics.
-        return _heuristic_fallback(context, reason="LLM unavailable")
+        verdict = _heuristic_fallback(context, reason="LLM unavailable")
+        record_complexity_tier(tier=verdict.tier, source="heuristic_fallback")
+        return verdict
 
     prompt = _build_classifier_prompt(context)
     try:
-        return await claude.structured_complete(
+        verdict = await claude.structured_complete(
             prompt,
             schema=ComplexityVerdict,
             feature="complexity_classifier",
@@ -207,13 +211,19 @@ async def classify(
         )
     except StructuredCompleteError as exc:
         logger.info("complexity_classifier: structured_complete failed (%s)", exc)
-        return _heuristic_fallback(context, reason=f"LLM error: {exc}")
+        fallback = _heuristic_fallback(context, reason=f"LLM error: {exc}")
+        record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
+        return fallback
     except Exception as exc:  # noqa: BLE001 — never break the caller on a classifier hiccup
         logger.warning(
             "complexity_classifier: unexpected error (%s); falling back to heuristic",
             exc,
         )
-        return _heuristic_fallback(context, reason=f"classifier exception: {exc}")
+        fallback = _heuristic_fallback(context, reason=f"classifier exception: {exc}")
+        record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
+        return fallback
+    record_complexity_tier(tier=verdict.tier, source="llm")
+    return verdict
 
 
 def _heuristic_fallback(context: ExecutorRouteContext, *, reason: str) -> ComplexityVerdict:

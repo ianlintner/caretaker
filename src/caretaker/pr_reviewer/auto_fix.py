@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from caretaker.observability.metrics import record_auto_fix_dispatch
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ def decide_auto_fix(
     pr_author: str,
     pr_labels: list[str],
     tracking: TrackedPR,
+    repo: str = "",
 ) -> AutoFixDecision:
     """Return whether to dispatch a fixer for this review, and which one.
 
@@ -132,14 +134,21 @@ def decide_auto_fix(
          the opt-in label
       5. Pick a backend from category → fixer map; fall back to
          ``default_fixer`` when no category resolves cleanly
+
+    ``repo`` is the ``owner/repo`` slug, threaded through so the
+    ``skipped`` outcome counter is attributed correctly. Defaults to
+    empty for backward-compat with older callers.
     """
     if not config.enabled:
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
         return AutoFixDecision(should_dispatch=False, reason="auto_fix.enabled is False")
     if review.verdict != "REQUEST_CHANGES":
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
         return AutoFixDecision(
             should_dispatch=False, reason=f"verdict {review.verdict!r} is not REQUEST_CHANGES"
         )
     if tracking.auto_fix_attempts >= config.max_attempts:
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -151,6 +160,7 @@ def decide_auto_fix(
     author_eligible = pr_author in set(config.allowed_authors)
     label_eligible = config.opt_in_label in pr_labels
     if not (author_eligible or label_eligible):
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -415,6 +425,12 @@ async def dispatch_auto_fix(
                     success=False,
                     detail=outcome.detail,
                 )
+                record_auto_fix_dispatch(
+                    repo=f"{owner}/{repo}",
+                    backend=decision.backend,
+                    category=(decision.categories or ["none"])[0] or "none",
+                    outcome="dispatched_fail",
+                )
                 return outcome
         else:
             # Look up the backend's fix_run via its module. Only
@@ -477,6 +493,12 @@ async def dispatch_auto_fix(
             new_head_sha=new_head,
             success=True,
         )
+        record_auto_fix_dispatch(
+            repo=f"{owner}/{repo}",
+            backend=decision.backend,
+            category=(decision.categories or ["none"])[0] or "none",
+            outcome="dispatched_success",
+        )
         return outcome
     except Exception as exc:  # noqa: BLE001 — the dispatcher is best-effort
         logger.warning(
@@ -502,6 +524,12 @@ async def dispatch_auto_fix(
                 success=False,
                 detail=f"`{type(exc).__name__}: {exc}`",
             )
+        record_auto_fix_dispatch(
+            repo=f"{owner}/{repo}",
+            backend=decision.backend,
+            category=(decision.categories or ["none"])[0] or "none",
+            outcome="dispatched_fail",
+        )
         return outcome
     finally:
         if workdir is not None:

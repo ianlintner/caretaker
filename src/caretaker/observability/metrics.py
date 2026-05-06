@@ -348,6 +348,74 @@ INTERVENTION_REASONS: frozenset[str] = frozenset(
 )
 
 
+# ── PR-reviewer instrumentation (observability phase 1A) ────────────
+#
+# These five metrics live alongside the attribution counters above
+# because they answer the same question one layer deeper: not just
+# "did caretaker touch this PR?" but "with which backend, at what
+# tier, with what verdict, and how long did it take?".
+#
+# Cardinality budget:
+#   - ``backend`` is bounded by the registered backends (~5 entries).
+#   - ``tier`` / ``verdict`` / ``source`` / ``mode`` / ``outcome`` are
+#     all bounded by closed enums declared below.
+#   - ``model`` is the opencode model identifier — operators pin a
+#     handful (one per tier) so this stays small in practice.
+#   - ``repo`` is ``owner/repo`` (same convention as the attribution
+#     counters).
+#   - ``category`` is the auto-fix dispatcher's category (``lint``,
+#     ``format``, ``correctness``, etc.) — a closed enum from the
+#     review-payload schema.
+
+# Bounded enums for the labels above. Re-exported via ``__all__`` so
+# call-sites can refer to the canonical tuple instead of fat-fingering
+# the string and silently birthing a new series.
+COMPLEXITY_TIERS: tuple[str, ...] = ("trivial", "simple", "standard", "complex", "none")
+CLASSIFIER_SOURCES: tuple[str, ...] = ("fast_path", "llm", "heuristic_fallback")
+OPENCODE_MODES: tuple[str, ...] = ("review", "fix")
+OPENCODE_OUTCOMES: tuple[str, ...] = (
+    "ok",
+    "parse_fallback",
+    "timeout",
+    "no_endpoints",
+    "error",
+)
+AUTO_FIX_OUTCOMES: tuple[str, ...] = ("dispatched_success", "dispatched_fail", "skipped")
+REVIEW_VERDICTS: tuple[str, ...] = ("APPROVE", "COMMENT", "REQUEST_CHANGES")
+
+PR_REVIEW_OUTCOME_TOTAL = Counter(
+    "caretaker_pr_review_outcome_total",
+    "PR review outcomes by backend, tier, verdict",
+    ["service", "repo", "backend", "tier", "verdict"],
+    registry=REGISTRY,
+)
+PR_REVIEW_DURATION_SECONDS = Histogram(
+    "caretaker_pr_review_duration_seconds",
+    "End-to-end PR review duration",
+    ["service", "backend", "tier"],
+    buckets=(1, 5, 10, 30, 60, 120, 300, 600),
+    registry=REGISTRY,
+)
+COMPLEXITY_CLASSIFIER_TIER_TOTAL = Counter(
+    "caretaker_complexity_classifier_tier_total",
+    "Complexity classifier verdicts by tier and decision source",
+    ["service", "tier", "source"],
+    registry=REGISTRY,
+)
+OPENCODE_INVOCATION_TOTAL = Counter(
+    "caretaker_opencode_invocation_total",
+    "opencode CLI subprocess invocations by model and outcome",
+    ["service", "model", "mode", "outcome"],
+    registry=REGISTRY,
+)
+AUTO_FIX_DISPATCH_TOTAL = Counter(
+    "caretaker_auto_fix_dispatch_total",
+    "Auto-fix dispatcher outcomes",
+    ["service", "repo", "backend", "category", "outcome"],
+    registry=REGISTRY,
+)
+
+
 # ── LLM prompt-cache telemetry ───────────────────────────────────────
 #
 # Emitted by :mod:`caretaker.llm.provider` on every completion.  Together
@@ -868,6 +936,80 @@ def record_guardrail_rollback_fired(repo: str, reason: str) -> None:
     ).inc()
 
 
+def _bound_or_other(value: str, allowed: tuple[str, ...]) -> str:
+    """Return ``value`` when it's in ``allowed``, else ``"other"``.
+
+    Centralises the enum-validation pattern used by the PR-reviewer
+    recorders below: an unknown value never crashes the run, but it
+    also never silently mints a new series — both effects are
+    cardinality-eating bugs we'd rather see as a generic "other"
+    bucket and a one-shot warning log.
+    """
+    if value in allowed:
+        return value
+    logger.warning(
+        "metrics: enum value %r not in %s; recording under 'other'",
+        value,
+        allowed,
+    )
+    return "other"
+
+
+def record_pr_review_outcome(repo: str, backend: str, tier: str, verdict: str) -> None:
+    """Increment ``caretaker_pr_review_outcome_total``.
+
+    ``tier`` / ``verdict`` are validated against the bounded enums
+    above; unknown values are recorded under ``"other"`` so a typo
+    can't silently expand cardinality.
+    """
+    PR_REVIEW_OUTCOME_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        repo=repo or "unknown",
+        backend=backend or "none",
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+        verdict=_bound_or_other(verdict, REVIEW_VERDICTS),
+    ).inc()
+
+
+def observe_pr_review_duration(backend: str, tier: str, seconds: float) -> None:
+    """Observe a sample on ``caretaker_pr_review_duration_seconds``."""
+    PR_REVIEW_DURATION_SECONDS.labels(
+        service=_SERVICE_LABEL,
+        backend=backend or "none",
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+    ).observe(max(0.0, float(seconds)))
+
+
+def record_complexity_tier(tier: str, source: str) -> None:
+    """Increment ``caretaker_complexity_classifier_tier_total``."""
+    COMPLEXITY_CLASSIFIER_TIER_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+        source=_bound_or_other(source, CLASSIFIER_SOURCES),
+    ).inc()
+
+
+def record_opencode_invocation(model: str, mode: str, outcome: str) -> None:
+    """Increment ``caretaker_opencode_invocation_total``."""
+    OPENCODE_INVOCATION_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        model=model or "unknown",
+        mode=_bound_or_other(mode, OPENCODE_MODES),
+        outcome=_bound_or_other(outcome, OPENCODE_OUTCOMES),
+    ).inc()
+
+
+def record_auto_fix_dispatch(repo: str, backend: str, category: str, outcome: str) -> None:
+    """Increment ``caretaker_auto_fix_dispatch_total``."""
+    AUTO_FIX_DISPATCH_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        repo=repo or "unknown",
+        backend=backend or "none",
+        category=category or "none",
+        outcome=_bound_or_other(outcome, AUTO_FIX_OUTCOMES),
+    ).inc()
+
+
 def record_llm_cache_usage(
     *,
     provider: str,
@@ -896,10 +1038,15 @@ def record_llm_cache_usage(
 
 __all__ = [
     "APP_INFO",
+    "AUTO_FIX_DISPATCH_TOTAL",
+    "AUTO_FIX_OUTCOMES",
     "CARETAKER_ERRORS_TOTAL",
     "CARETAKER_ISSUE_OUTCOME_TOTAL",
     "CARETAKER_OPERATOR_INTERVENTION_TOTAL",
     "CARETAKER_PR_OUTCOME_TOTAL",
+    "CLASSIFIER_SOURCES",
+    "COMPLEXITY_CLASSIFIER_TIER_TOTAL",
+    "COMPLEXITY_TIERS",
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
     "GITHUB_SCOPE_GAP_TOTAL",
@@ -915,11 +1062,17 @@ __all__ = [
     "LATENCY_BUCKETS",
     "LLM_CACHE_CREATION_TOKENS_TOTAL",
     "LLM_CACHE_READ_TOKENS_TOTAL",
+    "OPENCODE_INVOCATION_TOTAL",
+    "OPENCODE_MODES",
+    "OPENCODE_OUTCOMES",
     "ORCHESTRATOR_SOFT_FAIL_TOTAL",
     "PR_OUTCOMES",
+    "PR_REVIEW_DURATION_SECONDS",
+    "PR_REVIEW_OUTCOME_TOTAL",
     "RATE_LIMIT_COOLDOWN_SECONDS",
     "RATE_LIMIT_REMAINING",
     "REGISTRY",
+    "REVIEW_VERDICTS",
     "WEBHOOK_EVENTS_TOTAL",
     "WORKER_JOBS_TOTAL",
     "WORKER_JOB_DURATION_SECONDS",
@@ -929,6 +1082,9 @@ __all__ = [
     "get_service_label",
     "init_metrics",
     "metrics_asgi_app",
+    "observe_pr_review_duration",
+    "record_auto_fix_dispatch",
+    "record_complexity_tier",
     "record_error",
     "record_github_scope_gap",
     "record_guardrail_filter_blocked",
@@ -937,9 +1093,11 @@ __all__ = [
     "record_http_client",
     "record_issue_outcome",
     "record_llm_cache_usage",
+    "record_opencode_invocation",
     "record_operator_intervention",
     "record_orchestrator_soft_fail",
     "record_pr_outcome",
+    "record_pr_review_outcome",
     "record_webhook_event",
     "record_worker_job",
     "set_rate_limit_remaining",

@@ -40,6 +40,7 @@ import re
 import shutil
 from typing import TYPE_CHECKING
 
+from caretaker.observability.metrics import record_opencode_invocation
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 from caretaker.pr_reviewer.backends._workdir import (
     WorkdirError,
@@ -78,6 +79,19 @@ def _resolve_tier_model(
 
 class OpenCodeLocalError(RuntimeError):
     """Raised when the local opencode CLI run fails (clone, invocation, parse)."""
+
+
+class OpenCodeLocalTimeoutError(OpenCodeLocalError):
+    """Raised specifically when the opencode subprocess timed out."""
+
+
+class OpenCodeLocalNoEndpointsError(OpenCodeLocalError):
+    """Raised when opencode reports ``No endpoints found`` (provider misconfig).
+
+    Distinguished from generic ``OpenCodeLocalError`` so the metrics
+    layer can attribute the failure to the right outcome bucket without
+    string-matching stderr at every callsite.
+    """
 
 
 def _parse_pr_url_wrapped(pr_url: str):  # type: ignore[no-untyped-def]
@@ -210,8 +224,19 @@ async def _invoke_opencode(
             stderr_log=lambda line: logger.warning("opencode! %s", line),
         )
     except TimeoutError as exc:
-        raise OpenCodeLocalError(f"opencode timed out after {config.timeout_seconds}s") from exc
+        raise OpenCodeLocalTimeoutError(
+            f"opencode timed out after {config.timeout_seconds}s"
+        ) from exc
     if proc.returncode != 0:
+        # Special-case: opencode emits ``No endpoints found`` when the
+        # configured provider (OpenRouter) hasn't been wired up. We
+        # surface this as its own exception type so the caller can
+        # record a specific ``no_endpoints`` outcome on the metric.
+        if "No endpoints found" in stderr:
+            raise OpenCodeLocalNoEndpointsError(
+                f"opencode exited {proc.returncode} with No endpoints found "
+                f"(check OPENROUTER_API_KEY / model id): {stderr.strip()[:500]}"
+            )
         raise OpenCodeLocalError(
             f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
         )
@@ -230,10 +255,17 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
     match = _RESULT_TEXT_RE.search(assistant_text)
     if not match:
         logger.warning(
-            "opencode_local: no caretaker-review JSON block in opencode reply; "
-            "wrapping the prose as a COMMENT review (length=%d)",
+            "opencode_local: fallback parse used — structured caretaker-review JSON missing. "
+            "stdout_bytes=%d sample=%r",
             len(assistant_text),
+            assistant_text[:200],
         )
+        # Record under unknown model/mode because _parse_review_payload
+        # doesn't see those args; the caller (run / fix_run) will record
+        # the corresponding outcome with the real model + mode. This
+        # extra increment guarantees the warning is paired with a
+        # counter even if a future caller forgets to wrap.
+        record_opencode_invocation(model="<unknown>", mode="<unknown>", outcome="parse_fallback")
         return ReviewResult(
             summary=(
                 "**Review by opencode_local (fallback parse)**\n\n"
@@ -317,6 +349,11 @@ async def run(
     workdir: str | None = None
     success = False
     review_model = _resolve_tier_model(tier, tier_map=config.review_models, default=config.model)
+    # Track whether _parse_review_payload took the fallback path so we
+    # record the right outcome AROUND the invoke. The fallback parse
+    # itself fires a counter; we still want the run-level invocation
+    # outcome to reflect "parse_fallback" rather than "ok".
+    used_fallback = False
     try:
         workdir, _parsed = await _prepare_workdir(pr_url, config=config)
         stdout = await _invoke_opencode(
@@ -325,11 +362,30 @@ async def run(
             prompt=_REVIEW_PROMPT,
             model_override=review_model,
         )
+        # If the structured JSON block is missing, _parse_review_payload
+        # already logged + recorded the parse_fallback counter; we
+        # record the run-level outcome to match.
+        if _RESULT_TEXT_RE.search(stdout) is None:
+            used_fallback = True
         result = _parse_review_payload(stdout)
         success = True
+        if not used_fallback:
+            record_opencode_invocation(model=review_model, mode="review", outcome="ok")
+        else:
+            record_opencode_invocation(model=review_model, mode="review", outcome="parse_fallback")
         return result
+    except OpenCodeLocalTimeoutError:
+        record_opencode_invocation(model=review_model, mode="review", outcome="timeout")
+        raise
+    except OpenCodeLocalNoEndpointsError:
+        record_opencode_invocation(model=review_model, mode="review", outcome="no_endpoints")
+        raise
     except WorkdirError as exc:
+        record_opencode_invocation(model=review_model, mode="review", outcome="error")
         raise OpenCodeLocalError(str(exc)) from exc
+    except Exception:
+        record_opencode_invocation(model=review_model, mode="review", outcome="error")
+        raise
     finally:
         if workdir is not None:
             cleanup_workdir(workdir, keep=(not success and config.keep_workdir_on_failure))
@@ -404,12 +460,24 @@ async def fix_run(
         tier_map=getattr(config, "fix_models", {}),
         default=getattr(config, "fix_model", "") or config.model,
     )
-    stdout = await _invoke_opencode(
-        workdir=workdir,
-        config=config,
-        prompt=prompt,
-        model_override=fix_model,
-    )
+    try:
+        stdout = await _invoke_opencode(
+            workdir=workdir,
+            config=config,
+            prompt=prompt,
+            model_override=fix_model,
+        )
+    except OpenCodeLocalTimeoutError:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="timeout")
+        raise
+    except OpenCodeLocalNoEndpointsError:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="no_endpoints")
+        raise
+    except Exception:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="error")
+        raise
+
+    record_opencode_invocation(model=fix_model, mode="fix", outcome="ok")
     text = stdout.strip()
     if text.startswith("CARETAKER_FIX_DECLINED:"):
         raise OpenCodeLocalError(f"opencode declined to fix: {text}")

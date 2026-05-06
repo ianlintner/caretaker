@@ -502,3 +502,155 @@ async def test_dispatch_auto_fix_deterministic_lint_success_updates_tracking(mon
     assert tracking.auto_fix_last_head_sha == new_sha
     assert tracking.auto_fix_attempts == 1
     github.upsert_issue_comment.assert_awaited_once()
+
+
+# ── observability wire-up ────────────────────────────────────────────────────
+
+
+def _read_dispatch_counter(repo: str, backend: str, category: str, outcome: str) -> float:
+    from caretaker.observability.metrics import REGISTRY, get_service_label
+
+    val = REGISTRY.get_sample_value(
+        "caretaker_auto_fix_dispatch_total",
+        {
+            "service": get_service_label(),
+            "repo": repo,
+            "backend": backend,
+            "category": category,
+            "outcome": outcome,
+        },
+    )
+    return 0.0 if val is None else float(val)
+
+
+def test_decide_auto_fix_records_skipped_when_disabled():
+    """When the gate fails, ``skipped`` is recorded once with backend=none."""
+    from caretaker.config import AutoFixConfig
+
+    before = _read_dispatch_counter("owner/repo", "none", "none", "skipped")
+    cfg = AutoFixConfig(enabled=False)
+    review = ReviewResult(summary="x", verdict="REQUEST_CHANGES", comments=[])
+    _auto_fix.decide_auto_fix(
+        review=review,
+        config=cfg,
+        pr_author="bot[bot]",
+        pr_labels=[],
+        tracking=_make_tracking(),
+        repo="owner/repo",
+    )
+    after = _read_dispatch_counter("owner/repo", "none", "none", "skipped")
+    assert after >= before + 1
+
+
+def test_decide_auto_fix_records_skipped_when_verdict_not_request_changes():
+    before = _read_dispatch_counter("owner/repo", "none", "none", "skipped")
+    cfg = _make_config()
+    review = ReviewResult(summary="x", verdict="APPROVE", comments=[])
+    _auto_fix.decide_auto_fix(
+        review=review,
+        config=cfg,
+        pr_author="bot[bot]",
+        pr_labels=[],
+        tracking=_make_tracking(),
+        repo="owner/repo",
+    )
+    after = _read_dispatch_counter("owner/repo", "none", "none", "skipped")
+    assert after >= before + 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_records_dispatched_success(monkeypatch):
+    """A successful lint fix records ``dispatched_success``."""
+    import caretaker.pr_reviewer.auto_fix as _af_mod
+    import caretaker.pr_reviewer.backends._workdir as _wd
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(_wd, "prepare_workdir", AsyncMock(return_value=("/tmp/fake", MagicMock())))
+    monkeypatch.setattr(_wd, "cleanup_workdir", MagicMock())
+    monkeypatch.setattr(_af_mod, "run_deterministic_lint", AsyncMock(return_value=True))
+    monkeypatch.setattr(_af_mod, "commit_and_push", AsyncMock(return_value="newshaaa"))
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+
+    before = _read_dispatch_counter(
+        "owner/repo", "deterministic_lint", "lint", "dispatched_success"
+    )
+    await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/9",
+        head_branch="feature/lint",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=9,
+        tracking=TrackedPR(number=9),
+    )
+    after = _read_dispatch_counter("owner/repo", "deterministic_lint", "lint", "dispatched_success")
+    assert after >= before + 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_records_dispatched_fail_on_no_diff(monkeypatch):
+    """A no-changes lint result records ``dispatched_fail``."""
+    import caretaker.pr_reviewer.auto_fix as _af_mod
+    import caretaker.pr_reviewer.backends._workdir as _wd
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(_wd, "prepare_workdir", AsyncMock(return_value=("/tmp/fake", MagicMock())))
+    monkeypatch.setattr(_wd, "cleanup_workdir", MagicMock())
+    monkeypatch.setattr(_af_mod, "run_deterministic_lint", AsyncMock(return_value=False))
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+
+    before = _read_dispatch_counter("owner/repo", "deterministic_lint", "lint", "dispatched_fail")
+    await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/10",
+        head_branch="feature/lint",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=10,
+        tracking=TrackedPR(number=10),
+    )
+    after = _read_dispatch_counter("owner/repo", "deterministic_lint", "lint", "dispatched_fail")
+    assert after >= before + 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_fix_records_dispatched_fail_on_exception(monkeypatch):
+    """When the dispatcher hits an exception (no GITHUB_TOKEN), record ``dispatched_fail``."""
+    from caretaker.config import PRReviewerConfig
+    from caretaker.state.models import TrackedPR
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    github = MagicMock()
+    github.upsert_issue_comment = AsyncMock()
+
+    before = _read_dispatch_counter("owner/repo", "deterministic_lint", "lint", "dispatched_fail")
+    outcome = await _auto_fix.dispatch_auto_fix(
+        decision=_make_dispatch_decision(),
+        pr_url="https://github.com/owner/repo/pull/11",
+        head_branch="feature/fix",
+        review=_make_dispatch_review(),
+        config=PRReviewerConfig(enabled=True),
+        github=github,
+        owner="owner",
+        repo="repo",
+        pr_number=11,
+        tracking=TrackedPR(number=11),
+    )
+    assert not outcome.success
+    after = _read_dispatch_counter("owner/repo", "deterministic_lint", "lint", "dispatched_fail")
+    assert after >= before + 1
