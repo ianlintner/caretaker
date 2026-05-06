@@ -540,6 +540,24 @@ async def run(
     workdir: str | None = None
     success = False
     review_model = _resolve_tier_model(tier, tier_map=config.review_models, default=config.model)
+
+    # Lazy import — keep the per-PR-decision helper out of the
+    # top-level import path so the backend module stays cheap to load.
+    from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+
+    repo_slug, pr_number = _extract_repo_and_pr(pr_url)
+
+    async def _record(event: str, **fields: object) -> None:
+        if not repo_slug or pr_number <= 0:
+            return
+        await record_decision(repo_slug, pr_number, "opencode_local", event, **fields)
+
+    await _record(
+        "opencode_review_started",
+        model=review_model,
+        tier=str(tier) if tier else "none",
+        workdir=workdir or "",
+    )
     try:
         workdir, _parsed = await _prepare_workdir(pr_url, config=config)
         stdout = await _invoke_opencode(
@@ -558,22 +576,68 @@ async def run(
             mode="review",
             outcome="parse_fallback" if used_fallback else "ok",
         )
+        await _record(
+            "opencode_review_finished",
+            model=review_model,
+            verdict=str(result.verdict),
+            fallback_parse=bool(used_fallback),
+        )
         return result
-    except OpenCodeLocalTimeoutError:
+    except OpenCodeLocalTimeoutError as exc:
         record_opencode_invocation(model=review_model, mode="review", outcome="timeout")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="timeout",
+            error_message=str(exc),
+        )
         raise
-    except OpenCodeLocalNoEndpointsError:
+    except OpenCodeLocalNoEndpointsError as exc:
         record_opencode_invocation(model=review_model, mode="review", outcome="no_endpoints")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="no_endpoints",
+            error_message=str(exc),
+        )
         raise
     except WorkdirError as exc:
         record_opencode_invocation(model=review_model, mode="review", outcome="error")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="workdir_error",
+            error_message=str(exc),
+        )
         raise OpenCodeLocalError(str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         record_opencode_invocation(model=review_model, mode="review", outcome="error")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind=type(exc).__name__,
+            error_message=str(exc)[:500],
+        )
         raise
     finally:
         if workdir is not None:
             cleanup_workdir(workdir, keep=(not success and config.keep_workdir_on_failure))
+
+
+def _extract_repo_and_pr(pr_url: str) -> tuple[str, int]:
+    """Best-effort parse of ``pr_url`` into ``(owner/repo, pr_number)``.
+
+    Used only to attribute decision-timeline records — the parser used
+    by :func:`run` may already have parsed this, but plumbing that
+    object through every callsite is out of scope. Returns
+    ``("", 0)`` when the URL can't be parsed so the timeline write
+    silently skips rather than crashing the review.
+    """
+    try:
+        parsed = parse_pr_url(pr_url)
+        return f"{parsed.owner}/{parsed.repo}", int(parsed.number)
+    except Exception:  # pragma: no cover - defensive
+        return "", 0
 
 
 _FIX_PROMPT_TEMPLATE = """\

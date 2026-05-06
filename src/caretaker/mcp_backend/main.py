@@ -466,6 +466,23 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             except Exception:
                 logger.warning("Failed to initialise admin webhooks API", exc_info=True)
 
+            # Per-PR decision timeline — admin endpoint reading from a
+            # MongoDB ``pr_decisions`` collection populated by the PR-
+            # reviewer pipeline. The store is also installed as the
+            # process-wide default so the lazy ``record_decision``
+            # call sites pick it up without explicit plumbing.
+            try:
+                from caretaker.admin import pr_timeline_api
+                from caretaker.state import pr_decisions as _pr_decisions
+
+                _decision_store = _pr_decisions.PRDecisionStore.from_config(maint_cfg)
+                _pr_decisions.configure_default_store(_decision_store)
+                pr_timeline_api.configure(_decision_store)
+                application.include_router(pr_timeline_api.router)
+                logger.info("Admin PR-timeline API enabled")
+            except Exception:
+                logger.warning("Failed to initialise admin PR-timeline API", exc_info=True)
+
             # Serve SPA static files
             if _ADMIN_STATIC_DIR.is_dir():
                 application.mount(

@@ -187,13 +187,38 @@ async def classify(
     context: ExecutorRouteContext,
     claude: ClaudeClient | None,
     routing_decision: RoutingDecision | None = None,
+    pr_number: int | None = None,
 ) -> ComplexityVerdict:
     """Classify a PR's complexity, using the fast path when possible.
 
     Always returns a :class:`ComplexityVerdict`. On LLM failure or
     unavailability, falls back to a heuristic verdict so callers can
     continue without a special-case branch.
+
+    ``pr_number`` is optional and only used to attribute the
+    ``tier_classified`` decision-timeline record back to the PR. When
+    omitted, the timeline write is skipped (so non-PR call sites such
+    as eval harnesses don't pollute the timeline collection).
     """
+    # Lazy import — avoid pulling Mongo deps at module import time.
+    from caretaker.state.pr_decisions import record_decision
+
+    repo_slug = context.repo_slug or ""
+
+    async def _record(verdict: ComplexityVerdict, source: str) -> None:
+        if pr_number is None or not repo_slug:
+            return
+        await record_decision(
+            repo_slug,
+            int(pr_number),
+            "complexity_classifier",
+            "tier_classified",
+            tier=str(verdict.tier),
+            source=source,
+            confidence=float(verdict.confidence),
+            reason=verdict.reason,
+        )
+
     with _tracer.start_as_current_span("complexity_classifier.classify") as span:
         try:
             span.set_attribute("caretaker.pr.repo", context.repo_slug or "")
@@ -214,6 +239,7 @@ async def classify(
             record_complexity_tier(tier=fast, source="fast_path")
             verdict = ComplexityVerdict(tier=fast, reason="heuristic fast path", confidence=0.9)
             _stamp(verdict, "fast_path")
+            await _record(verdict, "fast_path")
             return verdict
 
         if claude is None or not getattr(claude, "available", True):
@@ -221,6 +247,7 @@ async def classify(
             verdict = _heuristic_fallback(context, reason="LLM unavailable")
             record_complexity_tier(tier=verdict.tier, source="heuristic_fallback")
             _stamp(verdict, "heuristic_fallback")
+            await _record(verdict, "heuristic_fallback")
             return verdict
 
         prompt = _build_classifier_prompt(context)
@@ -237,6 +264,7 @@ async def classify(
             fallback = _heuristic_fallback(context, reason=f"LLM error: {exc}")
             record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
             _stamp(fallback, "heuristic_fallback")
+            await _record(fallback, "heuristic_fallback")
             return fallback
         except Exception as exc:  # noqa: BLE001 — never break the caller on a classifier hiccup
             logger.warning(
@@ -246,9 +274,11 @@ async def classify(
             fallback = _heuristic_fallback(context, reason=f"classifier exception: {exc}")
             record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
             _stamp(fallback, "heuristic_fallback")
+            await _record(fallback, "heuristic_fallback")
             return fallback
         record_complexity_tier(tier=verdict.tier, source="llm")
         _stamp(verdict, "llm")
+        await _record(verdict, "llm")
         return verdict
 
 

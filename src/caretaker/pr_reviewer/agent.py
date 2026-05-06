@@ -19,6 +19,7 @@ Idempotency is provided by ``skip_labels`` (defaults to
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -262,6 +263,37 @@ class PRReviewerAgent(BaseAgent):
                 "auto_fix_reason": auto_fix_reason or "n/a",
             },
         )
+        # Per-PR decision timeline write — fire-and-forget so the
+        # observability path never blocks the agent. Lazy import keeps
+        # the helper out of the import-cycle hot path.
+        try:
+            from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+
+            asyncio.create_task(
+                record_decision(
+                    repo_slug,
+                    int(pr_number),
+                    "pr_reviewer",
+                    "review_completed",
+                    pr_author=pr_author,
+                    is_caretaker_owned=bool(is_caretaker_pr),
+                    routing_reason=routing_reason,
+                    verdict=verdict_label,
+                    tier=tier_label,
+                    backend=backend_label,
+                    model=model or "none",
+                    duration_ms=duration_ms,
+                    auto_fix_dispatched=bool(auto_fix_dispatched),
+                    auto_fix_reason=auto_fix_reason or "n/a",
+                )
+            )
+        except RuntimeError:
+            # No running loop (e.g. called from a sync test harness).
+            # Skip the decision-timeline write — the structured log
+            # line above is still emitted by ``logger.info``.
+            pass
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("record_decision dispatch failed", exc_info=True)
 
     async def _handle_pr(
         self,
@@ -327,9 +359,44 @@ class PRReviewerAgent(BaseAgent):
         span.set_attribute("caretaker.pr.author", pr_author)
         span.set_attribute("caretaker.pr.is_caretaker_owned", bool(is_caretaker_pr))
 
+        # Per-PR decision timeline: emit ``review_started`` for the
+        # non-skipped path (skip paths emit their own ``review_skipped``
+        # below). Lazy import keeps the helper out of the import-cycle
+        # hot path. ``await`` is safe here — we're already in the async
+        # body and the helper is fire-and-forget at the Mongo layer.
+        from caretaker.state.pr_decisions import record_decision
+
+        will_skip = bool(
+            (cfg.skip_draft and pr.get("draft", False))
+            or any(
+                lbl in cfg.skip_labels
+                for lbl in (
+                    label.get("name", "") if isinstance(label, dict) else str(label)
+                    for label in pr.get("labels", [])
+                )
+            )
+        )
+        if not will_skip:
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_started",
+                author=pr_author,
+                is_caretaker_owned=bool(is_caretaker_pr),
+            )
+
         # Skip drafts
         if cfg.skip_draft and pr.get("draft", False):
             report.skipped.append(pr_number)
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_skipped",
+                reason="draft",
+                author=pr_author,
+            )
             self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
@@ -355,6 +422,14 @@ class PRReviewerAgent(BaseAgent):
         ]
         if any(lbl in cfg.skip_labels for lbl in pr_labels):
             report.skipped.append(pr_number)
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_skipped",
+                reason="skip_label",
+                author=pr_author,
+            )
             self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
@@ -411,6 +486,7 @@ class PRReviewerAgent(BaseAgent):
                             pr_labels=pr_labels,
                             tracking=tracking,
                             repo=f"{owner}/{repo}",
+                            pr_number=pr_number,
                         )
                         harvested_verdict = review_result.verdict
                         if fix_decision.should_dispatch:
@@ -589,6 +665,7 @@ class PRReviewerAgent(BaseAgent):
                             pr_labels=pr_labels,
                             tracking=_tracking,
                             repo=f"{owner}/{repo}",
+                            pr_number=pr_number,
                         )
                         auto_fix_reason = _decision.reason
                         if _decision.should_dispatch:
@@ -727,6 +804,7 @@ class PRReviewerAgent(BaseAgent):
             # Flash-Lite call costs ~$0.0001.
             tier = (
                 await self._classify_complexity(
+                    pr_number=pr_number,
                     pr=pr,
                     files=files,
                     pr_labels=pr_labels,
@@ -771,6 +849,7 @@ class PRReviewerAgent(BaseAgent):
                     pr_labels=pr_labels,
                     tracking=_tracking,
                     repo=f"{owner}/{repo}",
+                    pr_number=pr_number,
                 )
                 auto_fix_reason = fix_decision.reason
                 if fix_decision.should_dispatch:
@@ -967,9 +1046,10 @@ class PRReviewerAgent(BaseAgent):
         report.reviewed.append(pr_number)
         return review_result
 
-    async def _classify_complexity(
+    async def _classify_complexity(  # noqa: PLR0913 — kwargs-only callsite
         self,
         *,
+        pr_number: int | None = None,
         pr: dict[str, Any],
         files: list[dict[str, Any]],
         pr_labels: list[str],
@@ -1013,6 +1093,7 @@ class PRReviewerAgent(BaseAgent):
                 context=context,
                 claude=claude,
                 routing_decision=routing_decision,
+                pr_number=pr_number,
             )
             logger.info(
                 "pr-reviewer: complexity tier=%s (confidence=%.2f) — %s",
