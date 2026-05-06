@@ -84,6 +84,16 @@ def test_repo_matches_handles_extra_whitespace_in_patterns() -> None:
     assert _repo_matches("ianlintner/caretaker", ["  ianlintner/caretaker  "]) is True
 
 
+def test_repo_matches_owner_wildcard_rejects_bare_slug() -> None:
+    """``"owner/*"`` must require a non-empty repo segment after the slash."""
+    assert _repo_matches("ianlintner/", ["ianlintner/*"]) is False
+
+
+def test_repo_matches_owner_wildcard_rejects_prefix_only_match() -> None:
+    """``"ianlintner/*"`` must NOT match ``"ianlintnerx/foo"``."""
+    assert _repo_matches("ianlintnerx/foo", ["ianlintner/*"]) is False
+
+
 # ── dispatcher integration ───────────────────────────────────────────
 
 

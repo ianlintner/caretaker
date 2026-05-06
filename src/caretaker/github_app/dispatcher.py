@@ -170,7 +170,12 @@ def _repo_matches(repo: str, patterns: list[str]) -> bool:
         if p == "*":
             return True
         if p.endswith("/*"):
-            if repo_lower.startswith(p[:-1]):  # p[:-1] keeps the trailing "/"
+            # ``p[:-1]`` keeps the trailing "/", so ``"owner/"`` matches
+            # ``"owner/x"`` but not ``"ownerx/y"``. Require a non-empty
+            # repo segment after the slash so the pattern doesn't match
+            # the bare slug ``"owner/"``.
+            prefix = p[:-1]
+            if repo_lower.startswith(prefix) and len(repo_lower) > len(prefix):
                 return True
         elif p == repo_lower:
             return True
@@ -590,7 +595,6 @@ __all__ = [
     "DispatchMode",
     "DispatchResult",
     "WebhookDispatcher",
-    "_repo_matches",
     "dispatch_in_background",
     "in_flight_count",
 ]
