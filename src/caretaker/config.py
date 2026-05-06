@@ -333,18 +333,20 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
 # silently bypassing OpenRouter and breaking cost/billing/rate-limits).
 DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] = {
     "openrouter": {
-        # CI log analysis: DeepSeek V4 is fast + cheap and handles the
-        # bounded "what failed?" pattern well. R1 was overkill — its
+        # CI log analysis: DeepSeek V4 Flash is fast + cheap and handles
+        # the bounded "what failed?" pattern well. R1 was overkill — its
         # extended-thinking surface doesn't change the verdict.
         "ci_log_analysis": {
-            "model": "openrouter/deepseek/deepseek-v4",
+            "model": "openrouter/deepseek/deepseek-v4-flash",
             "max_tokens": 2000,
         },
-        # Complexity classifier on OpenRouter: Gemini 3 Flash-Lite is
-        # the cheapest credible option (~$0.0001/call) and easily
-        # handles a 4-way structured-output classification.
+        # Complexity classifier on OpenRouter: Gemini 2.5 Flash-Lite is
+        # the cheapest credible option in the opencode model registry
+        # (~$0.0001/call) and easily handles a 4-way structured-output
+        # classification. (Gemini 3 Flash-Lite is not in the registry
+        # yet — only ``gemini-3-flash-preview`` and ``gemini-3-pro-preview``.)
         "complexity_classifier": {
-            "model": "openrouter/google/gemini-3-flash-lite-001",
+            "model": "openrouter/google/gemini-2.5-flash-lite",
             "max_tokens": 300,
         },
         # Architecture review: Sonnet 4.6 (was Opus 4.6). Opus is ~5x
@@ -473,7 +475,7 @@ class LLMConfig(StrictBaseModel):
     # enforces openrouter/-prefixed model strings (see model_validator below).
     provider: Literal["anthropic", "litellm", "openrouter"] = "anthropic"
     # Model used when a feature has no explicit override. For litellm this
-    # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-3.1-pro-preview").
+    # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-2.5-pro").
     default_model: str = DEFAULT_MODEL
     # Per-request timeout in seconds.
     timeout_seconds: float = 60.0
@@ -821,37 +823,43 @@ class OpenCodeLocalBackendConfig(StrictBaseModel):
     # selected tier are empty (e.g. mis-typed tier name).
     #
     # Model selection philosophy: prefer faster balanced models (Gemini
-    # 3 Pro / DeepSeek V4) over the most expensive Anthropic models
-    # (Opus, R1's extended-thinking surface). Sonnet 4.6 is reserved
-    # for architecture-level work; coding agents lean on Gemini 3.1
-    # Pro Preview and DeepSeek V4 which are faster and cheaper for
-    # the same code-review/code-edit quality.
-    model: str = "openrouter/google/gemini-3.1-pro-preview"
-    fix_model: str = "openrouter/google/gemini-3.1-pro-preview"
+    # 3 Pro Preview / DeepSeek V4) over the most expensive Anthropic
+    # models (Opus, R1's extended-thinking surface). Sonnet 4.6 is
+    # reserved for architecture-level work; coding agents lean on
+    # Gemini 3 Pro Preview and DeepSeek V4 Pro which are faster and
+    # cheaper for the same code-review/code-edit quality.
+    #
+    # All defaults route through OpenRouter since that's the provider
+    # registered in opencode CLI's model registry today. Operators with
+    # direct GEMINI_API_KEY / OPENAI_API_KEY in the pod env can swap
+    # to ``google/...`` or ``openai/...`` strings via config override.
+    model: str = "openrouter/google/gemini-3-pro-preview"
+    fix_model: str = "openrouter/google/gemini-3-pro-preview"
     # Tier → model map for PR *review*. Keys are the four tiers from
     # :mod:`caretaker.pr_reviewer.complexity_classifier`. Gemini-first:
-    # Flash-Lite for trivial typo work, Flash for simple bug fixes,
-    # DeepSeek V4 for ordinary feature work, Gemini 3.1 Pro Preview
-    # for genuinely complex review (large refactors, sensitive paths).
+    # Flash-Lite for trivial typo work, Flash Preview for simple bug
+    # fixes, DeepSeek V4 Flash for ordinary feature work, Gemini 3 Pro
+    # Preview for genuinely complex review (large refactors, sensitive
+    # paths).
     review_models: dict[str, str] = Field(
         default_factory=lambda: {
-            "trivial": "openrouter/google/gemini-3-flash-lite-001",
-            "simple": "openrouter/google/gemini-3-flash-001",
-            "standard": "openrouter/deepseek/deepseek-v4",
-            "complex": "openrouter/google/gemini-3.1-pro-preview",
+            "trivial": "openrouter/google/gemini-2.5-flash-lite",
+            "simple": "openrouter/google/gemini-3-flash-preview",
+            "standard": "openrouter/deepseek/deepseek-v4-flash",
+            "complex": "openrouter/google/gemini-3-pro-preview",
         }
     )
     # Tier → model map for the auto-fix pass. Fix needs to actually
     # write code, so the floor is higher than for review — Flash-Lite
     # struggles with multi-file edits. Gemini 3 Flash for trivial
-    # mechanical fixes, Haiku 4.6 for simple isolated fixes, DeepSeek
-    # V4 for standard work, Gemini 3.1 Pro Preview for complex.
+    # mechanical fixes, Haiku 4.5 for simple isolated fixes, DeepSeek
+    # V4 Pro for standard work, Gemini 3 Pro Preview for complex.
     fix_models: dict[str, str] = Field(
         default_factory=lambda: {
-            "trivial": "openrouter/google/gemini-3-flash-001",
-            "simple": "openrouter/anthropic/claude-haiku-4.6",
-            "standard": "openrouter/deepseek/deepseek-v4",
-            "complex": "openrouter/google/gemini-3.1-pro-preview",
+            "trivial": "openrouter/google/gemini-3-flash-preview",
+            "simple": "openrouter/anthropic/claude-haiku-4.5",
+            "standard": "openrouter/deepseek/deepseek-v4-pro",
+            "complex": "openrouter/google/gemini-3-pro-preview",
         }
     )
     timeout_seconds: int = 600

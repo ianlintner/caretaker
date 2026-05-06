@@ -5,7 +5,7 @@ An alternative to the ``opencode`` comment-trigger backend (which posts
 cycles). This backend instead:
 
   1. Clones the PR's head into a temp workdir inside caretaker's pod
-  2. Spawns ``opencode -p "<review prompt>"`` (non-interactive print mode)
+  2. Spawns ``opencode run "<review prompt>" --model <id>`` (non-interactive)
   3. Streams every line of output to caretaker's logger (visible live in
      GH Actions / kubectl logs)
   4. Parses the final stdout for a ``caretaker-review`` JSON block,
@@ -23,9 +23,9 @@ a Kubernetes Job per review so each session has its own resource budget.
 The runner shape (:func:`run`) is the same; only :func:`_invoke_opencode`
 would change.
 
-opencode CLI print mode:
-  ``opencode -p "prompt" --model openrouter/auto``
-  runs in non-interactive mode, letting OpenRouter pick the best model.
+opencode CLI non-interactive mode:
+  ``opencode run "prompt" --model openrouter/<provider>/<model>``
+  runs the agent against a prompt and prints the response to stdout.
   ``OPENROUTER_API_KEY`` is inherited from the pod environment; no extra
   configuration needed.  Configure via :class:`OpenCodeLocalBackendConfig`.
 """
@@ -182,7 +182,10 @@ async def _invoke_opencode(
         env.update(config.extra_env)
 
     model = model_override or config.model
-    args = [resolved, "-p", prompt or _REVIEW_PROMPT]
+    # opencode CLI uses ``run`` as the non-interactive subcommand. The
+    # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
+    # prompt as a positional and ``--model`` to pin the provider/model.
+    args = [resolved, "run", prompt or _REVIEW_PROMPT]
     if model:
         args += ["--model", model]
 
