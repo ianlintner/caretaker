@@ -26,7 +26,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # the frontend-build stage breaks because Docker dereferences symlinks
 # (npm wrapper requires ../lib/cli.js via relative resolution).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg git \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
