@@ -20,16 +20,19 @@ FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install Node.js so the opencode and claude-code CLIs can run inside the pod.
-# We copy from the frontend-build stage (node:22-slim) rather than pulling
-# a second base image. Only the runtime binaries are needed — no build tools.
-COPY --from=frontend-build /usr/local/bin/node /usr/local/bin/node
-COPY --from=frontend-build /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=frontend-build /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=frontend-build /usr/local/bin/npx /usr/local/bin/npx
+# Install Node.js (NodeSource) so the opencode and claude-code CLIs can
+# run inside the pod. NodeSource provides a proper apt package that
+# preserves npm's symlinks and lib structure — copying binaries from
+# the frontend-build stage breaks because Docker dereferences symlinks
+# (npm wrapper requires ../lib/cli.js via relative resolution).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install coding-agent CLIs used by the local-subprocess review backends.
-# Pin versions so a registry bump doesn't silently change agent behaviour.
 # opencode: https://github.com/sst/opencode
 # claude-code: https://github.com/anthropics/claude-code
 RUN npm install -g opencode-ai @anthropic-ai/claude-code \
