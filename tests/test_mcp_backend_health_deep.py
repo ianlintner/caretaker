@@ -165,30 +165,70 @@ def test_health_deep_caches_model_probe(monkeypatch: pytest.MonkeyPatch) -> None
     assert r2.status_code in (200, 503)
 
 
-def test_health_deep_returns_503_on_config_failure(
+def test_health_deep_missing_config_file_is_ok_with_note(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    """A missing/malformed CARETAKER_CONFIG_PATH bubbles up as a config fail.
+    """A missing CARETAKER_CONFIG_PATH is OK (defaults are used).
 
-    The aggregator treats ``config`` as a CORE check, so the rollup is
-    ``fail`` and the endpoint returns 503 with ``checks.config.status``
-    set to ``"fail"``.
+    The MCP backend pod doesn't ship a consumer-side config YAML — it
+    uses defaults + env vars. Treating "no file" as a hard failure was
+    a false alarm in v0.29.0 deploy. Now ``resolve_models`` returns
+    ``status="ok"`` with a ``note`` field instead, and the endpoint
+    returns 200.
     """
-    # Point the config loader at a path that doesn't exist; resolve_models
-    # records that as the config check failure.
     missing = tmp_path / "definitely-not-here.yml"
     monkeypatch.setenv("CARETAKER_CONFIG_PATH", str(missing))
 
     async def _fake_gather(**kwargs: Any) -> dict[str, Any]:
-        # The endpoint wires resolve_models() output into config_check.
-        # Confirm we received a fail entry and propagate it through the
-        # full aggregator response shape.
+        config_check = kwargs.get("config_check")
+        assert config_check is not None
+        assert config_check["status"] == "ok"
+        assert "note" in config_check
+        assert "not present" in config_check["note"]
+        return {
+            "status": "ok",
+            "version": "0.29.0",
+            "checks": {
+                "config": config_check,
+                "git_cli": {"status": "ok", "version": "2.47.3"},
+                "opencode_cli": {"status": "ok", "version": "1.14.39"},
+                "redis": {"status": "ok", "latency_ms": 1},
+                "mongo": {"status": "ok", "latency_ms": 1},
+                "neo4j": {"status": "ok", "latency_ms": 1},
+                "openrouter_models": {"status": "ok", "results": {}},
+            },
+        }
+
+    import caretaker.observability.health as health_module
+
+    monkeypatch.setattr(health_module, "gather_deep_health", _fake_gather)
+
+    response = client.get("/health/deep")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["checks"]["config"]["status"] == "ok"
+
+
+def test_health_deep_returns_503_on_malformed_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A malformed YAML at CARETAKER_CONFIG_PATH IS still a hard fail.
+
+    Distinct from the "no file at all" case above — if the operator
+    DID mount a config file and it's broken, that's a real deploy bug.
+    """
+    bad_yaml = tmp_path / "config.yml"
+    bad_yaml.write_text("this: : is : invalid : yaml :\n  - 1\n  - 2\n  3")
+    monkeypatch.setenv("CARETAKER_CONFIG_PATH", str(bad_yaml))
+
+    async def _fake_gather(**kwargs: Any) -> dict[str, Any]:
         config_check = kwargs.get("config_check")
         assert config_check is not None
         assert config_check["status"] == "fail"
         return {
             "status": "fail",
-            "version": "0.28.4",
+            "version": "0.29.0",
             "checks": {
                 "config": config_check,
                 "git_cli": {"status": "ok", "version": "2.47.3"},
@@ -209,7 +249,6 @@ def test_health_deep_returns_503_on_config_failure(
     body = response.json()
     assert body["status"] == "fail"
     assert body["checks"]["config"]["status"] == "fail"
-    assert "not found" in body["checks"]["config"]["error"].lower()
 
 
 def test_health_deep_returns_503_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

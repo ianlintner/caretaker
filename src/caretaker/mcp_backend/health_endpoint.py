@@ -67,14 +67,27 @@ def resolve_models() -> ResolvedModels:
     cfg_path = os.environ.get("CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml")
     try:
         cfg = MaintainerConfig.from_yaml(cfg_path)
-    except FileNotFoundError as exc:
-        logger.warning("MaintainerConfig file missing for /health/deep: %s", exc)
+    except FileNotFoundError:
+        # No file is a valid backend-deployment state — the MCP pod uses
+        # defaults + env vars, not a mounted YAML. Treat as ok (with a
+        # ``note`` so the operator can still see what's going on) instead
+        # of fail. A malformed YAML is still a hard fail (next branch).
+        logger.info(
+            "MaintainerConfig file %s not present; /health/deep using defaults",
+            cfg_path,
+        )
+        cfg = MaintainerConfig()
+        models = collect_models_to_probe(
+            opencode_local=cfg.pr_reviewer.opencode_local,
+            llm=cfg.llm,
+        )
+        opencode_cli_path = cfg.pr_reviewer.opencode_local.cli_path
         return ResolvedModels(
-            models=[],
-            opencode_cli_path="opencode",
+            models=models,
+            opencode_cli_path=opencode_cli_path,
             config_check={
-                "status": "fail",
-                "error": f"config file not found: {cfg_path}",
+                "status": "ok",
+                "note": f"config file {cfg_path} not present; using defaults",
             },
         )
     except Exception as exc:  # noqa: BLE001 — yaml + pydantic raise heterogeneous errors
