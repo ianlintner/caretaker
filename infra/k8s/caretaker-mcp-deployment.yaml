@@ -61,6 +61,14 @@ spec:
             # silence-postmortem.md.
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Application log level. v0.28.3+ honours this via
+            # logging.basicConfig in mcp_backend/main.py. Lower to DEBUG
+            # when diagnosing webhook / pr-reviewer behaviour; bump back
+            # to INFO once the issue is identified to keep log volume
+            # manageable. Noisy libs (httpx, openai, urllib3) are pinned
+            # to INFO regardless so the signal stays readable.
+            - name: CARETAKER_LOG_LEVEL
+              value: "DEBUG"
             # ── OpenTelemetry — point at the in-cluster collector ────
             # The collector is at otel-collector.default.svc:4317 (gRPC),
             # which fans out to Tempo with tail-sampling. ``caretaker-mcp``
