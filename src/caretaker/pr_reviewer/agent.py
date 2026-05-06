@@ -24,8 +24,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from opentelemetry import trace as _otel_trace
-
 from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.evolution.executor_routing import (
     ExecutorRoute,
@@ -40,6 +38,7 @@ from caretaker.observability.metrics import (
     observe_pr_review_duration,
     record_pr_review_outcome,
 )
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer import auto_fix as _auto_fix
 from caretaker.pr_reviewer import handoff_review_consumer, handoff_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
@@ -47,7 +46,7 @@ from caretaker.pr_reviewer.routing import decide
 from caretaker.state.models import TrackedPR
 
 # Module-level tracer — re-used across all PR review handlers.
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer")
+_tracer = get_tracer("caretaker.pr_reviewer")
 
 if TYPE_CHECKING:
     from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
@@ -313,9 +312,7 @@ class PRReviewerAgent(BaseAgent):
             except Exception as exc:
                 try:
                     span.record_exception(exc)
-                    span.set_status(
-                        _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200])
-                    )
+                    span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
                 except Exception:  # pragma: no cover - defensive: never let tracer mask original
                     pass
                 raise

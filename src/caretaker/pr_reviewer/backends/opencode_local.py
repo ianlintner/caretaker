@@ -41,9 +41,8 @@ import re
 import shutil
 from typing import TYPE_CHECKING
 
-from opentelemetry import trace as _otel_trace
-
 from caretaker.observability.metrics import record_llm_usage, record_opencode_invocation
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 from caretaker.pr_reviewer.backends._workdir import (
     WorkdirError,
@@ -68,7 +67,7 @@ logger = logging.getLogger(__name__)
 # outcome. Note: the ``parse_fallback`` outcome is a property of
 # :func:`run` (output-parsing), NOT this span — this span only reports
 # the subprocess result (ok/timeout/no_endpoints/error).
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.opencode_local")
+_tracer = get_tracer("caretaker.pr_reviewer.opencode_local")
 
 
 def _resolve_tier_model(
@@ -287,7 +286,7 @@ async def _invoke_opencode(
                 Exception
             ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(exc)
-                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
             raise exc
 
         env = os.environ.copy()
@@ -347,9 +346,7 @@ async def _invoke_opencode(
                 Exception
             ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(timeout_err)
-                span.set_status(
-                    _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(timeout_err)[:200])
-                )
+                span.set_status(Status(StatusCode.ERROR, str(timeout_err)[:200]))
             raise timeout_err from exc
         span.set_attribute("caretaker.opencode.exit_code", int(proc.returncode or 0))
         if proc.returncode != 0:
@@ -367,9 +364,7 @@ async def _invoke_opencode(
                     Exception
                 ):  # pragma: no cover - never let tracer mask original
                     span.record_exception(no_ep_err)
-                    span.set_status(
-                        _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(no_ep_err)[:200])
-                    )
+                    span.set_status(Status(StatusCode.ERROR, str(no_ep_err)[:200]))
                 raise no_ep_err
             err = OpenCodeLocalError(
                 f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
@@ -379,7 +374,7 @@ async def _invoke_opencode(
                 Exception
             ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(err)
-                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(err)[:200]))
+                span.set_status(Status(StatusCode.ERROR, str(err)[:200]))
             raise err
 
         # Subprocess exited cleanly. parse_fallback (if any) is determined

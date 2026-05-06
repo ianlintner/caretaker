@@ -34,9 +34,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from opentelemetry import trace as _otel_trace
-
 from caretaker.observability.metrics import record_auto_fix_dispatch
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
 if TYPE_CHECKING:
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level tracer — every dispatch becomes one span under the parent
 # ``pr_reviewer.handle_pr`` trace, carrying backend + categories + outcome.
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.auto_fix")
+_tracer = get_tracer("caretaker.pr_reviewer.auto_fix")
 
 
 async def _record_auto_fix_skipped(repo: str, pr_number: int, reason: str, attempt: int) -> None:
@@ -453,7 +452,7 @@ async def dispatch_auto_fix(
         except Exception as exc:
             try:
                 span.record_exception(exc)
-                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
             except Exception:  # pragma: no cover - defensive: never let tracer mask original
                 pass
             raise

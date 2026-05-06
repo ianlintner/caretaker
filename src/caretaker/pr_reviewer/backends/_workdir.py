@@ -19,15 +19,14 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass
 
-from opentelemetry import trace as _otel_trace
-
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
 logger = logging.getLogger(__name__)
 
 # Module-level tracer — both review and auto-fix flows clone via this
 # helper, so a span here lets either parent trace see the clone cost.
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.workdir")
+_tracer = get_tracer("caretaker.pr_reviewer.workdir")
 
 
 class WorkdirError(RuntimeError):
@@ -170,7 +169,7 @@ async def prepare_workdir(
                 Exception
             ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(exc)
-                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
             raise
 
 

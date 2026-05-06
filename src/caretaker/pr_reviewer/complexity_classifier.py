@@ -32,12 +32,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Literal
 
-from opentelemetry import trace as _otel_trace
 from pydantic import BaseModel, Field
 
 from caretaker.evolution.executor_routing import ExecutorRouteContext, _detect_sensitive_hints
 from caretaker.llm.claude import StructuredCompleteError
 from caretaker.observability.metrics import record_complexity_tier
+from caretaker.observability.tracer_compat import get_tracer
 
 if TYPE_CHECKING:
     from caretaker.llm.claude import ClaudeClient
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level tracer — every classification gets a span so the
 # parent ``pr_reviewer.handle_pr`` trace shows tier + source attrs.
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.complexity_classifier")
+_tracer = get_tracer("caretaker.pr_reviewer.complexity_classifier")
 
 
 ComplexityTier = Literal["trivial", "simple", "standard", "complex"]

@@ -38,7 +38,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from opentelemetry import trace as _otel_trace
+from caretaker.observability.tracer_compat import get_current_span
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def _capture_trace_ids() -> tuple[str | None, str | None]:
     is the no-op fallback).
     """
     try:
-        span = _otel_trace.get_current_span()
+        span = get_current_span()
         if span is None:
             return None, None
         ctx = span.get_span_context()

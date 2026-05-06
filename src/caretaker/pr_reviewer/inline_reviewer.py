@@ -11,10 +11,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from opentelemetry import trace as _otel_trace
 from pydantic import BaseModel, Field
 
 from caretaker.llm.claude import StructuredCompleteError
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level tracer — wraps each inline-LLM review so the parent
 # ``pr_reviewer.handle_pr`` trace shows diff_lines / model / verdict.
-_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.inline_reviewer")
+_tracer = get_tracer("caretaker.pr_reviewer.inline_reviewer")
 
 _REVIEW_SYSTEM = """\
 You are an expert code reviewer. Review the pull request diff below and produce
@@ -183,7 +183,7 @@ async def review(
             )
             with contextlib.suppress(Exception):  # pragma: no cover
                 span.record_exception(exc)
-                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
             raise
         except Exception as exc:
             logger.warning("Inline LLM review failed for %s/%s#%d: %s", owner, repo, pr_number, exc)
