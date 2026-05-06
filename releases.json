@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.28.4",
+      "min_compatible": "0.28.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.4",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.28.4 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.28.3 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/682\n* fix(pr-reviewer): use verified-working OpenRouter model IDs by @ianlintner in https://github.com/ianlintner/caretaker/pull/683\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.28.3...v0.28.4",
+      "breaking": false
+    },
+    {
       "version": "0.28.3",
       "min_compatible": "0.28.2",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.3",
