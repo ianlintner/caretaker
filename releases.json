@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.29.0",
+      "min_compatible": "0.28.4",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.29.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.29.0 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.28.4 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/684\n* feat(observability): phases 1-4 \u2014 metrics, health probe, OTEL spans, cost tracking, PR timeline by @ianlintner in https://github.com/ianlintner/caretaker/pull/685\n* feat(github_app): config-driven webhook fleet allow-list by @ianlintner in https://github.com/ianlintner/caretaker/pull/687\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.28.4...v0.29.0",
+      "breaking": false
+    },
+    {
       "version": "0.28.4",
       "min_compatible": "0.28.3",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.4",
