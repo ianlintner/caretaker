@@ -69,6 +69,18 @@ spec:
             # to INFO regardless so the signal stays readable.
             - name: CARETAKER_LOG_LEVEL
               value: "DEBUG"
+            # Webhook fleet allow-list (comma-separated owner/repo, with
+            # optional ``owner/*`` wildcards). The MCP backend's GitHub
+            # App is installed on ~188 repos (forks, archived projects,
+            # etc.) but only the ones below are actively maintained.
+            # Webhooks for other repos are short-circuited with
+            # outcome=not_in_allowlist before any agent resolution or
+            # fleet heartbeat write — keeps fleet_clients clean and
+            # observability noise bounded. Empty value (or unset) allows
+            # all repos. Read by ``_get_dispatcher`` in
+            # ``caretaker.mcp_backend.main`` after the YAML config check.
+            - name: CARETAKER_FLEET_ALLOWED_REPOS
+              value: "ianlintner/caretaker,ianlintner/caretaker-qa,ianlintner/audio_engineer,ianlintner/AI-Pipeline,ianlintner/python_dsa,ianlintner/flashcards,ianlintner/Example-React-AI-Chat-App,ianlintner/kubernetes-apply-vscode,ianlintner/rust-oauth2-server,ianlintner/space-tycoon"
             # ── OpenTelemetry — point at the in-cluster collector ────
             # The collector is at otel-collector.default.svc:4317 (gRPC),
             # which fans out to Tempo with tail-sampling. ``caretaker-mcp``

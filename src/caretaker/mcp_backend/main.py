@@ -783,11 +783,44 @@ def _get_dispatcher() -> WebhookDispatcher:
     """
     global _dispatcher  # noqa: PLW0603
     if _dispatcher is None:
+        from caretaker.config import MaintainerConfig
+
         mode = DispatchMode.parse(os.environ.get("CARETAKER_WEBHOOK_DISPATCH_MODE"))
 
         context_factory = None
         agent_runner = None
         active_agents: frozenset[str] | None = None
+
+        # Load the maintainer config up front: the fleet gate (allowed_repos)
+        # is consulted regardless of mode so even shadow / off-mode setups
+        # filter inactive forks before recording webhook events.
+        cfg_path = os.environ.get("CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml")
+        try:
+            default_cfg = MaintainerConfig.from_yaml(cfg_path)
+        except Exception:
+            logger.info(
+                "No local maintainer config at %r; using defaults for dispatcher",
+                cfg_path,
+            )
+            default_cfg = MaintainerConfig()
+
+        # Fleet gate sourcing precedence:
+        # 1. Config (``fleet_gate.allowed_repos``) — primary, config-driven
+        # 2. Env var ``CARETAKER_FLEET_ALLOWED_REPOS`` (comma-separated)
+        #    — fallback / ops override when config is empty
+        # 3. Empty (default) — backward compatible (allow all)
+        allowed_repos: list[str] = list(default_cfg.fleet_gate.allowed_repos)
+        log_filtered = default_cfg.fleet_gate.log_filtered
+        if not allowed_repos:
+            raw_allowed = os.environ.get("CARETAKER_FLEET_ALLOWED_REPOS", "").strip()
+            if raw_allowed:
+                allowed_repos = [item.strip() for item in raw_allowed.split(",") if item.strip()]
+        if allowed_repos:
+            logger.info(
+                "webhook fleet-gate enabled: allowed_repos=%s log_filtered=%s",
+                sorted(allowed_repos),
+                log_filtered,
+            )
 
         if mode is DispatchMode.ACTIVE:
             if _token_broker is None:
@@ -798,18 +831,7 @@ def _get_dispatcher() -> WebhookDispatcher:
                 )
                 mode = DispatchMode.OFF
             else:
-                from caretaker.config import MaintainerConfig
                 from caretaker.llm.router import LLMRouter
-
-                cfg_path = os.environ.get("CARETAKER_CONFIG_PATH", ".github/maintainer/config.yml")
-                try:
-                    default_cfg = MaintainerConfig.from_yaml(cfg_path)
-                except Exception:
-                    logger.info(
-                        "No local maintainer config at %r; using defaults for active dispatch",
-                        cfg_path,
-                    )
-                    default_cfg = MaintainerConfig()
 
                 llm_router = LLMRouter(default_cfg.llm)
                 dry_run = os.environ.get("CARETAKER_DRY_RUN", "").lower() in ("1", "true", "yes")
@@ -839,6 +861,8 @@ def _get_dispatcher() -> WebhookDispatcher:
             context_factory=context_factory,
             agent_runner=agent_runner,
             active_agents=active_agents,
+            allowed_repos=allowed_repos,
+            log_filtered=log_filtered,
         )
         logger.info("webhook dispatcher initialised mode=%s", mode.value)
     return _dispatcher

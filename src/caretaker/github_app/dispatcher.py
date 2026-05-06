@@ -149,6 +149,39 @@ class DispatchResult:
 _DEFAULT_AGENT_TIMEOUT_SECONDS: float = 120.0
 
 
+def _repo_matches(repo: str, patterns: list[str]) -> bool:
+    """Return True when ``repo`` matches any pattern in the list.
+
+    Patterns:
+      - ``"owner/repo"`` — exact match
+      - ``"owner/*"``    — any repo under an owner
+      - ``"*"``          — match all
+    Empty list returns False (caller decides whether to treat empty as
+    "allow all" or "deny all" — for the fleet gate, empty = allow all,
+    handled at the call site).
+    """
+    if not patterns:
+        return False
+    repo_lower = repo.lower().strip()
+    for pat in patterns:
+        p = pat.lower().strip()
+        if not p:
+            continue
+        if p == "*":
+            return True
+        if p.endswith("/*"):
+            # ``p[:-1]`` keeps the trailing "/", so ``"owner/"`` matches
+            # ``"owner/x"`` but not ``"ownerx/y"``. Require a non-empty
+            # repo segment after the slash so the pattern doesn't match
+            # the bare slug ``"owner/"``.
+            prefix = p[:-1]
+            if repo_lower.startswith(prefix) and len(repo_lower) > len(prefix):
+                return True
+        elif p == repo_lower:
+            return True
+    return False
+
+
 class WebhookDispatcher:
     """Route parsed webhooks to caretaker agents according to ``mode``.
 
@@ -169,6 +202,8 @@ class WebhookDispatcher:
         context_factory: AgentContextFactory | None = None,
         agent_runner: AgentRunner | None = None,
         active_agents: frozenset[str] | None = None,
+        allowed_repos: list[str] | None = None,
+        log_filtered: bool = False,
     ) -> None:
         self._mode = mode
         self._agent_timeout = agent_timeout_seconds
@@ -178,6 +213,11 @@ class WebhookDispatcher:
         # mode. A set = the allow-list; agents not in it silently fall back
         # to ``shadow`` treatment so we can roll out one agent at a time.
         self._active_agents = active_agents
+        # Fleet gate — when non-empty, restrict the dispatcher to repos
+        # matching at least one pattern. Empty list = allow all (preserves
+        # backward compatibility).
+        self._allowed_repos = list(allowed_repos) if allowed_repos else []
+        self._log_filtered = log_filtered
 
     @property
     def mode(self) -> DispatchMode:
@@ -194,6 +234,36 @@ class WebhookDispatcher:
         agents: tuple[str, ...] = ()
 
         try:
+            # Fleet allow-list — short-circuit before agent resolution so
+            # repos outside the list don't write heartbeats / take up
+            # context-factory cycles. Empty list = allow everything.
+            if self._allowed_repos:
+                repo_slug = parsed.repository_full_name or ""
+                if not _repo_matches(repo_slug, self._allowed_repos):
+                    if self._log_filtered:
+                        logger.info(
+                            "webhook fleet-gate: repo=%s not in allowed_repos; "
+                            "skipping event=%s delivery=%s",
+                            repo_slug,
+                            parsed.event_type,
+                            parsed.delivery_id,
+                        )
+                    duration = time.monotonic() - started
+                    record_webhook_event(
+                        event=parsed.event_type,
+                        mode=self._mode.value,
+                        outcome="not_in_allowlist",
+                    )
+                    return DispatchResult(
+                        mode=self._mode,
+                        event=parsed.event_type,
+                        delivery_id=parsed.delivery_id,
+                        agents=(),
+                        outcome="not_in_allowlist",
+                        duration_seconds=duration,
+                        detail=f"repo {repo_slug!r} not in fleet_gate.allowed_repos",
+                    )
+
             agents = tuple(agents_for_event(parsed.event_type))
 
             # Comment-gate runs before agent resolution: it short-circuits
