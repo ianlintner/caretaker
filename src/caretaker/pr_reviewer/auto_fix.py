@@ -383,52 +383,41 @@ async def dispatch_auto_fix(
     tracking.auto_fix_attempts += 1
     tracking.auto_fix_last_head_sha = ""  # will be set on success below
 
-    span_cm = _tracer.start_as_current_span("auto_fix.dispatch")
-    span = span_cm.__enter__()
-    try:
+    with _tracer.start_as_current_span("auto_fix.dispatch") as span:
+        span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+        span.set_attribute("caretaker.pr.number", int(pr_number))
+        span.set_attribute("caretaker.auto_fix.backend", str(decision.backend))
+        span.set_attribute("caretaker.auto_fix.categories", list(decision.categories or []))
+        span.set_attribute("caretaker.auto_fix.attempt", int(tracking.auto_fix_attempts))
         try:
-            span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
-            span.set_attribute("caretaker.pr.number", int(pr_number))
-            span.set_attribute("caretaker.auto_fix.backend", str(decision.backend))
-            span.set_attribute("caretaker.auto_fix.categories", list(decision.categories or []))
-            span.set_attribute("caretaker.auto_fix.attempt", int(tracking.auto_fix_attempts))
-        except Exception:  # pragma: no cover - defensive
-            pass
-        outcome_result = await _dispatch_auto_fix_inner(
-            decision=decision,
-            pr_url=pr_url,
-            head_branch=head_branch,
-            review=review,
-            config=config,
-            github=github,
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            tracking=tracking,
-            tier=tier,
-            auto_fix_cfg=auto_fix_cfg,
-        )
-        try:
-            outcome_label = (
-                "success"
-                if outcome_result.success
-                else ("skipped" if not outcome_result.dispatched else "failed")
+            outcome_result = await _dispatch_auto_fix_inner(
+                decision=decision,
+                pr_url=pr_url,
+                head_branch=head_branch,
+                review=review,
+                config=config,
+                github=github,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                tracking=tracking,
+                tier=tier,
+                auto_fix_cfg=auto_fix_cfg,
             )
-            span.set_attribute("caretaker.auto_fix.outcome", outcome_label)
-            if outcome_result.new_head_sha:
-                span.set_attribute("caretaker.auto_fix.new_head_sha", outcome_result.new_head_sha)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:
+            try:
+                span.record_exception(exc)
+                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+            except Exception:  # pragma: no cover - defensive: never let tracer mask original
+                pass
+            raise
+        # _dispatch_auto_fix_inner always returns dispatched=True, so the
+        # outcome is binary: success or failed.
+        outcome_label = "success" if outcome_result.success else "failed"
+        span.set_attribute("caretaker.auto_fix.outcome", outcome_label)
+        if outcome_result.new_head_sha:
+            span.set_attribute("caretaker.auto_fix.new_head_sha", outcome_result.new_head_sha)
         return outcome_result
-    except Exception as exc:
-        try:
-            span.record_exception(exc)
-            span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
-        except Exception:  # pragma: no cover
-            pass
-        raise
-    finally:
-        span_cm.__exit__(None, None, None)
 
 
 async def _dispatch_auto_fix_inner(

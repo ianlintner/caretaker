@@ -193,9 +193,8 @@ async def _invoke_opencode(
     output and search for the ``caretaker-review`` block.
     """
     with _tracer.start_as_current_span("opencode_local.invoke") as span:
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
-            span.set_attribute("caretaker.opencode.workdir", workdir)
-            span.set_attribute("caretaker.opencode.timeout_seconds", int(config.timeout_seconds))
+        span.set_attribute("caretaker.opencode.workdir", workdir)
+        span.set_attribute("caretaker.opencode.timeout_seconds", int(config.timeout_seconds))
 
         resolved = shutil.which(config.cli_path) or config.cli_path
         if not os.path.isabs(resolved) and not shutil.which(resolved):
@@ -205,8 +204,10 @@ async def _invoke_opencode(
                 "pr_reviewer.opencode_local.cli_path). "
                 "Requires OPENROUTER_API_KEY in the environment."
             )
-            with contextlib.suppress(Exception):  # pragma: no cover
-                span.set_attribute("caretaker.opencode.outcome", "error")
+            span.set_attribute("caretaker.opencode.outcome", "error")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(exc)
                 span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
             raise exc
@@ -216,8 +217,7 @@ async def _invoke_opencode(
             env.update(config.extra_env)
 
         model = model_override or config.model
-        with contextlib.suppress(Exception):  # pragma: no cover
-            span.set_attribute("caretaker.opencode.model", str(model or ""))
+        span.set_attribute("caretaker.opencode.model", str(model or ""))
         # opencode CLI uses ``run`` as the non-interactive subcommand. The
         # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
         # prompt as a positional and ``--model`` to pin the provider/model.
@@ -249,15 +249,16 @@ async def _invoke_opencode(
             timeout_err = OpenCodeLocalTimeoutError(
                 f"opencode timed out after {config.timeout_seconds}s"
             )
-            with contextlib.suppress(Exception):  # pragma: no cover
-                span.set_attribute("caretaker.opencode.outcome", "timeout")
+            span.set_attribute("caretaker.opencode.outcome", "timeout")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(timeout_err)
                 span.set_status(
                     _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(timeout_err)[:200])
                 )
             raise timeout_err from exc
-        with contextlib.suppress(Exception):  # pragma: no cover
-            span.set_attribute("caretaker.opencode.exit_code", int(proc.returncode or 0))
+        span.set_attribute("caretaker.opencode.exit_code", int(proc.returncode or 0))
         if proc.returncode != 0:
             # Special-case: opencode emits ``No endpoints found`` when the
             # configured provider (OpenRouter) hasn't been wired up. We
@@ -268,8 +269,10 @@ async def _invoke_opencode(
                     f"opencode exited {proc.returncode} with No endpoints found "
                     f"(check OPENROUTER_API_KEY / model id): {stderr.strip()[:500]}"
                 )
-                with contextlib.suppress(Exception):  # pragma: no cover
-                    span.set_attribute("caretaker.opencode.outcome", "no_endpoints")
+                span.set_attribute("caretaker.opencode.outcome", "no_endpoints")
+                with contextlib.suppress(
+                    Exception
+                ):  # pragma: no cover - never let tracer mask original
                     span.record_exception(no_ep_err)
                     span.set_status(
                         _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(no_ep_err)[:200])
@@ -278,15 +281,16 @@ async def _invoke_opencode(
             err = OpenCodeLocalError(
                 f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
             )
-            with contextlib.suppress(Exception):  # pragma: no cover
-                span.set_attribute("caretaker.opencode.outcome", "error")
+            span.set_attribute("caretaker.opencode.outcome", "error")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(err)
                 span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(err)[:200]))
             raise err
-        with contextlib.suppress(Exception):  # pragma: no cover
-            # Subprocess exited cleanly. parse_fallback (if any) is determined
-            # by :func:`run`'s output parser, not this span — see module docstring.
-            span.set_attribute("caretaker.opencode.outcome", "ok")
+        # Subprocess exited cleanly. parse_fallback (if any) is determined
+        # by :func:`run`'s output parser, not this span — see module docstring.
+        span.set_attribute("caretaker.opencode.outcome", "ok")
         return stdout
 
 

@@ -12,16 +12,22 @@ behavioural tests in ``test_pr_reviewer*``. The point of this file is:
 
     "Did the production span emission survive a refactor?"
 
-The fixture installs a fresh ``TracerProvider`` per test so spans from
-earlier tests don't leak into later assertions.
+NOTE: this file uses a process-global ``TracerProvider``. OTel's
+``set_tracer_provider`` is once-per-process, so the provider + exporter
+are scoped to the *module* and only the in-memory buffer is cleared
+between tests. Do NOT run this file with pytest-xdist — concurrent
+workers would race on the shared provider and exporter buffer.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Skip the whole module if the OTel SDK isn't installed — these tests
 # exercise the real provider, not the no-op fallback.
@@ -34,29 +40,33 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
-@pytest.fixture
-def span_exporter() -> Any:
-    """Install a fresh in-memory exporter on the (single) TracerProvider.
+@pytest.fixture(scope="module")
+def _tracer_provider_with_exporter() -> Iterator[InMemorySpanExporter]:
+    """Module-scoped: install one TracerProvider + exporter for the whole file.
 
-    OTel only lets ``set_tracer_provider`` succeed once per process, so
-    we attach a fresh exporter to whatever provider is currently
-    installed (or install one if none is). Each test gets its own
-    exporter via ``add_span_processor``; ``clear()`` on teardown
-    prevents spans from leaking into the next test.
+    OTel's ``set_tracer_provider`` is once-per-process, and adding a new
+    ``SpanProcessor`` per test would leak — old processors would keep
+    receiving spans and writing to dead exporters. Installing the
+    plumbing once at module scope sidesteps both issues.
     """
     exporter = InMemorySpanExporter()
     current = otel_trace.get_tracer_provider()
     if hasattr(current, "add_span_processor"):
-        # An SDK provider is already installed (likely by an earlier
-        # observability test fixture in the same session). Attach our
-        # exporter to it instead of fighting the once-set guard.
+        # An SDK provider is already installed (e.g. by an earlier
+        # module's fixture). Attach our exporter to it.
         current.add_span_processor(SimpleSpanProcessor(exporter))
     else:
         provider = TracerProvider(resource=Resource.create({"service.name": "test"}))
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         otel_trace.set_tracer_provider(provider)
     yield exporter
-    exporter.clear()
+
+
+@pytest.fixture
+def span_exporter(_tracer_provider_with_exporter: InMemorySpanExporter) -> Iterator[Any]:
+    """Function-scoped: clear the in-memory buffer between tests."""
+    yield _tracer_provider_with_exporter
+    _tracer_provider_with_exporter.clear()
 
 
 def _spans_by_name(exporter: InMemorySpanExporter, name: str) -> list[Any]:

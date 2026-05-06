@@ -122,17 +122,15 @@ async def prepare_workdir(
     via :func:`cleanup_workdir`.
     """
     with _tracer.start_as_current_span("pr_review.clone_workdir") as span:
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
-            span.set_attribute("caretaker.pr.url", pr_url)
-            span.set_attribute("caretaker.workdir.clone_depth", int(clone_depth))
+        span.set_attribute("caretaker.pr.url", pr_url)
+        span.set_attribute("caretaker.workdir.clone_depth", int(clone_depth))
         try:
             parsed = parse_pr_url(pr_url)
             workdir = tempfile.mkdtemp(
                 prefix=f"caretaker-pr-{parsed.repo}-{parsed.number}-",
                 dir=workdir_root or None,
             )
-            with contextlib.suppress(Exception):  # pragma: no cover
-                span.set_attribute("caretaker.workdir.path", workdir)
+            span.set_attribute("caretaker.workdir.path", workdir)
             logger.info(
                 "workdir: %s for %s/%s#%d (head_branch=%s)",
                 workdir,
@@ -157,17 +155,20 @@ async def prepare_workdir(
             await _run_git("fetch", "origin", f"{pr_ref}:{local_branch}", cwd=repo_dir)
             await _run_git("checkout", local_branch, cwd=repo_dir)
 
-            # Best-effort: capture the resolved head SHA after checkout so
-            # the parent trace can correlate with the GitHub commit URL.
-            with contextlib.suppress(Exception):  # pragma: no cover - best-effort attribute
-                head_sha = await _run_git("rev-parse", "HEAD", cwd=repo_dir)
-                head_sha = head_sha.strip()
-                if head_sha:
-                    span.set_attribute("caretaker.pr.head_sha", head_sha)
+            # Capture the resolved head SHA after checkout so the parent
+            # trace can correlate with the GitHub commit URL. rev-parse on
+            # a freshly cloned + checked-out repo should not fail; if it
+            # does, that's a real bug worth surfacing via the outer
+            # exception handler below.
+            head_sha = (await _run_git("rev-parse", "HEAD", cwd=repo_dir)).strip()
+            if head_sha:
+                span.set_attribute("caretaker.pr.head_sha", head_sha)
 
             return repo_dir, parsed
         except Exception as exc:
-            with contextlib.suppress(Exception):  # pragma: no cover
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
                 span.record_exception(exc)
                 span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
             raise

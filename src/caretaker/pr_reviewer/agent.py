@@ -216,17 +216,14 @@ class PRReviewerAgent(BaseAgent):
             repo=repo_slug, backend=backend_label, tier=tier_label, verdict=verdict_label
         )
         if span is not None:
-            try:
-                if tier:
-                    span.set_attribute("caretaker.complexity.tier", tier_label)
-                if backend:
-                    span.set_attribute("caretaker.backend", backend_label)
-                if model:
-                    span.set_attribute("caretaker.review.model", model)
-                span.set_attribute("caretaker.review.verdict", verdict_label)
-                span.set_attribute("caretaker.auto_fix.dispatched", bool(auto_fix_dispatched))
-            except Exception:  # pragma: no cover - defensive
-                pass
+            if tier:
+                span.set_attribute("caretaker.complexity.tier", tier_label)
+            if backend:
+                span.set_attribute("caretaker.backend", backend_label)
+            if model:
+                span.set_attribute("caretaker.review.model", model)
+            span.set_attribute("caretaker.review.verdict", verdict_label)
+            span.set_attribute("caretaker.auto_fix.dispatched", bool(auto_fix_dispatched))
         logger.info(
             "pr_review_complete repo=%s pr=%d author=%s is_caretaker_owned=%s "
             "routing=%s tier=%s backend=%s model=%s verdict=%s duration_ms=%d "
@@ -286,11 +283,8 @@ class PRReviewerAgent(BaseAgent):
         # classifier, inline reviewer, opencode invoke, auto-fix dispatch)
         # nests under this so a single PR review becomes one trace tree.
         with _tracer.start_as_current_span("pr_reviewer.handle_pr") as span:
-            try:
-                span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
-                span.set_attribute("caretaker.pr.number", int(pr_number))
-            except Exception:  # pragma: no cover - defensive
-                pass
+            span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+            span.set_attribute("caretaker.pr.number", int(pr_number))
             try:
                 await self._handle_pr_body(pr, report, state=state, span=span)
             except Exception as exc:
@@ -299,7 +293,7 @@ class PRReviewerAgent(BaseAgent):
                     span.set_status(
                         _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200])
                     )
-                except Exception:  # pragma: no cover
+                except Exception:  # pragma: no cover - defensive: never let tracer mask original
                     pass
                 raise
 
@@ -330,11 +324,8 @@ class PRReviewerAgent(BaseAgent):
         auto_fix_dispatched = False
         auto_fix_reason: str | None = None
 
-        try:
-            span.set_attribute("caretaker.pr.author", pr_author)
-            span.set_attribute("caretaker.pr.is_caretaker_owned", bool(is_caretaker_pr))
-        except Exception:  # pragma: no cover - defensive
-            pass
+        span.set_attribute("caretaker.pr.author", pr_author)
+        span.set_attribute("caretaker.pr.is_caretaker_owned", bool(is_caretaker_pr))
 
         # Skip drafts
         if cfg.skip_draft and pr.get("draft", False):
@@ -499,11 +490,8 @@ class PRReviewerAgent(BaseAgent):
         )
         routing_reason = decision.reason
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
-        try:
-            span.set_attribute("caretaker.routing.use_inline", bool(decision.use_inline))
-            span.set_attribute("caretaker.routing.score", int(decision.score))
-        except Exception:  # pragma: no cover
-            pass
+        span.set_attribute("caretaker.routing.use_inline", bool(decision.use_inline))
+        span.set_attribute("caretaker.routing.score", int(decision.score))
 
         # Shadow-mode wrapper: compares legacy point-system verdict with
         # the LLM candidate under the ``executor_routing`` flag. The
