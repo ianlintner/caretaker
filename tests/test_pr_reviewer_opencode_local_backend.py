@@ -195,6 +195,145 @@ def test_resolve_tier_model_falls_back_when_entry_is_empty() -> None:
 # ── _invoke_opencode "No endpoints found" detection ──────────────────────
 
 
+# ── _parse_opencode_json_stream + token capture wiring ──────────────────
+
+
+def test_parse_opencode_json_stream_extracts_text_and_token_totals() -> None:
+    """The JSON stream parser concatenates text events and sums step_finish tokens."""
+    from caretaker.pr_reviewer.backends.opencode_local import _parse_opencode_json_stream
+
+    stream = "\n".join(
+        [
+            '{"type":"step_start","part":{"id":"a"}}',
+            '{"type":"text","part":{"text":"Hello "}}',
+            '{"type":"text","part":{"text":"world."}}',
+            (
+                '{"type":"step_finish","part":{"tokens":'
+                '{"input":100,"output":50,"reasoning":5,'
+                '"cache":{"read":20,"write":3}}}}'
+            ),
+            (
+                '{"type":"step_finish","part":{"tokens":'
+                '{"input":200,"output":80,"reasoning":0,'
+                '"cache":{"read":0,"write":0}}}}'
+            ),
+            "> banner line that is not JSON",  # ignored
+        ]
+    )
+    text, prompt_tokens, completion_tokens = _parse_opencode_json_stream(stream)
+    assert text == "Hello world."
+    # input(100+200) + cache.read(20+0) + cache.write(3+0) = 323
+    assert prompt_tokens == 323
+    # output(50+80) + reasoning(5+0) = 135
+    assert completion_tokens == 135
+
+
+@pytest.mark.asyncio
+async def test_invoke_opencode_extracts_token_usage_from_stdout(monkeypatch, fake_config) -> None:
+    """A successful subprocess emits records on the new LLM-usage counters.
+
+    Mocks the subprocess + stream helper to return a canned JSON event
+    stream, then verifies ``record_llm_usage`` produced increments on
+    ``caretaker_llm_tokens_total`` for both directions.
+    """
+    from caretaker.observability.metrics import REGISTRY, get_service_label
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    canned_stream = "\n".join(
+        [
+            '{"type":"text","part":{"text":"Reply text from opencode."}}',
+            (
+                '{"type":"step_finish","part":{"tokens":'
+                '{"input":1000,"output":250,"reasoning":0,'
+                '"cache":{"read":0,"write":0}}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        opencode_local.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        opencode_local,
+        "stream_subprocess_output",
+        AsyncMock(return_value=(canned_stream, "")),
+    )
+    monkeypatch.setattr(opencode_local.shutil, "which", lambda _name: "/usr/bin/opencode")
+
+    model = "openrouter/test/extracted-usage-model"
+    fake_config.model = model
+
+    def _read_tokens(direction: str) -> float:
+        val = REGISTRY.get_sample_value(
+            "caretaker_llm_tokens_total",
+            {"service": get_service_label(), "model": model, "direction": direction},
+        )
+        return 0.0 if val is None else float(val)
+
+    before_p = _read_tokens("prompt")
+    before_c = _read_tokens("completion")
+
+    text = await opencode_local._invoke_opencode(
+        workdir="/tmp/fake", config=fake_config, prompt="hi", model_override=""
+    )
+
+    # Assistant text reassembled from JSON stream.
+    assert text == "Reply text from opencode."
+    # Tokens recorded against the resolved model label.
+    assert _read_tokens("prompt") - before_p == pytest.approx(1000)
+    assert _read_tokens("completion") - before_c == pytest.approx(250)
+
+
+@pytest.mark.asyncio
+async def test_invoke_opencode_skips_token_recording_when_no_step_finish(
+    monkeypatch, fake_config
+) -> None:
+    """Without ``step_finish`` events the assistant text is still returned, no tokens recorded."""
+    from caretaker.observability.metrics import REGISTRY, get_service_label
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    canned_stream = '{"type":"text","part":{"text":"Just text, no step_finish."}}'
+
+    monkeypatch.setattr(
+        opencode_local.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        opencode_local,
+        "stream_subprocess_output",
+        AsyncMock(return_value=(canned_stream, "")),
+    )
+    monkeypatch.setattr(opencode_local.shutil, "which", lambda _name: "/usr/bin/opencode")
+
+    model = "openrouter/test/no-step-finish"
+    fake_config.model = model
+
+    def _read_tokens(direction: str) -> float:
+        val = REGISTRY.get_sample_value(
+            "caretaker_llm_tokens_total",
+            {"service": get_service_label(), "model": model, "direction": direction},
+        )
+        return 0.0 if val is None else float(val)
+
+    before_p = _read_tokens("prompt")
+    before_c = _read_tokens("completion")
+
+    text = await opencode_local._invoke_opencode(
+        workdir="/tmp/fake", config=fake_config, prompt="hi", model_override=""
+    )
+    assert text == "Just text, no step_finish."
+    assert _read_tokens("prompt") == pytest.approx(before_p)
+    assert _read_tokens("completion") == pytest.approx(before_c)
+
+
 @pytest.mark.asyncio
 async def test_invoke_opencode_raises_no_endpoints_on_stderr_match(
     monkeypatch, fake_config

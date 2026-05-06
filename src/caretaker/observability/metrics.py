@@ -463,6 +463,44 @@ LLM_CACHE_CREATION_TOKENS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+
+# ── Per-model token + USD cost tracking (observability phase 3) ─────
+#
+# Lets a Grafana panel answer "did the v0.28 model shift away from Opus
+# actually save money?" by graphing rate(caretaker_llm_cost_usd_total)
+# split by ``model``.  Tokens are emitted by the ``opencode_local``
+# backend after parsing the ``--format json`` step_finish events; cost
+# is derived from a static price table in :data:`caretaker.config.LLM_PRICE_TABLE`.
+#
+# Cardinality: ``model`` is bounded by the price table (~12 entries for
+# the v0.28.x defaults). ``direction`` is a 2-value enum below. Models
+# we haven't priced yet still hit the tokens counter (so token usage
+# stays observable for new models) but skip the cost counter — see
+# :func:`record_llm_cost` for the warn-once behaviour.
+
+LLM_TOKEN_DIRECTIONS: tuple[str, ...] = ("prompt", "completion")
+
+LLM_TOKENS_TOTAL = Counter(
+    "caretaker_llm_tokens_total",
+    "Tokens consumed per model and direction (prompt | completion).",
+    ["service", "model", "direction"],
+    registry=REGISTRY,
+)
+
+LLM_COST_USD_TOTAL = Counter(
+    "caretaker_llm_cost_usd_total",
+    "Estimated USD cost per model (using a static price table).",
+    ["service", "model"],
+    registry=REGISTRY,
+)
+
+
+# Memoises models we've already warned about being missing from the
+# price table. Without this, a hot caller running thousands of fix
+# invocations against an un-priced model would log a warning per call
+# and drown out the rest of the log stream.
+_LLM_PRICE_TABLE_MISSES_WARNED: set[str] = set()
+
 # ── Self-heal fix ladder (Wave A3) ───────────────────────────────────
 #
 # The deterministic-first fix ladder emits one of these counters per
@@ -1078,6 +1116,75 @@ def record_llm_cache_usage(
         )
 
 
+def record_llm_tokens(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record prompt/completion token counts for a single LLM call.
+
+    Non-positive values are silently dropped so callers that didn't
+    actually consume tokens in one direction (e.g. prompt-only fanout)
+    don't pollute the counter with zero increments.
+    """
+    label_model = model or "unknown"
+    if prompt_tokens > 0:
+        LLM_TOKENS_TOTAL.labels(service=_SERVICE_LABEL, model=label_model, direction="prompt").inc(
+            float(prompt_tokens)
+        )
+    if completion_tokens > 0:
+        LLM_TOKENS_TOTAL.labels(
+            service=_SERVICE_LABEL, model=label_model, direction="completion"
+        ).inc(float(completion_tokens))
+
+
+def record_llm_cost(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record the estimated USD cost for a single LLM call.
+
+    Looks ``model`` up in :data:`caretaker.config.LLM_PRICE_TABLE`
+    (USD per 1M tokens) and increments the cost counter. If ``model``
+    isn't in the table, logs a one-shot warning and skips the cost
+    increment — token counters are unaffected so the dashboard still
+    shows token volume for un-priced models.
+    """
+    # Lazy import — keep the metrics module importable in environments
+    # that don't pull in the full caretaker.config (notebooks, isolated
+    # tests). Same pattern as the rate-limit collector below.
+    try:
+        from caretaker.config import LLM_PRICE_TABLE
+    except Exception:  # pragma: no cover - observability never cascades
+        return
+
+    label_model = model or "unknown"
+    price = LLM_PRICE_TABLE.get(label_model)
+    if price is None:
+        if label_model not in _LLM_PRICE_TABLE_MISSES_WARNED:
+            _LLM_PRICE_TABLE_MISSES_WARNED.add(label_model)
+            logger.info(
+                "metrics: model %r missing from LLM_PRICE_TABLE; skipping cost "
+                "tracking (tokens still recorded). Add an entry in "
+                "caretaker.config.LLM_PRICE_TABLE to enable USD cost.",
+                label_model,
+            )
+        return
+
+    input_per_1m, output_per_1m = price
+    # Prices are USD per 1,000,000 tokens; divide rather than multiply
+    # so a typo in the table (e.g. quoting per-1k by mistake) shows up
+    # as a 1000x cost spike rather than silently under-billing.
+    cost = (max(0, prompt_tokens) * input_per_1m + max(0, completion_tokens) * output_per_1m) / 1e6
+    if cost <= 0:
+        return
+    LLM_COST_USD_TOTAL.labels(service=_SERVICE_LABEL, model=label_model).inc(cost)
+
+
+def record_llm_usage(model: str, *, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record both tokens and USD cost for one LLM call.
+
+    Convenience wrapper around :func:`record_llm_tokens` +
+    :func:`record_llm_cost` so backends don't have to remember to call
+    both. Safe to call with zeros — non-positive counts are no-ops.
+    """
+    record_llm_tokens(model, prompt_tokens, completion_tokens)
+    record_llm_cost(model, prompt_tokens, completion_tokens)
+
+
 __all__ = [
     "APP_INFO",
     "AUTO_FIX_DISPATCH_TOTAL",
@@ -1104,6 +1211,9 @@ __all__ = [
     "LATENCY_BUCKETS",
     "LLM_CACHE_CREATION_TOKENS_TOTAL",
     "LLM_CACHE_READ_TOKENS_TOTAL",
+    "LLM_COST_USD_TOTAL",
+    "LLM_TOKEN_DIRECTIONS",
+    "LLM_TOKENS_TOTAL",
     "OPENCODE_INVOCATION_TOTAL",
     "OPENCODE_MODES",
     "OPENCODE_OUTCOMES",
@@ -1135,6 +1245,9 @@ __all__ = [
     "record_http_client",
     "record_issue_outcome",
     "record_llm_cache_usage",
+    "record_llm_cost",
+    "record_llm_tokens",
+    "record_llm_usage",
     "record_opencode_invocation",
     "record_operator_intervention",
     "record_orchestrator_soft_fail",

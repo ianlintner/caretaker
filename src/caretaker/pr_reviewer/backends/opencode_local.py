@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace as _otel_trace
 
-from caretaker.observability.metrics import record_opencode_invocation
+from caretaker.observability.metrics import record_llm_usage, record_opencode_invocation
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 from caretaker.pr_reviewer.backends._workdir import (
     WorkdirError,
@@ -178,6 +178,78 @@ def _truncate(line: str, max_len: int) -> str:
     return line[:max_len] + f"… ({len(line) - max_len} more chars)"
 
 
+def _parse_opencode_json_stream(
+    stdout: str,
+) -> tuple[str, int, int]:
+    """Parse opencode ``--format json`` stdout into (text, prompt_tokens, completion_tokens).
+
+    opencode emits one JSON object per line on stdout when invoked with
+    ``--format json``.  Three event types matter for our purposes:
+
+    * ``text``       — fragments of the assistant's response. We
+      concatenate the ``part.text`` strings in stream order to
+      reconstruct the prose+JSON-block payload the existing parser
+      expects.
+    * ``step_finish`` — emitted at the end of each agent step with a
+      ``part.tokens`` object: ``{input, output, reasoning, cache: {read, write}}``.
+      We sum ``input`` (with cache reads added back in — those are
+      still input tokens that count against the operator's bill) and
+      ``output + reasoning`` for prompt vs. completion tokens.
+    * everything else (tool_use, step_start, error, …) is ignored for
+      token-accounting purposes.
+
+    Lines that don't parse as JSON are silently skipped — opencode
+    sometimes emits a final ANSI-colored summary line on stdout even
+    in JSON mode (the ``> build · …`` banner), and we don't want a
+    parse failure there to fail the whole invocation.
+    """
+    text_parts: list[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(evt, dict):
+            continue
+        evt_type = evt.get("type")
+        part = evt.get("part") if isinstance(evt.get("part"), dict) else {}
+        if evt_type == "text":
+            txt = part.get("text") if isinstance(part, dict) else None
+            if isinstance(txt, str):
+                text_parts.append(txt)
+        elif evt_type == "step_finish":
+            tokens = part.get("tokens") if isinstance(part, dict) else None
+            if not isinstance(tokens, dict):
+                continue
+            inp = tokens.get("input") or 0
+            out = tokens.get("output") or 0
+            reasoning = tokens.get("reasoning") or 0
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            cache_read = cache.get("read") or 0 if isinstance(cache, dict) else 0
+            cache_write = cache.get("write") or 0 if isinstance(cache, dict) else 0
+            # ``input`` from opencode excludes cache reads/writes when
+            # caching is in use; we add them back so the prompt-token
+            # count matches what the provider actually billed.  Reasoning
+            # tokens are part of the model's output bill, so they go on
+            # the completion side.
+            if isinstance(inp, int | float):
+                prompt_tokens += int(inp)
+            if isinstance(cache_read, int | float):
+                prompt_tokens += int(cache_read)
+            if isinstance(cache_write, int | float):
+                prompt_tokens += int(cache_write)
+            if isinstance(out, int | float):
+                completion_tokens += int(out)
+            if isinstance(reasoning, int | float):
+                completion_tokens += int(reasoning)
+    return "".join(text_parts), prompt_tokens, completion_tokens
+
+
 async def _invoke_opencode(
     *,
     workdir: str,
@@ -185,12 +257,18 @@ async def _invoke_opencode(
     prompt: str = "",
     model_override: str = "",
 ) -> str:
-    """Spawn the opencode CLI in ``workdir`` and return its stdout text.
+    """Spawn the opencode CLI in ``workdir`` and return the assistant text.
 
-    opencode runs in print mode (``-p``): it sends the prompt, runs the
-    agent, and emits the final response to stdout when done. Unlike the
-    claude stream-json mode, this is plain text — we capture the full
-    output and search for the ``caretaker-review`` block.
+    opencode is invoked with ``--format json`` so each agent event lands
+    on stdout as a JSON object on its own line. We assemble the
+    assistant's prose + ``caretaker-review`` JSON block from the
+    ``text`` events and sum prompt/completion token counts from the
+    ``step_finish`` events for cost-tracking metrics.
+
+    The default-format banner output (``> build · …``) is replaced with
+    the structured event stream; the existing ``_parse_review_payload``
+    contract still receives a plain text string and looks for the
+    ``caretaker-review`` fence in it.
     """
     with _tracer.start_as_current_span("opencode_local.invoke") as span:
         span.set_attribute("caretaker.opencode.workdir", workdir)
@@ -218,10 +296,11 @@ async def _invoke_opencode(
 
         model = model_override or config.model
         span.set_attribute("caretaker.opencode.model", str(model or ""))
-        # opencode CLI uses ``run`` as the non-interactive subcommand. The
-        # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
-        # prompt as a positional and ``--model`` to pin the provider/model.
-        args = [resolved, "run", prompt or _REVIEW_PROMPT]
+        # opencode CLI uses ``run`` as the non-interactive subcommand.
+        # ``--format json`` emits one event per stdout line which gives
+        # us per-step token counts for the cost-tracking metrics; the
+        # assistant text is reassembled by ``_parse_opencode_json_stream``.
+        args = [resolved, "run", prompt or _REVIEW_PROMPT, "--format", "json"]
         if model:
             args += ["--model", model]
 
@@ -288,10 +367,44 @@ async def _invoke_opencode(
                 span.record_exception(err)
                 span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(err)[:200]))
             raise err
+
         # Subprocess exited cleanly. parse_fallback (if any) is determined
         # by :func:`run`'s output parser, not this span — see module docstring.
         span.set_attribute("caretaker.opencode.outcome", "ok")
-        return stdout
+
+        # Parse the JSON event stream into (assistant_text, p_tokens, c_tokens).
+        # Token-extraction failures must NOT fail the run — log at DEBUG
+        # and fall back to the raw stdout. The assistant text *should*
+        # always parse out of the stream, but if opencode ever changes
+        # its output format we still want the review to land.
+        try:
+            assistant_text, prompt_tokens, completion_tokens = _parse_opencode_json_stream(stdout)
+        except Exception:  # pragma: no cover - defence in depth
+            logger.debug(
+                "opencode_local: token extraction from JSON stream failed; returning raw stdout",
+                exc_info=True,
+            )
+            return stdout
+
+        if prompt_tokens > 0 or completion_tokens > 0:
+            span.set_attribute("caretaker.llm.prompt_tokens", prompt_tokens)
+            span.set_attribute("caretaker.llm.completion_tokens", completion_tokens)
+            with contextlib.suppress(Exception):
+                record_llm_usage(
+                    model=model or "unknown",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+        else:
+            logger.debug(
+                "opencode_local: no token usage extracted from JSON stream "
+                "(model=%s); skipping LLM usage metrics",
+                model,
+            )
+
+        # Fall back to raw stdout if no text events appeared — keeps the
+        # downstream parser robust against an unusual opencode reply.
+        return assistant_text or stdout
 
 
 _RESULT_TEXT_RE = re.compile(r"```caretaker-review\s*\n(?P<json>.+?)\n\s*```", re.DOTALL)
