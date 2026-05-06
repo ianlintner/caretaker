@@ -664,6 +664,18 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
 
         await _runs_get_store().close()
 
+    # Drain the per-PR decision-timeline store so the underlying Motor
+    # client is closed cleanly on shutdown. ``configure_default_store``
+    # is also called with ``None`` so a subsequent lifespan re-entry
+    # (used by the test suite) doesn't observe a stale singleton.
+    with suppress(Exception):
+        from caretaker.state import pr_decisions as _pr_decisions
+
+        store_attr = _pr_decisions.get_default_store()
+        if store_attr is not None:
+            await store_attr.close()
+        _pr_decisions.configure_default_store(None)
+
     # Stop the metrics server side-car cleanly so tests that re-enter
     # the lifespan don't leak a port binding.
     try:

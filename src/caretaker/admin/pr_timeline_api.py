@@ -13,7 +13,7 @@ import logging
 from datetime import datetime  # noqa: TC003 — pydantic resolves the annotation at runtime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from caretaker.admin.auth import UserInfo, require_session
@@ -53,6 +53,8 @@ class TimelineResponse(BaseModel):
     repo: str
     pr_number: int
     decisions: list[DecisionRow] = Field(default_factory=list)
+    total_count: int = 0
+    truncated: bool = False
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────────
@@ -63,12 +65,28 @@ async def get_pr_timeline(
     owner: str,
     repo: str,
     number: int,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     _user: UserInfo = Depends(require_session),
 ) -> TimelineResponse:
-    """Return the chronological decision trail for one PR."""
+    """Return the chronological decision trail for one PR.
+
+    ``limit``/``offset`` paginate the result. ``total_count`` is the
+    full, unfiltered count of matching decisions so the SPA can render
+    a "showing N of M" affordance; ``truncated`` is a convenience
+    boolean (= ``total_count > offset + len(decisions)``) so callers
+    don't need to recompute it client-side.
+    """
     decisions: list[DecisionRow] = []
+    total_count = 0
     if _store is not None:
-        docs = await _store.query_timeline(owner=owner, repo=repo, pr_number=number)
+        docs, total_count = await _store.query_timeline(
+            owner=owner,
+            repo=repo,
+            pr_number=number,
+            limit=limit,
+            offset=offset,
+        )
         for d in docs:
             decisions.append(
                 DecisionRow(
@@ -81,11 +99,14 @@ async def get_pr_timeline(
                     span_id=d.get("span_id"),
                 )
             )
+    truncated = total_count > offset + len(decisions)
     return TimelineResponse(
         owner=owner,
         repo=repo,
         pr_number=number,
         decisions=decisions,
+        total_count=total_count,
+        truncated=truncated,
     )
 
 

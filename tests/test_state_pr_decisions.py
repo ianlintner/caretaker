@@ -36,7 +36,7 @@ def _reset_default_store() -> Iterator[None]:
 
 
 class _FakeCursor:
-    """Minimal AsyncIterator over an in-memory list, supporting sort + limit chains."""
+    """Minimal AsyncIterator over an in-memory list, supporting sort/skip/limit chains."""
 
     def __init__(self, docs: list[dict[str, Any]]) -> None:
         self._docs = docs
@@ -44,6 +44,10 @@ class _FakeCursor:
     def sort(self, key: str, direction: int) -> _FakeCursor:
         reverse = direction < 0
         self._docs = sorted(self._docs, key=lambda d: d[key], reverse=reverse)
+        return self
+
+    def skip(self, n: int) -> _FakeCursor:
+        self._docs = self._docs[int(n) :]
         return self
 
     def limit(self, n: int) -> _FakeCursor:
@@ -80,6 +84,9 @@ class _FakeCollection:
     def find(self, query: dict[str, Any]) -> _FakeCursor:
         matched = [d for d in self._docs if all(d.get(k) == v for k, v in query.items())]
         return _FakeCursor(matched)
+
+    async def count_documents(self, query: dict[str, Any]) -> int:
+        return sum(1 for d in self._docs if all(d.get(k) == v for k, v in query.items()))
 
 
 def _wire_fake_collection(store: PRDecisionStore, col: _FakeCollection) -> None:
@@ -205,7 +212,7 @@ class TestPRDecisionStore:
                 }
             )
 
-        timeline = await store.query_timeline(
+        timeline, total_count = await store.query_timeline(
             owner="ianlintner", repo="caretaker-qa", pr_number=108
         )
 
@@ -214,3 +221,42 @@ class TestPRDecisionStore:
             "tier_classified",
             "review_completed",
         ]
+        assert total_count == 3
+
+    @pytest.mark.asyncio
+    async def test_query_timeline_pagination_reports_total(self) -> None:
+        """``query_timeline`` honours ``limit``/``offset`` and reports total_count."""
+        store = PRDecisionStore(enabled=True)
+        col = _FakeCollection()
+        _wire_fake_collection(store, col)
+
+        now = datetime.now(UTC)
+        # Insert 5 decisions, oldest first.
+        for i in range(5):
+            col._docs.append(
+                {
+                    "id": f"id-{i}",
+                    "repo": "ianlintner/caretaker-qa",
+                    "pr_number": 108,
+                    "observed_at": now - timedelta(minutes=10 - i),
+                    "agent": "pr_reviewer",
+                    "event": f"event_{i}",
+                    "fields": {},
+                    "trace_id": None,
+                    "span_id": None,
+                }
+            )
+
+        # First page: 2 items, total_count = 5.
+        page1, total1 = await store.query_timeline(
+            owner="ianlintner", repo="caretaker-qa", pr_number=108, limit=2, offset=0
+        )
+        assert [d["id"] for d in page1] == ["id-0", "id-1"]
+        assert total1 == 5
+
+        # Second page: 2 items at offset 2, total_count still 5.
+        page2, total2 = await store.query_timeline(
+            owner="ianlintner", repo="caretaker-qa", pr_number=108, limit=2, offset=2
+        )
+        assert [d["id"] for d in page2] == ["id-2", "id-3"]
+        assert total2 == 5

@@ -30,12 +30,13 @@ build the timeline from logs even if Mongo is down.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from opentelemetry import trace as _otel_trace
 
@@ -43,6 +44,30 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import motor.motor_asyncio
+
+# Bounded, mypy-strict-checked vocabularies for the agent + event
+# columns. Free-text strings would silently drift over time
+# (``auto_fix_complete`` vs ``auto_fix_completed`` vs typos), splitting
+# the timeline into orphaned events that the admin SPA can't group.
+DecisionAgent = Literal[
+    "pr_reviewer",
+    "pr_agent",
+    "auto_fix",
+    "complexity_classifier",
+    "opencode_local",
+]
+DecisionEvent = Literal[
+    "review_started",
+    "review_skipped",
+    "review_completed",
+    "tier_classified",
+    "auto_fix_dispatched",
+    "auto_fix_complete",
+    "auto_fix_skipped",
+    "opencode_review_started",
+    "opencode_review_finished",
+    "opencode_review_failed",
+]
 
 # Module-level singleton, lazily initialised by ``configure_default_store``.
 _default_store: PRDecisionStore | None = None
@@ -54,9 +79,22 @@ def configure_default_store(store: PRDecisionStore | None) -> None:
     Called at app startup once the config is loaded so call sites can
     use the :func:`record_decision` shortcut without plumbing the store
     through every layer.
+
+    If a previous store was installed and the new value is a different
+    instance (or ``None``), the old store's Mongo client is scheduled
+    for cleanup on the running event loop. This prevents leaking a
+    Motor client when the function is called multiple times during
+    hot-reload / test-suite teardown.
     """
     global _default_store  # noqa: PLW0603 — process singleton.
+    previous = _default_store
     _default_store = store
+    if previous is not None and previous is not store:
+        # Best-effort async close. If no loop is running (e.g. sync
+        # test harness) we just drop the reference — the underlying
+        # Motor client will be GC'd by the interpreter.
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(previous.close())
 
 
 def get_default_store() -> PRDecisionStore | None:
@@ -106,7 +144,7 @@ class PRDecisionStore:
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
-    async def _ensure_collection(  # noqa: E501
+    async def _ensure_collection(
         self,
     ) -> motor.motor_asyncio.AsyncIOMotorCollection[dict[str, Any]] | None:
         """Return a live Motor collection handle, or None if unavailable."""
@@ -167,8 +205,8 @@ class PRDecisionStore:
         *,
         repo: str,
         pr_number: int,
-        agent: str,
-        event: str,
+        agent: DecisionAgent,
+        event: DecisionEvent,
         fields: dict[str, Any] | None = None,
     ) -> None:
         """Persist one decision record + emit a structured log line.
@@ -216,28 +254,33 @@ class PRDecisionStore:
         repo: str,
         pr_number: int,
         limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        """Return the full chronological timeline for one PR.
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return ``(decisions, total_count)`` for one PR.
 
-        Sorted by ``observed_at`` ascending (oldest first). Returns an
-        empty list when Mongo is unreachable or the PR has no records.
+        ``decisions`` are sorted by ``observed_at`` ascending (oldest
+        first), bounded by ``limit`` and skipped past ``offset`` so the
+        admin SPA can paginate. ``total_count`` is the unfiltered count
+        of matching documents so the SPA can render a "showing N of M"
+        affordance and detect truncation.
+
+        Returns ``([], 0)`` when Mongo is unreachable or the PR has no
+        records.
         """
         col = await self._ensure_collection()
         if col is None:
-            return []
+            return [], 0
         repo_slug = f"{owner}/{repo}"
+        query = {"repo": repo_slug, "pr_number": int(pr_number)}
         try:
-            cursor = (
-                col.find({"repo": repo_slug, "pr_number": int(pr_number)})
-                .sort("observed_at", 1)
-                .limit(int(limit))
-            )
+            total_count = int(await col.count_documents(query))
+            cursor = col.find(query).sort("observed_at", 1).skip(int(offset)).limit(int(limit))
             docs: list[dict[str, Any]] = []
             async for doc in cursor:
                 # Drop Mongo's internal ``_id`` so the response is JSON-clean.
                 doc.pop("_id", None)
                 docs.append(doc)
-            return docs
+            return docs, total_count
         except Exception:
             logger.warning(
                 "PRDecisionStore: failed to query timeline for %s#%d",
@@ -245,7 +288,7 @@ class PRDecisionStore:
                 pr_number,
                 exc_info=True,
             )
-            return []
+            return [], 0
 
     # ── Internals ──────────────────────────────────────────────────────
 
@@ -297,38 +340,34 @@ class PRDecisionStore:
 async def record_decision(
     repo: str,
     pr_number: int,
-    agent: str,
-    event: str,
+    agent: DecisionAgent,
+    event: DecisionEvent,
     **fields: Any,
 ) -> None:
     """Module-level shortcut: write one decision via the default store.
 
     Lazily falls back to a disabled store (structured-log only) when
     nobody called :func:`configure_default_store` so call sites can
-    fire-and-forget without checking config first. Never raises.
+    ``await`` without checking config first. ``store.record`` already
+    swallows Mongo failures and the trace-id capture has its own
+    guard, so this wrapper deliberately does not add another
+    ``try/except`` — nothing inside should raise.
     """
     store = _default_store
     if store is None:
         store = PRDecisionStore(enabled=False)
-    try:
-        await store.record(
-            repo=repo,
-            pr_number=pr_number,
-            agent=agent,
-            event=event,
-            fields=dict(fields),
-        )
-    except Exception:  # pragma: no cover - defensive: belt-and-braces
-        logger.warning(
-            "record_decision: unexpected exception (event=%s repo=%s pr=%d)",
-            event,
-            repo,
-            pr_number,
-            exc_info=True,
-        )
+    await store.record(
+        repo=repo,
+        pr_number=pr_number,
+        agent=agent,
+        event=event,
+        fields=dict(fields),
+    )
 
 
 __all__ = [
+    "DecisionAgent",
+    "DecisionEvent",
     "PRDecisionStore",
     "configure_default_store",
     "get_default_store",

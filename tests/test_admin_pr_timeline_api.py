@@ -27,6 +27,10 @@ class _FakeCursor:
         self._docs = sorted(self._docs, key=lambda d: d[key], reverse=reverse)
         return self
 
+    def skip(self, n: int) -> _FakeCursor:
+        self._docs = self._docs[int(n) :]
+        return self
+
     def limit(self, n: int) -> _FakeCursor:
         self._docs = self._docs[: int(n)]
         return self
@@ -53,6 +57,9 @@ class _FakeCollection:
     def find(self, query: dict[str, Any]) -> _FakeCursor:
         matched = [d for d in self._docs if all(d.get(k) == v for k, v in query.items())]
         return _FakeCursor(matched)
+
+    async def count_documents(self, query: dict[str, Any]) -> int:
+        return sum(1 for d in self._docs if all(d.get(k) == v for k, v in query.items()))
 
 
 def _build_store() -> tuple[PRDecisionStore, _FakeCollection]:
@@ -143,6 +150,8 @@ class TestPRTimelineAPI:
         assert events == ["review_started", "tier_classified"]
         assert data["decisions"][0]["fields"]["author"] == "ianlintner"
         assert data["decisions"][0]["trace_id"] == "a" * 32
+        assert data["total_count"] == 2
+        assert data["truncated"] is False
 
     def test_get_timeline_returns_empty_when_no_decisions(
         self,
@@ -156,6 +165,8 @@ class TestPRTimelineAPI:
         data = resp.json()
         assert data["decisions"] == []
         assert data["pr_number"] == 999
+        assert data["total_count"] == 0
+        assert data["truncated"] is False
 
     def test_get_timeline_unauthorized(
         self,
@@ -164,3 +175,47 @@ class TestPRTimelineAPI:
         # Without the dependency override, the endpoint should 401/403.
         resp = client_unauthed.get("/api/admin/pr/ianlintner/caretaker-qa/108/timeline")
         assert resp.status_code in (401, 403, 503)
+
+    def test_get_timeline_pagination_reports_truncation(
+        self,
+        client_authed: TestClient,
+        store_and_col: tuple[PRDecisionStore, _FakeCollection],
+    ) -> None:
+        """When more decisions exist than the page size, the response flags it."""
+        _store, col = store_and_col
+        now = datetime.now(UTC)
+        # Insert 5 decisions oldest-first.
+        for i in range(5):
+            col._docs.append(
+                {
+                    "id": f"d{i}",
+                    "repo": "ianlintner/caretaker-qa",
+                    "pr_number": 108,
+                    "observed_at": now - timedelta(minutes=10 - i),
+                    "agent": "pr_reviewer",
+                    "event": f"event_{i}",
+                    "fields": {},
+                    "trace_id": None,
+                    "span_id": None,
+                }
+            )
+
+        # Ask for a 2-row page from the start.
+        resp = client_authed.get(
+            "/api/admin/pr/ianlintner/caretaker-qa/108/timeline?limit=2&offset=0"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["decisions"]) == 2
+        assert [d["id"] for d in data["decisions"]] == ["d0", "d1"]
+        assert data["total_count"] == 5
+        assert data["truncated"] is True
+
+        # Last page (offset=4, limit=2) — only one row left, not truncated.
+        resp = client_authed.get(
+            "/api/admin/pr/ianlintner/caretaker-qa/108/timeline?limit=2&offset=4"
+        )
+        data = resp.json()
+        assert [d["id"] for d in data["decisions"]] == ["d4"]
+        assert data["total_count"] == 5
+        assert data["truncated"] is False

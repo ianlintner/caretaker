@@ -543,15 +543,21 @@ async def run(
 
     # Lazy import — keep the per-PR-decision helper out of the
     # top-level import path so the backend module stays cheap to load.
-    from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+    from caretaker.state.pr_decisions import DecisionEvent, record_decision  # noqa: PLC0415
 
+    # Parse the PR URL once up front. ``prepare_workdir`` parses the
+    # same URL internally, but we need ``(repo_slug, pr_number)`` for
+    # the per-PR-decision writes BEFORE workdir prep, and re-parsing
+    # the URL at every call site is wasteful.
     repo_slug, pr_number = _extract_repo_and_pr(pr_url)
 
-    async def _record(event: str, **fields: object) -> None:
+    async def _record(event: DecisionEvent, **fields: object) -> None:
         if not repo_slug or pr_number <= 0:
             return
         await record_decision(repo_slug, pr_number, "opencode_local", event, **fields)
 
+    # Recorded BEFORE _prepare_workdir succeeds so workdir-prep
+    # failures show as started+failed rather than missing entirely.
     await _record(
         "opencode_review_started",
         model=review_model,

@@ -52,34 +52,25 @@ logger = logging.getLogger(__name__)
 _tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.auto_fix")
 
 
-def _record_auto_fix_skipped(repo: str, pr_number: int, reason: str, attempt: int) -> None:
-    """Fire-and-forget per-PR-decision write for an auto-fix skip branch.
+async def _record_auto_fix_skipped(repo: str, pr_number: int, reason: str, attempt: int) -> None:
+    """Per-PR-decision write for an auto-fix skip branch.
 
-    Lazy import + best-effort: never fail ``decide_auto_fix`` because
-    the timeline write threw or the loop wasn't running.
+    Lazy import keeps the Mongo helper out of the module-import hot
+    path. ``record_decision`` already swallows persistence errors, so
+    this just plain-awaits.
     """
     if not repo or pr_number <= 0:
         return
-    try:
-        from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+    from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
 
-        asyncio.create_task(
-            record_decision(
-                repo,
-                int(pr_number),
-                "auto_fix",
-                "auto_fix_skipped",
-                reason=reason,
-                attempt=int(attempt),
-            )
-        )
-    except RuntimeError:
-        # No running loop — sync test harness. Skip silently; the
-        # structured-log line in record_decision still fires when the
-        # test eventually drives the coroutine.
-        pass
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("auto_fix: record_decision dispatch failed", exc_info=True)
+    await record_decision(
+        repo,
+        int(pr_number),
+        "auto_fix",
+        "auto_fix_skipped",
+        reason=reason,
+        attempt=int(attempt),
+    )
 
 
 # Synthetic backend name handled in-process by :func:`run_deterministic_lint`
@@ -149,7 +140,7 @@ class AutoFixDecision:
     categories: list[str] | None = None
 
 
-def decide_auto_fix(
+async def decide_auto_fix(
     *,
     review: ReviewResult,
     config: AutoFixConfig,
@@ -181,17 +172,17 @@ def decide_auto_fix(
     attempt = int(tracking.auto_fix_attempts) + 1
     if not config.enabled:
         record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
-        _record_auto_fix_skipped(repo, pr_number, "auto_fix_disabled", attempt)
+        await _record_auto_fix_skipped(repo, pr_number, "auto_fix_disabled", attempt)
         return AutoFixDecision(should_dispatch=False, reason="auto_fix.enabled is False")
     if review.verdict != "REQUEST_CHANGES":
         record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
-        _record_auto_fix_skipped(repo, pr_number, f"verdict_{review.verdict}", attempt)
+        await _record_auto_fix_skipped(repo, pr_number, f"verdict_{review.verdict}", attempt)
         return AutoFixDecision(
             should_dispatch=False, reason=f"verdict {review.verdict!r} is not REQUEST_CHANGES"
         )
     if tracking.auto_fix_attempts >= config.max_attempts:
         record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
-        _record_auto_fix_skipped(repo, pr_number, "max_attempts_reached", attempt)
+        await _record_auto_fix_skipped(repo, pr_number, "max_attempts_reached", attempt)
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -204,7 +195,7 @@ def decide_auto_fix(
     label_eligible = config.opt_in_label in pr_labels
     if not (author_eligible or label_eligible):
         record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
-        _record_auto_fix_skipped(repo, pr_number, "author_or_label_ineligible", attempt)
+        await _record_auto_fix_skipped(repo, pr_number, "author_or_label_ineligible", attempt)
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -426,6 +417,8 @@ async def dispatch_auto_fix(
     # the dispatcher's hot path free of optional Mongo deps.
     from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
 
+    # Recorded BEFORE the inner work so a pod crash mid-dispatch is
+    # visible in the timeline as a dispatched-without-complete pair.
     await record_decision(
         repo_slug,
         int(pr_number),

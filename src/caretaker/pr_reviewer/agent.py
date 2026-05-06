@@ -19,7 +19,6 @@ Idempotency is provided by ``skip_labels`` (defaults to
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -182,7 +181,7 @@ class PRReviewerAgent(BaseAgent):
             },
         )
 
-    def _emit_pr_review_audit(
+    async def _emit_pr_review_audit(
         self,
         *,
         owner: str,
@@ -263,37 +262,29 @@ class PRReviewerAgent(BaseAgent):
                 "auto_fix_reason": auto_fix_reason or "n/a",
             },
         )
-        # Per-PR decision timeline write — fire-and-forget so the
-        # observability path never blocks the agent. Lazy import keeps
-        # the helper out of the import-cycle hot path.
-        try:
-            from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+        # Per-PR decision timeline write. Plain ``await`` — the helper
+        # already swallows Mongo errors and the structured log line
+        # above ensures Loki has the record even when the Mongo write
+        # fails. Lazy import keeps the helper out of the import-cycle
+        # hot path.
+        from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
 
-            asyncio.create_task(
-                record_decision(
-                    repo_slug,
-                    int(pr_number),
-                    "pr_reviewer",
-                    "review_completed",
-                    pr_author=pr_author,
-                    is_caretaker_owned=bool(is_caretaker_pr),
-                    routing_reason=routing_reason,
-                    verdict=verdict_label,
-                    tier=tier_label,
-                    backend=backend_label,
-                    model=model or "none",
-                    duration_ms=duration_ms,
-                    auto_fix_dispatched=bool(auto_fix_dispatched),
-                    auto_fix_reason=auto_fix_reason or "n/a",
-                )
-            )
-        except RuntimeError:
-            # No running loop (e.g. called from a sync test harness).
-            # Skip the decision-timeline write — the structured log
-            # line above is still emitted by ``logger.info``.
-            pass
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("record_decision dispatch failed", exc_info=True)
+        await record_decision(
+            repo_slug,
+            int(pr_number),
+            "pr_reviewer",
+            "review_completed",
+            pr_author=pr_author,
+            is_caretaker_owned=bool(is_caretaker_pr),
+            routing_reason=routing_reason,
+            verdict=verdict_label,
+            tier=tier_label,
+            backend=backend_label,
+            model=model or "none",
+            duration_ms=duration_ms,
+            auto_fix_dispatched=bool(auto_fix_dispatched),
+            auto_fix_reason=auto_fix_reason or "n/a",
+        )
 
     async def _handle_pr(
         self,
@@ -397,7 +388,7 @@ class PRReviewerAgent(BaseAgent):
                 reason="draft",
                 author=pr_author,
             )
-            self._emit_pr_review_audit(
+            await self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
                 pr_number=pr_number,
@@ -430,7 +421,7 @@ class PRReviewerAgent(BaseAgent):
                 reason="skip_label",
                 author=pr_author,
             )
-            self._emit_pr_review_audit(
+            await self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
                 pr_number=pr_number,
@@ -479,7 +470,7 @@ class PRReviewerAgent(BaseAgent):
                     if review_result.verdict == "REQUEST_CHANGES":
                         head_branch = (pr.get("head") or {}).get("ref", "")
                         pr_url = pr.get("html_url", "")
-                        fix_decision = _auto_fix.decide_auto_fix(
+                        fix_decision = await _auto_fix.decide_auto_fix(
                             review=review_result,
                             config=cfg.auto_fix,
                             pr_author=pr_author,
@@ -526,7 +517,7 @@ class PRReviewerAgent(BaseAgent):
                         pr_number,
                         exc,
                     )
-                self._emit_pr_review_audit(
+                await self._emit_pr_review_audit(
                     owner=owner,
                     repo=repo,
                     pr_number=pr_number,
@@ -623,7 +614,7 @@ class PRReviewerAgent(BaseAgent):
                         logger.warning("pr-reviewer: no head SHA for #%d", pr_number)
                         report.skipped.append(pr_number)
                         # ``pr_author`` is already set at the top of _handle_pr.
-                        self._emit_pr_review_audit(
+                        await self._emit_pr_review_audit(
                             owner=owner,
                             repo=repo,
                             pr_number=pr_number,
@@ -658,7 +649,7 @@ class PRReviewerAgent(BaseAgent):
                         _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
                         head_branch = (pr.get("head") or {}).get("ref", "")
                         pr_url = pr.get("html_url", "")
-                        _decision = _auto_fix.decide_auto_fix(
+                        _decision = await _auto_fix.decide_auto_fix(
                             review=result,
                             config=cfg.auto_fix,
                             pr_author=pr_author,
@@ -697,7 +688,7 @@ class PRReviewerAgent(BaseAgent):
                     except Exception:
                         pass
                     report.reviewed.append(pr_number)
-                    self._emit_pr_review_audit(
+                    await self._emit_pr_review_audit(
                         owner=owner,
                         repo=repo,
                         pr_number=pr_number,
@@ -769,7 +760,7 @@ class PRReviewerAgent(BaseAgent):
                         backend,
                         cfg.enabled_backends,
                     )
-                    self._emit_pr_review_audit(
+                    await self._emit_pr_review_audit(
                         owner=owner,
                         repo=repo,
                         pr_number=pr_number,
@@ -842,7 +833,7 @@ class PRReviewerAgent(BaseAgent):
                     f"https://github.com/{owner}/{repo}/pull/{pr_number}"
                 )
                 _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
-                fix_decision = _auto_fix.decide_auto_fix(
+                fix_decision = await _auto_fix.decide_auto_fix(
                     review=local_result,
                     config=cfg.auto_fix,
                     pr_author=pr_author,
@@ -876,7 +867,7 @@ class PRReviewerAgent(BaseAgent):
                             new_head_sha=outcome.new_head_sha,
                             fix_backend=fix_decision.backend,
                         )
-            self._emit_pr_review_audit(
+            await self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
                 pr_number=pr_number,
@@ -910,7 +901,7 @@ class PRReviewerAgent(BaseAgent):
         else:
             report.errors.append(f"{backend} dispatch failed for #{pr_number}")
             verdict_label = "dispatch_failed"
-        self._emit_pr_review_audit(
+        await self._emit_pr_review_audit(
             owner=owner,
             repo=repo,
             pr_number=pr_number,
