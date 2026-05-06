@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.28.3",
+      "min_compatible": "0.28.2",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.3",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.28.3 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.28.2 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/680\n* feat(observability): env-driven log level + DEBUG default in QA by @ianlintner in https://github.com/ianlintner/caretaker/pull/681\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.28.2...v0.28.3",
+      "breaking": false
+    },
+    {
       "version": "0.28.2",
       "min_compatible": "0.28.1",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.2",
