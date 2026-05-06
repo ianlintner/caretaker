@@ -68,7 +68,7 @@ spec:
             # manageable. Noisy libs (httpx, openai, urllib3) are pinned
             # to INFO regardless so the signal stays readable.
             - name: CARETAKER_LOG_LEVEL
-              value: "DEBUG"
+              value: "INFO"
             # Webhook fleet allow-list (comma-separated owner/repo, with
             # optional ``owner/*`` wildcards). The MCP backend's GitHub
             # App is installed on ~188 repos (forks, archived projects,
@@ -311,12 +311,13 @@ spec:
               memory: "256Mi"
             limits:
               cpu: "500m"
-              # Bumped from 512Mi → 1Gi: opencode_local and claude_code_local
-              # backends spawn Node.js subprocesses (~150-300MB each) inside
-              # this pod for caretaker-owned PR reviews. The bounded
-              # in-flight cap in github_app/dispatcher.py prevents runaway
-              # concurrent sessions from hiding a leak.
-              memory: "1Gi"
+              # Bumped from 1Gi → 2Gi after v0.29.x deploy hit OOMKills:
+              # observability phases 1-4 added per-webhook Mongo writes
+              # (pr_decisions, fleet_heartbeats, OTEL spans), and a
+              # busy webhook minute (~60 filtered + ~10 dispatched) was
+              # spiking past 1Gi. opencode_local subprocesses still need
+              # 150-300MB headroom on top of steady-state.
+              memory: "2Gi"
           volumeMounts:
             - name: pr-review-workdir
               mountPath: /tmp/caretaker-pr-review
