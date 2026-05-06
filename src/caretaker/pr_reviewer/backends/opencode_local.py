@@ -33,12 +33,15 @@ opencode CLI non-interactive mode:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
 from typing import TYPE_CHECKING
+
+from opentelemetry import trace as _otel_trace
 
 from caretaker.observability.metrics import record_opencode_invocation
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
@@ -59,6 +62,13 @@ if TYPE_CHECKING:
     from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — wraps each opencode subprocess invocation so the
+# parent ``pr_reviewer.handle_pr`` trace shows model + exit_code +
+# outcome. Note: the ``parse_fallback`` outcome is a property of
+# :func:`run` (output-parsing), NOT this span — this span only reports
+# the subprocess result (ok/timeout/no_endpoints/error).
+_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.opencode_local")
 
 
 def _resolve_tier_model(
@@ -182,65 +192,102 @@ async def _invoke_opencode(
     claude stream-json mode, this is plain text — we capture the full
     output and search for the ``caretaker-review`` block.
     """
-    resolved = shutil.which(config.cli_path) or config.cli_path
-    if not os.path.isabs(resolved) and not shutil.which(resolved):
-        raise OpenCodeLocalError(
-            f"opencode CLI not found at {config.cli_path!r}; install it "
-            "(`npm install -g opencode-ai` or pin a path in "
-            "pr_reviewer.opencode_local.cli_path). "
-            "Requires OPENROUTER_API_KEY in the environment."
-        )
+    with _tracer.start_as_current_span("opencode_local.invoke") as span:
+        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+            span.set_attribute("caretaker.opencode.workdir", workdir)
+            span.set_attribute("caretaker.opencode.timeout_seconds", int(config.timeout_seconds))
 
-    env = os.environ.copy()
-    if config.extra_env:
-        env.update(config.extra_env)
-
-    model = model_override or config.model
-    # opencode CLI uses ``run`` as the non-interactive subcommand. The
-    # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
-    # prompt as a positional and ``--model`` to pin the provider/model.
-    args = [resolved, "run", prompt or _REVIEW_PROMPT]
-    if model:
-        args += ["--model", model]
-
-    logger.info(
-        "opencode_local: invoking %s model=%s in %s",
-        resolved,
-        model or "(opencode default)",
-        workdir,
-    )
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=workdir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    try:
-        stdout, stderr = await stream_subprocess_output(
-            proc,
-            timeout_seconds=config.timeout_seconds,
-            stdout_log=lambda line: logger.info("opencode | %s", _truncate(line, 400)),
-            stderr_log=lambda line: logger.warning("opencode! %s", line),
-        )
-    except TimeoutError as exc:
-        raise OpenCodeLocalTimeoutError(
-            f"opencode timed out after {config.timeout_seconds}s"
-        ) from exc
-    if proc.returncode != 0:
-        # Special-case: opencode emits ``No endpoints found`` when the
-        # configured provider (OpenRouter) hasn't been wired up. We
-        # surface this as its own exception type so the caller can
-        # record a specific ``no_endpoints`` outcome on the metric.
-        if "No endpoints found" in stderr:
-            raise OpenCodeLocalNoEndpointsError(
-                f"opencode exited {proc.returncode} with No endpoints found "
-                f"(check OPENROUTER_API_KEY / model id): {stderr.strip()[:500]}"
+        resolved = shutil.which(config.cli_path) or config.cli_path
+        if not os.path.isabs(resolved) and not shutil.which(resolved):
+            exc = OpenCodeLocalError(
+                f"opencode CLI not found at {config.cli_path!r}; install it "
+                "(`npm install -g opencode-ai` or pin a path in "
+                "pr_reviewer.opencode_local.cli_path). "
+                "Requires OPENROUTER_API_KEY in the environment."
             )
-        raise OpenCodeLocalError(
-            f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.opencode.outcome", "error")
+                span.record_exception(exc)
+                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+            raise exc
+
+        env = os.environ.copy()
+        if config.extra_env:
+            env.update(config.extra_env)
+
+        model = model_override or config.model
+        with contextlib.suppress(Exception):  # pragma: no cover
+            span.set_attribute("caretaker.opencode.model", str(model or ""))
+        # opencode CLI uses ``run`` as the non-interactive subcommand. The
+        # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
+        # prompt as a positional and ``--model`` to pin the provider/model.
+        args = [resolved, "run", prompt or _REVIEW_PROMPT]
+        if model:
+            args += ["--model", model]
+
+        logger.info(
+            "opencode_local: invoking %s model=%s in %s",
+            resolved,
+            model or "(opencode default)",
+            workdir,
         )
-    return stdout
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=workdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            stdout, stderr = await stream_subprocess_output(
+                proc,
+                timeout_seconds=config.timeout_seconds,
+                stdout_log=lambda line: logger.info("opencode | %s", _truncate(line, 400)),
+                stderr_log=lambda line: logger.warning("opencode! %s", line),
+            )
+        except TimeoutError as exc:
+            timeout_err = OpenCodeLocalTimeoutError(
+                f"opencode timed out after {config.timeout_seconds}s"
+            )
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.opencode.outcome", "timeout")
+                span.record_exception(timeout_err)
+                span.set_status(
+                    _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(timeout_err)[:200])
+                )
+            raise timeout_err from exc
+        with contextlib.suppress(Exception):  # pragma: no cover
+            span.set_attribute("caretaker.opencode.exit_code", int(proc.returncode or 0))
+        if proc.returncode != 0:
+            # Special-case: opencode emits ``No endpoints found`` when the
+            # configured provider (OpenRouter) hasn't been wired up. We
+            # surface this as its own exception type so the caller can
+            # record a specific ``no_endpoints`` outcome on the metric.
+            if "No endpoints found" in stderr:
+                no_ep_err = OpenCodeLocalNoEndpointsError(
+                    f"opencode exited {proc.returncode} with No endpoints found "
+                    f"(check OPENROUTER_API_KEY / model id): {stderr.strip()[:500]}"
+                )
+                with contextlib.suppress(Exception):  # pragma: no cover
+                    span.set_attribute("caretaker.opencode.outcome", "no_endpoints")
+                    span.record_exception(no_ep_err)
+                    span.set_status(
+                        _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(no_ep_err)[:200])
+                    )
+                raise no_ep_err
+            err = OpenCodeLocalError(
+                f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
+            )
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.opencode.outcome", "error")
+                span.record_exception(err)
+                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(err)[:200]))
+            raise err
+        with contextlib.suppress(Exception):  # pragma: no cover
+            # Subprocess exited cleanly. parse_fallback (if any) is determined
+            # by :func:`run`'s output parser, not this span — see module docstring.
+            span.set_attribute("caretaker.opencode.outcome", "ok")
+        return stdout
 
 
 _RESULT_TEXT_RE = re.compile(r"```caretaker-review\s*\n(?P<json>.+?)\n\s*```", re.DOTALL)

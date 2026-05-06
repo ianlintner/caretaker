@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from opentelemetry import trace as _otel_trace
+
 from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.evolution.executor_routing import (
     ExecutorRoute,
@@ -43,6 +45,9 @@ from caretaker.pr_reviewer import handoff_review_consumer, handoff_reviewer, inl
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
 from caretaker.state.models import TrackedPR
+
+# Module-level tracer — re-used across all PR review handlers.
+_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer")
 
 if TYPE_CHECKING:
     from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
@@ -192,6 +197,7 @@ class PRReviewerAgent(BaseAgent):
         start_monotonic: float,
         auto_fix_dispatched: bool,
         auto_fix_reason: str | None,
+        span: Any = None,
     ) -> None:
         """Emit the per-PR audit log line + metrics at every return point.
 
@@ -209,6 +215,18 @@ class PRReviewerAgent(BaseAgent):
         record_pr_review_outcome(
             repo=repo_slug, backend=backend_label, tier=tier_label, verdict=verdict_label
         )
+        if span is not None:
+            try:
+                if tier:
+                    span.set_attribute("caretaker.complexity.tier", tier_label)
+                if backend:
+                    span.set_attribute("caretaker.backend", backend_label)
+                if model:
+                    span.set_attribute("caretaker.review.model", model)
+                span.set_attribute("caretaker.review.verdict", verdict_label)
+                span.set_attribute("caretaker.auto_fix.dispatched", bool(auto_fix_dispatched))
+            except Exception:  # pragma: no cover - defensive
+                pass
         logger.info(
             "pr_review_complete repo=%s pr=%d author=%s is_caretaker_owned=%s "
             "routing=%s tier=%s backend=%s model=%s verdict=%s duration_ms=%d "
@@ -260,6 +278,40 @@ class PRReviewerAgent(BaseAgent):
         # is approaching a state-machine. Refactor into a
         # ``_PRReviewState`` dataclass once the next reviewer phase
         # adds more transitions. Out of scope for phase 1A.
+        pr_number = int(pr.get("number", 0))
+        owner = self._ctx.owner
+        repo = self._ctx.repo
+
+        # Root span for this PR review — every downstream span (complexity
+        # classifier, inline reviewer, opencode invoke, auto-fix dispatch)
+        # nests under this so a single PR review becomes one trace tree.
+        with _tracer.start_as_current_span("pr_reviewer.handle_pr") as span:
+            try:
+                span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+                span.set_attribute("caretaker.pr.number", int(pr_number))
+            except Exception:  # pragma: no cover - defensive
+                pass
+            try:
+                await self._handle_pr_body(pr, report, state=state, span=span)
+            except Exception as exc:
+                try:
+                    span.record_exception(exc)
+                    span.set_status(
+                        _otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200])
+                    )
+                except Exception:  # pragma: no cover
+                    pass
+                raise
+
+    async def _handle_pr_body(
+        self,
+        pr: dict[str, Any],
+        report: _PRReviewReport,
+        *,
+        state: OrchestratorState,
+        span: Any,
+    ) -> None:
+        """Real body of :meth:`_handle_pr`, wrapped by the root span."""
         cfg = self._ctx.config.pr_reviewer
         pr_number = int(pr.get("number", 0))
         owner = self._ctx.owner
@@ -278,6 +330,12 @@ class PRReviewerAgent(BaseAgent):
         auto_fix_dispatched = False
         auto_fix_reason: str | None = None
 
+        try:
+            span.set_attribute("caretaker.pr.author", pr_author)
+            span.set_attribute("caretaker.pr.is_caretaker_owned", bool(is_caretaker_pr))
+        except Exception:  # pragma: no cover - defensive
+            pass
+
         # Skip drafts
         if cfg.skip_draft and pr.get("draft", False):
             report.skipped.append(pr_number)
@@ -295,6 +353,7 @@ class PRReviewerAgent(BaseAgent):
                 start_monotonic=start_monotonic,
                 auto_fix_dispatched=auto_fix_dispatched,
                 auto_fix_reason="skipped_draft",
+                span=span,
             )
             return
 
@@ -319,6 +378,7 @@ class PRReviewerAgent(BaseAgent):
                 start_monotonic=start_monotonic,
                 auto_fix_dispatched=auto_fix_dispatched,
                 auto_fix_reason="skipped_label",
+                span=span,
             )
             return
 
@@ -413,6 +473,7 @@ class PRReviewerAgent(BaseAgent):
                     start_monotonic=start_monotonic,
                     auto_fix_dispatched=auto_fix_dispatched,
                     auto_fix_reason=auto_fix_reason,
+                    span=span,
                 )
                 return
 
@@ -438,6 +499,11 @@ class PRReviewerAgent(BaseAgent):
         )
         routing_reason = decision.reason
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
+        try:
+            span.set_attribute("caretaker.routing.use_inline", bool(decision.use_inline))
+            span.set_attribute("caretaker.routing.score", int(decision.score))
+        except Exception:  # pragma: no cover
+            pass
 
         # Shadow-mode wrapper: compares legacy point-system verdict with
         # the LLM candidate under the ``executor_routing`` flag. The
@@ -507,6 +573,7 @@ class PRReviewerAgent(BaseAgent):
                             start_monotonic=start_monotonic,
                             auto_fix_dispatched=auto_fix_dispatched,
                             auto_fix_reason="no_head_sha",
+                            span=span,
                         )
                         return
 
@@ -579,6 +646,7 @@ class PRReviewerAgent(BaseAgent):
                         start_monotonic=start_monotonic,
                         auto_fix_dispatched=auto_fix_dispatched,
                         auto_fix_reason=auto_fix_reason,
+                        span=span,
                     )
                     return
 
@@ -650,6 +718,7 @@ class PRReviewerAgent(BaseAgent):
                         start_monotonic=start_monotonic,
                         auto_fix_dispatched=auto_fix_dispatched,
                         auto_fix_reason="backend_not_enabled",
+                        span=span,
                     )
                     return
                 logger.warning(
@@ -754,6 +823,7 @@ class PRReviewerAgent(BaseAgent):
                 start_monotonic=start_monotonic,
                 auto_fix_dispatched=auto_fix_dispatched,
                 auto_fix_reason=auto_fix_reason,
+                span=span,
             )
             return
 
@@ -787,6 +857,7 @@ class PRReviewerAgent(BaseAgent):
             start_monotonic=start_monotonic,
             auto_fix_dispatched=auto_fix_dispatched,
             auto_fix_reason=auto_fix_reason,
+            span=span,
         )
 
     async def _run_local_subprocess_backend(

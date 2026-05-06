@@ -10,6 +10,7 @@ and a future k8s-Job mode can swap one helper instead of two.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -18,9 +19,15 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass
 
+from opentelemetry import trace as _otel_trace
+
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — both review and auto-fix flows clone via this
+# helper, so a span here lets either parent trace see the clone cost.
+_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.workdir")
 
 
 class WorkdirError(RuntimeError):
@@ -114,35 +121,56 @@ async def prepare_workdir(
     Returns ``(repo_dir, parsed)``. Caller is responsible for cleanup
     via :func:`cleanup_workdir`.
     """
-    parsed = parse_pr_url(pr_url)
-    workdir = tempfile.mkdtemp(
-        prefix=f"caretaker-pr-{parsed.repo}-{parsed.number}-",
-        dir=workdir_root or None,
-    )
-    logger.info(
-        "workdir: %s for %s/%s#%d (head_branch=%s)",
-        workdir,
-        parsed.owner,
-        parsed.repo,
-        parsed.number,
-        head_branch or "<sha-only>",
-    )
+    with _tracer.start_as_current_span("pr_review.clone_workdir") as span:
+        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+            span.set_attribute("caretaker.pr.url", pr_url)
+            span.set_attribute("caretaker.workdir.clone_depth", int(clone_depth))
+        try:
+            parsed = parse_pr_url(pr_url)
+            workdir = tempfile.mkdtemp(
+                prefix=f"caretaker-pr-{parsed.repo}-{parsed.number}-",
+                dir=workdir_root or None,
+            )
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.workdir.path", workdir)
+            logger.info(
+                "workdir: %s for %s/%s#%d (head_branch=%s)",
+                workdir,
+                parsed.owner,
+                parsed.repo,
+                parsed.number,
+                head_branch or "<sha-only>",
+            )
 
-    repo_dir = os.path.join(workdir, "repo")
-    await _run_git(
-        "clone",
-        "--depth",
-        str(clone_depth),
-        "--quiet",
-        clone_url(parsed, github_token=github_token),
-        repo_dir,
-    )
+            repo_dir = os.path.join(workdir, "repo")
+            await _run_git(
+                "clone",
+                "--depth",
+                str(clone_depth),
+                "--quiet",
+                clone_url(parsed, github_token=github_token),
+                repo_dir,
+            )
 
-    pr_ref = f"refs/pull/{parsed.number}/head"
-    local_branch = head_branch or "caretaker/pr-head"
-    await _run_git("fetch", "origin", f"{pr_ref}:{local_branch}", cwd=repo_dir)
-    await _run_git("checkout", local_branch, cwd=repo_dir)
-    return repo_dir, parsed
+            pr_ref = f"refs/pull/{parsed.number}/head"
+            local_branch = head_branch or "caretaker/pr-head"
+            await _run_git("fetch", "origin", f"{pr_ref}:{local_branch}", cwd=repo_dir)
+            await _run_git("checkout", local_branch, cwd=repo_dir)
+
+            # Best-effort: capture the resolved head SHA after checkout so
+            # the parent trace can correlate with the GitHub commit URL.
+            with contextlib.suppress(Exception):  # pragma: no cover - best-effort attribute
+                head_sha = await _run_git("rev-parse", "HEAD", cwd=repo_dir)
+                head_sha = head_sha.strip()
+                if head_sha:
+                    span.set_attribute("caretaker.pr.head_sha", head_sha)
+
+            return repo_dir, parsed
+        except Exception as exc:
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.record_exception(exc)
+                span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+            raise
 
 
 def cleanup_workdir(repo_dir: str, *, keep: bool = False) -> None:

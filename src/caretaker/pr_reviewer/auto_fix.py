@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from opentelemetry import trace as _otel_trace
+
 from caretaker.observability.metrics import record_auto_fix_dispatch
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
@@ -44,6 +46,10 @@ if TYPE_CHECKING:
     from caretaker.state.models import TrackedPR
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — every dispatch becomes one span under the parent
+# ``pr_reviewer.handle_pr`` trace, carrying backend + categories + outcome.
+_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.auto_fix")
 
 
 # Synthetic backend name handled in-process by :func:`run_deterministic_lint`
@@ -377,6 +383,70 @@ async def dispatch_auto_fix(
     tracking.auto_fix_attempts += 1
     tracking.auto_fix_last_head_sha = ""  # will be set on success below
 
+    span_cm = _tracer.start_as_current_span("auto_fix.dispatch")
+    span = span_cm.__enter__()
+    try:
+        try:
+            span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+            span.set_attribute("caretaker.pr.number", int(pr_number))
+            span.set_attribute("caretaker.auto_fix.backend", str(decision.backend))
+            span.set_attribute("caretaker.auto_fix.categories", list(decision.categories or []))
+            span.set_attribute("caretaker.auto_fix.attempt", int(tracking.auto_fix_attempts))
+        except Exception:  # pragma: no cover - defensive
+            pass
+        outcome_result = await _dispatch_auto_fix_inner(
+            decision=decision,
+            pr_url=pr_url,
+            head_branch=head_branch,
+            review=review,
+            config=config,
+            github=github,
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            tracking=tracking,
+            tier=tier,
+            auto_fix_cfg=auto_fix_cfg,
+        )
+        try:
+            outcome_label = (
+                "success"
+                if outcome_result.success
+                else ("skipped" if not outcome_result.dispatched else "failed")
+            )
+            span.set_attribute("caretaker.auto_fix.outcome", outcome_label)
+            if outcome_result.new_head_sha:
+                span.set_attribute("caretaker.auto_fix.new_head_sha", outcome_result.new_head_sha)
+        except Exception:  # pragma: no cover
+            pass
+        return outcome_result
+    except Exception as exc:
+        try:
+            span.record_exception(exc)
+            span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR, str(exc)[:200]))
+        except Exception:  # pragma: no cover
+            pass
+        raise
+    finally:
+        span_cm.__exit__(None, None, None)
+
+
+async def _dispatch_auto_fix_inner(
+    *,
+    decision: AutoFixDecision,
+    pr_url: str,
+    head_branch: str,
+    review: ReviewResult,
+    config: PRReviewerConfig,
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    tracking: TrackedPR,
+    tier: str | None,
+    auto_fix_cfg: AutoFixConfig,
+) -> AutoFixOutcome:
+    """Inner body of :func:`dispatch_auto_fix`, wrapped by the OTel span."""
     workdir: str | None = None
     new_head: str = ""
     try:

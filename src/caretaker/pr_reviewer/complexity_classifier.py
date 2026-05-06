@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Literal
 
+from opentelemetry import trace as _otel_trace
 from pydantic import BaseModel, Field
 
 from caretaker.evolution.executor_routing import ExecutorRouteContext, _detect_sensitive_hints
@@ -43,6 +44,10 @@ if TYPE_CHECKING:
     from caretaker.pr_reviewer.routing import RoutingDecision
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — every classification gets a span so the
+# parent ``pr_reviewer.handle_pr`` trace shows tier + source attrs.
+_tracer = _otel_trace.get_tracer("caretaker.pr_reviewer.complexity_classifier")
 
 
 ComplexityTier = Literal["trivial", "simple", "standard", "complex"]
@@ -189,41 +194,62 @@ async def classify(
     unavailability, falls back to a heuristic verdict so callers can
     continue without a special-case branch.
     """
-    fast = fast_path_tier(context=context, routing_decision=routing_decision)
-    if fast is not None:
-        record_complexity_tier(tier=fast, source="fast_path")
-        return ComplexityVerdict(tier=fast, reason="heuristic fast path", confidence=0.9)
+    with _tracer.start_as_current_span("complexity_classifier.classify") as span:
+        try:
+            span.set_attribute("caretaker.pr.repo", context.repo_slug or "")
+            span.set_attribute("caretaker.complexity.file_count", len(context.files))
+        except Exception:  # pragma: no cover - defensive
+            pass
 
-    if claude is None or not getattr(claude, "available", True):
-        # No LLM available; pick a safe tier from heuristics.
-        verdict = _heuristic_fallback(context, reason="LLM unavailable")
-        record_complexity_tier(tier=verdict.tier, source="heuristic_fallback")
+        def _stamp(verdict: ComplexityVerdict, source: str) -> None:
+            try:
+                span.set_attribute("caretaker.complexity.tier", verdict.tier)
+                span.set_attribute("caretaker.complexity.source", source)
+                span.set_attribute("caretaker.complexity.confidence", float(verdict.confidence))
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+        fast = fast_path_tier(context=context, routing_decision=routing_decision)
+        if fast is not None:
+            record_complexity_tier(tier=fast, source="fast_path")
+            verdict = ComplexityVerdict(tier=fast, reason="heuristic fast path", confidence=0.9)
+            _stamp(verdict, "fast_path")
+            return verdict
+
+        if claude is None or not getattr(claude, "available", True):
+            # No LLM available; pick a safe tier from heuristics.
+            verdict = _heuristic_fallback(context, reason="LLM unavailable")
+            record_complexity_tier(tier=verdict.tier, source="heuristic_fallback")
+            _stamp(verdict, "heuristic_fallback")
+            return verdict
+
+        prompt = _build_classifier_prompt(context)
+        try:
+            verdict = await claude.structured_complete(
+                prompt,
+                schema=ComplexityVerdict,
+                feature="complexity_classifier",
+                system=_CLASSIFIER_SYSTEM_PROMPT,
+                max_tokens=300,
+            )
+        except StructuredCompleteError as exc:
+            logger.info("complexity_classifier: structured_complete failed (%s)", exc)
+            fallback = _heuristic_fallback(context, reason=f"LLM error: {exc}")
+            record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
+            _stamp(fallback, "heuristic_fallback")
+            return fallback
+        except Exception as exc:  # noqa: BLE001 — never break the caller on a classifier hiccup
+            logger.warning(
+                "complexity_classifier: unexpected error (%s); falling back to heuristic",
+                exc,
+            )
+            fallback = _heuristic_fallback(context, reason=f"classifier exception: {exc}")
+            record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
+            _stamp(fallback, "heuristic_fallback")
+            return fallback
+        record_complexity_tier(tier=verdict.tier, source="llm")
+        _stamp(verdict, "llm")
         return verdict
-
-    prompt = _build_classifier_prompt(context)
-    try:
-        verdict = await claude.structured_complete(
-            prompt,
-            schema=ComplexityVerdict,
-            feature="complexity_classifier",
-            system=_CLASSIFIER_SYSTEM_PROMPT,
-            max_tokens=300,
-        )
-    except StructuredCompleteError as exc:
-        logger.info("complexity_classifier: structured_complete failed (%s)", exc)
-        fallback = _heuristic_fallback(context, reason=f"LLM error: {exc}")
-        record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
-        return fallback
-    except Exception as exc:  # noqa: BLE001 — never break the caller on a classifier hiccup
-        logger.warning(
-            "complexity_classifier: unexpected error (%s); falling back to heuristic",
-            exc,
-        )
-        fallback = _heuristic_fallback(context, reason=f"classifier exception: {exc}")
-        record_complexity_tier(tier=fallback.tier, source="heuristic_fallback")
-        return fallback
-    record_complexity_tier(tier=verdict.tier, source="llm")
-    return verdict
 
 
 def _heuristic_fallback(context: ExecutorRouteContext, *, reason: str) -> ComplexityVerdict:
