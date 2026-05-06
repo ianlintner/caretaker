@@ -304,7 +304,7 @@ class LiteLLMProvider:
 
     Args:
         fallback_models: Ordered list of model strings to try if the primary
-            model fails (e.g. ``["openai/gpt-4o", "vertex_ai/gemini-1.5-pro"]``).
+            model fails (e.g. ``["openai/gpt-4o", "vertex_ai/gemini-3.1-pro-preview"]``).
         timeout: Per-request timeout in seconds.
     """
 

@@ -288,14 +288,18 @@ spec:
           resources:
             requests:
               cpu: "10m"
-              memory: "128Mi"
+              memory: "256Mi"
             limits:
-              cpu: "250m"
-              # Bumped from 256Mi → 512Mi after observed OOMKills under
-              # webhook bursts coinciding with GitHub rate-limit cooldown.
-              # The bounded in-flight cap in github_app/dispatcher.py keeps
-              # this from masking a real leak.
-              memory: "512Mi"
+              cpu: "500m"
+              # Bumped from 512Mi → 1Gi: opencode_local and claude_code_local
+              # backends spawn Node.js subprocesses (~150-300MB each) inside
+              # this pod for caretaker-owned PR reviews. The bounded
+              # in-flight cap in github_app/dispatcher.py prevents runaway
+              # concurrent sessions from hiding a leak.
+              memory: "1Gi"
+          volumeMounts:
+            - name: pr-review-workdir
+              mountPath: /tmp/caretaker-pr-review
           # startupProbe gates liveness/readiness during initial startup.
           # FastAPI lifespan can take longer than the liveness window
           # (failureThreshold=3 × periodSeconds=15 = 45s) on cold-cache
@@ -321,3 +325,11 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        # Writable scratch space for opencode_local / claude_code_local PR
+        # review backends.  Each review clones the PR head here; the backend
+        # cleans up after itself.  emptyDir is node-local (fast) and
+        # reclaimed when the pod is replaced.
+        - name: pr-review-workdir
+          emptyDir:
+            sizeLimit: 4Gi

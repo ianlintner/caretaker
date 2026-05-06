@@ -2,7 +2,9 @@
 # the FastAPI MCP backend and serves the SPA as static files.
 
 # ── Stage 1: build admin dashboard SPA ────────────────────────────────
-FROM node:22-alpine AS frontend-build
+# Use slim (Debian) instead of alpine so Node binaries can be copied
+# into the Debian-based python:3.14-slim stage without musl/glibc mismatch.
+FROM node:22-slim AS frontend-build
 
 WORKDIR /frontend
 
@@ -17,6 +19,22 @@ FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+
+# Install Node.js so the opencode and claude-code CLIs can run inside the pod.
+# We copy from the frontend-build stage (node:22-slim) rather than pulling
+# a second base image. Only the runtime binaries are needed — no build tools.
+COPY --from=frontend-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-build /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=frontend-build /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=frontend-build /usr/local/bin/npx /usr/local/bin/npx
+
+# Install coding-agent CLIs used by the local-subprocess review backends.
+# Pin versions so a registry bump doesn't silently change agent behaviour.
+# opencode: https://github.com/sst/opencode
+# claude-code: https://github.com/anthropics/claude-code
+RUN npm install -g opencode-ai @anthropic-ai/claude-code \
+    && opencode --version \
+    && claude --version
 
 WORKDIR /app
 

@@ -286,9 +286,13 @@ class EscalationConfig(StrictBaseModel):
     labels: list[str] = Field(default_factory=lambda: ["maintainer:escalated"])
 
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
-DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5"
-DEFAULT_REASONING_MODEL = "claude-opus-4-5"
+DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_TRIAGE_MODEL = "claude-haiku-4-6"
+# Architecture-level reasoning uses Sonnet 4.6 rather than Opus —
+# Opus is ~5x the cost of Sonnet for marginal quality gain on the
+# refactor/PRD/migration tasks we use it for. Operators who want
+# Opus back can override per-feature via ``feature_models``.
+DEFAULT_REASONING_MODEL = "claude-sonnet-4-6"
 
 DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     # Short classification/triage tasks — route to the faster/cheaper tier.
@@ -297,11 +301,16 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
     "analyze_review_comment": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 1000},
     "review_classification": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
     "analyze_stuck_pr": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 800},
+    # PR complexity tier classifier — runs once per caretaker-owned PR to
+    # pick which model the review/fix should use. Must stay cheap; Haiku
+    # is plenty for a 4-way classification with structured output.
+    "complexity_classifier": {"model": DEFAULT_TRIAGE_MODEL, "max_tokens": 300},
     # Longer reasoning tasks — keep on the default (Sonnet) tier.
     "generate_reflection": {"model": DEFAULT_MODEL, "max_tokens": 1500},
     "generate_recovery_plan": {"model": DEFAULT_MODEL, "max_tokens": 2000},
     "decompose_issue": {"model": DEFAULT_MODEL, "max_tokens": 3000},
-    # Deep reasoning tasks — route to Opus for complex analysis.
+    # Deep reasoning tasks — route to the reasoning tier (Sonnet 4.6 by
+    # default; Opus only by explicit operator override).
     "principal_architecture_review": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 4000},
     "principal_create_prd": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 6000},
     "principal_decompose_refactor": {"model": DEFAULT_REASONING_MODEL, "max_tokens": 5000},
@@ -324,12 +333,25 @@ DEFAULT_FEATURE_MODELS: dict[str, dict[str, int | str]] = {
 # silently bypassing OpenRouter and breaking cost/billing/rate-limits).
 DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] = {
     "openrouter": {
+        # CI log analysis: DeepSeek V4 is fast + cheap and handles the
+        # bounded "what failed?" pattern well. R1 was overkill — its
+        # extended-thinking surface doesn't change the verdict.
         "ci_log_analysis": {
-            "model": "openrouter/deepseek/deepseek-r1",
+            "model": "openrouter/deepseek/deepseek-v4",
             "max_tokens": 2000,
         },
+        # Complexity classifier on OpenRouter: Gemini 3 Flash-Lite is
+        # the cheapest credible option (~$0.0001/call) and easily
+        # handles a 4-way structured-output classification.
+        "complexity_classifier": {
+            "model": "openrouter/google/gemini-3-flash-lite-001",
+            "max_tokens": 300,
+        },
+        # Architecture review: Sonnet 4.6 (was Opus 4.6). Opus is ~5x
+        # the cost for marginal quality on these tasks — operators who
+        # need Opus can override via ``feature_models``.
         "principal_architecture_review": {
-            "model": "openrouter/anthropic/claude-opus-4.6",
+            "model": "openrouter/anthropic/claude-sonnet-4.6",
             "max_tokens": 4000,
         },
         # upgrade_impact_analysis has no DEFAULT_FEATURE_MODELS entry; Anthropic
@@ -451,7 +473,7 @@ class LLMConfig(StrictBaseModel):
     # enforces openrouter/-prefixed model strings (see model_validator below).
     provider: Literal["anthropic", "litellm", "openrouter"] = "anthropic"
     # Model used when a feature has no explicit override. For litellm this
-    # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-1.5-pro").
+    # can be prefixed (e.g. "openai/gpt-4o", "azure_ai/gpt-4o", "vertex_ai/gemini-3.1-pro-preview").
     default_model: str = DEFAULT_MODEL
     # Per-request timeout in seconds.
     timeout_seconds: float = 60.0
@@ -778,6 +800,74 @@ class ClaudeCodeLocalBackendConfig(StrictBaseModel):
     keep_workdir_on_failure: bool = False
 
 
+class OpenCodeLocalBackendConfig(StrictBaseModel):
+    """Configuration for the ``opencode_local`` complex-reviewer backend.
+
+    Caretaker invokes the ``opencode`` CLI as a subprocess in its own pod,
+    against a freshly-cloned working copy of the PR's head. This is an
+    alternative to the ``opencode`` comment-trigger backend (which posts
+    ``@opencode-agent`` and waits for ``sst/opencode/github`` to reply) —
+    ``opencode_local`` keeps execution centralised in caretaker, producing
+    live streamed logs with no cross-cycle wait and no per-repo workflow
+    install.
+
+    The backend is automatically selected for caretaker-owned PRs when
+    ``pr_reviewer.caretaker_owned_reviewer = "opencode_local"`` (default).
+    """
+
+    cli_path: str = "opencode"
+    # Default review/fix models when no tier is supplied. These are also
+    # the *fallback* values when ``review_models``/``fix_models`` for the
+    # selected tier are empty (e.g. mis-typed tier name).
+    #
+    # Model selection philosophy: prefer faster balanced models (Gemini
+    # 3 Pro / DeepSeek V4) over the most expensive Anthropic models
+    # (Opus, R1's extended-thinking surface). Sonnet 4.6 is reserved
+    # for architecture-level work; coding agents lean on Gemini 3.1
+    # Pro Preview and DeepSeek V4 which are faster and cheaper for
+    # the same code-review/code-edit quality.
+    model: str = "openrouter/google/gemini-3.1-pro-preview"
+    fix_model: str = "openrouter/google/gemini-3.1-pro-preview"
+    # Tier → model map for PR *review*. Keys are the four tiers from
+    # :mod:`caretaker.pr_reviewer.complexity_classifier`. Gemini-first:
+    # Flash-Lite for trivial typo work, Flash for simple bug fixes,
+    # DeepSeek V4 for ordinary feature work, Gemini 3.1 Pro Preview
+    # for genuinely complex review (large refactors, sensitive paths).
+    review_models: dict[str, str] = Field(
+        default_factory=lambda: {
+            "trivial": "openrouter/google/gemini-3-flash-lite-001",
+            "simple": "openrouter/google/gemini-3-flash-001",
+            "standard": "openrouter/deepseek/deepseek-v4",
+            "complex": "openrouter/google/gemini-3.1-pro-preview",
+        }
+    )
+    # Tier → model map for the auto-fix pass. Fix needs to actually
+    # write code, so the floor is higher than for review — Flash-Lite
+    # struggles with multi-file edits. Gemini 3 Flash for trivial
+    # mechanical fixes, Haiku 4.6 for simple isolated fixes, DeepSeek
+    # V4 for standard work, Gemini 3.1 Pro Preview for complex.
+    fix_models: dict[str, str] = Field(
+        default_factory=lambda: {
+            "trivial": "openrouter/google/gemini-3-flash-001",
+            "simple": "openrouter/anthropic/claude-haiku-4.6",
+            "standard": "openrouter/deepseek/deepseek-v4",
+            "complex": "openrouter/google/gemini-3.1-pro-preview",
+        }
+    )
+    timeout_seconds: int = 600
+    # Directory where PR clones are created.  Empty string defers to the
+    # OS temp dir.  In k8s deployments, pin to the emptyDir volume mount
+    # (e.g. ``/tmp/caretaker-pr-review``) so clones land on the fast
+    # ephemeral volume rather than the container's overlay filesystem.
+    clone_workdir_root: str = ""
+    clone_depth: int = 50
+    # Extra env passed to the subprocess. ``OPENROUTER_API_KEY`` and
+    # ``GITHUB_TOKEN`` are already in the pod env and do not need to be
+    # repeated here unless you want to override them for this backend.
+    extra_env: dict[str, str] = Field(default_factory=dict)
+    keep_workdir_on_failure: bool = False
+
+
 class AutoFixConfig(StrictBaseModel):
     """Configuration for the PR-reviewer auto-fix loop.
 
@@ -948,6 +1038,15 @@ class PRReviewerConfig(StrictBaseModel):
     claude_code_local: ClaudeCodeLocalBackendConfig = Field(
         default_factory=ClaudeCodeLocalBackendConfig
     )
+    # Settings for the local opencode CLI backend.  Used when
+    # ``caretaker_owned_reviewer = "opencode_local"`` (the default for
+    # PRs authored by ``the-care-taker[bot]``).
+    opencode_local: OpenCodeLocalBackendConfig = Field(default_factory=OpenCodeLocalBackendConfig)
+    # Backend used to review PRs authored by caretaker itself.  Defaults
+    # to ``"opencode_local"`` (in-pod subprocess, synchronous, no
+    # comment-trigger round-trip).  Set to ``""`` to use the standard
+    # ``complex_reviewer`` path for caretaker-owned PRs instead.
+    caretaker_owned_reviewer: str = "opencode_local"
     # Auto-fix loop: when reviewer returns REQUEST_CHANGES, dispatch a
     # fixer backend (coding agent or deterministic linter), push the
     # result, re-review. Disabled by default; opt-in per-PR via

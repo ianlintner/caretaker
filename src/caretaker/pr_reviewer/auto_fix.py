@@ -345,6 +345,7 @@ async def dispatch_auto_fix(
     repo: str,
     pr_number: int,
     tracking: TrackedPR,
+    tier: str | None = None,
 ) -> AutoFixOutcome:
     """Execute the chosen fixer, push commits, update tracking + post status.
 
@@ -436,13 +437,19 @@ async def dispatch_auto_fix(
                 )
 
             backend_config = getattr(config, decision.backend, None)
-            summary = await fix_callable(
-                workdir=workdir,
-                review_summary=review.summary,
-                review_comments=review.comments,
-                config=backend_config,
-            )
-            logger.info("auto_fix(%s): claude returned: %s", decision.backend, summary[:200])
+            # Only opencode_local currently supports tier-based model
+            # selection; pass ``tier`` only there to keep older
+            # backends' two-arg signatures intact.
+            fix_kwargs: dict[str, object] = {
+                "workdir": workdir,
+                "review_summary": review.summary,
+                "review_comments": review.comments,
+                "config": backend_config,
+            }
+            if tier is not None and decision.backend == "opencode_local":
+                fix_kwargs["tier"] = tier
+            summary = await fix_callable(**fix_kwargs)
+            logger.info("auto_fix(%s): fixer returned: %s", decision.backend, summary[:200])
 
         # Whether we ran lint or an LLM fixer, we now check for + push
         # the diff. Sharing this step means a future "deterministic
@@ -522,6 +529,10 @@ def _resolve_backend_module(backend: str):  # type: ignore[no-untyped-def]
         from caretaker.pr_reviewer.backends import claude_code_local  # noqa: PLC0415
 
         return claude_code_local
+    if backend == "opencode_local":
+        from caretaker.pr_reviewer.backends import opencode_local  # noqa: PLC0415
+
+        return opencode_local
     from caretaker.pr_reviewer.backends._workdir import WorkdirError  # noqa: PLC0415
 
     raise WorkdirError(
