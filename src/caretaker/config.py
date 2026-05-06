@@ -586,6 +586,33 @@ class OrchestratorConfig(StrictBaseModel):
     dry_run: bool = False
 
 
+class FleetGateConfig(StrictBaseModel):
+    """Webhook delivery filter — restrict the dispatcher to an explicit
+    allow-list of repos so forks / inactive installations stop generating
+    fleet heartbeats and observability noise.
+
+    When ``allowed_repos`` is empty, ALL incoming webhooks pass — this
+    preserves backward compatibility with existing deployments.
+
+    Patterns supported:
+      - Exact slug: ``"owner/repo"``
+      - Owner wildcard: ``"owner/*"`` (all repos under an owner)
+      - Plain ``"*"`` = match anything (equivalent to leaving the list
+        empty; provided so an operator can be explicit).
+
+    The check runs at the head of ``WebhookDispatcher.dispatch`` —
+    short-circuits with ``outcome="not_in_allowlist"`` before any agent
+    resolution, fleet heartbeat write, or context factory call. The
+    filtered repo's webhook still gets a 200 OK back to GitHub (we
+    accepted delivery, we just chose not to act).
+    """
+
+    allowed_repos: list[str] = Field(default_factory=list)
+    # Verbose logging — emit one INFO log per filtered delivery instead
+    # of just a metric. Useful when first turning on the allow-list.
+    log_filtered: bool = False
+
+
 class DevOpsAgentConfig(StrictBaseModel):
     enabled: bool = True
     # Branch to monitor for CI failures
@@ -1929,6 +1956,11 @@ class MaintainerConfig(StrictBaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     fleet_registry: FleetRegistryConfig = Field(default_factory=FleetRegistryConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)
+    # Webhook delivery filter — when ``allowed_repos`` is set, the
+    # dispatcher short-circuits webhooks for repos outside the list so
+    # inactive forks stop generating heartbeat / observability noise.
+    # Empty list (default) preserves current behavior (allow all).
+    fleet_gate: FleetGateConfig = Field(default_factory=FleetGateConfig)
     github_app: GitHubAppConfig = Field(default_factory=GitHubAppConfig)
     admin_dashboard: AdminDashboardConfig = Field(default_factory=AdminDashboardConfig)
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
