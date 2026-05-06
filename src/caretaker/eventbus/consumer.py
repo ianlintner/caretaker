@@ -326,7 +326,16 @@ async def _handle_webhook(*, parsed: ParsedWebhook, dispatcher: WebhookDispatche
     # v0.25.0 thin streaming workflow no longer runs ``caretaker run`` in
     # consumer CI (so consumer-side ``emit_heartbeat`` never fires for any
     # fleet repo anymore). Best-effort; failures never propagate.
-    if parsed.repository_full_name and result.outcome != "off":
+    #
+    # Skip outcomes that mean "we filtered this delivery before doing any
+    # work":
+    #   - ``off`` — dispatch mode disabled
+    #   - ``not_in_allowlist`` — repo not in fleet_gate.allowed_repos
+    #     (added in PR #687 / v0.29.x). Without this gate the heartbeat
+    #     writer kept fleet_clients / fleet_heartbeats growing for every
+    #     filtered fork, defeating the table-cleanup goal of the allow-
+    #     list (188 → 189 instead of 188 → 10).
+    if parsed.repository_full_name and result.outcome not in {"off", "not_in_allowlist"}:
         try:
             from caretaker.fleet import record_dispatch_activity
 

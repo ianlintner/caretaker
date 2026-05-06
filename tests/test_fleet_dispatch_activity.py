@@ -216,3 +216,47 @@ async def test_consumer_webhook_handler_skips_record_when_dispatcher_off(
 
     client = await (get_store()).get_client("acme/demo")
     assert client is None
+
+
+@pytest.mark.asyncio
+async def test_consumer_webhook_handler_skips_record_when_outcome_not_in_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the dispatcher returns ``outcome="not_in_allowlist"`` (added
+    in PR #687 / v0.29.x for fleet_gate.allowed_repos filtering), the
+    consumer must NOT touch the fleet registry. Without this skip the
+    heartbeat writer kept writing rows for filtered forks, defeating the
+    cleanup goal of the allow-list (fleet_clients went 188 → 189 instead
+    of 188 → 10 after v0.29.1 deploy)."""
+    from caretaker.eventbus.consumer import _handle_webhook
+    from caretaker.github_app.dispatcher import DispatchMode, DispatchResult
+    from caretaker.github_app.webhooks import ParsedWebhook
+
+    parsed = ParsedWebhook(
+        event_type="pull_request",
+        delivery_id="d-1",
+        action="opened",
+        installation_id=42,
+        repository_full_name="some-fork/abandoned",
+        payload={},
+    )
+    dispatcher = AsyncMock()
+    dispatcher.mode = DispatchMode.ACTIVE
+    dispatcher.dispatch = AsyncMock(
+        return_value=DispatchResult(
+            mode=DispatchMode.ACTIVE,
+            event="pull_request",
+            delivery_id="d-1",
+            agents=(),
+            outcome="not_in_allowlist",
+            duration_seconds=0.0,
+            detail="repo 'some-fork/abandoned' not in fleet_gate.allowed_repos",
+        )
+    )
+
+    await _handle_webhook(parsed=parsed, dispatcher=dispatcher)
+
+    from caretaker.fleet.store import get_store
+
+    client = await (get_store()).get_client("some-fork/abandoned")
+    assert client is None, "fleet_clients must not be written for repos filtered by allow-list"
