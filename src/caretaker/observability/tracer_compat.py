@@ -29,15 +29,15 @@ try:
 
     OTEL_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without otel extras
-    _otel_trace = None  # type: ignore[assignment]
+    _otel_trace = None  # type: ignore[assignment,unused-ignore]
     OTEL_AVAILABLE = False
 
-    class StatusCode:  # type: ignore[no-redef]
+    class StatusCode:  # type: ignore[no-redef,unused-ignore]
         OK = "ok"
         ERROR = "error"
         UNSET = "unset"
 
-    class Status:  # type: ignore[no-redef]
+    class Status:  # type: ignore[no-redef,unused-ignore]
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
