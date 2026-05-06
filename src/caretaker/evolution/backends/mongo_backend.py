@@ -246,11 +246,24 @@ class MongoEvolutionBackend:
         return _to_skill(doc) if doc else None
 
     def all_skills(self, category: str | None = None) -> list[Any]:
-        flt: dict[str, Any] = {}
         if category:
-            flt["category"] = category
-        cursor = self._skills.find(flt, sort=[("success_count", -1)])
-        return [_to_skill(doc) for doc in cursor]
+            # With ``category`` set, ``idx_skills_success`` (``category
+            # ASC, success_count DESC``) covers the sort directly and
+            # Cosmos accepts the OrderBy.
+            cursor = self._skills.find(
+                {"category": category},
+                sort=[("success_count", -1)],
+            )
+            return [_to_skill(doc) for doc in cursor]
+        # Without a category filter the leading-prefix rule fails on
+        # Azure Cosmos DB ("The index path corresponding to the
+        # specified order-by item is excluded") because no index has
+        # ``success_count`` as a leading column. Skill counts are
+        # bounded (low thousands across all categories), so fetch
+        # unsorted and sort in Python — same wire result, Cosmos-safe.
+        rows = list(self._skills.find({}))
+        rows.sort(key=lambda d: d.get("success_count", 0), reverse=True)
+        return [_to_skill(doc) for doc in rows]
 
     def delete_skills(self, skill_ids: list[str]) -> int:
         if not skill_ids:

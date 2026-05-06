@@ -8,6 +8,8 @@ replay, and the live-tail iterator without external dependencies.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -113,3 +115,53 @@ async def test_list_runs_filters(store: RunsStore) -> None:
 
     succeeded = await store.list_runs(status=RunStatus.SUCCEEDED)
     assert {r.run_id for r in succeeded} == {b.run_id}
+
+
+@pytest.mark.asyncio
+async def test_collection_creates_cosmos_safe_compound_indexes() -> None:
+    """``_collection`` registers ``(status, started_at)`` and
+    ``(repository, started_at)`` compounds so ``list_runs`` filter+sort
+    queries don't trip Azure Cosmos DB's strict OrderBy contract.
+
+    Regression for the production stalled-run sweeper, which calls
+    ``list_runs(status=RUNNING).sort('started_at', -1)`` every 60s and
+    failed under Cosmos when only the single-field ``idx_started_at``
+    existed.
+    """
+    created: list[tuple[Any, dict[str, Any]]] = []
+
+    fake_collection = MagicMock()
+
+    async def _capture(spec: Any, **kwargs: Any) -> str:
+        created.append((spec, kwargs))
+        return kwargs.get("name", "idx")
+
+    fake_collection.create_index = AsyncMock(side_effect=_capture)
+
+    fake_db = MagicMock()
+    fake_db.__getitem__.return_value = fake_collection
+
+    fake_client = MagicMock()
+    fake_client.__getitem__.return_value = fake_db
+
+    rs = RunsStore(mongodb_url="mongodb://stub")
+    rs._mongo_client = fake_client  # bypass connect
+
+    col = await rs._collection()
+    assert col is fake_collection
+
+    names = {kwargs.get("name") for _spec, kwargs in created}
+    # Pre-existing single-field/uniqueness indexes still present.
+    assert "idx_run_id" in names
+    assert "idx_natural_key" in names
+    assert "idx_started_at" in names
+    # New Cosmos-safe compounds.
+    assert "idx_status_started_at" in names
+    assert "idx_repository_started_at" in names
+
+    # Verify the leading-prefix shape so the sort is actually covered.
+    by_name = {kwargs["name"]: spec for spec, kwargs in created if "name" in kwargs}
+    assert by_name["idx_status_started_at"][0][0] == "status"
+    assert by_name["idx_status_started_at"][1][0] == "started_at"
+    assert by_name["idx_repository_started_at"][0][0] == "repository"
+    assert by_name["idx_repository_started_at"][1][0] == "started_at"

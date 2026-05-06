@@ -184,8 +184,24 @@ class TestMongoEvolutionBackendSkills:
         skills_col.find.return_value = [_make_skill_doc()]
 
         results = b.all_skills()
-        skills_col.find.assert_called_once_with({}, sort=[("success_count", -1)])
+        # Cosmos-safe: with no category filter we must NOT pass ``sort=``
+        # to ``find()`` (no compound index has ``success_count`` as a
+        # leading column). The sort happens in Python instead.
+        skills_col.find.assert_called_once_with({})
+        call_kwargs = skills_col.find.call_args[1]
+        assert "sort" not in call_kwargs
         assert len(results) == 1
+
+    def test_all_skills_no_filter_sorts_in_python(self, backend):
+        b, skills_col, _ = backend
+        # Return docs in non-sorted order to verify the in-Python sort.
+        low = _make_skill_doc(success_count=2, signature="low")
+        high = _make_skill_doc(success_count=10, signature="high")
+        mid = _make_skill_doc(success_count=5, signature="mid")
+        skills_col.find.return_value = [low, high, mid]
+
+        results = b.all_skills()
+        assert [s.signature for s in results] == ["high", "mid", "low"]
 
     def test_all_skills_with_category(self, backend):
         b, skills_col, _ = backend
@@ -194,6 +210,10 @@ class TestMongoEvolutionBackendSkills:
         b.all_skills(category="build")
         call_args = skills_col.find.call_args
         assert call_args[0][0] == {"category": "build"}
+        # Cosmos-safe path with category: ``idx_skills_success`` covers
+        # ``(category, success_count DESC)`` so we DO push the sort
+        # into Mongo here.
+        assert call_args[1].get("sort") == [("success_count", -1)]
 
     def test_delete_skills_empty_list_returns_zero(self, backend):
         b, skills_col, _ = backend
