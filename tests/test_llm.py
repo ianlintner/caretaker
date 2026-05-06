@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from caretaker.config import FeatureModelConfig, LLMConfig
+from caretaker.config import (
+    DEFAULT_MODEL,
+    DEFAULT_TRIAGE_MODEL,
+    FeatureModelConfig,
+    LLMConfig,
+)
 from caretaker.llm.claude import ClaudeClient, StructuredCompleteError
 from caretaker.llm.provider import (
     AnthropicProvider,
@@ -132,13 +137,13 @@ class TestClaudeClientLogging:
 class TestFeatureModelResolution:
     async def test_default_model_used_when_no_override(self) -> None:
         provider = FakeProvider()
-        config = LLMConfig(default_model="claude-sonnet-4-5")
+        config = LLMConfig(default_model=DEFAULT_MODEL)
         client = ClaudeClient(config=config, provider=provider)
 
         await client.generate_reflection("analyze this")
 
-        # DEFAULT_FEATURE_MODELS keeps generate_reflection on Sonnet
-        assert provider.calls[0].model == "claude-sonnet-4-5"
+        # DEFAULT_FEATURE_MODELS keeps generate_reflection on the Sonnet tier.
+        assert provider.calls[0].model == DEFAULT_MODEL
         assert provider.calls[0].max_tokens == 1500
 
     async def test_triage_tasks_route_to_haiku_by_default(self) -> None:
@@ -152,7 +157,7 @@ class TestFeatureModelResolution:
 
         # All three should be routed to the cheaper triage tier
         for call in provider.calls:
-            assert call.model == "claude-haiku-4-5"
+            assert call.model == DEFAULT_TRIAGE_MODEL
 
     async def test_per_feature_override_wins(self) -> None:
         provider = FakeProvider()
