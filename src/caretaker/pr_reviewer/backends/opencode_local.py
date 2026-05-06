@@ -33,6 +33,7 @@ opencode CLI non-interactive mode:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -40,6 +41,8 @@ import re
 import shutil
 from typing import TYPE_CHECKING
 
+from caretaker.observability.metrics import record_llm_usage, record_opencode_invocation
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 from caretaker.pr_reviewer.backends._workdir import (
     WorkdirError,
@@ -58,6 +61,13 @@ if TYPE_CHECKING:
     from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — wraps each opencode subprocess invocation so the
+# parent ``pr_reviewer.handle_pr`` trace shows model + exit_code +
+# outcome. Note: the ``parse_fallback`` outcome is a property of
+# :func:`run` (output-parsing), NOT this span — this span only reports
+# the subprocess result (ok/timeout/no_endpoints/error).
+_tracer = get_tracer("caretaker.pr_reviewer.opencode_local")
 
 
 def _resolve_tier_model(
@@ -78,6 +88,19 @@ def _resolve_tier_model(
 
 class OpenCodeLocalError(RuntimeError):
     """Raised when the local opencode CLI run fails (clone, invocation, parse)."""
+
+
+class OpenCodeLocalTimeoutError(OpenCodeLocalError):
+    """Raised specifically when the opencode subprocess timed out."""
+
+
+class OpenCodeLocalNoEndpointsError(OpenCodeLocalError):
+    """Raised when opencode reports ``No endpoints found`` (provider misconfig).
+
+    Distinguished from generic ``OpenCodeLocalError`` so the metrics
+    layer can attribute the failure to the right outcome bucket without
+    string-matching stderr at every callsite.
+    """
 
 
 def _parse_pr_url_wrapped(pr_url: str):  # type: ignore[no-untyped-def]
@@ -154,6 +177,78 @@ def _truncate(line: str, max_len: int) -> str:
     return line[:max_len] + f"… ({len(line) - max_len} more chars)"
 
 
+def _parse_opencode_json_stream(
+    stdout: str,
+) -> tuple[str, int, int]:
+    """Parse opencode ``--format json`` stdout into (text, prompt_tokens, completion_tokens).
+
+    opencode emits one JSON object per line on stdout when invoked with
+    ``--format json``.  Three event types matter for our purposes:
+
+    * ``text``       — fragments of the assistant's response. We
+      concatenate the ``part.text`` strings in stream order to
+      reconstruct the prose+JSON-block payload the existing parser
+      expects.
+    * ``step_finish`` — emitted at the end of each agent step with a
+      ``part.tokens`` object: ``{input, output, reasoning, cache: {read, write}}``.
+      We sum ``input`` (with cache reads added back in — those are
+      still input tokens that count against the operator's bill) and
+      ``output + reasoning`` for prompt vs. completion tokens.
+    * everything else (tool_use, step_start, error, …) is ignored for
+      token-accounting purposes.
+
+    Lines that don't parse as JSON are silently skipped — opencode
+    sometimes emits a final ANSI-colored summary line on stdout even
+    in JSON mode (the ``> build · …`` banner), and we don't want a
+    parse failure there to fail the whole invocation.
+    """
+    text_parts: list[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(evt, dict):
+            continue
+        evt_type = evt.get("type")
+        part = evt.get("part") if isinstance(evt.get("part"), dict) else {}
+        if evt_type == "text":
+            txt = part.get("text") if isinstance(part, dict) else None
+            if isinstance(txt, str):
+                text_parts.append(txt)
+        elif evt_type == "step_finish":
+            tokens = part.get("tokens") if isinstance(part, dict) else None
+            if not isinstance(tokens, dict):
+                continue
+            inp = tokens.get("input") or 0
+            out = tokens.get("output") or 0
+            reasoning = tokens.get("reasoning") or 0
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            cache_read = cache.get("read") or 0 if isinstance(cache, dict) else 0
+            cache_write = cache.get("write") or 0 if isinstance(cache, dict) else 0
+            # ``input`` from opencode excludes cache reads/writes when
+            # caching is in use; we add them back so the prompt-token
+            # count matches what the provider actually billed.  Reasoning
+            # tokens are part of the model's output bill, so they go on
+            # the completion side.
+            if isinstance(inp, int | float):
+                prompt_tokens += int(inp)
+            if isinstance(cache_read, int | float):
+                prompt_tokens += int(cache_read)
+            if isinstance(cache_write, int | float):
+                prompt_tokens += int(cache_write)
+            if isinstance(out, int | float):
+                completion_tokens += int(out)
+            if isinstance(reasoning, int | float):
+                completion_tokens += int(reasoning)
+    return "".join(text_parts), prompt_tokens, completion_tokens
+
+
 async def _invoke_opencode(
     *,
     workdir: str,
@@ -161,68 +256,184 @@ async def _invoke_opencode(
     prompt: str = "",
     model_override: str = "",
 ) -> str:
-    """Spawn the opencode CLI in ``workdir`` and return its stdout text.
+    """Spawn the opencode CLI in ``workdir`` and return the assistant text.
 
-    opencode runs in print mode (``-p``): it sends the prompt, runs the
-    agent, and emits the final response to stdout when done. Unlike the
-    claude stream-json mode, this is plain text — we capture the full
-    output and search for the ``caretaker-review`` block.
+    opencode is invoked with ``--format json`` so each agent event lands
+    on stdout as a JSON object on its own line. We assemble the
+    assistant's prose + ``caretaker-review`` JSON block from the
+    ``text`` events and sum prompt/completion token counts from the
+    ``step_finish`` events for cost-tracking metrics.
+
+    The default-format banner output (``> build · …``) is replaced with
+    the structured event stream; the existing ``_parse_review_payload``
+    contract still receives a plain text string and looks for the
+    ``caretaker-review`` fence in it.
     """
-    resolved = shutil.which(config.cli_path) or config.cli_path
-    if not os.path.isabs(resolved) and not shutil.which(resolved):
-        raise OpenCodeLocalError(
-            f"opencode CLI not found at {config.cli_path!r}; install it "
-            "(`npm install -g opencode-ai` or pin a path in "
-            "pr_reviewer.opencode_local.cli_path). "
-            "Requires OPENROUTER_API_KEY in the environment."
+    with _tracer.start_as_current_span("opencode_local.invoke") as span:
+        span.set_attribute("caretaker.opencode.workdir", workdir)
+        span.set_attribute("caretaker.opencode.timeout_seconds", int(config.timeout_seconds))
+
+        resolved = shutil.which(config.cli_path) or config.cli_path
+        if not os.path.isabs(resolved) and not shutil.which(resolved):
+            exc = OpenCodeLocalError(
+                f"opencode CLI not found at {config.cli_path!r}; install it "
+                "(`npm install -g opencode-ai` or pin a path in "
+                "pr_reviewer.opencode_local.cli_path). "
+                "Requires OPENROUTER_API_KEY in the environment."
+            )
+            span.set_attribute("caretaker.opencode.outcome", "error")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+            raise exc
+
+        env = os.environ.copy()
+        if config.extra_env:
+            env.update(config.extra_env)
+
+        model = model_override or config.model
+        span.set_attribute("caretaker.opencode.model", str(model or ""))
+        # opencode CLI uses ``run`` as the non-interactive subcommand.
+        # ``--format json`` emits one event per stdout line which gives
+        # us per-step token counts for the cost-tracking metrics; the
+        # assistant text is reassembled by ``_parse_opencode_json_stream``.
+        args = [resolved, "run", prompt or _REVIEW_PROMPT, "--format", "json"]
+        if model:
+            args += ["--model", model]
+
+        logger.info(
+            "opencode_local: invoking %s model=%s in %s",
+            resolved,
+            model or "(opencode default)",
+            workdir,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=workdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
 
-    env = os.environ.copy()
-    if config.extra_env:
-        env.update(config.extra_env)
+        # Classifier: ``--format json`` emits 100-500 JSON events per
+        # review; logging every ``text``/``tool_use_*`` line at INFO
+        # turns pod logs into noise. Demote those event types to DEBUG
+        # while keeping step boundaries (``step_start``/``step_finish``),
+        # errors, and any non-JSON banner output at INFO so operators
+        # still see review progress live.
+        def _stdout_log(line: str) -> None:
+            stripped = line.lstrip()
+            if stripped.startswith('{"type":"text"') or stripped.startswith('{"type":"tool_'):
+                logger.debug("opencode | %s", _truncate(line, 400))
+            else:
+                logger.info("opencode | %s", _truncate(line, 400))
 
-    model = model_override or config.model
-    # opencode CLI uses ``run`` as the non-interactive subcommand. The
-    # ``-p`` flag (claude-style) just prints help. ``run`` accepts the
-    # prompt as a positional and ``--model`` to pin the provider/model.
-    args = [resolved, "run", prompt or _REVIEW_PROMPT]
-    if model:
-        args += ["--model", model]
+        try:
+            stdout, stderr = await stream_subprocess_output(
+                proc,
+                timeout_seconds=config.timeout_seconds,
+                stdout_log=_stdout_log,
+                stderr_log=lambda line: logger.warning("opencode! %s", line),
+            )
+        except TimeoutError as exc:
+            timeout_err = OpenCodeLocalTimeoutError(
+                f"opencode timed out after {config.timeout_seconds}s"
+            )
+            span.set_attribute("caretaker.opencode.outcome", "timeout")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
+                span.record_exception(timeout_err)
+                span.set_status(Status(StatusCode.ERROR, str(timeout_err)[:200]))
+            raise timeout_err from exc
+        span.set_attribute("caretaker.opencode.exit_code", int(proc.returncode or 0))
+        if proc.returncode != 0:
+            # Special-case: opencode emits ``No endpoints found`` when the
+            # configured provider (OpenRouter) hasn't been wired up. We
+            # surface this as its own exception type so the caller can
+            # record a specific ``no_endpoints`` outcome on the metric.
+            if "No endpoints found" in stderr:
+                no_ep_err = OpenCodeLocalNoEndpointsError(
+                    f"opencode exited {proc.returncode} with No endpoints found "
+                    f"(check OPENROUTER_API_KEY / model id): {stderr.strip()[:500]}"
+                )
+                span.set_attribute("caretaker.opencode.outcome", "no_endpoints")
+                with contextlib.suppress(
+                    Exception
+                ):  # pragma: no cover - never let tracer mask original
+                    span.record_exception(no_ep_err)
+                    span.set_status(Status(StatusCode.ERROR, str(no_ep_err)[:200]))
+                raise no_ep_err
+            err = OpenCodeLocalError(
+                f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
+            )
+            span.set_attribute("caretaker.opencode.outcome", "error")
+            with contextlib.suppress(
+                Exception
+            ):  # pragma: no cover - never let tracer mask original
+                span.record_exception(err)
+                span.set_status(Status(StatusCode.ERROR, str(err)[:200]))
+            raise err
 
-    logger.info(
-        "opencode_local: invoking %s model=%s in %s",
-        resolved,
-        model or "(opencode default)",
-        workdir,
-    )
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=workdir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    try:
-        stdout, stderr = await stream_subprocess_output(
-            proc,
-            timeout_seconds=config.timeout_seconds,
-            stdout_log=lambda line: logger.info("opencode | %s", _truncate(line, 400)),
-            stderr_log=lambda line: logger.warning("opencode! %s", line),
-        )
-    except TimeoutError as exc:
-        raise OpenCodeLocalError(f"opencode timed out after {config.timeout_seconds}s") from exc
-    if proc.returncode != 0:
-        raise OpenCodeLocalError(
-            f"opencode exited {proc.returncode}: {stderr.strip() or stdout.strip()[:500]}"
-        )
-    return stdout
+        # Subprocess exited cleanly. parse_fallback (if any) is determined
+        # by :func:`run`'s output parser, not this span — see module docstring.
+        span.set_attribute("caretaker.opencode.outcome", "ok")
+
+        # Parse the JSON event stream into (assistant_text, p_tokens, c_tokens).
+        # Token-extraction failures must NOT fail the run — log at DEBUG
+        # and fall back to the raw stdout. The assistant text *should*
+        # always parse out of the stream, but if opencode ever changes
+        # its output format we still want the review to land.
+        try:
+            assistant_text, prompt_tokens, completion_tokens = _parse_opencode_json_stream(stdout)
+        except Exception:  # pragma: no cover - defence in depth
+            logger.debug(
+                "opencode_local: token extraction from JSON stream failed; returning raw stdout",
+                exc_info=True,
+            )
+            return stdout
+
+        if prompt_tokens > 0 or completion_tokens > 0:
+            span.set_attribute("caretaker.llm.prompt_tokens", prompt_tokens)
+            span.set_attribute("caretaker.llm.completion_tokens", completion_tokens)
+            # ``record_llm_tokens`` and ``record_llm_cost`` already handle
+            # their own failure modes (lazy-import wrap, isinstance guards),
+            # so we don't blanket-suppress here. A narrow except keeps any
+            # truly surprising regression visible at DEBUG instead of
+            # silently swallowed.
+            try:
+                record_llm_usage(
+                    model=model or "unknown",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+            except Exception:  # pragma: no cover - defence in depth
+                logger.debug("metrics: record_llm_usage failed", exc_info=True)
+        else:
+            logger.debug(
+                "opencode_local: no token usage extracted from JSON stream "
+                "(model=%s); skipping LLM usage metrics",
+                model,
+            )
+
+        # Fall back to raw stdout if no text events appeared — keeps the
+        # downstream parser robust against an unusual opencode reply.
+        return assistant_text or stdout
 
 
 _RESULT_TEXT_RE = re.compile(r"```caretaker-review\s*\n(?P<json>.+?)\n\s*```", re.DOTALL)
 
 
-def _parse_review_payload(assistant_text: str) -> ReviewResult:
+def _parse_review_payload(assistant_text: str) -> tuple[ReviewResult, bool]:
     """Find the ``caretaker-review`` JSON block; fall back to a generic COMMENT review.
+
+    Returns ``(result, was_fallback)`` so the caller can record the
+    parse-fallback outcome with the real model + mode labels (instead
+    of double-counting via an in-function metric increment that loses
+    label fidelity). The WARNING log stays here — that's still useful
+    for log-based alerting independent of the metric.
 
     The fallback ensures a noisy or non-conforming opencode reply still
     produces *some* review on the PR rather than dropping the work.
@@ -230,19 +441,23 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
     match = _RESULT_TEXT_RE.search(assistant_text)
     if not match:
         logger.warning(
-            "opencode_local: no caretaker-review JSON block in opencode reply; "
-            "wrapping the prose as a COMMENT review (length=%d)",
+            "opencode_local: fallback parse used — structured caretaker-review JSON missing. "
+            "stdout_bytes=%d sample=%r",
             len(assistant_text),
+            assistant_text[:200],
         )
-        return ReviewResult(
-            summary=(
-                "**Review by opencode_local (fallback parse)**\n\n"
-                "opencode did not emit a structured `caretaker-review` JSON block; "
-                "its prose response is included below.\n\n"
-                f"{assistant_text.strip()[:4000]}"
+        return (
+            ReviewResult(
+                summary=(
+                    "**Review by opencode_local (fallback parse)**\n\n"
+                    "opencode did not emit a structured `caretaker-review` JSON block; "
+                    "its prose response is included below.\n\n"
+                    f"{assistant_text.strip()[:4000]}"
+                ),
+                verdict="COMMENT",
+                comments=[],
             ),
-            verdict="COMMENT",
-            comments=[],
+            True,
         )
     raw = match.group("json").strip()
     try:
@@ -297,8 +512,11 @@ def _parse_review_payload(assistant_text: str) -> ReviewResult:
         "(opencode CLI in caretaker's pod)**\n\n"
         f"{summary or 'opencode returned no summary text.'}"
     )
-    return ReviewResult(
-        summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories
+    return (
+        ReviewResult(
+            summary=body, verdict=verdict, comments=comments, issue_categories=issue_categories
+        ),
+        False,
     )
 
 
@@ -317,6 +535,30 @@ async def run(
     workdir: str | None = None
     success = False
     review_model = _resolve_tier_model(tier, tier_map=config.review_models, default=config.model)
+
+    # Lazy import — keep the per-PR-decision helper out of the
+    # top-level import path so the backend module stays cheap to load.
+    from caretaker.state.pr_decisions import DecisionEvent, record_decision  # noqa: PLC0415
+
+    # Parse the PR URL once up front. ``prepare_workdir`` parses the
+    # same URL internally, but we need ``(repo_slug, pr_number)`` for
+    # the per-PR-decision writes BEFORE workdir prep, and re-parsing
+    # the URL at every call site is wasteful.
+    repo_slug, pr_number = _extract_repo_and_pr(pr_url)
+
+    async def _record(event: DecisionEvent, **fields: object) -> None:
+        if not repo_slug or pr_number <= 0:
+            return
+        await record_decision(repo_slug, pr_number, "opencode_local", event, **fields)
+
+    # Recorded BEFORE _prepare_workdir succeeds so workdir-prep
+    # failures show as started+failed rather than missing entirely.
+    await _record(
+        "opencode_review_started",
+        model=review_model,
+        tier=str(tier) if tier else "none",
+        workdir=workdir or "",
+    )
     try:
         workdir, _parsed = await _prepare_workdir(pr_url, config=config)
         stdout = await _invoke_opencode(
@@ -325,14 +567,78 @@ async def run(
             prompt=_REVIEW_PROMPT,
             model_override=review_model,
         )
-        result = _parse_review_payload(stdout)
+        # ``_parse_review_payload`` returns a (result, was_fallback)
+        # tuple so we record the outcome exactly once with the real
+        # model + mode labels (no in-function double-count).
+        result, used_fallback = _parse_review_payload(stdout)
         success = True
+        record_opencode_invocation(
+            model=review_model,
+            mode="review",
+            outcome="parse_fallback" if used_fallback else "ok",
+        )
+        await _record(
+            "opencode_review_finished",
+            model=review_model,
+            verdict=str(result.verdict),
+            fallback_parse=bool(used_fallback),
+        )
         return result
+    except OpenCodeLocalTimeoutError as exc:
+        record_opencode_invocation(model=review_model, mode="review", outcome="timeout")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="timeout",
+            error_message=str(exc),
+        )
+        raise
+    except OpenCodeLocalNoEndpointsError as exc:
+        record_opencode_invocation(model=review_model, mode="review", outcome="no_endpoints")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="no_endpoints",
+            error_message=str(exc),
+        )
+        raise
     except WorkdirError as exc:
+        record_opencode_invocation(model=review_model, mode="review", outcome="error")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind="workdir_error",
+            error_message=str(exc),
+        )
         raise OpenCodeLocalError(str(exc)) from exc
+    except Exception as exc:
+        record_opencode_invocation(model=review_model, mode="review", outcome="error")
+        await _record(
+            "opencode_review_failed",
+            model=review_model,
+            error_kind=type(exc).__name__,
+            error_message=str(exc)[:500],
+        )
+        raise
     finally:
         if workdir is not None:
             cleanup_workdir(workdir, keep=(not success and config.keep_workdir_on_failure))
+
+
+def _extract_repo_and_pr(pr_url: str) -> tuple[str, int]:
+    """Best-effort parse of ``pr_url`` into ``(owner/repo, pr_number)``.
+
+    Used only to attribute decision-timeline records — the parser used
+    by :func:`run` may already have parsed this, but plumbing that
+    object through every callsite is out of scope. Returns
+    ``("", 0)`` when the URL can't be parsed so the timeline write
+    silently skips rather than crashing the review.
+    """
+    try:
+        parsed = parse_pr_url(pr_url)
+        return f"{parsed.owner}/{parsed.repo}", int(parsed.number)
+    except Exception:  # pragma: no cover - defensive
+        return "", 0
 
 
 _FIX_PROMPT_TEMPLATE = """\
@@ -404,15 +710,31 @@ async def fix_run(
         tier_map=getattr(config, "fix_models", {}),
         default=getattr(config, "fix_model", "") or config.model,
     )
-    stdout = await _invoke_opencode(
-        workdir=workdir,
-        config=config,
-        prompt=prompt,
-        model_override=fix_model,
-    )
+    try:
+        stdout = await _invoke_opencode(
+            workdir=workdir,
+            config=config,
+            prompt=prompt,
+            model_override=fix_model,
+        )
+    except OpenCodeLocalTimeoutError:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="timeout")
+        raise
+    except OpenCodeLocalNoEndpointsError:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="no_endpoints")
+        raise
+    except Exception:
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="error")
+        raise
+
+    # Inspect the in-band sentinel BEFORE recording the outcome so a
+    # decline doesn't pollute the success rate. ``declined`` is its
+    # own outcome bucket — see :data:`OPENCODE_OUTCOMES`.
     text = stdout.strip()
     if text.startswith("CARETAKER_FIX_DECLINED:"):
+        record_opencode_invocation(model=fix_model, mode="fix", outcome="declined")
         raise OpenCodeLocalError(f"opencode declined to fix: {text}")
+    record_opencode_invocation(model=fix_model, mode="fix", outcome="ok")
     return text or "(no summary)"
 
 

@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from caretaker.observability.metrics import record_auto_fix_dispatch
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subprocess_output
 
 if TYPE_CHECKING:
@@ -43,6 +45,31 @@ if TYPE_CHECKING:
     from caretaker.state.models import TrackedPR
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — every dispatch becomes one span under the parent
+# ``pr_reviewer.handle_pr`` trace, carrying backend + categories + outcome.
+_tracer = get_tracer("caretaker.pr_reviewer.auto_fix")
+
+
+async def _record_auto_fix_skipped(repo: str, pr_number: int, reason: str, attempt: int) -> None:
+    """Per-PR-decision write for an auto-fix skip branch.
+
+    Lazy import keeps the Mongo helper out of the module-import hot
+    path. ``record_decision`` already swallows persistence errors, so
+    this just plain-awaits.
+    """
+    if not repo or pr_number <= 0:
+        return
+    from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+
+    await record_decision(
+        repo,
+        int(pr_number),
+        "auto_fix",
+        "auto_fix_skipped",
+        reason=reason,
+        attempt=int(attempt),
+    )
 
 
 # Synthetic backend name handled in-process by :func:`run_deterministic_lint`
@@ -112,13 +139,15 @@ class AutoFixDecision:
     categories: list[str] | None = None
 
 
-def decide_auto_fix(
+async def decide_auto_fix(
     *,
     review: ReviewResult,
     config: AutoFixConfig,
     pr_author: str,
     pr_labels: list[str],
     tracking: TrackedPR,
+    repo: str = "",
+    pr_number: int = 0,
 ) -> AutoFixDecision:
     """Return whether to dispatch a fixer for this review, and which one.
 
@@ -132,14 +161,27 @@ def decide_auto_fix(
          the opt-in label
       5. Pick a backend from category → fixer map; fall back to
          ``default_fixer`` when no category resolves cleanly
+
+    ``repo`` is the ``owner/repo`` slug, threaded through so the
+    ``skipped`` outcome counter is attributed correctly. ``pr_number``
+    is threaded through so skip branches can record an
+    ``auto_fix_skipped`` decision-timeline event. Both default to
+    empty/0 for backward-compat with older callers.
     """
+    attempt = int(tracking.auto_fix_attempts) + 1
     if not config.enabled:
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
+        await _record_auto_fix_skipped(repo, pr_number, "auto_fix_disabled", attempt)
         return AutoFixDecision(should_dispatch=False, reason="auto_fix.enabled is False")
     if review.verdict != "REQUEST_CHANGES":
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
+        await _record_auto_fix_skipped(repo, pr_number, f"verdict_{review.verdict}", attempt)
         return AutoFixDecision(
             should_dispatch=False, reason=f"verdict {review.verdict!r} is not REQUEST_CHANGES"
         )
     if tracking.auto_fix_attempts >= config.max_attempts:
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
+        await _record_auto_fix_skipped(repo, pr_number, "max_attempts_reached", attempt)
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -151,6 +193,8 @@ def decide_auto_fix(
     author_eligible = pr_author in set(config.allowed_authors)
     label_eligible = config.opt_in_label in pr_labels
     if not (author_eligible or label_eligible):
+        record_auto_fix_dispatch(repo=repo, backend="none", category="none", outcome="skipped")
+        await _record_auto_fix_skipped(repo, pr_number, "author_or_label_ineligible", attempt)
         return AutoFixDecision(
             should_dispatch=False,
             reason=(
@@ -367,6 +411,89 @@ async def dispatch_auto_fix(
     tracking.auto_fix_attempts += 1
     tracking.auto_fix_last_head_sha = ""  # will be set on success below
 
+    repo_slug = f"{owner}/{repo}"
+    # Per-PR decision timeline: dispatch event. Lazy import to keep
+    # the dispatcher's hot path free of optional Mongo deps.
+    from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+
+    # Recorded BEFORE the inner work so a pod crash mid-dispatch is
+    # visible in the timeline as a dispatched-without-complete pair.
+    await record_decision(
+        repo_slug,
+        int(pr_number),
+        "auto_fix",
+        "auto_fix_dispatched",
+        backend=str(decision.backend),
+        categories=list(decision.categories or []),
+        attempt=int(tracking.auto_fix_attempts),
+    )
+
+    with _tracer.start_as_current_span("auto_fix.dispatch") as span:
+        span.set_attribute("caretaker.pr.repo", repo_slug)
+        span.set_attribute("caretaker.pr.number", int(pr_number))
+        span.set_attribute("caretaker.auto_fix.backend", str(decision.backend))
+        span.set_attribute("caretaker.auto_fix.categories", list(decision.categories or []))
+        span.set_attribute("caretaker.auto_fix.attempt", int(tracking.auto_fix_attempts))
+        try:
+            outcome_result = await _dispatch_auto_fix_inner(
+                decision=decision,
+                pr_url=pr_url,
+                head_branch=head_branch,
+                review=review,
+                config=config,
+                github=github,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                tracking=tracking,
+                tier=tier,
+                auto_fix_cfg=auto_fix_cfg,
+            )
+        except Exception as exc:
+            try:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+            except Exception:  # pragma: no cover - defensive: never let tracer mask original
+                pass
+            raise
+        # _dispatch_auto_fix_inner always returns dispatched=True, so the
+        # outcome is binary: success or failed.
+        outcome_label = "success" if outcome_result.success else "failed"
+        span.set_attribute("caretaker.auto_fix.outcome", outcome_label)
+        if outcome_result.new_head_sha:
+            span.set_attribute("caretaker.auto_fix.new_head_sha", outcome_result.new_head_sha)
+
+        # Decision-timeline write for the completion event. Includes
+        # the new head SHA + any error so the admin SPA can show what
+        # actually shipped at the end of the cycle.
+        await record_decision(
+            repo_slug,
+            int(pr_number),
+            "auto_fix",
+            "auto_fix_complete",
+            success=bool(outcome_result.success),
+            new_head_sha=outcome_result.new_head_sha or "",
+            error=outcome_result.error or "",
+        )
+        return outcome_result
+
+
+async def _dispatch_auto_fix_inner(
+    *,
+    decision: AutoFixDecision,
+    pr_url: str,
+    head_branch: str,
+    review: ReviewResult,
+    config: PRReviewerConfig,
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    tracking: TrackedPR,
+    tier: str | None,
+    auto_fix_cfg: AutoFixConfig,
+) -> AutoFixOutcome:
+    """Inner body of :func:`dispatch_auto_fix`, wrapped by the OTel span."""
     workdir: str | None = None
     new_head: str = ""
     try:
@@ -414,6 +541,12 @@ async def dispatch_auto_fix(
                     new_head_sha="",
                     success=False,
                     detail=outcome.detail,
+                )
+                record_auto_fix_dispatch(
+                    repo=f"{owner}/{repo}",
+                    backend=decision.backend,
+                    category=(decision.categories or ["none"])[0] or "none",
+                    outcome="dispatched_fail",
                 )
                 return outcome
         else:
@@ -477,6 +610,12 @@ async def dispatch_auto_fix(
             new_head_sha=new_head,
             success=True,
         )
+        record_auto_fix_dispatch(
+            repo=f"{owner}/{repo}",
+            backend=decision.backend,
+            category=(decision.categories or ["none"])[0] or "none",
+            outcome="dispatched_success",
+        )
         return outcome
     except Exception as exc:  # noqa: BLE001 — the dispatcher is best-effort
         logger.warning(
@@ -502,6 +641,12 @@ async def dispatch_auto_fix(
                 success=False,
                 detail=f"`{type(exc).__name__}: {exc}`",
             )
+        record_auto_fix_dispatch(
+            repo=f"{owner}/{repo}",
+            backend=decision.backend,
+            category=(decision.categories or ["none"])[0] or "none",
+            outcome="dispatched_fail",
+        )
         return outcome
     finally:
         if workdir is not None:

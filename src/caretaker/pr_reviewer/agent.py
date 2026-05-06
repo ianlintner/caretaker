@@ -20,8 +20,9 @@ Idempotency is provided by ``skip_labels`` (defaults to
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from caretaker.agent_protocol import AgentResult, BaseAgent
 from caretaker.evolution.executor_routing import (
@@ -33,11 +34,19 @@ from caretaker.evolution.executor_routing import (
     route_from_pr_reviewer_legacy,
 )
 from caretaker.evolution.shadow import shadow_decision
+from caretaker.observability.metrics import (
+    observe_pr_review_duration,
+    record_pr_review_outcome,
+)
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 from caretaker.pr_reviewer import auto_fix as _auto_fix
 from caretaker.pr_reviewer import handoff_review_consumer, handoff_reviewer, inline_reviewer
 from caretaker.pr_reviewer.github_review import post_review
 from caretaker.pr_reviewer.routing import decide
 from caretaker.state.models import TrackedPR
+
+# Module-level tracer — re-used across all PR review handlers.
+_tracer = get_tracer("caretaker.pr_reviewer")
 
 if TYPE_CHECKING:
     from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
@@ -171,6 +180,111 @@ class PRReviewerAgent(BaseAgent):
             },
         )
 
+    async def _emit_pr_review_audit(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        pr_author: str,
+        is_caretaker_pr: bool,
+        routing_reason: str,
+        tier: str | None,
+        backend: str | None,
+        model: str | None,
+        verdict: str | None,
+        start_monotonic: float,
+        auto_fix_dispatched: bool,
+        auto_fix_reason: str | None,
+        span: Any = None,
+    ) -> None:
+        """Emit the per-PR audit log line + metrics at every return point.
+
+        Centralised so the multi-return ``_handle_pr`` doesn't grow a
+        bespoke 12-line emission block at each branch. ``"none"`` is the
+        sentinel for unset values — both the log and the metrics use it.
+        """
+        duration_seconds = max(0.0, time.monotonic() - start_monotonic)
+        duration_ms = int(duration_seconds * 1000)
+        repo_slug = f"{owner}/{repo}"
+        tier_label = tier or "none"
+        backend_label = backend or "none"
+        verdict_label = verdict or "none"
+        observe_pr_review_duration(backend=backend_label, tier=tier_label, seconds=duration_seconds)
+        record_pr_review_outcome(
+            repo=repo_slug, backend=backend_label, tier=tier_label, verdict=verdict_label
+        )
+        if span is not None:
+            if tier:
+                span.set_attribute("caretaker.complexity.tier", tier_label)
+            if backend:
+                span.set_attribute("caretaker.backend", backend_label)
+            if model:
+                span.set_attribute("caretaker.review.model", model)
+            span.set_attribute("caretaker.review.verdict", verdict_label)
+            span.set_attribute("caretaker.auto_fix.dispatched", bool(auto_fix_dispatched))
+        logger.info(
+            "pr_review_complete repo=%s pr=%d author=%s is_caretaker_owned=%s "
+            "routing=%s tier=%s backend=%s model=%s verdict=%s duration_ms=%d "
+            "auto_fix_dispatched=%s auto_fix_reason=%s",
+            repo_slug,
+            pr_number,
+            pr_author,
+            is_caretaker_pr,
+            routing_reason,
+            tier_label,
+            backend_label,
+            model or "none",
+            verdict_label,
+            duration_ms,
+            auto_fix_dispatched,
+            auto_fix_reason or "n/a",
+            # Every field that appears in the format string above is
+            # also surfaced here so structured-log consumers (Loki /
+            # JSON formatter) don't lose attributes that the human
+            # message includes. Field names match the metric labels
+            # where they overlap (``backend``, ``tier``, ``verdict``,
+            # ``repo``).
+            extra={
+                "audit_event": "pr_review_complete",
+                "pr_number": pr_number,
+                "repo": repo_slug,
+                "pr_author": pr_author,
+                "is_caretaker_owned": is_caretaker_pr,
+                "routing_reason": routing_reason,
+                "verdict": verdict_label,
+                "tier": tier_label,
+                "backend": backend_label,
+                "model": model or "none",
+                "duration_ms": duration_ms,
+                "auto_fix_dispatched": auto_fix_dispatched,
+                "auto_fix_reason": auto_fix_reason or "n/a",
+            },
+        )
+        # Per-PR decision timeline write. Plain ``await`` — the helper
+        # already swallows Mongo errors and the structured log line
+        # above ensures Loki has the record even when the Mongo write
+        # fails. Lazy import keeps the helper out of the import-cycle
+        # hot path.
+        from caretaker.state.pr_decisions import record_decision  # noqa: PLC0415
+
+        await record_decision(
+            repo_slug,
+            int(pr_number),
+            "pr_reviewer",
+            "review_completed",
+            pr_author=pr_author,
+            is_caretaker_owned=bool(is_caretaker_pr),
+            routing_reason=routing_reason,
+            verdict=verdict_label,
+            tier=tier_label,
+            backend=backend_label,
+            model=model or "none",
+            duration_ms=duration_ms,
+            auto_fix_dispatched=bool(auto_fix_dispatched),
+            auto_fix_reason=auto_fix_reason or "n/a",
+        )
+
     async def _handle_pr(
         self,
         pr: dict[str, Any],
@@ -178,14 +292,115 @@ class PRReviewerAgent(BaseAgent):
         *,
         state: OrchestratorState,
     ) -> None:
+        # TODO(state-object): the local-variable bag below
+        # (``tier_label``, ``backend_label``, ``auto_fix_dispatched`` …)
+        # is approaching a state-machine. Refactor into a
+        # ``_PRReviewState`` dataclass once the next reviewer phase
+        # adds more transitions. Out of scope for phase 1A.
+        pr_number = int(pr.get("number", 0))
+        owner = self._ctx.owner
+        repo = self._ctx.repo
+
+        # Root span for this PR review — every downstream span (complexity
+        # classifier, inline reviewer, opencode invoke, auto-fix dispatch)
+        # nests under this so a single PR review becomes one trace tree.
+        with _tracer.start_as_current_span("pr_reviewer.handle_pr") as span:
+            span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+            span.set_attribute("caretaker.pr.number", int(pr_number))
+            try:
+                await self._handle_pr_body(pr, report, state=state, span=span)
+            except Exception as exc:
+                try:
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+                except Exception:  # pragma: no cover - defensive: never let tracer mask original
+                    pass
+                raise
+
+    async def _handle_pr_body(
+        self,
+        pr: dict[str, Any],
+        report: _PRReviewReport,
+        *,
+        state: OrchestratorState,
+        span: Any,
+    ) -> None:
+        """Real body of :meth:`_handle_pr`, wrapped by the root span."""
         cfg = self._ctx.config.pr_reviewer
         pr_number = int(pr.get("number", 0))
         owner = self._ctx.owner
         repo = self._ctx.repo
 
+        # Track wall-clock from the very top so every early-return branch
+        # records the time actually spent before bailing.
+        start_monotonic = time.monotonic()
+        pr_author = (pr.get("user") or {}).get("login", "")
+        is_caretaker_pr = _is_caretaker_owned(pr)
+        routing_reason = "n/a"
+        tier_label: str | None = None
+        backend_label: str | None = None
+        model_label: str | None = None
+        verdict_label: str | None = None
+        auto_fix_dispatched = False
+        auto_fix_reason: str | None = None
+
+        span.set_attribute("caretaker.pr.author", pr_author)
+        span.set_attribute("caretaker.pr.is_caretaker_owned", bool(is_caretaker_pr))
+
+        # Per-PR decision timeline: emit ``review_started`` for the
+        # non-skipped path (skip paths emit their own ``review_skipped``
+        # below). Lazy import keeps the helper out of the import-cycle
+        # hot path. ``await`` is safe here — we're already in the async
+        # body and the helper is fire-and-forget at the Mongo layer.
+        from caretaker.state.pr_decisions import record_decision
+
+        will_skip = bool(
+            (cfg.skip_draft and pr.get("draft", False))
+            or any(
+                lbl in cfg.skip_labels
+                for lbl in (
+                    label.get("name", "") if isinstance(label, dict) else str(label)
+                    for label in pr.get("labels", [])
+                )
+            )
+        )
+        if not will_skip:
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_started",
+                author=pr_author,
+                is_caretaker_owned=bool(is_caretaker_pr),
+            )
+
         # Skip drafts
         if cfg.skip_draft and pr.get("draft", False):
             report.skipped.append(pr_number)
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_skipped",
+                reason="draft",
+                author=pr_author,
+            )
+            await self._emit_pr_review_audit(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                pr_author=pr_author,
+                is_caretaker_pr=is_caretaker_pr,
+                routing_reason="draft",
+                tier=tier_label,
+                backend=backend_label,
+                model=model_label,
+                verdict="skipped",
+                start_monotonic=start_monotonic,
+                auto_fix_dispatched=auto_fix_dispatched,
+                auto_fix_reason="skipped_draft",
+                span=span,
+            )
             return
 
         # Skip if already reviewed by caretaker this cycle
@@ -195,6 +410,30 @@ class PRReviewerAgent(BaseAgent):
         ]
         if any(lbl in cfg.skip_labels for lbl in pr_labels):
             report.skipped.append(pr_number)
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_skipped",
+                reason="skip_label",
+                author=pr_author,
+            )
+            await self._emit_pr_review_audit(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                pr_author=pr_author,
+                is_caretaker_pr=is_caretaker_pr,
+                routing_reason="skip_label",
+                tier=tier_label,
+                backend=backend_label,
+                model=model_label,
+                verdict="skipped",
+                start_monotonic=start_monotonic,
+                auto_fix_dispatched=auto_fix_dispatched,
+                auto_fix_reason="skipped_label",
+                span=span,
+            )
             return
 
         # Harvest pass — if a hand-off agent (Claude Code, opencode)
@@ -222,18 +461,22 @@ class PRReviewerAgent(BaseAgent):
             if posted:
                 report.harvested.append(pr_number)
                 # Check if any harvested review requests changes — dispatch auto-fix.
+                # We're already inside ``if posted:`` so ``posted[0]`` is safe.
+                harvested_verdict = posted[0].verdict
                 for review_result in posted:
                     if review_result.verdict == "REQUEST_CHANGES":
-                        pr_author = (pr.get("user") or {}).get("login", "")
                         head_branch = (pr.get("head") or {}).get("ref", "")
                         pr_url = pr.get("html_url", "")
-                        fix_decision = _auto_fix.decide_auto_fix(
+                        fix_decision = await _auto_fix.decide_auto_fix(
                             review=review_result,
                             config=cfg.auto_fix,
                             pr_author=pr_author,
                             pr_labels=pr_labels,
                             tracking=tracking,
+                            repo=f"{owner}/{repo}",
+                            pr_number=pr_number,
                         )
+                        harvested_verdict = review_result.verdict
                         if fix_decision.should_dispatch:
                             await _auto_fix.dispatch_auto_fix(
                                 decision=fix_decision,
@@ -247,6 +490,11 @@ class PRReviewerAgent(BaseAgent):
                                 pr_number=pr_number,
                                 tracking=tracking,
                             )
+                            auto_fix_dispatched = True
+                            auto_fix_reason = fix_decision.reason
+                            backend_label = fix_decision.backend
+                        else:
+                            auto_fix_reason = fix_decision.reason
                         break  # one REQUEST_CHANGES is enough to arm the fixer
                 # Always mark reviewed after harvest regardless of fix dispatch.
                 try:
@@ -266,6 +514,22 @@ class PRReviewerAgent(BaseAgent):
                         pr_number,
                         exc,
                     )
+                await self._emit_pr_review_audit(
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    pr_author=pr_author,
+                    is_caretaker_pr=is_caretaker_pr,
+                    routing_reason="harvest",
+                    tier=tier_label,
+                    backend=backend_label,
+                    model=model_label,
+                    verdict=harvested_verdict,
+                    start_monotonic=start_monotonic,
+                    auto_fix_dispatched=auto_fix_dispatched,
+                    auto_fix_reason=auto_fix_reason,
+                    span=span,
+                )
                 return
 
         # Fetch file metadata for routing
@@ -288,7 +552,10 @@ class PRReviewerAgent(BaseAgent):
             threshold=cfg.routing_threshold,
             backend=cfg.complex_reviewer,
         )
+        routing_reason = decision.reason
         logger.info("pr-reviewer: #%d routing — %s", pr_number, decision.reason)
+        span.set_attribute("caretaker.routing.use_inline", bool(decision.use_inline))
+        span.set_attribute("caretaker.routing.score", int(decision.score))
 
         # Shadow-mode wrapper: compares legacy point-system verdict with
         # the LLM candidate under the ``executor_routing`` flag. The
@@ -343,6 +610,23 @@ class PRReviewerAgent(BaseAgent):
                     if not commit_sha:
                         logger.warning("pr-reviewer: no head SHA for #%d", pr_number)
                         report.skipped.append(pr_number)
+                        # ``pr_author`` is already set at the top of _handle_pr.
+                        await self._emit_pr_review_audit(
+                            owner=owner,
+                            repo=repo,
+                            pr_number=pr_number,
+                            pr_author=pr_author,
+                            is_caretaker_pr=is_caretaker_pr,
+                            routing_reason=routing_reason,
+                            tier=tier_label,
+                            backend="inline",
+                            model=model_label,
+                            verdict="skipped",
+                            start_monotonic=start_monotonic,
+                            auto_fix_dispatched=auto_fix_dispatched,
+                            auto_fix_reason="no_head_sha",
+                            span=span,
+                        )
                         return
 
                     await post_review(
@@ -355,19 +639,23 @@ class PRReviewerAgent(BaseAgent):
                         post_inline_comments=cfg.post_inline_comments,
                         force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
                     )
+                    backend_label = "inline"
+                    verdict_label = result.verdict
                     # Inline path auto-fix: if the LLM says REQUEST_CHANGES, dispatch fixer.
                     if result.verdict == "REQUEST_CHANGES":
                         _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
-                        pr_author = (pr.get("user") or {}).get("login", "")
                         head_branch = (pr.get("head") or {}).get("ref", "")
                         pr_url = pr.get("html_url", "")
-                        _decision = _auto_fix.decide_auto_fix(
+                        _decision = await _auto_fix.decide_auto_fix(
                             review=result,
                             config=cfg.auto_fix,
                             pr_author=pr_author,
                             pr_labels=pr_labels,
                             tracking=_tracking,
+                            repo=f"{owner}/{repo}",
+                            pr_number=pr_number,
                         )
+                        auto_fix_reason = _decision.reason
                         if _decision.should_dispatch:
                             await _auto_fix.dispatch_auto_fix(
                                 decision=_decision,
@@ -381,6 +669,7 @@ class PRReviewerAgent(BaseAgent):
                                 pr_number=pr_number,
                                 tracking=_tracking,
                             )
+                            auto_fix_dispatched = True
                             state.tracked_prs[pr_number] = _tracking
                     # Mark as reviewed
                     try:
@@ -396,6 +685,22 @@ class PRReviewerAgent(BaseAgent):
                     except Exception:
                         pass
                     report.reviewed.append(pr_number)
+                    await self._emit_pr_review_audit(
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        pr_author=pr_author,
+                        is_caretaker_pr=is_caretaker_pr,
+                        routing_reason=routing_reason,
+                        tier=tier_label,
+                        backend=backend_label,
+                        model=model_label,
+                        verdict=verdict_label,
+                        start_monotonic=start_monotonic,
+                        auto_fix_dispatched=auto_fix_dispatched,
+                        auto_fix_reason=auto_fix_reason,
+                        span=span,
+                    )
                     return
 
         # Hand-off path — backend chosen by ``complex_reviewer`` (Claude
@@ -408,8 +713,8 @@ class PRReviewerAgent(BaseAgent):
         # run opencode (or the configured caretaker_owned_reviewer) as a
         # local subprocess so the review is synchronous, then immediately
         # dispatch auto-fix and auto-approve within the same cycle.
-        pr_author = (pr.get("user") or {}).get("login", "")
-        is_caretaker_pr = _is_caretaker_owned(pr)
+        # ``pr_author`` and ``is_caretaker_pr`` were already populated at
+        # the top of _handle_pr; reuse them here.
         if is_caretaker_pr and cfg.caretaker_owned_reviewer:
             caretaker_backend = cfg.caretaker_owned_reviewer
             if caretaker_backend in handoff_reviewer.known_backends():
@@ -452,6 +757,22 @@ class PRReviewerAgent(BaseAgent):
                         backend,
                         cfg.enabled_backends,
                     )
+                    await self._emit_pr_review_audit(
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        pr_author=pr_author,
+                        is_caretaker_pr=is_caretaker_pr,
+                        routing_reason=routing_reason,
+                        tier=tier_label,
+                        backend=backend,
+                        model=model_label,
+                        verdict="skipped",
+                        start_monotonic=start_monotonic,
+                        auto_fix_dispatched=auto_fix_dispatched,
+                        auto_fix_reason="backend_not_enabled",
+                        span=span,
+                    )
                     return
                 logger.warning(
                     "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
@@ -471,6 +792,7 @@ class PRReviewerAgent(BaseAgent):
             # Flash-Lite call costs ~$0.0001.
             tier = (
                 await self._classify_complexity(
+                    pr_number=pr_number,
                     pr=pr,
                     files=files,
                     pr_labels=pr_labels,
@@ -479,6 +801,9 @@ class PRReviewerAgent(BaseAgent):
                 if is_caretaker_pr
                 else None
             )
+            tier_label = tier
+            backend_label = backend
+            model_label = self._resolve_backend_model(backend, tier=tier, mode="review")
 
             local_result = await self._run_local_subprocess_backend(
                 backend=backend,
@@ -491,6 +816,8 @@ class PRReviewerAgent(BaseAgent):
                 routing_reason=decision.reason,
                 tier=tier,
             )
+            if local_result is not None:
+                verdict_label = local_result.verdict
             # For caretaker-owned PRs: run auto-fix when reviewer says
             # REQUEST_CHANGES, then auto-approve on success.
             if (
@@ -503,13 +830,16 @@ class PRReviewerAgent(BaseAgent):
                     f"https://github.com/{owner}/{repo}/pull/{pr_number}"
                 )
                 _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
-                fix_decision = _auto_fix.decide_auto_fix(
+                fix_decision = await _auto_fix.decide_auto_fix(
                     review=local_result,
                     config=cfg.auto_fix,
                     pr_author=pr_author,
                     pr_labels=pr_labels,
                     tracking=_tracking,
+                    repo=f"{owner}/{repo}",
+                    pr_number=pr_number,
                 )
+                auto_fix_reason = fix_decision.reason
                 if fix_decision.should_dispatch:
                     outcome = await _auto_fix.dispatch_auto_fix(
                         decision=fix_decision,
@@ -524,6 +854,7 @@ class PRReviewerAgent(BaseAgent):
                         tracking=_tracking,
                         tier=tier,
                     )
+                    auto_fix_dispatched = True
                     state.tracked_prs[pr_number] = _tracking
                     if outcome.success and outcome.new_head_sha:
                         await self._auto_approve_caretaker_pr(
@@ -533,8 +864,25 @@ class PRReviewerAgent(BaseAgent):
                             new_head_sha=outcome.new_head_sha,
                             fix_backend=fix_decision.backend,
                         )
+            await self._emit_pr_review_audit(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                pr_author=pr_author,
+                is_caretaker_pr=is_caretaker_pr,
+                routing_reason=routing_reason,
+                tier=tier_label,
+                backend=backend_label,
+                model=model_label,
+                verdict=verdict_label,
+                start_monotonic=start_monotonic,
+                auto_fix_dispatched=auto_fix_dispatched,
+                auto_fix_reason=auto_fix_reason,
+                span=span,
+            )
             return
 
+        backend_label = backend
         success = await handoff_reviewer.dispatch(
             backend=backend,
             github=self._ctx.github,
@@ -546,8 +894,26 @@ class PRReviewerAgent(BaseAgent):
         )
         if success:
             report.dispatched.append(pr_number)
+            verdict_label = "dispatched"
         else:
             report.errors.append(f"{backend} dispatch failed for #{pr_number}")
+            verdict_label = "dispatch_failed"
+        await self._emit_pr_review_audit(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            pr_author=pr_author,
+            is_caretaker_pr=is_caretaker_pr,
+            routing_reason=routing_reason,
+            tier=tier_label,
+            backend=backend_label,
+            model=model_label,
+            verdict=verdict_label,
+            start_monotonic=start_monotonic,
+            auto_fix_dispatched=auto_fix_dispatched,
+            auto_fix_reason=auto_fix_reason,
+            span=span,
+        )
 
     async def _run_local_subprocess_backend(
         self,
@@ -668,9 +1034,10 @@ class PRReviewerAgent(BaseAgent):
         report.reviewed.append(pr_number)
         return review_result
 
-    async def _classify_complexity(
+    async def _classify_complexity(  # noqa: PLR0913 — kwargs-only callsite
         self,
         *,
+        pr_number: int | None = None,
         pr: dict[str, Any],
         files: list[dict[str, Any]],
         pr_labels: list[str],
@@ -714,6 +1081,7 @@ class PRReviewerAgent(BaseAgent):
                 context=context,
                 claude=claude,
                 routing_decision=routing_decision,
+                pr_number=pr_number,
             )
             logger.info(
                 "pr-reviewer: complexity tier=%s (confidence=%.2f) — %s",
@@ -781,6 +1149,41 @@ class PRReviewerAgent(BaseAgent):
         ``NotImplementedError`` cleanly without a missing-attribute.
         """
         return getattr(self._ctx.config.pr_reviewer, backend, _EMPTY_BACKEND_CONFIG)
+
+    def _resolve_backend_model(
+        self,
+        backend: str,
+        *,
+        tier: ComplexityTier | None,
+        mode: Literal["review", "fix"],
+    ) -> str | None:
+        """Return the model id the backend would use for ``mode``+``tier``.
+
+        Best-effort lookup so the audit log reports the actual model the
+        backend will route to (rather than the operator-pinned default
+        even when a tier override is in play). Returns ``None`` when the
+        backend doesn't expose a tier-aware model map.
+
+        TODO(backend-dispatch): replace the ``if backend == ...``
+        ladder with a dispatch table once a second tier-aware backend
+        lands. Out of scope for the phase 1A observability PR.
+        """
+        backend_cfg = self._resolve_local_backend_config(backend)
+        if backend == "opencode_local":
+            tier_map = getattr(
+                backend_cfg, "review_models" if mode == "review" else "fix_models", {}
+            )
+            default = (
+                getattr(backend_cfg, "model", "")
+                if mode == "review"
+                else (getattr(backend_cfg, "fix_model", "") or getattr(backend_cfg, "model", ""))
+            )
+            if tier is not None and tier_map.get(tier):
+                model: str = tier_map[tier]
+                return model
+            return str(default) if default else None
+        configured: Any = getattr(backend_cfg, "model", None)
+        return str(configured) if configured else None
 
     async def _route_via_shadow(
         self,

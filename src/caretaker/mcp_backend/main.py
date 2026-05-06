@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -466,6 +466,23 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
             except Exception:
                 logger.warning("Failed to initialise admin webhooks API", exc_info=True)
 
+            # Per-PR decision timeline — admin endpoint reading from a
+            # MongoDB ``pr_decisions`` collection populated by the PR-
+            # reviewer pipeline. The store is also installed as the
+            # process-wide default so the lazy ``record_decision``
+            # call sites pick it up without explicit plumbing.
+            try:
+                from caretaker.admin import pr_timeline_api
+                from caretaker.state import pr_decisions as _pr_decisions
+
+                _decision_store = _pr_decisions.PRDecisionStore.from_config(maint_cfg)
+                _pr_decisions.configure_default_store(_decision_store)
+                pr_timeline_api.configure(_decision_store)
+                application.include_router(pr_timeline_api.router)
+                logger.info("Admin PR-timeline API enabled")
+            except Exception:
+                logger.warning("Failed to initialise admin PR-timeline API", exc_info=True)
+
             # Serve SPA static files
             if _ADMIN_STATIC_DIR.is_dir():
                 application.mount(
@@ -646,6 +663,18 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
         from caretaker.runs.store import get_store as _runs_get_store
 
         await _runs_get_store().close()
+
+    # Drain the per-PR decision-timeline store so the underlying Motor
+    # client is closed cleanly on shutdown. ``configure_default_store``
+    # is also called with ``None`` so a subsequent lifespan re-entry
+    # (used by the test suite) doesn't observe a stale singleton.
+    with suppress(Exception):
+        from caretaker.state import pr_decisions as _pr_decisions
+
+        store_attr = _pr_decisions.get_default_store()
+        if store_attr is not None:
+            await store_attr.close()
+        _pr_decisions.configure_default_store(None)
 
     # Stop the metrics server side-car cleanly so tests that re-enter
     # the lifespan don't leak a port binding.
@@ -910,6 +939,64 @@ async def health_check() -> dict[str, str]:
         "dispatch_mode": _get_dispatcher().mode.value,
         "github_app_configured": str(_token_broker is not None).lower(),
     }
+
+
+#: Wall-clock budget for /health/deep. Six model probes at 30s plus five
+#: core checks running in parallel can approach 30s on a cold cache; 45s
+#: gives headroom without letting one slow probe pin a worker.
+HEALTH_DEEP_TIMEOUT_SECONDS: float = 45.0
+
+
+@app.get("/health/deep")
+async def health_check_deep() -> Response:
+    """Deep dependency probe for pre-deploy / operator-triggered diagnostics.
+
+    Concurrently probes ``git`` and ``opencode`` CLIs, Redis/Mongo/Neo4j
+    connectivity, the parsed MaintainerConfig, and every OpenRouter model
+    the PR-reviewer plans to use. Returns HTTP 200 with
+    ``status=ok|degraded`` when the core stack is up, or 503 when any core
+    dependency (config, git, opencode, redis, mongo, neo4j) is failing —
+    model-probe failures only surface as ``degraded``.
+
+    Kubelet keeps probing the cheap ``/health`` endpoint; this one is
+    intentionally heavier and rate-limited via a 1-hour model-probe cache.
+    """
+    # TODO(observability): build a Motor + Neo4j driver pool in _lifespan
+    # so this endpoint and the Phase 2 db.client.* OTel instrumentation
+    # share long-lived clients instead of constructing per-request.
+    from caretaker.mcp_backend.health_endpoint import build_clients, resolve_models
+    from caretaker.observability.health import gather_deep_health
+
+    resolved = resolve_models()
+    async with build_clients() as bundle:
+        try:
+            result = await asyncio.wait_for(
+                gather_deep_health(
+                    redis_url=bundle.redis_url,
+                    mongo_client=bundle.mongo_client,
+                    neo4j_driver=bundle.neo4j_driver,
+                    models_to_probe=resolved.models,
+                    opencode_cli_path=resolved.opencode_cli_path,
+                    version=app.version,
+                    config_check=resolved.config_check,
+                ),
+                timeout=HEALTH_DEEP_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "/health/deep exceeded %.1fs wall-time budget", HEALTH_DEEP_TIMEOUT_SECONDS
+            )
+            return JSONResponse(
+                content={
+                    "status": "fail",
+                    "version": app.version,
+                    "error": (f"deep_health timed out (>{HEALTH_DEEP_TIMEOUT_SECONDS:.0f}s)"),
+                },
+                status_code=503,
+            )
+
+    status_code = 503 if result["status"] == "fail" else 200
+    return JSONResponse(content=result, status_code=status_code)
 
 
 @app.get("/mcp/tools")

@@ -6,6 +6,7 @@ Returns a ``ReviewResult`` that ``github_review.post_review()`` can post directl
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -13,12 +14,17 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, Field
 
 from caretaker.llm.claude import StructuredCompleteError
+from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
 
 if TYPE_CHECKING:
     from caretaker.github_client.api import GitHubClient
     from caretaker.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
+
+# Module-level tracer — wraps each inline-LLM review so the parent
+# ``pr_reviewer.handle_pr`` trace shows diff_lines / model / verdict.
+_tracer = get_tracer("caretaker.pr_reviewer.inline_reviewer")
 
 _REVIEW_SYSTEM = """\
 You are an expert code reviewer. Review the pull request diff below and produce
@@ -119,61 +125,88 @@ async def review(
     max_diff_lines: int = 2000,
 ) -> ReviewResult:
     """Fetch the PR diff and call the LLM for a review."""
-    diff = await github.get_pull_diff(owner, repo, pr_number)
-    if not diff:
+    with _tracer.start_as_current_span("inline_reviewer.review") as span:
+        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+            span.set_attribute("caretaker.pr.repo", f"{owner}/{repo}")
+            span.set_attribute("caretaker.pr.number", int(pr_number))
+
+        diff = await github.get_pull_diff(owner, repo, pr_number)
+        if not diff:
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.review.diff_lines", 0)
+                span.set_attribute("caretaker.review.verdict", "COMMENT")
+            return ReviewResult(
+                summary="Could not fetch diff — skipping inline review.",
+                verdict="COMMENT",
+            )
+
+        diff_lines = diff.splitlines()
+        bounded_lines = min(len(diff_lines), max_diff_lines)
+        if len(diff_lines) > max_diff_lines:
+            diff = "\n".join(diff_lines[:max_diff_lines]) + "\n…(diff truncated)"
+
+        with contextlib.suppress(Exception):  # pragma: no cover
+            span.set_attribute("caretaker.review.diff_lines", int(bounded_lines))
+
+        prompt = (
+            f"PR #{pr_number}: {pr_title}\n\n"
+            f"{pr_body.strip()[:500] if pr_body else '(no description)'}\n\n"
+            "---\n"
+            f"```diff\n{diff}\n```"
+        )
+
+        # Capture the model the LLM router reports for this feature, when
+        # accessible — best-effort because the router shape varies.
+        with contextlib.suppress(Exception):  # pragma: no cover
+            model_name = getattr(getattr(llm, "claude", None), "model", "") or ""
+            if model_name:
+                span.set_attribute("caretaker.review.model", str(model_name))
+
+        try:
+            payload = await llm.claude.structured_complete(
+                prompt,
+                schema=InlineReviewResult,
+                feature="pr_inline_review",
+                system=_REVIEW_SYSTEM,
+                max_tokens=2000,
+            )
+        except StructuredCompleteError as exc:
+            # Surface parse/validation failures to the caller so they can be logged
+            # loudly. The pr-reviewer agent is expected to catch and fall back to
+            # a skip / claude-code dispatch — it must not silently issue an empty
+            # COMMENT review as the old ``json.loads`` fallback did.
+            logger.exception(
+                "inline review for %s/%s#%d failed validation after retries",
+                owner,
+                repo,
+                pr_number,
+            )
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+            raise
+        except Exception as exc:
+            logger.warning("Inline LLM review failed for %s/%s#%d: %s", owner, repo, pr_number, exc)
+            with contextlib.suppress(Exception):  # pragma: no cover
+                span.set_attribute("caretaker.review.verdict", "COMMENT")
+            return ReviewResult(
+                summary=f"Inline review failed: {exc}",
+                verdict="COMMENT",
+            )
+
+        comments = [
+            InlineReviewComment(path=c.path, line=int(c.line), body=c.body)
+            for c in payload.comments
+            if c.path and c.body
+        ]
+
+        with contextlib.suppress(Exception):  # pragma: no cover
+            span.set_attribute("caretaker.review.verdict", str(payload.verdict))
+
         return ReviewResult(
-            summary="Could not fetch diff — skipping inline review.",
-            verdict="COMMENT",
+            summary=payload.summary,
+            verdict=payload.verdict,
+            comments=comments,
+            raw_response=payload.model_dump_json(),
+            issue_categories=list(payload.issue_categories),
         )
-
-    diff_lines = diff.splitlines()
-    if len(diff_lines) > max_diff_lines:
-        diff = "\n".join(diff_lines[:max_diff_lines]) + "\n…(diff truncated)"
-
-    prompt = (
-        f"PR #{pr_number}: {pr_title}\n\n"
-        f"{pr_body.strip()[:500] if pr_body else '(no description)'}\n\n"
-        "---\n"
-        f"```diff\n{diff}\n```"
-    )
-
-    try:
-        payload = await llm.claude.structured_complete(
-            prompt,
-            schema=InlineReviewResult,
-            feature="pr_inline_review",
-            system=_REVIEW_SYSTEM,
-            max_tokens=2000,
-        )
-    except StructuredCompleteError:
-        # Surface parse/validation failures to the caller so they can be logged
-        # loudly. The pr-reviewer agent is expected to catch and fall back to
-        # a skip / claude-code dispatch — it must not silently issue an empty
-        # COMMENT review as the old ``json.loads`` fallback did.
-        logger.exception(
-            "inline review for %s/%s#%d failed validation after retries",
-            owner,
-            repo,
-            pr_number,
-        )
-        raise
-    except Exception as exc:
-        logger.warning("Inline LLM review failed for %s/%s#%d: %s", owner, repo, pr_number, exc)
-        return ReviewResult(
-            summary=f"Inline review failed: {exc}",
-            verdict="COMMENT",
-        )
-
-    comments = [
-        InlineReviewComment(path=c.path, line=int(c.line), body=c.body)
-        for c in payload.comments
-        if c.path and c.body
-    ]
-
-    return ReviewResult(
-        summary=payload.summary,
-        verdict=payload.verdict,
-        comments=comments,
-        raw_response=payload.model_dump_json(),
-        issue_categories=list(payload.issue_categories),
-    )

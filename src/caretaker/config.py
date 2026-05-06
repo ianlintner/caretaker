@@ -377,6 +377,56 @@ DEFAULT_FEATURE_MODELS_BY_PROVIDER: dict[str, dict[str, dict[str, int | str]]] =
 }
 
 
+# Per-model pricing in USD per 1 MILLION tokens (input, output).
+#
+# Source: https://openrouter.ai/models — captured 2026-05.  Update by
+# replacing the entry inline and re-running ``pytest
+# tests/test_observability_cost_tracking.py``; no other code changes
+# needed.  Models not present in this table emit a one-shot warning
+# from :func:`caretaker.observability.metrics.record_llm_cost` and skip
+# USD cost tracking — token counts are still recorded, so the dashboard
+# can show "tokens by model" even for newly-added models we haven't
+# priced yet.
+#
+# Update cadence: review each quarter, or whenever a provider changes
+# their pricing publicly. The dashboard panel using
+# ``caretaker_llm_cost_usd_total`` is approximate — any drift between
+# this table and the provider's invoice manifests as a discrepancy
+# Grafana labels "approximate (static price table)".
+#
+# Convention: prices are ``(input_per_1m_tokens, output_per_1m_tokens)``.
+# Always quote both even if the provider charges the same for input and
+# output, so a future split doesn't silently break callers.
+#
+# **Cache token caveat (Anthropic):** Anthropic charges 1.25× the input
+# rate for ``cache_write`` tokens and 0.10× for ``cache_read`` tokens,
+# but this table doesn't model that. Both are folded into
+# ``prompt_tokens`` and counted at the input rate. For a cache-heavy
+# review on Anthropic models, the recorded USD cost can drift ±10-15%
+# from the true bill. If accuracy matters more than simplicity, extend
+# the entry to a ``dataclass(input, output, cache_read=None,
+# cache_write=None)`` and update
+# :func:`caretaker.observability.metrics.record_llm_cost` to use the
+# optional fields when present.
+LLM_PRICE_TABLE: dict[str, tuple[float, float]] = {
+    # Google
+    "openrouter/google/gemini-2.5-flash-lite": (0.10, 0.40),
+    "openrouter/google/gemini-2.5-flash": (0.30, 2.50),
+    "openrouter/google/gemini-2.5-pro": (1.25, 10.00),
+    "openrouter/google/gemini-3-flash-preview": (0.30, 2.50),
+    # DeepSeek
+    "openrouter/deepseek/deepseek-v4-flash": (0.14, 0.28),
+    "openrouter/deepseek/deepseek-v4-pro": (0.55, 2.19),
+    "openrouter/deepseek/deepseek-r1": (0.55, 2.19),
+    # Anthropic via OpenRouter
+    "openrouter/anthropic/claude-haiku-4.5": (1.00, 5.00),
+    "openrouter/anthropic/claude-sonnet-4.5": (3.00, 15.00),
+    "openrouter/anthropic/claude-sonnet-4.6": (3.00, 15.00),
+    "openrouter/anthropic/claude-opus-4.6": (15.00, 75.00),
+    "openrouter/anthropic/claude-opus-4.7": (15.00, 75.00),
+}
+
+
 class FeatureModelConfig(StrictBaseModel):
     """Per-feature model override."""
 

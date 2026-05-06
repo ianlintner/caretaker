@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -348,6 +348,94 @@ INTERVENTION_REASONS: frozenset[str] = frozenset(
 )
 
 
+# ── PR-reviewer instrumentation (observability phase 1A) ────────────
+#
+# These five metrics live alongside the attribution counters above
+# because they answer the same question one layer deeper: not just
+# "did caretaker touch this PR?" but "with which backend, at what
+# tier, with what verdict, and how long did it take?".
+#
+# Cardinality budget:
+#   - ``backend`` is bounded by the registered backends (~5 entries).
+#   - ``tier`` / ``verdict`` / ``source`` / ``mode`` / ``outcome`` are
+#     all bounded by closed enums declared below.
+#   - ``model`` is the opencode model identifier — operators pin a
+#     handful (one per tier) so this stays small in practice.
+#   - ``repo`` is ``owner/repo`` (same convention as the attribution
+#     counters).
+#   - ``category`` is the auto-fix dispatcher's category (``lint``,
+#     ``format``, ``correctness``, etc.) — a closed enum from the
+#     review-payload schema.
+
+# Bounded enums for the labels above. Re-exported via ``__all__`` so
+# call-sites can refer to the canonical tuple instead of fat-fingering
+# the string and silently birthing a new series.
+COMPLEXITY_TIERS: tuple[str, ...] = ("trivial", "simple", "standard", "complex", "none")
+CLASSIFIER_SOURCES: tuple[str, ...] = ("fast_path", "llm", "heuristic_fallback")
+OPENCODE_MODES: tuple[str, ...] = ("review", "fix")
+OPENCODE_OUTCOMES: tuple[str, ...] = (
+    "ok",
+    "parse_fallback",
+    "timeout",
+    "no_endpoints",
+    "error",
+    # ``declined`` is the in-band sentinel ``CARETAKER_FIX_DECLINED:`` —
+    # opencode chose not to apply the requested change. Tracked
+    # separately from ``ok`` so the fix-mode success rate stays honest
+    # and the dashboard can graph "decline rate" directly.
+    "declined",
+)
+AUTO_FIX_OUTCOMES: tuple[str, ...] = ("dispatched_success", "dispatched_fail", "skipped")
+# ``REVIEW_VERDICTS`` covers both real LLM verdicts (``APPROVE`` /
+# ``COMMENT`` / ``REQUEST_CHANGES``) **and** the terminal non-LLM
+# states emitted by the audit log (``skipped`` / ``dispatched`` /
+# ``dispatch_failed`` / ``none``). They're all bounded — letting the
+# dashboard distinguish "dispatched to opencode" from "skipped (draft)"
+# from a real "COMMENT" verdict without collapsing into a noisy
+# ``other`` bucket.
+REVIEW_VERDICTS: tuple[str, ...] = (
+    "APPROVE",
+    "COMMENT",
+    "REQUEST_CHANGES",
+    "skipped",
+    "dispatched",
+    "dispatch_failed",
+    "none",
+)
+
+PR_REVIEW_OUTCOME_TOTAL = Counter(
+    "caretaker_pr_review_outcome_total",
+    "PR review outcomes by backend, tier, verdict",
+    ["service", "repo", "backend", "tier", "verdict"],
+    registry=REGISTRY,
+)
+PR_REVIEW_DURATION_SECONDS = Histogram(
+    "caretaker_pr_review_duration_seconds",
+    "End-to-end PR review duration",
+    ["service", "backend", "tier"],
+    buckets=(1, 5, 10, 30, 60, 120, 300, 600),
+    registry=REGISTRY,
+)
+COMPLEXITY_CLASSIFIER_TIER_TOTAL = Counter(
+    "caretaker_complexity_classifier_tier_total",
+    "Complexity classifier verdicts by tier and decision source",
+    ["service", "tier", "source"],
+    registry=REGISTRY,
+)
+OPENCODE_INVOCATION_TOTAL = Counter(
+    "caretaker_opencode_invocation_total",
+    "opencode CLI subprocess invocations by model and outcome",
+    ["service", "model", "mode", "outcome"],
+    registry=REGISTRY,
+)
+AUTO_FIX_DISPATCH_TOTAL = Counter(
+    "caretaker_auto_fix_dispatch_total",
+    "Auto-fix dispatcher outcomes",
+    ["service", "repo", "backend", "category", "outcome"],
+    registry=REGISTRY,
+)
+
+
 # ── LLM prompt-cache telemetry ───────────────────────────────────────
 #
 # Emitted by :mod:`caretaker.llm.provider` on every completion.  Together
@@ -374,6 +462,44 @@ LLM_CACHE_CREATION_TOKENS_TOTAL = Counter(
     ["provider", "model"],
     registry=REGISTRY,
 )
+
+
+# ── Per-model token + USD cost tracking (observability phase 3) ─────
+#
+# Lets a Grafana panel answer "did the v0.28 model shift away from Opus
+# actually save money?" by graphing rate(caretaker_llm_cost_usd_total)
+# split by ``model``.  Tokens are emitted by the ``opencode_local``
+# backend after parsing the ``--format json`` step_finish events; cost
+# is derived from a static price table in :data:`caretaker.config.LLM_PRICE_TABLE`.
+#
+# Cardinality: ``model`` is bounded by the price table (~12 entries for
+# the v0.28.x defaults). ``direction`` is a 2-value enum below. Models
+# we haven't priced yet still hit the tokens counter (so token usage
+# stays observable for new models) but skip the cost counter — see
+# :func:`record_llm_cost` for the warn-once behaviour.
+
+LLM_TOKEN_DIRECTIONS: tuple[str, ...] = ("prompt", "completion")
+
+LLM_TOKENS_TOTAL = Counter(
+    "caretaker_llm_tokens_total",
+    "Tokens consumed per model and direction (prompt | completion).",
+    ["service", "model", "direction"],
+    registry=REGISTRY,
+)
+
+LLM_COST_USD_TOTAL = Counter(
+    "caretaker_llm_cost_usd_total",
+    "Estimated USD cost per model (using a static price table).",
+    ["service", "model"],
+    registry=REGISTRY,
+)
+
+
+# Memoises models we've already warned about being missing from the
+# price table. Without this, a hot caller running thousands of fix
+# invocations against an un-priced model would log a warning per call
+# and drown out the rest of the log stream.
+_LLM_PRICE_TABLE_MISSES_WARNED: set[str] = set()
 
 # ── Self-heal fix ladder (Wave A3) ───────────────────────────────────
 #
@@ -868,6 +994,102 @@ def record_guardrail_rollback_fired(repo: str, reason: str) -> None:
     ).inc()
 
 
+# Memoises ``(value, id(allowed))`` pairs we've already warned about so
+# a hot caller passing the same off-enum value repeatedly only logs
+# once per process lifetime. The key uses ``id(allowed)`` (not the
+# tuple itself) because the canonical enum tuples are module-level
+# constants — same identity for every call — and ``id`` is O(1) where
+# the tuple equality check would walk the contents.
+_BOUND_OR_OTHER_WARNED: set[tuple[str, int]] = set()
+
+
+def _bound_or_other(value: str, allowed: tuple[str, ...]) -> str:
+    """Return ``value`` when it's in ``allowed``, else ``"other"``.
+
+    Centralises the enum-validation pattern used by the PR-reviewer
+    recorders below: an unknown value never crashes the run, but it
+    also never silently mints a new series — both effects are
+    cardinality-eating bugs we'd rather see as a generic "other"
+    bucket and a one-shot warning log.
+
+    The warning is emitted **at most once per ``(value, allowed)``
+    pair** so a hot loop that repeatedly passes the same off-enum
+    value doesn't flood the log.
+    """
+    if value in allowed:
+        return value
+    key = (value, id(allowed))
+    if key not in _BOUND_OR_OTHER_WARNED:
+        _BOUND_OR_OTHER_WARNED.add(key)
+        logger.warning(
+            "metrics: unbounded value %r for enum %s; bucketing as 'other'",
+            value,
+            allowed,
+        )
+    return "other"
+
+
+def record_pr_review_outcome(repo: str, backend: str, tier: str, verdict: str) -> None:
+    """Increment ``caretaker_pr_review_outcome_total``.
+
+    ``tier`` / ``verdict`` are validated against the bounded enums
+    above; unknown values are recorded under ``"other"`` so a typo
+    can't silently expand cardinality.
+    """
+    PR_REVIEW_OUTCOME_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        repo=repo or "unknown",
+        backend=backend or "none",
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+        verdict=_bound_or_other(verdict, REVIEW_VERDICTS),
+    ).inc()
+
+
+def observe_pr_review_duration(backend: str, tier: str, seconds: float) -> None:
+    """Observe a sample on ``caretaker_pr_review_duration_seconds``."""
+    PR_REVIEW_DURATION_SECONDS.labels(
+        service=_SERVICE_LABEL,
+        backend=backend or "none",
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+    ).observe(max(0.0, float(seconds)))
+
+
+def record_complexity_tier(tier: str, source: str) -> None:
+    """Increment ``caretaker_complexity_classifier_tier_total``."""
+    COMPLEXITY_CLASSIFIER_TIER_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        tier=_bound_or_other(tier, COMPLEXITY_TIERS),
+        source=_bound_or_other(source, CLASSIFIER_SOURCES),
+    ).inc()
+
+
+def record_opencode_invocation(model: str, mode: Literal["review", "fix"], outcome: str) -> None:
+    """Increment ``caretaker_opencode_invocation_total``.
+
+    ``mode`` is typed as ``Literal["review", "fix"]`` so a typo at a
+    static call site is caught by mypy. The runtime
+    :func:`_bound_or_other` validation stays as defence-in-depth for
+    dynamic callers.
+    """
+    OPENCODE_INVOCATION_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        model=model or "unknown",
+        mode=_bound_or_other(mode, OPENCODE_MODES),
+        outcome=_bound_or_other(outcome, OPENCODE_OUTCOMES),
+    ).inc()
+
+
+def record_auto_fix_dispatch(repo: str, backend: str, category: str, outcome: str) -> None:
+    """Increment ``caretaker_auto_fix_dispatch_total``."""
+    AUTO_FIX_DISPATCH_TOTAL.labels(
+        service=_SERVICE_LABEL,
+        repo=repo or "unknown",
+        backend=backend or "none",
+        category=category or "none",
+        outcome=_bound_or_other(outcome, AUTO_FIX_OUTCOMES),
+    ).inc()
+
+
 def record_llm_cache_usage(
     *,
     provider: str,
@@ -894,12 +1116,90 @@ def record_llm_cache_usage(
         )
 
 
+def record_llm_tokens(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record prompt/completion token counts for a single LLM call.
+
+    Non-positive values are silently dropped so callers that didn't
+    actually consume tokens in one direction (e.g. prompt-only fanout)
+    don't pollute the counter with zero increments.
+    """
+    label_model = model or "unknown"
+    if prompt_tokens > 0:
+        LLM_TOKENS_TOTAL.labels(service=_SERVICE_LABEL, model=label_model, direction="prompt").inc(
+            float(prompt_tokens)
+        )
+    if completion_tokens > 0:
+        LLM_TOKENS_TOTAL.labels(
+            service=_SERVICE_LABEL, model=label_model, direction="completion"
+        ).inc(float(completion_tokens))
+
+
+def record_llm_cost(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record the estimated USD cost for a single LLM call.
+
+    Looks ``model`` up in :data:`caretaker.config.LLM_PRICE_TABLE`
+    (USD per 1M tokens) and increments the cost counter. If ``model``
+    isn't in the table, logs a one-shot warning and skips the cost
+    increment — token counters are unaffected so the dashboard still
+    shows token volume for un-priced models.
+    """
+    # Lazy import — keep the metrics module importable in environments
+    # that don't pull in the full caretaker.config (notebooks, isolated
+    # tests). Same pattern as the rate-limit collector below.
+    try:
+        from caretaker.config import LLM_PRICE_TABLE
+    except Exception:  # pragma: no cover - observability never cascades
+        return
+
+    label_model = model or "unknown"
+    price = LLM_PRICE_TABLE.get(label_model)
+    if price is None:
+        if label_model not in _LLM_PRICE_TABLE_MISSES_WARNED:
+            _LLM_PRICE_TABLE_MISSES_WARNED.add(label_model)
+            # WARNING (not INFO) so dashboard maintainers see this in
+            # their alert filters — an un-priced model means the USD
+            # cost panel under-counts. Still warn-once via the memo so
+            # a hot caller doesn't flood the log.
+            logger.warning(
+                "metrics: model %r missing from LLM_PRICE_TABLE; skipping cost "
+                "tracking (tokens still recorded). Add an entry in "
+                "caretaker.config.LLM_PRICE_TABLE to enable USD cost.",
+                label_model,
+            )
+        return
+
+    input_per_1m, output_per_1m = price
+    # Prices are USD per 1,000,000 tokens; divide rather than multiply
+    # so a typo in the table (e.g. quoting per-1k by mistake) shows up
+    # as a 1000x cost spike rather than silently under-billing.
+    cost = (max(0, prompt_tokens) * input_per_1m + max(0, completion_tokens) * output_per_1m) / 1e6
+    if cost <= 0:
+        return
+    LLM_COST_USD_TOTAL.labels(service=_SERVICE_LABEL, model=label_model).inc(cost)
+
+
+def record_llm_usage(model: str, *, prompt_tokens: int, completion_tokens: int) -> None:
+    """Record both tokens and USD cost for one LLM call.
+
+    Convenience wrapper around :func:`record_llm_tokens` +
+    :func:`record_llm_cost` so backends don't have to remember to call
+    both. Safe to call with zeros — non-positive counts are no-ops.
+    """
+    record_llm_tokens(model, prompt_tokens, completion_tokens)
+    record_llm_cost(model, prompt_tokens, completion_tokens)
+
+
 __all__ = [
     "APP_INFO",
+    "AUTO_FIX_DISPATCH_TOTAL",
+    "AUTO_FIX_OUTCOMES",
     "CARETAKER_ERRORS_TOTAL",
     "CARETAKER_ISSUE_OUTCOME_TOTAL",
     "CARETAKER_OPERATOR_INTERVENTION_TOTAL",
     "CARETAKER_PR_OUTCOME_TOTAL",
+    "CLASSIFIER_SOURCES",
+    "COMPLEXITY_CLASSIFIER_TIER_TOTAL",
+    "COMPLEXITY_TIERS",
     "DB_CLIENT_OPERATIONS_TOTAL",
     "DB_CLIENT_OPERATION_DURATION_SECONDS",
     "GITHUB_SCOPE_GAP_TOTAL",
@@ -915,11 +1215,20 @@ __all__ = [
     "LATENCY_BUCKETS",
     "LLM_CACHE_CREATION_TOKENS_TOTAL",
     "LLM_CACHE_READ_TOKENS_TOTAL",
+    "LLM_COST_USD_TOTAL",
+    "LLM_TOKEN_DIRECTIONS",
+    "LLM_TOKENS_TOTAL",
+    "OPENCODE_INVOCATION_TOTAL",
+    "OPENCODE_MODES",
+    "OPENCODE_OUTCOMES",
     "ORCHESTRATOR_SOFT_FAIL_TOTAL",
     "PR_OUTCOMES",
+    "PR_REVIEW_DURATION_SECONDS",
+    "PR_REVIEW_OUTCOME_TOTAL",
     "RATE_LIMIT_COOLDOWN_SECONDS",
     "RATE_LIMIT_REMAINING",
     "REGISTRY",
+    "REVIEW_VERDICTS",
     "WEBHOOK_EVENTS_TOTAL",
     "WORKER_JOBS_TOTAL",
     "WORKER_JOB_DURATION_SECONDS",
@@ -929,6 +1238,9 @@ __all__ = [
     "get_service_label",
     "init_metrics",
     "metrics_asgi_app",
+    "observe_pr_review_duration",
+    "record_auto_fix_dispatch",
+    "record_complexity_tier",
     "record_error",
     "record_github_scope_gap",
     "record_guardrail_filter_blocked",
@@ -937,9 +1249,14 @@ __all__ = [
     "record_http_client",
     "record_issue_outcome",
     "record_llm_cache_usage",
+    "record_llm_cost",
+    "record_llm_tokens",
+    "record_llm_usage",
+    "record_opencode_invocation",
     "record_operator_intervention",
     "record_orchestrator_soft_fail",
     "record_pr_outcome",
+    "record_pr_review_outcome",
     "record_webhook_event",
     "record_worker_job",
     "set_rate_limit_remaining",
