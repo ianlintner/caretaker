@@ -55,7 +55,30 @@ from caretaker.observability.metrics import record_error, record_webhook_event
 from caretaker.state.token_broker import build_token_broker
 from caretaker.state.webhook_dedup import LocalDedup, RedisDedup, build_dedup
 
+# Configure root logging before any module-level loggers fire so a
+# ``CARETAKER_LOG_LEVEL=DEBUG`` env var actually surfaces application
+# logs to stdout. Without this, uvicorn's defaults leave the root logger
+# at WARNING and every ``logger.info`` / ``logger.debug`` call from
+# caretaker code silently drops, making PR-review behaviour invisible
+# in ``kubectl logs``. Levels are case-insensitive; invalid values
+# fall back to INFO so a typo doesn't silence the backend entirely.
+_LOG_LEVEL_NAME = os.environ.get("CARETAKER_LOG_LEVEL", "INFO").upper()
+_LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
+logging.basicConfig(
+    level=_LOG_LEVEL,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    force=True,  # uvicorn may have called basicConfig already
+)
+# Quiet down a few noisy libraries even at DEBUG so the signal stays
+# readable. Operators can re-enable individually via per-module env.
+for _noisy in ("httpx", "httpcore", "openai", "urllib3"):
+    logging.getLogger(_noisy).setLevel(max(logging.INFO, _LOG_LEVEL))
+
 logger = logging.getLogger(__name__)
+logger.info(
+    "caretaker MCP backend starting (log level=%s)",
+    logging.getLevelName(_LOG_LEVEL),
+)
 
 try:
     _PKG_VERSION = importlib.metadata.version("caretaker-github")
