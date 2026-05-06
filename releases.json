@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.28.0",
+      "min_compatible": "0.27.1",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.28.0",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.28.0 -->\n\n## What's Changed\n### Other Changes\n* chore: add v0.27.1 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/673\n* feat(pr-reviewer): opencode_local backend with tier-based model selection by @ianlintner in https://github.com/ianlintner/caretaker/pull/674\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.27.1...v0.28.0",
+      "breaking": false
+    },
+    {
       "version": "0.27.1",
       "min_compatible": "0.27.0",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.27.1",
