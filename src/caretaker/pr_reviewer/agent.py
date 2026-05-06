@@ -40,6 +40,8 @@ from caretaker.pr_reviewer.routing import decide
 from caretaker.state.models import TrackedPR
 
 if TYPE_CHECKING:
+    from caretaker.pr_reviewer.complexity_classifier import ComplexityTier
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
     from caretaker.state.models import OrchestratorState
 
 
@@ -58,6 +60,15 @@ async def _decide_executor_route(
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HANDLED_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
+
+
+def _is_caretaker_owned(pr: dict[str, Any]) -> bool:
+    """Return True when the PR was authored by caretaker's bot account."""
+    from caretaker.identity.bot import deterministic_family  # noqa: PLC0415
+
+    login = (pr.get("user") or {}).get("login", "")
+    return deterministic_family(login) == "caretaker"
+
 
 # Sentinel passed to local-subprocess runners that have no per-backend
 # config block yet (e.g. the greptile stub). Using a frozen empty
@@ -392,6 +403,25 @@ class PRReviewerAgent(BaseAgent):
         # configured backend isn't recognized or isn't enabled so a
         # misconfiguration doesn't silently skip review entirely.
         backend = decision.backend or cfg.complex_reviewer or "opencode"
+
+        # Caretaker-owned PRs bypass the comment-trigger round-trip: we
+        # run opencode (or the configured caretaker_owned_reviewer) as a
+        # local subprocess so the review is synchronous, then immediately
+        # dispatch auto-fix and auto-approve within the same cycle.
+        pr_author = (pr.get("user") or {}).get("login", "")
+        is_caretaker_pr = _is_caretaker_owned(pr)
+        if is_caretaker_pr and cfg.caretaker_owned_reviewer:
+            caretaker_backend = cfg.caretaker_owned_reviewer
+            if caretaker_backend in handoff_reviewer.known_backends():
+                caretaker_spec = handoff_reviewer.get_spec(caretaker_backend)
+                if caretaker_spec.invocation == "local_subprocess":
+                    logger.info(
+                        "pr-reviewer: caretaker-owned PR #%d — using %s (local subprocess)",
+                        pr_number,
+                        caretaker_backend,
+                    )
+                    backend = caretaker_backend
+
         if backend not in handoff_reviewer.known_backends():
             logger.warning(
                 "pr-reviewer: complex_reviewer=%r is not a known hand-off backend "
@@ -401,30 +431,56 @@ class PRReviewerAgent(BaseAgent):
             )
             backend = "opencode"
         if cfg.enabled_backends and backend not in cfg.enabled_backends:
-            fallback = next(
-                (b for b in cfg.enabled_backends if b in handoff_reviewer.known_backends()),
-                None,
-            )
-            if fallback is None:
-                logger.error(
-                    "pr-reviewer: backend %r not in enabled_backends=%s and no "
-                    "known fallback is available — skipping review",
+            # For caretaker-owned PRs using opencode_local, add it
+            # implicitly rather than silently skipping review.
+            if is_caretaker_pr and backend == cfg.caretaker_owned_reviewer:
+                logger.info(
+                    "pr-reviewer: allowing %r for caretaker-owned PR #%d "
+                    "(not in enabled_backends but required for caretaker flow)",
+                    backend,
+                    pr_number,
+                )
+            else:
+                fallback = next(
+                    (b for b in cfg.enabled_backends if b in handoff_reviewer.known_backends()),
+                    None,
+                )
+                if fallback is None:
+                    logger.error(
+                        "pr-reviewer: backend %r not in enabled_backends=%s and no "
+                        "known fallback is available — skipping review",
+                        backend,
+                        cfg.enabled_backends,
+                    )
+                    return
+                logger.warning(
+                    "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
+                    "falling back to %r",
                     backend,
                     cfg.enabled_backends,
+                    fallback,
                 )
-                return
-            logger.warning(
-                "pr-reviewer: backend %r is registered but not in enabled_backends=%s; "
-                "falling back to %r",
-                backend,
-                cfg.enabled_backends,
-                fallback,
-            )
-            backend = fallback
+                backend = fallback
 
         spec = handoff_reviewer.get_spec(backend)
         if spec.invocation == "local_subprocess":
-            await self._run_local_subprocess_backend(
+            # Classify complexity once for caretaker-owned PRs so review
+            # and any subsequent fix can route to a cheap model when
+            # appropriate.  The classifier short-circuits trivial PRs
+            # without an LLM call (~30% of bot PRs); for the rest a
+            # Flash-Lite call costs ~$0.0001.
+            tier = (
+                await self._classify_complexity(
+                    pr=pr,
+                    files=files,
+                    pr_labels=pr_labels,
+                    routing_decision=decision,
+                )
+                if is_caretaker_pr
+                else None
+            )
+
+            local_result = await self._run_local_subprocess_backend(
                 backend=backend,
                 spec=spec,
                 pr=pr,
@@ -433,7 +489,50 @@ class PRReviewerAgent(BaseAgent):
                 repo=repo,
                 report=report,
                 routing_reason=decision.reason,
+                tier=tier,
             )
+            # For caretaker-owned PRs: run auto-fix when reviewer says
+            # REQUEST_CHANGES, then auto-approve on success.
+            if (
+                local_result is not None
+                and local_result.verdict == "REQUEST_CHANGES"
+                and is_caretaker_pr
+            ):
+                head_branch = (pr.get("head") or {}).get("ref", "")
+                pr_url = pr.get("html_url", "") or (
+                    f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+                )
+                _tracking = state.tracked_prs.get(pr_number) or TrackedPR(number=pr_number)
+                fix_decision = _auto_fix.decide_auto_fix(
+                    review=local_result,
+                    config=cfg.auto_fix,
+                    pr_author=pr_author,
+                    pr_labels=pr_labels,
+                    tracking=_tracking,
+                )
+                if fix_decision.should_dispatch:
+                    outcome = await _auto_fix.dispatch_auto_fix(
+                        decision=fix_decision,
+                        pr_url=pr_url,
+                        head_branch=head_branch,
+                        review=local_result,
+                        config=cfg,
+                        github=self._ctx.github,
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        tracking=_tracking,
+                        tier=tier,
+                    )
+                    state.tracked_prs[pr_number] = _tracking
+                    if outcome.success and outcome.new_head_sha:
+                        await self._auto_approve_caretaker_pr(
+                            pr_number=pr_number,
+                            owner=owner,
+                            repo=repo,
+                            new_head_sha=outcome.new_head_sha,
+                            fix_backend=fix_decision.backend,
+                        )
             return
 
         success = await handoff_reviewer.dispatch(
@@ -461,7 +560,8 @@ class PRReviewerAgent(BaseAgent):
         repo: str,
         report: _PRReviewReport,
         routing_reason: str,
-    ) -> None:
+        tier: ComplexityTier | None = None,
+    ) -> ReviewResult | None:
         """Run a local-subprocess backend (pr_agent, greptile) and post the review.
 
         Unlike the comment-trigger path, the review is produced
@@ -477,7 +577,7 @@ class PRReviewerAgent(BaseAgent):
                 "pr-reviewer(%s): no head SHA on #%d; cannot post review", backend, pr_number
             )
             report.skipped.append(pr_number)
-            return
+            return None
 
         if spec.runner is None:
             logger.error(
@@ -486,13 +586,20 @@ class PRReviewerAgent(BaseAgent):
                 pr_number,
             )
             report.errors.append(f"{backend} runner missing for #{pr_number}")
-            return
+            return None
 
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
         backend_config = self._resolve_local_backend_config(backend)
 
+        # Only opencode_local currently knows how to use ``tier``; other
+        # local-subprocess backends keep the legacy two-arg signature so
+        # we don't fail with TypeError on unexpected kwargs.
+        runner_kwargs: dict[str, Any] = {"pr_url": pr_url, "config": backend_config}
+        if tier is not None and backend == "opencode_local":
+            runner_kwargs["tier"] = tier
+
         try:
-            review_result = await spec.runner(pr_url=pr_url, config=backend_config)
+            review_result = await spec.runner(**runner_kwargs)
         except Exception as exc:  # noqa: BLE001 — we always want to log + fall back
             logger.warning(
                 "pr-reviewer(%s): runner failed on %s/%s#%d: %s",
@@ -520,7 +627,7 @@ class PRReviewerAgent(BaseAgent):
                     "pr-reviewer(%s): also failed to post failure note: %s", backend, post_exc
                 )
             report.errors.append(f"{backend} runner failed for #{pr_number}: {exc}")
-            return
+            return None
 
         try:
             await post_review(
@@ -543,7 +650,7 @@ class PRReviewerAgent(BaseAgent):
                 exc,
             )
             report.errors.append(f"{backend} post_review failed for #{pr_number}: {exc}")
-            return
+            return None
 
         try:
             reviewed_label = "caretaker:reviewed"
@@ -559,6 +666,111 @@ class PRReviewerAgent(BaseAgent):
                 exc,
             )
         report.reviewed.append(pr_number)
+        return review_result
+
+    async def _classify_complexity(
+        self,
+        *,
+        pr: dict[str, Any],
+        files: list[dict[str, Any]],
+        pr_labels: list[str],
+        routing_decision: Any,
+    ) -> ComplexityTier | None:
+        """Classify a caretaker-owned PR's complexity for tier-based model selection.
+
+        Returns the tier string (``trivial``/``simple``/``standard``/``complex``)
+        or ``None`` on any failure — callers fall back to the configured
+        default model when ``None`` is returned.
+
+        Builds an :class:`ExecutorRouteContext` from the same signals the
+        existing routing pass already gathered (file list, LOC, labels)
+        so we don't re-fetch GitHub data.
+        """
+        from caretaker.evolution.executor_routing import (  # noqa: PLC0415
+            ExecutorRouteContext,
+            ExecutorRouteFile,
+        )
+        from caretaker.pr_reviewer import complexity_classifier  # noqa: PLC0415
+
+        try:
+            route_files = [
+                ExecutorRouteFile(
+                    path=f.get("path", ""),
+                    additions=int(f.get("additions", 0)),
+                    deletions=int(f.get("deletions", 0)),
+                )
+                for f in files
+            ]
+            context = ExecutorRouteContext(
+                task_type="pr_review",
+                files=route_files,
+                labels=pr_labels,
+                repo_slug=f"{self._ctx.owner}/{self._ctx.repo}",
+                title=str(pr.get("title", "")),
+                body=str(pr.get("body") or ""),
+            )
+            claude = self._ctx.llm_router.claude if self._ctx.llm_router else None
+            verdict = await complexity_classifier.classify(
+                context=context,
+                claude=claude,
+                routing_decision=routing_decision,
+            )
+            logger.info(
+                "pr-reviewer: complexity tier=%s (confidence=%.2f) — %s",
+                verdict.tier,
+                verdict.confidence,
+                verdict.reason,
+            )
+            return verdict.tier
+        except Exception as exc:  # noqa: BLE001 — never fail the review on classifier errors
+            logger.warning(
+                "pr-reviewer: complexity classification failed (%s); using default models",
+                exc,
+            )
+            return None
+
+    async def _auto_approve_caretaker_pr(
+        self,
+        *,
+        pr_number: int,
+        owner: str,
+        repo: str,
+        new_head_sha: str,
+        fix_backend: str,
+    ) -> None:
+        """Submit an APPROVE review after a successful auto-fix on a caretaker-owned PR.
+
+        Posts a formal GitHub PR approval attributed to caretaker's bot
+        identity, marking the review feedback as addressed.  Any error
+        is logged but not propagated — the fix commit has already been
+        pushed and is more important than the approval label.
+        """
+        body = (
+            "caretaker auto-fix applied successfully. "
+            f"Feedback addressed by `{fix_backend}` "
+            f"(commit `{new_head_sha[:8]}`). Approving."
+        )
+        try:
+            await self._ctx.github.create_review(
+                owner,
+                repo,
+                pr_number,
+                commit_sha=new_head_sha,
+                body=body,
+                event="APPROVE",
+            )
+            logger.info(
+                "pr-reviewer: auto-approved caretaker PR #%d after %s fix (%s)",
+                pr_number,
+                fix_backend,
+                new_head_sha[:8],
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "pr-reviewer: failed to auto-approve caretaker PR #%d: %s",
+                pr_number,
+                exc,
+            )
 
     def _resolve_local_backend_config(self, backend: str) -> Any:
         """Return the per-backend config object passed to the runner.

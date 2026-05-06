@@ -34,6 +34,7 @@ PR_AGENT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-pr-agent-handoff -->"
 CODERABBIT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-coderabbit-handoff -->"
 GREPTILE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-greptile-handoff -->"
 CLAUDE_CODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-claude-code-local-handoff -->"
+OPENCODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-local-handoff -->"
 
 # Invocation models a backend can use:
 #   - ``comment_trigger``: caretaker labels the PR + posts a mention
@@ -123,10 +124,17 @@ def _build_specs() -> dict[str, HandoffReviewerSpec]:
         claude_code_local,
         coderabbit,
         greptile,
+        opencode_local,
         pr_agent,
     )
 
-    for spec in (pr_agent.SPEC, coderabbit.SPEC, greptile.SPEC, claude_code_local.SPEC):
+    for spec in (
+        pr_agent.SPEC,
+        coderabbit.SPEC,
+        greptile.SPEC,
+        claude_code_local.SPEC,
+        opencode_local.SPEC,
+    ):
         specs[spec.backend] = spec
     return specs
 
@@ -358,6 +366,7 @@ __all__ = [
     "GREPTILE_REVIEW_MARKER",
     "HandoffReviewerSpec",
     "InvocationMode",
+    "OPENCODE_LOCAL_REVIEW_MARKER",
     "OPENCODE_REVIEW_MARKER",
     "PR_AGENT_REVIEW_MARKER",
     "REVIEW_RESULT_MARKER",
