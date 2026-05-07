@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -65,14 +66,19 @@ class AsbCodingQueue:
             attempt=msg.attempt + 1,
         )
 
+        elapsed = time.time() - msg.first_enqueued_ts
+        remaining = _WALL_CLOCK_TTL_SECS - elapsed
+        if remaining <= 0:
+            logger.info("asb-queue: wall-clock TTL exhausted, dropping retry job_id=%s", msg.job_id)
+            return
+
         body = json.dumps(retry_msg.to_asb_body()).encode()
         properties = retry_msg.to_asb_properties()
-        remaining_ttl = max(60, _WALL_CLOCK_TTL_SECS - int(retry_msg.attempt * 900))
 
         asb_msg = ServiceBusMessage(
             body=body,
             message_id=retry_msg.asb_message_id(),
-            time_to_live=timedelta(seconds=remaining_ttl),
+            time_to_live=timedelta(seconds=remaining),
             application_properties=properties,
         )
 

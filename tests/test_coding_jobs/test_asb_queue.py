@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -104,3 +105,17 @@ async def test_schedule_retry_uses_scheduled_enqueue_time(
     msg = call_args[0][0]
     body = json.loads(b"".join(msg.body))
     assert "attempt" not in body
+
+
+@pytest.mark.asyncio
+async def test_schedule_retry_drops_when_ttl_exhausted(
+    config, mock_client, mock_sender, sample_msg
+):
+    """If wall-clock TTL has elapsed, schedule_retry silently drops the message."""
+    # Simulate first_enqueued_ts 46 minutes ago (beyond 45-min / 2700-sec TTL)
+    expired_msg = dataclasses.replace(sample_msg, first_enqueued_ts=time.time() - 2760)
+    queue = AsbCodingQueue(config=config, client=mock_client)
+    await queue.schedule_retry(expired_msg, delay_secs=60)
+
+    # schedule_messages must NOT have been called
+    mock_sender.schedule_messages.assert_not_awaited()
