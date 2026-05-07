@@ -1211,11 +1211,9 @@ class PRAgent:
     ) -> TrackedPR:
         """Run opencode_local synchronously to fix a CI failure and push the result.
 
-        Falls back to posting a plain comment on error so the PR isn't silently
-        stuck. Lazy-imports to avoid pulling opencode deps into every code path.
+        Falls back to the copilot bridge on error so the PR isn't silently stuck.
+        Lazy-imports to avoid pulling opencode deps into every code path.
         """
-        import os as _os  # noqa: PLC0415
-
         from caretaker.pr_reviewer.auto_fix import commit_and_push  # noqa: PLC0415
         from caretaker.pr_reviewer.backends._workdir import (  # noqa: PLC0415
             WorkdirError,
@@ -1226,10 +1224,13 @@ class PRAgent:
             ci_fix_run,
         )
 
-        token = _os.environ.get("GITHUB_TOKEN", "").strip()
+        # Use the GitHub App installation token from the authenticated client —
+        # the MCP pod doesn't have a static GITHUB_TOKEN env var, it generates
+        # tokens dynamically via the App credentials.
+        token = (await self._github.get_default_token()).strip()
         if not token:
             logger.warning(
-                "PR #%d: GITHUB_TOKEN not set — cannot run opencode_local CI fix; "
+                "PR #%d: no GitHub token available — cannot run opencode_local CI fix; "
                 "falling back to copilot bridge",
                 pr.number,
             )
