@@ -177,3 +177,92 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: caretaker-coding-worker-template
+  namespace: caretaker
+  labels:
+    app: caretaker-coding-worker
+    role: template
+  annotations:
+    caretaker.io/description: >-
+      Template for durable coding job workers spawned by caretaker-job-dispatcher.
+      NOT run directly. Dispatcher clones per task with content-addressed name.
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  suspend: true
+  template:
+    metadata:
+      labels:
+        app: caretaker-coding-worker
+    spec:
+      serviceAccountName: caretaker-agent-worker
+      restartPolicy: Never
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coding-worker
+          image: MUST_BE_OVERRIDDEN_BY_DISPATCHER
+          imagePullPolicy: Always
+          args: ["python", "-m", "caretaker.coding_jobs.worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: JOB_ID
+              value: "MUST_BE_OVERRIDDEN_BY_DISPATCHER"
+            - name: ATTEMPT
+              value: "MUST_BE_OVERRIDDEN_BY_DISPATCHER"
+            - name: TASK_PAYLOAD
+              value: "MUST_BE_OVERRIDDEN_BY_DISPATCHER"
+            - name: STATUS_STREAM
+              value: "job-status"
+            - name: OTEL_SERVICE_NAME
+              value: "caretaker-coding-worker"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: redis-url
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: anthropic-api-key
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: github-app-installation-token
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 4Gi
