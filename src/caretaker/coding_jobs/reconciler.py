@@ -51,6 +51,12 @@ class Reconciler:
         while True:
             try:
                 await self._check_k8s_jobs()
+                heartbeat_map: dict[str, float] = {}
+                for job_id in list(self._in_flight):
+                    event = await self._status.read_latest_status(job_id)
+                    if event is not None:
+                        heartbeat_map[job_id] = event.heartbeat_ts
+                await self._check_heartbeats(heartbeat_map)
             except asyncio.CancelledError:
                 raise
             except Exception:

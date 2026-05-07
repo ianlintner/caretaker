@@ -9,6 +9,13 @@ from caretaker.coding_jobs.models import CodingJobMessage, JobStatus, make_job_i
 
 
 @pytest.fixture
+def mock_reconciler():
+    r = MagicMock()
+    r._track = MagicMock()
+    return r
+
+
+@pytest.fixture
 def config():
     from caretaker.config import CodingJobsConfig
 
@@ -57,6 +64,19 @@ def dispatcher(config, mock_status_stream, mock_spawner, mock_asb_queue):
 
 
 @pytest.fixture
+def dispatcher_with_reconciler(
+    config, mock_status_stream, mock_spawner, mock_asb_queue, mock_reconciler
+):
+    return CodingJobDispatcher(
+        status_stream=mock_status_stream,
+        spawner=mock_spawner,
+        asb_queue=mock_asb_queue,
+        config=config,
+        reconciler=mock_reconciler,
+    )
+
+
+@pytest.fixture
 def asb_message():
     job_id = make_job_id("org/repo", "fix", "abc123", "fix the bug")
     msg = CodingJobMessage(
@@ -100,3 +120,14 @@ async def test_handle_message_writes_spawning_status(dispatcher, mock_status_str
     status_event = mock_status_stream.write_status.call_args[0][0]
     assert status_event.status == JobStatus.SPAWNING
     assert status_event.job_id == coding_msg.job_id
+
+
+@pytest.mark.asyncio
+async def test_handle_message_tracks_in_reconciler(
+    dispatcher_with_reconciler, mock_reconciler, asb_message
+):
+    asb_msg, coding_msg = asb_message
+    await dispatcher_with_reconciler._handle_message(asb_msg)
+    mock_reconciler._track.assert_called_once()
+    tracked_msg = mock_reconciler._track.call_args[0][0]
+    assert tracked_msg.job_id == coding_msg.job_id

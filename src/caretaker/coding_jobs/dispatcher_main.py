@@ -41,17 +41,18 @@ async def _main() -> None:
     asb_queue = AsbCodingQueue(config=config, client=asb_client)
     spawner = build_spawner(config)
 
-    dispatcher = CodingJobDispatcher(
-        status_stream=status_stream,
-        spawner=spawner,
-        asb_queue=asb_queue,
-        config=config,
-    )
     reconciler = Reconciler(
         status_stream=status_stream,
         spawner=spawner,
         asb_queue=asb_queue,
         config=config,
+    )
+    dispatcher = CodingJobDispatcher(
+        status_stream=status_stream,
+        spawner=spawner,
+        asb_queue=asb_queue,
+        config=config,
+        reconciler=reconciler,
     )
 
     async def _noop_post(**kwargs: object) -> None:

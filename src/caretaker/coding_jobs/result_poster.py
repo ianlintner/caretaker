@@ -12,7 +12,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL = {JobStatus.COMPLETED, JobStatus.DEAD_LETTER, JobStatus.HEARTBEAT_TIMEOUT}
+_TERMINAL = {
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.TIMEOUT,
+    JobStatus.DEAD_LETTER,
+    JobStatus.HEARTBEAT_TIMEOUT,
+}
 
 PostCommentFn = Callable[..., Awaitable[None]]
 

@@ -58,7 +58,9 @@ class K8sJobSpawner:
                 name="GITHUB_TOKEN",
                 value_from=k8s.V1EnvVarSource(
                     secret_key_ref=k8s.V1SecretKeySelector(
-                        name="caretaker-secrets", key="github-app-installation-token"
+                        name="caretaker-secrets",
+                        key="github-app-installation-token",
+                        optional=True,
                     )
                 ),
             ),
@@ -88,6 +90,9 @@ class K8sJobSpawner:
                                 image_pull_policy="Always",
                                 args=["python", "-m", "caretaker.coding_jobs.worker"],
                                 env=env,
+                                volume_mounts=[
+                                    k8s.V1VolumeMount(name="workspace", mount_path="/workspace")
+                                ],
                                 resources=k8s.V1ResourceRequirements(
                                     requests={"cpu": "500m", "memory": "1Gi"},
                                     limits={"cpu": "2000m", "memory": "4Gi"},

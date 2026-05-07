@@ -72,6 +72,7 @@ class CodingJobMessage:
         return {
             "job_id": self.job_id,
             "first_enqueued_ts": str(self.first_enqueued_ts),
+            "attempt": str(self.attempt),
             "traceparent": traceparent,
         }
 
@@ -87,6 +88,9 @@ class CodingJobMessage:
         properties: dict[str, Any],
         delivery_count: int,
     ) -> CodingJobMessage:
+        # For scheduled retries (delivery_count=0), use attempt from properties if present
+        attempt_from_props = int(properties.get("attempt", "1"))
+        attempt = attempt_from_props if delivery_count == 0 else delivery_count + 1
         return cls(
             job_id=body["job_id"],
             repo=body["repo"],
@@ -95,7 +99,7 @@ class CodingJobMessage:
             instructions=body["instructions"],
             context=body.get("context", ""),
             first_enqueued_ts=float(properties.get("first_enqueued_ts", time.time())),
-            attempt=delivery_count + 1,  # ASB delivery_count is 0-based
+            attempt=attempt,
         )
 
     @property

@@ -89,6 +89,7 @@ def test_coding_job_message_to_asb_properties():
     assert props["job_id"] == "abc1234567890123"
     assert props["traceparent"] == "00-abc-def-01"
     assert props["first_enqueued_ts"] == "1700000000.0"
+    assert props["attempt"] == "1"
 
 
 def test_coding_job_message_roundtrip_from_asb():
@@ -103,10 +104,40 @@ def test_coding_job_message_roundtrip_from_asb():
     )
     body = msg.to_asb_body()
     props = msg.to_asb_properties()
+    assert props["attempt"] == "1"
     recovered = CodingJobMessage.from_asb(body=body, properties=props, delivery_count=1)
     assert recovered.job_id == msg.job_id
-    assert recovered.attempt == 2  # delivery_count=1 → attempt=2
+    assert recovered.attempt == 2  # delivery_count=1 → attempt=2 (non-zero delivery_count wins)
     assert recovered.first_enqueued_ts == 1700000000.0
+
+
+def test_parse_received_delivery_count_maps_to_attempt():
+    msg = CodingJobMessage(
+        job_id="abc1234567890123",
+        repo="org/repo",
+        task_type="fix",
+        base_sha="deadbeef",
+        instructions="fix the null pointer",
+        context="",
+        first_enqueued_ts=1700000000.0,
+        attempt=1,
+    )
+    body = msg.to_asb_body()
+    # delivery_count=2, no attempt in properties → attempt=3
+    props_no_attempt = {"job_id": msg.job_id, "first_enqueued_ts": "1700000000.0"}
+    recovered = CodingJobMessage.from_asb(body=body, properties=props_no_attempt, delivery_count=2)
+    assert recovered.attempt == 3
+
+    # delivery_count=0, attempt=2 in properties → use properties attempt (scheduled retry)
+    props_with_attempt = {
+        "job_id": msg.job_id,
+        "first_enqueued_ts": "1700000000.0",
+        "attempt": "2",
+    }
+    recovered2 = CodingJobMessage.from_asb(
+        body=body, properties=props_with_attempt, delivery_count=0
+    )
+    assert recovered2.attempt == 2
 
 
 def test_coding_job_message_omits_empty_context():

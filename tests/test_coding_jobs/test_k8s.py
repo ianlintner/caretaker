@@ -116,3 +116,13 @@ def test_get_status_timeout_on_deadline_exceeded(spawner, mock_batch_api, sample
     s.status.conditions = [cond]
     mock_batch_api.read_namespaced_job_status.return_value = s
     assert spawner.get_status(sample_msg.k8s_name) == K8sJobOutcome.TIMEOUT
+
+
+def test_spawn_mounts_workspace_volume(spawner, mock_batch_api, sample_msg):
+    mock_batch_api.create_namespaced_job.return_value = MagicMock()
+    spawner.spawn(sample_msg)
+    body = mock_batch_api.create_namespaced_job.call_args[1]["body"]
+    container = body.spec.template.spec.containers[0]
+    assert container.volume_mounts is not None
+    mount_names = [vm.name for vm in container.volume_mounts]
+    assert "workspace" in mount_names

@@ -9,6 +9,7 @@ from caretaker.coding_jobs.models import JobStatus, StatusEvent
 if TYPE_CHECKING:
     from caretaker.coding_jobs.asb_queue import AsbCodingQueue
     from caretaker.coding_jobs.k8s import K8sJobSpawner
+    from caretaker.coding_jobs.reconciler import Reconciler
     from caretaker.coding_jobs.status_stream import JobStatusStream
     from caretaker.config import CodingJobsConfig
 
@@ -28,11 +29,13 @@ class CodingJobDispatcher:
         spawner: K8sJobSpawner,
         asb_queue: AsbCodingQueue,
         config: CodingJobsConfig,
+        reconciler: Reconciler | None = None,
     ) -> None:
         self._status = status_stream
         self._spawner = spawner
         self._asb = asb_queue
         self._config = config
+        self._reconciler = reconciler
 
     async def run(self, asb_client: Any) -> None:
         """Main consume loop — runs until cancelled."""
@@ -73,6 +76,8 @@ class CodingJobDispatcher:
         )
 
         self._spawner.spawn(msg)
+        if self._reconciler is not None:
+            self._reconciler._track(msg)
         await self._status.write_status(
             StatusEvent(
                 job_id=msg.job_id,

@@ -53,3 +53,17 @@ async def test_ignores_non_terminal_events(poster, mock_post):
     event = _make_event(JobStatus.RUNNING)
     await poster._handle_status_event(event)
     mock_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_posts_failure_comment_on_failed(poster, mock_post):
+    event = _make_event(JobStatus.FAILED, error="LLM unavailable")
+    await poster._handle_status_event(event)
+    mock_post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_posts_failure_comment_on_timeout(poster, mock_post):
+    event = _make_event(JobStatus.TIMEOUT, error="job timed out")
+    await poster._handle_status_event(event)
+    mock_post.assert_awaited_once()

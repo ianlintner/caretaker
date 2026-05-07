@@ -968,18 +968,20 @@ def _enforce_auth(
 async def coding_job_status(job_id: str) -> dict[str, Any]:
     """Latest status for a coding job, read from the job-status Redis Stream."""
     try:
-        from caretaker.coding_jobs.status_stream import JobStatusStream
-        from caretaker.config import CodingJobsConfig
-
         redis_url = os.environ.get("REDIS_URL", "")
         if not redis_url:
             raise HTTPException(status_code=503, detail="redis not configured")
 
+        from caretaker.coding_jobs.status_stream import JobStatusStream
+        from caretaker.config import CodingJobsConfig
         from caretaker.eventbus.redis_streams import RedisStreamsEventBus
 
         bus = RedisStreamsEventBus(redis_url=redis_url)
-        stream = JobStatusStream(bus=bus, config=CodingJobsConfig())
-        status = await stream.read_latest_status(job_id)
+        try:
+            stream = JobStatusStream(bus=bus, config=CodingJobsConfig())
+            status = await stream.read_latest_status(job_id)
+        finally:
+            await bus.close()
         if status is None:
             raise HTTPException(status_code=404, detail="job not found")
         return status.to_payload()
