@@ -67,6 +67,8 @@ DecisionEvent = Literal[
     "opencode_review_started",
     "opencode_review_finished",
     "opencode_review_failed",
+    "inline_review_started",
+    "inline_review_finished",
 ]
 
 # Module-level singleton, lazily initialised by ``configure_default_store``.
@@ -316,21 +318,40 @@ class PRDecisionStore:
     def from_config(cls, config: Any) -> PRDecisionStore:
         """Build from a :class:`~caretaker.config.MaintainerConfig`.
 
-        Reuses the same ``mongo`` block as the audit-log writer — when
-        Mongo is disabled the store is created in disabled mode and
-        ``record`` is a no-op for persistence (the structured log line
-        is still emitted).
+        Reuses the same ``mongo`` block as the audit-log writer. Enable
+        precedence (highest first):
+
+        1. ``config.mongo.enabled`` if explicitly set in the loaded
+           config (truthy or falsy) — explicit configuration always wins.
+        2. Env-var fallback: enabled when ``MONGODB_URL`` (or the
+           configured ``mongodb_url_env``) is non-empty in the
+           environment. This catches the deployed-backend case where no
+           ``config.yml`` is mounted but ``MONGODB_URL`` is set in the
+           pod env (same one ``audit_log`` and ``fleet_clients`` use).
+        3. Disabled — falls back to structured-log-only mode; ``record``
+           still emits an INFO line so Loki can rebuild the timeline.
         """
         from caretaker.config import MaintainerConfig
 
         if not isinstance(config, MaintainerConfig):
             return cls(enabled=False)
 
-        mongo_enabled = getattr(config, "mongo", None) is not None and config.mongo.enabled
-        mongodb_url_env = config.mongo.mongodb_url_env if mongo_enabled else "MONGODB_URL"
-        database_name = config.mongo.database_name if mongo_enabled else "caretaker"
+        mongo_block = getattr(config, "mongo", None)
+        mongodb_url_env = mongo_block.mongodb_url_env if mongo_block is not None else "MONGODB_URL"
+        database_name = mongo_block.database_name if mongo_block is not None else "caretaker"
+
+        # Determine enable state. Pydantic's ``model_fields_set`` lets us
+        # tell "user explicitly set enabled=False" from "user never
+        # touched this field". When unset, fall back to detecting the
+        # env-var so backend pods (which don't mount a config.yml) still
+        # persist decisions instead of silently log-only.
+        if mongo_block is not None and "enabled" in getattr(mongo_block, "model_fields_set", set()):
+            enabled = bool(mongo_block.enabled)
+        else:
+            enabled = bool(os.environ.get(mongodb_url_env, "").strip())
+
         return cls(
-            enabled=mongo_enabled,
+            enabled=enabled,
             mongodb_url_env=mongodb_url_env,
             database_name=database_name,
             collection_name="pr_decisions",

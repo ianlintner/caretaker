@@ -153,7 +153,9 @@ async def check_git_cli(timeout_seconds: float = 2.0) -> dict[str, Any]:
     return {"status": "ok", "version": version}
 
 
-async def check_opencode_cli(timeout_seconds: float = 5.0) -> dict[str, Any]:
+# 5s was too tight on cold Node.js JIT warmup; opencode v1.14+ takes
+# 6-8s for the first --version call after pod start.
+async def check_opencode_cli(timeout_seconds: float = 15.0) -> dict[str, Any]:
     """Probe ``opencode --version``. Returns ``{"status", "version"}`` or fail."""
     try:
         rc, stdout, stderr = await _run_cli(

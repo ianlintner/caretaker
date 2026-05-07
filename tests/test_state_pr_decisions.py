@@ -260,3 +260,63 @@ class TestPRDecisionStore:
         )
         assert [d["id"] for d in page2] == ["id-2", "id-3"]
         assert total2 == 5
+
+
+class TestPRDecisionStoreFromConfig:
+    """Enable-detection precedence for ``PRDecisionStore.from_config``.
+
+    The deployed backend pods don't mount a ``config.yml``, so
+    ``MaintainerConfig.mongo.enabled`` falls back to its ``False``
+    default. We rely on the ``MONGODB_URL`` env-var fallback to enable
+    the store in that case (same env var ``audit_log`` and
+    ``fleet_clients`` already use). Explicit config still wins to
+    preserve the disable-on-purpose escape hatch.
+    """
+
+    def test_from_config_enables_when_mongo_url_set_and_config_silent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from caretaker.config import MaintainerConfig
+
+        monkeypatch.setenv("MONGODB_URL", "mongodb://x")
+        # Default-constructed config: ``mongo.enabled`` is its default
+        # ``False`` and was never explicitly set.
+        cfg = MaintainerConfig()
+        assert "enabled" not in cfg.mongo.model_fields_set
+
+        store = PRDecisionStore.from_config(cfg)
+        assert store._enabled is True
+
+    def test_from_config_disabled_when_explicit_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit ``mongo.enabled = False`` wins even with the env var set."""
+        from caretaker.config import MaintainerConfig, MongoConfig
+
+        monkeypatch.setenv("MONGODB_URL", "mongodb://x")
+        # Explicit instantiation marks ``enabled`` as set.
+        cfg = MaintainerConfig(mongo=MongoConfig(enabled=False))
+        assert "enabled" in cfg.mongo.model_fields_set
+
+        store = PRDecisionStore.from_config(cfg)
+        assert store._enabled is False
+
+    def test_from_config_disabled_when_no_url_and_config_silent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No env var + no explicit config → store stays disabled."""
+        from caretaker.config import MaintainerConfig
+
+        monkeypatch.delenv("MONGODB_URL", raising=False)
+        cfg = MaintainerConfig()
+        store = PRDecisionStore.from_config(cfg)
+        assert store._enabled is False
+
+    def test_from_config_enabled_when_explicit_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicit ``mongo.enabled = True`` enables even without env var."""
+        from caretaker.config import MaintainerConfig, MongoConfig
+
+        monkeypatch.delenv("MONGODB_URL", raising=False)
+        cfg = MaintainerConfig(mongo=MongoConfig(enabled=True))
+        store = PRDecisionStore.from_config(cfg)
+        assert store._enabled is True

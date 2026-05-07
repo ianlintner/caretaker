@@ -574,6 +574,26 @@ class PRReviewerAgent(BaseAgent):
             pr=pr,
         )
 
+        # Classify complexity for every caretaker-owned PR — even when
+        # routing chose the inline path. The classifier's purpose is to
+        # label the PR's tier for observability (so the
+        # ``caretaker_complexity_classifier_tier_total`` counter and the
+        # ``tier_classified`` decision-timeline event fire on every
+        # caretaker-owned PR, not just hand-off-routed ones). For
+        # routing scores < 5 the classifier hits its fast-path
+        # heuristic and returns "trivial" without an LLM call, so this
+        # adds no measurable latency.
+        caretaker_tier: ComplexityTier | None = None
+        if is_caretaker_pr:
+            caretaker_tier = await self._classify_complexity(
+                pr_number=pr_number,
+                pr=pr,
+                files=files,
+                pr_labels=pr_labels,
+                routing_decision=decision,
+            )
+            tier_label = caretaker_tier
+
         if decision.use_inline:
             if self._ctx.llm_router is None or not self._ctx.llm_router.available:
                 logger.warning(
@@ -584,6 +604,17 @@ class PRReviewerAgent(BaseAgent):
             else:
                 from caretaker.llm.claude import StructuredCompleteError
 
+                # Symmetric ``inline_review_started`` event so the
+                # decision-timeline collection records both review paths
+                # (was previously only emitted for opencode local-
+                # subprocess; the inline path was invisible).
+                await record_decision(
+                    f"{owner}/{repo}",
+                    int(pr_number),
+                    "pr_reviewer",
+                    "inline_review_started",
+                    tier=str(tier_label) if tier_label else "none",
+                )
                 try:
                     result = await inline_reviewer.review(
                         github=self._ctx.github,
@@ -605,7 +636,23 @@ class PRReviewerAgent(BaseAgent):
                         pr_number,
                         exc.validation_error,
                     )
+                    await record_decision(
+                        f"{owner}/{repo}",
+                        int(pr_number),
+                        "pr_reviewer",
+                        "inline_review_finished",
+                        tier=str(tier_label) if tier_label else "none",
+                        verdict="validation_failed",
+                    )
                 else:
+                    await record_decision(
+                        f"{owner}/{repo}",
+                        int(pr_number),
+                        "pr_reviewer",
+                        "inline_review_finished",
+                        tier=str(tier_label) if tier_label else "none",
+                        verdict=str(result.verdict),
+                    )
                     commit_sha = (pr.get("head") or {}).get("sha", "")
                     if not commit_sha:
                         logger.warning("pr-reviewer: no head SHA for #%d", pr_number)
@@ -785,22 +832,13 @@ class PRReviewerAgent(BaseAgent):
 
         spec = handoff_reviewer.get_spec(backend)
         if spec.invocation == "local_subprocess":
-            # Classify complexity once for caretaker-owned PRs so review
-            # and any subsequent fix can route to a cheap model when
-            # appropriate.  The classifier short-circuits trivial PRs
-            # without an LLM call (~30% of bot PRs); for the rest a
-            # Flash-Lite call costs ~$0.0001.
-            tier = (
-                await self._classify_complexity(
-                    pr_number=pr_number,
-                    pr=pr,
-                    files=files,
-                    pr_labels=pr_labels,
-                    routing_decision=decision,
-                )
-                if is_caretaker_pr
-                else None
-            )
+            # Reuse the tier classified earlier in this call (every
+            # caretaker-owned PR is classified up front so the metric
+            # and ``tier_classified`` decision row fire regardless of
+            # whether the inline or hand-off path runs). The classifier
+            # short-circuits trivial PRs without an LLM call (~30% of
+            # bot PRs); for the rest a Flash-Lite call costs ~$0.0001.
+            tier = caretaker_tier if is_caretaker_pr else None
             tier_label = tier
             backend_label = backend
             model_label = self._resolve_backend_model(backend, tier=tier, mode="review")
