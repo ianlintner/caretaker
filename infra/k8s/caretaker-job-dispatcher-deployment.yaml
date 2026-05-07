@@ -1,0 +1,70 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: caretaker-job-dispatcher
+  namespace: caretaker
+  labels:
+    app: caretaker-job-dispatcher
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: caretaker-job-dispatcher-binding
+  namespace: caretaker
+subjects:
+  - kind: ServiceAccount
+    name: caretaker-job-dispatcher
+    namespace: caretaker
+roleRef:
+  kind: Role
+  name: caretaker-agent-worker-job-creator
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caretaker-job-dispatcher
+  namespace: caretaker
+  labels:
+    app: caretaker-job-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caretaker-job-dispatcher
+  template:
+    metadata:
+      labels:
+        app: caretaker-job-dispatcher
+    spec:
+      serviceAccountName: caretaker-job-dispatcher
+      containers:
+        - name: dispatcher
+          image: your-acr.azurecr.io/caretaker-mcp:latest
+          imagePullPolicy: Always
+          args: ["python", "-m", "caretaker.coding_jobs.dispatcher_main"]
+          env:
+            - name: CARETAKER_ASB_NAMESPACE
+              value: "thebiggestboy.servicebus.windows.net"
+            - name: CARETAKER_CODING_JOBS_K8S_WORKER_IMAGE
+              value: "your-acr.azurecr.io/caretaker-coding-worker:latest"
+            - name: OTEL_SERVICE_NAME
+              value: "caretaker-job-dispatcher"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: redis-url
+                  optional: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

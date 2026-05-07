@@ -964,6 +964,34 @@ def _enforce_auth(
     raise HTTPException(status_code=500, detail=f"Unsupported auth mode: {auth_mode}")
 
 
+@app.get("/coding-jobs/{job_id}/status")
+async def coding_job_status(job_id: str) -> dict[str, Any]:
+    """Latest status for a coding job, read from the job-status Redis Stream."""
+    try:
+        redis_url = os.environ.get("REDIS_URL", "")
+        if not redis_url:
+            raise HTTPException(status_code=503, detail="redis not configured")
+
+        from caretaker.coding_jobs.status_stream import JobStatusStream
+        from caretaker.config import CodingJobsConfig
+        from caretaker.eventbus.redis_streams import RedisStreamsEventBus
+
+        bus = RedisStreamsEventBus(redis_url=redis_url)
+        try:
+            stream = JobStatusStream(bus=bus, config=CodingJobsConfig())
+            status = await stream.read_latest_status(job_id)
+        finally:
+            await bus.close()
+        if status is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return status.to_payload()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("coding_job_status error job_id=%s: %s", job_id, exc)
+        raise HTTPException(status_code=500, detail="internal error") from exc
+
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     """Basic health probe for Kubernetes or Container Apps.

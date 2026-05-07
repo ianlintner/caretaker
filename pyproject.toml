@@ -51,6 +51,10 @@ dev = [
     "motor>=3.3,<4",
     "redis[asyncio]>=5,<6",
     "types-redis>=4.6,<5",
+    # Phase 3 coding-jobs deps (required for test_coding_jobs suite)
+    "kubernetes>=30,<34",
+    "azure-servicebus>=7.11",
+    "azure-identity>=1.16",
 ]
 docs = [
     "mkdocs>=1.6,<2",
@@ -99,6 +103,13 @@ llm-multi = [
 # backend that spawns the worker Jobs; consumer repos do not need this.
 k8s-worker = [
     "kubernetes>=30,<34",
+]
+# Azure Service Bus task queue — coding-jobs dispatcher and worker. See
+# docs/custom-coding-agent-plan.md. Only required on the caretaker
+# backend that enqueues/receives coding tasks via ASB.
+asb = [
+    "azure-servicebus>=7.11",
+    "azure-identity>=1.16",
 ]
 # Workstream A4 — offline evaluation of the shadow-decision stream via
 # Braintrust. The harness falls open to a local-only JSON report when
@@ -199,6 +210,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["redis", "redis.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["azure", "azure.*"]
 ignore_missing_imports = true
 
 [tool.uv]
