@@ -15,15 +15,19 @@ from caretaker.coding_jobs.models import StatusEvent
 
 if TYPE_CHECKING:
     from caretaker.config import CodingJobsConfig
-    from caretaker.eventbus.base import EventBus, EventHandler
+    from caretaker.eventbus.base import EventHandler
+    from caretaker.eventbus.redis_streams import RedisStreamsEventBus
 
 logger = logging.getLogger(__name__)
+
+_SCAN_PAGE = 200
+_MAX_PAGES = 10  # scan at most 2000 entries before giving up
 
 
 class JobStatusStream:
     """Write and read lifecycle events on the job-status Redis Stream."""
 
-    def __init__(self, *, bus: EventBus, config: CodingJobsConfig) -> None:
+    def __init__(self, *, bus: RedisStreamsEventBus, config: CodingJobsConfig) -> None:
         self._bus = bus
         self._config = config
 
@@ -47,16 +51,27 @@ class JobStatusStream:
         )
 
     async def read_latest_status(self, job_id: str) -> StatusEvent | None:
-        """Scan the stream newest-first to find the latest event for job_id."""
-        client = await self._bus._get_client()  # type: ignore[attr-defined]
-        entries = await client.xrevrange(self._config.stream_job_status, count=200)
-        for _entry_id, fields in entries:
-            raw = fields.get("payload")
-            if not raw:
-                continue
-            payload = json.loads(raw)
-            if payload.get("job_id") == job_id:
-                return StatusEvent.from_payload(payload)
+        """Scan the stream newest-first to find the latest event for job_id.
+
+        Pages through up to _MAX_PAGES * _SCAN_PAGE entries so long-running
+        deployments with many jobs don't return false 404s.
+        """
+        client = await self._bus.get_client()
+        last_id = "+"
+        for _ in range(_MAX_PAGES):
+            entries = await client.xrevrange(
+                self._config.stream_job_status, max=last_id, count=_SCAN_PAGE
+            )
+            if not entries:
+                break
+            for _entry_id, fields in entries:
+                raw = fields.get("payload")
+                if not raw:
+                    continue
+                payload = json.loads(raw)
+                if payload.get("job_id") == job_id:
+                    return StatusEvent.from_payload(payload)
+            last_id = f"({entries[-1][0]}"  # exclusive cursor for next page
         return None
 
 

@@ -93,9 +93,10 @@ class CodingJobMessage:
         properties: dict[str, Any],
         delivery_count: int,
     ) -> CodingJobMessage:
-        # For scheduled retries (delivery_count=0), use attempt from properties if present
+        # Use the higher of props-based attempt and delivery_count+1. Props carry the
+        # intended attempt for scheduled retries; delivery_count captures redeliveries.
         attempt_from_props = int(properties.get("attempt", "1"))
-        attempt = attempt_from_props if delivery_count == 0 else delivery_count + 1
+        attempt = max(attempt_from_props, delivery_count + 1)
         return cls(
             job_id=body["job_id"],
             repo=body["repo"],

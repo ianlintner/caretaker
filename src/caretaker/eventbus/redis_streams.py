@@ -368,6 +368,10 @@ class RedisStreamsEventBus:
             )
         return handled
 
+    async def get_client(self) -> redis.asyncio.Redis[str]:
+        """Return the shared Redis client, lazily connecting on first call."""
+        return await self._get_client()
+
     async def close(self) -> None:
         if self._client is not None:
             try:

@@ -120,7 +120,8 @@ if __name__ == "__main__":
 
     async def _main() -> None:
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        config = CodingJobsConfig()
+        status_stream_name = os.environ.get("STATUS_STREAM", "job-status")
+        config = CodingJobsConfig(stream_job_status=status_stream_name)
         bus = RedisStreamsEventBus(redis_url=redis_url)
         stream = JobStatusStream(bus=bus, config=config)
         await run_coding_worker(status_stream=stream)

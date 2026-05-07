@@ -78,6 +78,7 @@ async def _main() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
     await redis_bus.close()
     await asb_client.close()
+    await credential.close()
 
 
 if __name__ == "__main__":
