@@ -17,7 +17,7 @@ from caretaker.guardrails import RollbackOutcome
 from caretaker.identity import is_automated
 from caretaker.llm.copilot import CopilotProtocol, ResultStatus
 from caretaker.pr_agent.cascade import apply_cascade, on_pr_merged
-from caretaker.pr_agent.ci_triage import FailureType, triage_failure
+from caretaker.pr_agent.ci_triage import FailureType, TriageResult, triage_failure
 from caretaker.pr_agent.copilot import PRCopilotBridge
 from caretaker.pr_agent.merge import evaluate_merge, perform_merge
 from caretaker.pr_agent.ownership import (
@@ -55,7 +55,7 @@ from caretaker.state.models import OwnershipState, PRTrackingState, TrackedIssue
 from caretaker.tools.debug_dump import render_debug_dump
 
 if TYPE_CHECKING:
-    from caretaker.config import PRAgentConfig
+    from caretaker.config import PRAgentConfig, PRReviewerConfig
     from caretaker.evolution.insight_store import InsightStore
     from caretaker.foundry.dispatcher import ExecutorDispatcher
     from caretaker.github_client.api import GitHubClient
@@ -174,11 +174,13 @@ class PRAgent:
         dispatcher: ExecutorDispatcher | None = None,
         memory_retriever: MemoryRetriever | None = None,
         app_id: int | None = None,
+        pr_reviewer_config: PRReviewerConfig | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._config = config
+        self._pr_reviewer_config = pr_reviewer_config
         self._llm = llm_router
         self._insight_store = insight_store
         # T-E2: optional cross-run memory retriever. When supplied, the
@@ -1160,13 +1162,83 @@ class PRAgent:
             if stuck_analysis:
                 tracking.stuck_reflection_done = True
 
+            # When caretaker_owned_reviewer is "opencode_local", run the fix
+            # inline (synchronous subprocess) instead of posting a @copilot task.
+            # This keeps the fix loop fully internal and surfaces logs immediately.
+            reviewer_cfg = self._pr_reviewer_config
+            if (
+                reviewer_cfg is not None
+                and reviewer_cfg.caretaker_owned_reviewer == "opencode_local"
+            ):
+                tracking = await self._handle_ci_fix_opencode_local(
+                    pr=pr,
+                    triage=triage,
+                    tracking=tracking,
+                    attempt=attempt,
+                    report=report,
+                )
+            else:
+                result = await self._copilot_bridge.request_ci_fix(
+                    pr=pr,
+                    triage=triage,
+                    attempt=attempt,
+                    issue_context=stuck_analysis if stuck_analysis else "",
+                )
+
+                tracking.copilot_attempts = attempt
+                tracking.last_task_comment_id = result.comment_id
+                tracking.state = PRTrackingState.FIX_REQUESTED
+                tracking.last_state_change_at = datetime.now(UTC)
+                tracking.last_copilot_attempt_at = datetime.now(UTC)
+                _mark_caretaker_touched(tracking)
+                report.fix_requested.append(pr.number)
+                logger.info(
+                    "PR #%d: CI fix requested (attempt %d/%d)",
+                    pr.number,
+                    attempt,
+                    self._config.copilot.max_retries,
+                )
+
+        return tracking
+
+    async def _handle_ci_fix_opencode_local(
+        self,
+        pr: PullRequest,
+        triage: TriageResult,
+        tracking: TrackedPR,
+        attempt: int,
+        report: PRAgentReport,
+    ) -> TrackedPR:
+        """Run opencode_local synchronously to fix a CI failure and push the result.
+
+        Falls back to posting a plain comment on error so the PR isn't silently
+        stuck. Lazy-imports to avoid pulling opencode deps into every code path.
+        """
+        import os as _os  # noqa: PLC0415
+
+        from caretaker.pr_reviewer.auto_fix import commit_and_push  # noqa: PLC0415
+        from caretaker.pr_reviewer.backends._workdir import (  # noqa: PLC0415
+            WorkdirError,
+            prepare_workdir,
+        )
+        from caretaker.pr_reviewer.backends.opencode_local import (  # noqa: PLC0415
+            OpenCodeLocalError,
+            ci_fix_run,
+        )
+
+        token = _os.environ.get("GITHUB_TOKEN", "").strip()
+        if not token:
+            logger.warning(
+                "PR #%d: GITHUB_TOKEN not set — cannot run opencode_local CI fix; "
+                "falling back to copilot bridge",
+                pr.number,
+            )
             result = await self._copilot_bridge.request_ci_fix(
                 pr=pr,
                 triage=triage,
                 attempt=attempt,
-                issue_context=stuck_analysis if stuck_analysis else "",
+                issue_context="",
             )
-
             tracking.copilot_attempts = attempt
             tracking.last_task_comment_id = result.comment_id
             tracking.state = PRTrackingState.FIX_REQUESTED
@@ -1174,13 +1246,71 @@ class PRAgent:
             tracking.last_copilot_attempt_at = datetime.now(UTC)
             _mark_caretaker_touched(tracking)
             report.fix_requested.append(pr.number)
-            logger.info(
-                "PR #%d: CI fix requested (attempt %d/%d)",
-                pr.number,
-                attempt,
-                self._config.copilot.max_retries,
-            )
+            return tracking
 
+        pr_url = pr.html_url
+        head_branch = pr.head_ref
+        # Invariant: caller only dispatches here when caretaker_owned_reviewer == "opencode_local".
+        assert self._pr_reviewer_config is not None  # noqa: S101
+        oc_config = self._pr_reviewer_config.opencode_local
+        workdir: str | None = None
+        try:
+            workdir, _parsed = await prepare_workdir(
+                pr_url,
+                clone_depth=50,
+                head_branch=head_branch,
+                github_token=token,
+            )
+            summary = await ci_fix_run(
+                workdir=workdir,
+                job_name=triage.job_name or "",
+                error_summary=triage.error_summary or "",
+                raw_output=triage.raw_output or "",
+                config=oc_config,
+            )
+            logger.info("PR #%d: opencode_local CI fix summary: %s", pr.number, summary[:200])
+            new_sha = await commit_and_push(
+                workdir=workdir,
+                branch=head_branch,
+                commit_message=f"fix(ci): apply opencode_local CI fix [attempt {attempt}]",
+                github_token=token,
+                owner=self._owner,
+                repo=self._repo,
+            )
+            await self._github.add_issue_comment(
+                self._owner,
+                self._repo,
+                pr.number,
+                f"🤖 **opencode_local CI fix** (attempt {attempt}): "
+                f"pushed `{new_sha[:8]}` — {summary}",
+            )
+            tracking.copilot_attempts = attempt
+            tracking.state = PRTrackingState.FIX_REQUESTED
+            tracking.last_state_change_at = datetime.now(UTC)
+            tracking.last_copilot_attempt_at = datetime.now(UTC)
+            _mark_caretaker_touched(tracking)
+            report.fix_requested.append(pr.number)
+            logger.info("PR #%d: opencode_local CI fix pushed (%s)", pr.number, new_sha[:8])
+        except (OpenCodeLocalError, WorkdirError, RuntimeError, OSError) as exc:
+            logger.warning(
+                "PR #%d: opencode_local CI fix failed (%s); posting error comment",
+                pr.number,
+                exc,
+            )
+            await self._github.add_issue_comment(
+                self._owner,
+                self._repo,
+                pr.number,
+                f"⚠️ **opencode_local CI fix failed** (attempt {attempt}): `{exc}`\n\n"
+                "Caretaker will retry on the next cycle.",
+            )
+            tracking.notes = f"opencode_local_ci_fix_failed: {exc}"
+            report.waiting.append(pr.number)
+        finally:
+            if workdir:
+                from caretaker.pr_reviewer.backends._workdir import cleanup_workdir  # noqa: PLC0415
+
+                cleanup_workdir(workdir, keep=getattr(oc_config, "keep_workdir_on_failure", False))
         return tracking
 
     async def _maybe_analyze_stuck_pr(

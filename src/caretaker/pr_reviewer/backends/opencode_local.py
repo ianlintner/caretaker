@@ -749,9 +749,105 @@ SPEC = HandoffReviewerSpec(
 )
 
 
+_CI_FIX_PROMPT_TEMPLATE = """\
+You are fixing a CI failure on a pull request. The repo is already cloned
+and checked out to the PR's head branch in your current working directory;
+your edits will be committed directly to that branch by caretaker.
+
+CI job that failed: {job_name}
+
+Error summary:
+---
+{error_summary}
+---
+
+{raw_output_section}
+
+Your job:
+  1. Identify the root cause of the CI failure from the error output above.
+  2. Make the smallest change that fixes it; do not refactor unrelated code.
+  3. If a test was wrong, fix the test. If production code was wrong, fix that.
+  4. Run any obvious local validation (e.g. ``ruff check``, ``ruff format``,
+     ``pytest``) if those tools are configured in the repo.
+  5. After making changes, output one short summary line describing what you
+     changed. Do NOT output any JSON — caretaker handles the commit + push.
+
+If you decide the failure is not fixable automatically (e.g. requires manual
+infrastructure changes, external dependency update, or the root cause is
+ambiguous), output exactly the line ``CARETAKER_FIX_DECLINED:`` followed by
+a one-sentence explanation, and make no file changes.
+"""
+
+
+def _build_ci_fix_prompt(
+    *,
+    job_name: str,
+    error_summary: str,
+    raw_output: str,
+) -> str:
+    if raw_output and raw_output.strip():
+        trimmed = raw_output.strip()[:4000]
+        raw_output_section = f"Raw CI output (trimmed to 4000 chars):\n```\n{trimmed}\n```\n"
+    else:
+        raw_output_section = ""
+    return _CI_FIX_PROMPT_TEMPLATE.format(
+        job_name=job_name or "unknown",
+        error_summary=error_summary.strip() or "(no error summary available)",
+        raw_output_section=raw_output_section,
+    )
+
+
+async def ci_fix_run(
+    *,
+    workdir: str,
+    job_name: str,
+    error_summary: str,
+    raw_output: str,
+    config: OpenCodeLocalBackendConfig,
+) -> str:
+    """Invoke opencode to fix a CI failure in an already-prepared workdir.
+
+    Returns the assistant's final summary text.  The caller decides whether
+    to commit + push by inspecting ``git diff`` on the workdir.
+
+    Raises :class:`OpenCodeLocalError` on subprocess failure or on the
+    sentinel ``CARETAKER_FIX_DECLINED:`` return.
+    """
+    prompt = _build_ci_fix_prompt(
+        job_name=job_name,
+        error_summary=error_summary,
+        raw_output=raw_output,
+    )
+    model = getattr(config, "fix_model", "") or config.model
+    try:
+        stdout = await _invoke_opencode(
+            workdir=workdir,
+            config=config,
+            prompt=prompt,
+            model_override=model,
+        )
+    except OpenCodeLocalTimeoutError:
+        record_opencode_invocation(model=model, mode="ci_fix", outcome="timeout")
+        raise
+    except OpenCodeLocalNoEndpointsError:
+        record_opencode_invocation(model=model, mode="ci_fix", outcome="no_endpoints")
+        raise
+    except Exception:
+        record_opencode_invocation(model=model, mode="ci_fix", outcome="error")
+        raise
+
+    text = stdout.strip()
+    if text.startswith("CARETAKER_FIX_DECLINED:"):
+        record_opencode_invocation(model=model, mode="ci_fix", outcome="declined")
+        raise OpenCodeLocalError(f"opencode declined CI fix: {text}")
+    record_opencode_invocation(model=model, mode="ci_fix", outcome="ok")
+    return text or "(no summary)"
+
+
 __all__ = [
     "SPEC",
     "OpenCodeLocalError",
+    "ci_fix_run",
     "fix_run",
     "run",
 ]

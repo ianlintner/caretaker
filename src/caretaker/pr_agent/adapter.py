@@ -81,6 +81,7 @@ class PRAgentAdapter(BaseAgent):
             dispatcher=self._ctx.executor_dispatcher,
             memory_retriever=_build_memory_retriever(self._ctx),
             app_id=self._ctx.config.github_app.app_id,
+            pr_reviewer_config=self._ctx.config.pr_reviewer,
         )
         head_branch: str | None = None
         pr_number: int | None = None
