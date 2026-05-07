@@ -100,7 +100,7 @@ spec:
       containers:
         - name: agent
           # Replace `your-acr.azurecr.io` with your ACR hostname.
-          image: your-acr.azurecr.io/caretaker-agent-worker:v1.0.0
+          image: gabby.azurecr.io/caretaker-mcp:latest
           imagePullPolicy: Always
           args:
             - "caretaker"
