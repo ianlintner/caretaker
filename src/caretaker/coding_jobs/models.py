@@ -5,7 +5,10 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class JobStatus(StrEnum):
@@ -67,7 +70,9 @@ class CodingJobMessage:
             body["context"] = self.context
         return body
 
-    def to_asb_properties(self, traceparent: str = "") -> dict[str, str]:
+    def to_asb_properties(
+        self, traceparent: str = ""
+    ) -> dict[str | bytes, int | float | bytes | bool | str | UUID]:
         """application_properties: routing + tracing. No body parse needed for routing."""
         return {
             "job_id": self.job_id,
