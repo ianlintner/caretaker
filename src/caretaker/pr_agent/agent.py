@@ -1201,6 +1201,41 @@ class PRAgent:
 
         return tracking
 
+    async def _fetch_gha_job_log(self, job_url: str) -> str:
+        """Fetch the raw log for a GHA job from its HTML URL.
+
+        The HTML URL has the form:
+          https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{job_id}
+
+        Returns up to 8000 chars of the tail (the interesting part of test output).
+        Returns empty string on any error.
+        """
+        import re as _re  # noqa: PLC0415
+
+        m = _re.search(r"/job/(\d+)", job_url)
+        if not m:
+            return ""
+        job_id = m.group(1)
+        try:
+            token = (await self._github.get_default_token()).strip()
+            resp = await self._github._client.get(
+                f"/repos/{self._owner}/{self._repo}/actions/jobs/{job_id}/logs",
+                follow_redirects=True,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code == 200:
+                raw = resp.text or ""
+                return raw[-8000:] if len(raw) > 8000 else raw
+        except Exception as exc:
+            logger.debug(
+                "PR %s/%s: could not fetch GHA job log %s: %s",
+                self._owner,
+                self._repo,
+                job_id,
+                exc,
+            )
+        return ""
+
     async def _handle_ci_fix_opencode_local(
         self,
         pr: PullRequest,
@@ -1254,6 +1289,14 @@ class PRAgent:
         # Invariant: caller only dispatches here when caretaker_owned_reviewer == "opencode_local".
         assert self._pr_reviewer_config is not None  # noqa: S101
         oc_config = self._pr_reviewer_config.opencode_local
+
+        # When the check_run output fields are empty (the common case for
+        # GitHub Actions — GHA doesn't populate check_run.output_summary),
+        # fetch the raw job log from the GHA API so opencode has real output.
+        raw_output = triage.raw_output or ""
+        if not raw_output.strip() and triage.job_url:
+            raw_output = await self._fetch_gha_job_log(triage.job_url) or ""
+
         workdir: str | None = None
         try:
             workdir, _parsed = await prepare_workdir(
@@ -1265,8 +1308,8 @@ class PRAgent:
             summary = await ci_fix_run(
                 workdir=workdir,
                 job_name=triage.job_name or "",
-                error_summary=triage.error_summary or "",
-                raw_output=triage.raw_output or "",
+                error_summary=triage.error_summary or raw_output[:500],
+                raw_output=raw_output,
                 config=oc_config,
             )
             logger.info("PR #%d: opencode_local CI fix summary: %s", pr.number, summary[:200])

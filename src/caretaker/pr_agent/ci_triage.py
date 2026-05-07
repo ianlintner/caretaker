@@ -136,6 +136,9 @@ class TriageResult:
     error_summary: str
     instructions: str
     raw_output: str
+    # GHA job detail URL (e.g. https://github.com/.../job/12345). Used by
+    # opencode_local CI fix to fetch raw job logs when output_summary is empty.
+    job_url: str = ""
     # Populated only when the ``ci_triage`` domain runs in ``enforce`` mode
     # and the LLM candidate succeeds. In ``off`` / ``shadow`` modes this
     # remains ``None`` so downstream behaviour is byte-identical.
@@ -568,6 +571,7 @@ async def triage_failure(
         error_summary=error_summary,
         instructions=instructions,
         raw_output=raw_output,
+        job_url=check_run.html_url,
         triage=verdict,
     )
 
