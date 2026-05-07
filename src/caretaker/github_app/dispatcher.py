@@ -146,7 +146,7 @@ class DispatchResult:
 # Per-agent soft timeout when active mode is wired up. Shadow mode is
 # bounded by the time ``agents_for_event`` takes to return, which is
 # sub-microsecond — no timeout required today.
-_DEFAULT_AGENT_TIMEOUT_SECONDS: float = 120.0
+_DEFAULT_AGENT_TIMEOUT_SECONDS: float = 360.0  # 6 min; opencode_local CI fix can take 2-3 min
 
 
 def _repo_matches(repo: str, patterns: list[str]) -> bool:

@@ -372,7 +372,7 @@ INTERVENTION_REASONS: frozenset[str] = frozenset(
 # the string and silently birthing a new series.
 COMPLEXITY_TIERS: tuple[str, ...] = ("trivial", "simple", "standard", "complex", "none")
 CLASSIFIER_SOURCES: tuple[str, ...] = ("fast_path", "llm", "heuristic_fallback")
-OPENCODE_MODES: tuple[str, ...] = ("review", "fix")
+OPENCODE_MODES: tuple[str, ...] = ("review", "fix", "ci_fix")
 OPENCODE_OUTCOMES: tuple[str, ...] = (
     "ok",
     "parse_fallback",
