@@ -44,10 +44,14 @@ spec:
           args:
             - --appendonly
             - "yes"
+            - --appendfsync
+            - "everysec"
+            - --save
+            - "60 1"
             - --maxmemory
             - "1gb"
             - --maxmemory-policy
-            - "allkeys-lru"
+            - "volatile-lru"
           ports:
             - containerPort: 6379
               name: redis
