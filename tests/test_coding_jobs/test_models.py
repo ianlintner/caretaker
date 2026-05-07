@@ -11,6 +11,9 @@ def test_coding_jobs_config_defaults():
     assert cfg.stream_job_status == "job-status"
     assert cfg.k8s_namespace == "caretaker"
     assert cfg.reconcile_interval_secs == 30
+    assert cfg.asb_lock_duration_secs == 300
+    assert cfg.status_consumer_group == "coding-results"
+    assert cfg.k8s_worker_image == ""
 
 
 def test_coding_jobs_config_from_dict():
