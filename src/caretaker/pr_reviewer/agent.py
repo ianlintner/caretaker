@@ -583,16 +583,14 @@ class PRReviewerAgent(BaseAgent):
         # routing scores < 5 the classifier hits its fast-path
         # heuristic and returns "trivial" without an LLM call, so this
         # adds no measurable latency.
-        caretaker_tier: ComplexityTier | None = None
-        if is_caretaker_pr:
-            caretaker_tier = await self._classify_complexity(
-                pr_number=pr_number,
-                pr=pr,
-                files=files,
-                pr_labels=pr_labels,
-                routing_decision=decision,
-            )
-            tier_label = caretaker_tier
+        caretaker_tier: ComplexityTier | None = await self._classify_complexity(
+            pr_number=pr_number,
+            pr=pr,
+            files=files,
+            pr_labels=pr_labels,
+            routing_decision=decision,
+        )
+        tier_label = caretaker_tier
 
         if decision.use_inline:
             if self._ctx.llm_router is None or not self._ctx.llm_router.available:
@@ -762,13 +760,13 @@ class PRReviewerAgent(BaseAgent):
         # dispatch auto-fix and auto-approve within the same cycle.
         # ``pr_author`` and ``is_caretaker_pr`` were already populated at
         # the top of _handle_pr; reuse them here.
-        if is_caretaker_pr and cfg.caretaker_owned_reviewer:
+        if cfg.caretaker_owned_reviewer:
             caretaker_backend = cfg.caretaker_owned_reviewer
             if caretaker_backend in handoff_reviewer.known_backends():
                 caretaker_spec = handoff_reviewer.get_spec(caretaker_backend)
                 if caretaker_spec.invocation == "local_subprocess":
                     logger.info(
-                        "pr-reviewer: caretaker-owned PR #%d — using %s (local subprocess)",
+                        "pr-reviewer: PR #%d — using %s (local subprocess)",
                         pr_number,
                         caretaker_backend,
                     )
@@ -785,10 +783,10 @@ class PRReviewerAgent(BaseAgent):
         if cfg.enabled_backends and backend not in cfg.enabled_backends:
             # For caretaker-owned PRs using opencode_local, add it
             # implicitly rather than silently skipping review.
-            if is_caretaker_pr and backend == cfg.caretaker_owned_reviewer:
+            if backend == cfg.caretaker_owned_reviewer:
                 logger.info(
-                    "pr-reviewer: allowing %r for caretaker-owned PR #%d "
-                    "(not in enabled_backends but required for caretaker flow)",
+                    "pr-reviewer: allowing %r for PR #%d "
+                    "(not in enabled_backends but required for local runner flow)",
                     backend,
                     pr_number,
                 )
@@ -838,7 +836,7 @@ class PRReviewerAgent(BaseAgent):
             # whether the inline or hand-off path runs). The classifier
             # short-circuits trivial PRs without an LLM call (~30% of
             # bot PRs); for the rest a Flash-Lite call costs ~$0.0001.
-            tier = caretaker_tier if is_caretaker_pr else None
+            tier = caretaker_tier
             tier_label = tier
             backend_label = backend
             model_label = self._resolve_backend_model(backend, tier=tier, mode="review")

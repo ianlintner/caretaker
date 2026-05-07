@@ -51,6 +51,10 @@ dev = [
     "motor>=3.3,<4",
     "redis[asyncio]>=5,<6",
     "types-redis>=4.6,<5",
+    # Phase 3 coding-jobs deps (required for test_coding_jobs suite)
+    "kubernetes>=30,<34",
+    "azure-servicebus>=7.11",
+    "azure-identity>=1.16",
 ]
 docs = [
     "mkdocs>=1.6,<2",

@@ -1105,7 +1105,7 @@ class PRReviewerConfig(StrictBaseModel):
     # Which BYOCA coding agent to use for complex PR reviews. Must match
     # a registered agent name (``claude_code``, ``opencode``, …) or the
     # special value ``inline`` to keep everything inline.
-    complex_reviewer: str = "opencode"
+    complex_reviewer: str = "opencode_local"
     # Label/mention used for the claude-code-action hand-off.
     # Retained for backward-compatibility — read by the claude_code
     # reviewer dispatch path. New deployments should configure the
