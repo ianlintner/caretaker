@@ -1315,6 +1315,26 @@ class RedisConfig(StrictBaseModel):
     token_cache_ttl_seconds: int = 3000
 
 
+class CodingJobsConfig(StrictBaseModel):
+    """Durable K8s coding job dispatch via Azure Service Bus + Redis Streams."""
+
+    enabled: bool = False
+    # ASB — queue layer
+    asb_namespace: str = ""  # e.g. thebiggestboy.servicebus.windows.net
+    asb_queue_coding_tasks: str = "coding-tasks"
+    asb_lock_duration_secs: int = 300  # must match queue LockDuration in portal
+    # Redis — job-status stream only
+    stream_job_status: str = "job-status"
+    status_consumer_group: str = "coding-results"
+    # K8s
+    k8s_namespace: str = "caretaker"
+    k8s_worker_image: str = ""
+    per_attempt_timeout_secs: int = 900  # matches activeDeadlineSeconds
+    # Reconciler
+    heartbeat_staleness_secs: int = 300
+    reconcile_interval_secs: int = 30
+
+
 class AuditLogConfig(StrictBaseModel):
     """Phase 1 — structured audit-log writer.
 
