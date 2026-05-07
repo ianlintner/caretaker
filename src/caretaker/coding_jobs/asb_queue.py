@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from caretaker.coding_jobs.models import CodingJobMessage
     from caretaker.config import CodingJobsConfig
 
+# Runtime imports of CodingJobMessage happen inside schedule_retry (constructs instances)
+# Methods that only receive CodingJobMessage don't need a runtime import.
+
 logger = logging.getLogger(__name__)
 
 _WALL_CLOCK_TTL_SECS = 2700  # 45 min — matches queue DefaultMessageTimeToLive
@@ -26,9 +29,18 @@ _WALL_CLOCK_TTL_SECS = 2700  # 45 min — matches queue DefaultMessageTimeToLive
 class AsbCodingQueue:
     """Send and receive CodingJobMessages via an Azure Service Bus queue."""
 
-    def __init__(self, *, config: CodingJobsConfig, client: Any) -> None:
+    def __init__(self, *, config: CodingJobsConfig, client: Any, credential: Any = None) -> None:
         self._config = config
         self._client = client
+        self._credential = credential
+
+    async def __aenter__(self) -> AsbCodingQueue:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self._client.close()
+        if self._credential is not None:
+            await self._credential.close()
 
     async def enqueue(self, msg: CodingJobMessage, traceparent: str = "") -> None:
         """Send a new coding task to the ASB queue."""
@@ -69,7 +81,11 @@ class AsbCodingQueue:
         elapsed = time.time() - msg.first_enqueued_ts
         remaining = _WALL_CLOCK_TTL_SECS - elapsed
         if remaining <= 0:
-            logger.info("asb-queue: wall-clock TTL exhausted, dropping retry job_id=%s", msg.job_id)
+            logger.warning(
+                "asb-queue: wall-clock TTL exhausted, dropping retry job_id=%s attempt=%s",
+                msg.job_id,
+                msg.attempt,
+            )
             return
 
         body = json.dumps(retry_msg.to_asb_body()).encode()
@@ -101,11 +117,24 @@ class AsbCodingQueue:
         raw = b"".join(asb_msg.body)
         body = json.loads(raw)
         props = asb_msg.application_properties or {}
-        return Msg.from_asb(
-            body=body,
-            properties={k.decode() if isinstance(k, bytes) else k: v for k, v in props.items()},
-            delivery_count=asb_msg.delivery_count,
-        )
+        str_props = {
+            k.decode() if isinstance(k, bytes) else k: (v.decode() if isinstance(v, bytes) else v)
+            for k, v in props.items()
+        }
+        try:
+            return Msg.from_asb(
+                body=body,
+                properties=str_props,
+                delivery_count=asb_msg.delivery_count,
+            )
+        except (KeyError, TypeError) as exc:
+            logger.error(
+                "asb-queue: failed to parse received message body=%r props=%r: %s",
+                body,
+                str_props,
+                exc,
+            )
+            raise
 
 
 def build_asb_queue(config: CodingJobsConfig) -> AsbCodingQueue:
@@ -114,11 +143,9 @@ def build_asb_queue(config: CodingJobsConfig) -> AsbCodingQueue:
     from azure.servicebus.aio import ServiceBusClient
 
     credential = DefaultAzureCredential()
-    client = ServiceBusClient(
-        fully_qualified_namespace=config.asb_namespace,
-        credential=credential,
-    )
-    return AsbCodingQueue(config=config, client=client)
+    fqns = config.asb_namespace  # already full FQNS in config
+    client = ServiceBusClient(fqns, credential)
+    return AsbCodingQueue(config=config, client=client, credential=credential)
 
 
 __all__ = ["AsbCodingQueue", "build_asb_queue"]

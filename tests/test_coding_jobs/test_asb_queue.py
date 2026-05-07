@@ -119,3 +119,63 @@ async def test_schedule_retry_drops_when_ttl_exhausted(
 
     # schedule_messages must NOT have been called
     mock_sender.schedule_messages.assert_not_awaited()
+
+
+def _make_msg():
+    job_id = make_job_id("org/repo", "fix", "abc123", "fix the bug")
+    return CodingJobMessage(
+        job_id=job_id,
+        repo="org/repo",
+        task_type="fix",
+        base_sha="abc123",
+        instructions="fix the bug",
+        context="PR #42",
+        first_enqueued_ts=time.time(),
+    )
+
+
+def test_parse_received_happy_path():
+    msg = _make_msg()
+    body_bytes = json.dumps(msg.to_asb_body()).encode()
+    props = msg.to_asb_properties(traceparent="00-abc-def-01")
+    # ASB SDK returns bytes keys (and bytes values for strings)
+    bytes_props = {k.encode(): (v.encode() if isinstance(v, str) else v) for k, v in props.items()}
+
+    mock_asb = MagicMock()
+    mock_asb.body = iter([body_bytes])
+    mock_asb.application_properties = bytes_props
+    mock_asb.delivery_count = 0
+
+    result = AsbCodingQueue.parse_received(mock_asb)
+    assert result.job_id == msg.job_id
+    assert result.attempt == 1  # delivery_count=0 → attempt=1
+
+
+def test_parse_received_delivery_count_maps_to_attempt():
+    msg = _make_msg()
+    body_bytes = json.dumps(msg.to_asb_body()).encode()
+    props = {k.encode(): v.encode() for k, v in msg.to_asb_properties().items()}
+
+    mock_asb = MagicMock()
+    mock_asb.body = iter([body_bytes])
+    mock_asb.application_properties = props
+    mock_asb.delivery_count = 2
+
+    result = AsbCodingQueue.parse_received(mock_asb)
+    assert result.attempt == 3  # delivery_count=2 → attempt=3
+
+
+def test_parse_received_missing_context_defaults_to_empty():
+    msg = _make_msg()
+    body = msg.to_asb_body()
+    body.pop("context", None)  # ensure context absent
+    body_bytes = json.dumps(body).encode()
+    props = {k.encode(): v.encode() for k, v in msg.to_asb_properties().items()}
+
+    mock_asb = MagicMock()
+    mock_asb.body = iter([body_bytes])
+    mock_asb.application_properties = props
+    mock_asb.delivery_count = 0
+
+    result = AsbCodingQueue.parse_received(mock_asb)
+    assert result.context == ""
