@@ -100,6 +100,13 @@ llm-multi = [
 k8s-worker = [
     "kubernetes>=30,<34",
 ]
+# Azure Service Bus task queue — coding-jobs dispatcher and worker. See
+# docs/custom-coding-agent-plan.md. Only required on the caretaker
+# backend that enqueues/receives coding tasks via ASB.
+asb = [
+    "azure-servicebus>=7.11",
+    "azure-identity>=1.16",
+]
 # Workstream A4 — offline evaluation of the shadow-decision stream via
 # Braintrust. The harness falls open to a local-only JSON report when
 # ``BRAINTRUST_API_KEY`` is unset or this extra is not installed, so
@@ -199,6 +206,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["redis", "redis.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["azure", "azure.*"]
 ignore_missing_imports = true
 
 [tool.uv]
