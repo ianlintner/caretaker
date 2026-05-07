@@ -479,6 +479,22 @@ async def _lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
                 _pr_decisions.configure_default_store(_decision_store)
                 pr_timeline_api.configure(_decision_store)
                 application.include_router(pr_timeline_api.router)
+                # Surface the resolved store state so an empty
+                # ``pr_decisions`` collection in production isn't a
+                # silent mystery: this line tells operators whether the
+                # store enabled itself from explicit config, env-var
+                # fallback, or stayed disabled.
+                _mongo_url_present = bool(
+                    os.environ.get(
+                        _decision_store._mongodb_url_env,
+                        "",
+                    ).strip()
+                )
+                logger.info(
+                    "PR decision store configured (enabled=%s, mongo_url_present=%s)",
+                    _decision_store._enabled,
+                    _mongo_url_present,
+                )
                 logger.info("Admin PR-timeline API enabled")
             except Exception:
                 logger.warning("Failed to initialise admin PR-timeline API", exc_info=True)

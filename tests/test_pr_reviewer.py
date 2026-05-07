@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -856,3 +857,241 @@ async def test_execute_inline_review_request_changes_dispatches_auto_fix(monkeyp
 
     dispatch_mock.assert_awaited_once()
     assert result.extra["reviewed"] == [22]
+
+
+# ── caretaker-owned PR observability symmetry (v0.29.3) ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_calls_classifier_unconditionally_for_caretaker_pr(
+    monkeypatch,
+) -> None:
+    """Even when routing returns ``inline``, classify the caretaker-owned PR.
+
+    Pre-fix the classifier was tucked inside the local-subprocess
+    branch, so low-complexity caretaker PRs that routed inline left the
+    ``caretaker_complexity_classifier_tier_total`` counter and the
+    ``tier_classified`` decision-row at zero.
+    """
+    import caretaker.pr_reviewer.complexity_classifier as _classifier
+    import caretaker.pr_reviewer.inline_reviewer as _inline
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.pr_reviewer.complexity_classifier import ComplexityVerdict
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
+    from caretaker.state.models import OrchestratorState
+
+    inline_result = ReviewResult(summary="OK", verdict="APPROVE", comments=[], issue_categories=[])
+    monkeypatch.setattr(_inline, "review", AsyncMock(return_value=inline_result))
+
+    classify_mock = AsyncMock(
+        return_value=ComplexityVerdict(tier="trivial", reason="fast", confidence=0.9)
+    )
+    monkeypatch.setattr(_classifier, "classify", classify_mock)
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=False,
+        review_event="AUTO",
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = MagicMock()
+    mock_ctx.llm_router.available = True
+    mock_ctx.llm_router.claude = MagicMock()
+
+    mock_ctx.github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "src/foo.py", "additions": 2, "deletions": 1}]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    await agent.execute(
+        state=state,
+        event_payload={
+            "action": "opened",
+            "pull_request": {
+                "number": 33,
+                "title": "Tiny tweak",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "abc", "ref": "feature/tiny"},
+                "labels": [],
+                # caretaker-owned PR — must trigger the classifier even
+                # though routing will pick the inline path.
+                "user": {"login": "the-care-taker[bot]"},
+                "html_url": "https://github.com/org/repo/pull/33",
+            },
+        },
+    )
+
+    classify_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_review_started_emitted_before_routing_decision(monkeypatch) -> None:
+    """``review_started`` fires before routing — both paths see it.
+
+    The decision-timeline write order matters: ``review_started`` must
+    precede any path-specific event so the admin SPA can render the
+    full timeline regardless of which branch ran.
+    """
+    import caretaker.pr_reviewer.inline_reviewer as _inline
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
+    from caretaker.state.models import OrchestratorState
+
+    events: list[str] = []
+
+    async def _record(repo: str, pr_number: int, agent: str, event: str, **fields: Any) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        "caretaker.state.pr_decisions.record_decision",
+        _record,
+    )
+
+    inline_result = ReviewResult(summary="OK", verdict="APPROVE", comments=[], issue_categories=[])
+    monkeypatch.setattr(_inline, "review", AsyncMock(return_value=inline_result))
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=False,
+        review_event="AUTO",
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = MagicMock()
+    mock_ctx.llm_router.available = True
+    mock_ctx.llm_router.claude = None  # forces classifier to skip LLM
+
+    mock_ctx.github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "src/foo.py", "additions": 5, "deletions": 1}]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    await agent.execute(
+        state=state,
+        event_payload={
+            "action": "opened",
+            "pull_request": {
+                "number": 44,
+                "title": "Small change",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "def", "ref": "feature/small"},
+                "labels": [],
+                "user": {"login": "human-dev"},
+                "html_url": "https://github.com/org/repo/pull/44",
+            },
+        },
+    )
+
+    assert "review_started" in events
+    # ``review_started`` must come first — before any inline_review_*
+    # or tier_classified entries the path/classifier emit.
+    assert events.index("review_started") == 0
+
+
+@pytest.mark.asyncio
+async def test_inline_review_started_and_finished_events(monkeypatch) -> None:
+    """Inline path emits paired ``inline_review_started``/``inline_review_finished``."""
+    import caretaker.pr_reviewer.inline_reviewer as _inline
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+    from caretaker.pr_reviewer.inline_reviewer import ReviewResult
+    from caretaker.state.models import OrchestratorState
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def _record(repo: str, pr_number: int, agent: str, event: str, **fields: Any) -> None:
+        events.append((event, dict(fields)))
+
+    monkeypatch.setattr(
+        "caretaker.state.pr_decisions.record_decision",
+        _record,
+    )
+
+    inline_result = ReviewResult(summary="ok", verdict="APPROVE", comments=[], issue_categories=[])
+    monkeypatch.setattr(_inline, "review", AsyncMock(return_value=inline_result))
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        skip_labels=["caretaker:reviewed"],
+        routing_threshold=40,
+        max_diff_lines=2000,
+        post_inline_comments=False,
+        review_event="AUTO",
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = MagicMock()
+    mock_ctx.llm_router.available = True
+    mock_ctx.llm_router.claude = None
+
+    mock_ctx.github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "src/foo.py", "additions": 3, "deletions": 1}]
+    )
+    mock_ctx.github.create_review = AsyncMock(return_value={"id": 1})
+    mock_ctx.github.ensure_label = AsyncMock()
+    mock_ctx.github.add_labels = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    state = OrchestratorState()
+
+    await agent.execute(
+        state=state,
+        event_payload={
+            "action": "opened",
+            "pull_request": {
+                "number": 55,
+                "title": "Inline path PR",
+                "body": "",
+                "draft": False,
+                "head": {"sha": "ghi", "ref": "feature/inline"},
+                "labels": [],
+                "user": {"login": "human-dev"},
+                "html_url": "https://github.com/org/repo/pull/55",
+            },
+        },
+    )
+
+    event_names = [e for e, _ in events]
+    assert "inline_review_started" in event_names
+    assert "inline_review_finished" in event_names
+    # Started must precede finished.
+    assert event_names.index("inline_review_started") < event_names.index("inline_review_finished")
+    # ``inline_review_finished`` carries the verdict for downstream
+    # admin rendering.
+    finished_fields = next(f for e, f in events if e == "inline_review_finished")
+    assert finished_fields["verdict"] == "APPROVE"
+
+
+def test_inline_review_event_names_round_trip_through_decision_event_literal() -> None:
+    """The new event names are members of the ``DecisionEvent`` Literal type."""
+    from typing import get_args
+
+    from caretaker.state.pr_decisions import DecisionEvent
+
+    members = set(get_args(DecisionEvent))
+    assert "inline_review_started" in members
+    assert "inline_review_finished" in members
