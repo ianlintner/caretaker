@@ -22,8 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Use globals().get so that test patches survive importlib.reload().
-HEARTBEAT_INTERVAL_SECS: float = globals().get("HEARTBEAT_INTERVAL_SECS", 30.0)
+HEARTBEAT_INTERVAL_SECS: float = 30.0
 
 
 async def run_coding_worker(*, status_stream: JobStatusStream) -> None:
@@ -92,32 +91,24 @@ async def _heartbeat_loop(msg: CodingJobMessage, stream: JobStatusStream) -> Non
         )
 
 
-# Conditionally define _run_coding_task so that test patches survive
-# importlib.reload(): if the name is already set (e.g. by a mock), keep it.
-_existing_run_coding_task = globals().get("_run_coding_task")
-if _existing_run_coding_task is None:
+async def _run_coding_task(msg: CodingJobMessage) -> tuple[str, str, str]:
+    """Run coding work via foundry executor. Returns (commit_sha, pr_url, patch)."""
+    from caretaker.foundry.executor import CodingTask, FoundryExecutor
+    from caretaker.llm.copilot import TaskType
 
-    async def _run_coding_task(msg: CodingJobMessage) -> tuple[str, str, str]:
-        """Run coding work via foundry executor. Returns (commit_sha, pr_url, patch)."""
-        from caretaker.foundry.executor import CodingTask, FoundryExecutor
-        from caretaker.llm.copilot import TaskType
-
-        task = CodingTask(
-            task_type=TaskType(msg.task_type),
-            job_name=f"k8s-{msg.job_id}",
-            error_output="",
-            instructions=msg.instructions,
-            context=msg.context,
-        )
-        # FoundryExecutor requires full DI; wiring from env vars is deferred
-        # to a factory helper that will be added when the K8s runner is wired up.
-        raise NotImplementedError(  # pragma: no cover
-            "FoundryExecutor env-based factory not yet implemented; "
-            f"task={task!r} executor_class={FoundryExecutor!r}"
-        )
-else:
-    _run_coding_task = _existing_run_coding_task
-del _existing_run_coding_task
+    task = CodingTask(
+        task_type=TaskType(msg.task_type),
+        job_name=f"k8s-{msg.job_id}",
+        error_output="",
+        instructions=msg.instructions,
+        context=msg.context,
+    )
+    # FoundryExecutor requires full DI; wiring from env vars is deferred
+    # to a factory helper that will be added when the K8s runner is wired up.
+    raise NotImplementedError(  # pragma: no cover
+        "FoundryExecutor env-based factory not yet implemented; "
+        f"task={task!r} executor_class={FoundryExecutor!r}"
+    )
 
 
 if __name__ == "__main__":

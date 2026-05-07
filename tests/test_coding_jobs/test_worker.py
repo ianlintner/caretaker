@@ -1,4 +1,3 @@
-import importlib
 import json
 import os
 import time
@@ -83,10 +82,9 @@ async def test_worker_sends_heartbeats(task_payload_env):
         patch("caretaker.coding_jobs.worker._run_coding_task", side_effect=slow_task),
         patch("caretaker.coding_jobs.worker.HEARTBEAT_INTERVAL_SECS", 0.01),
     ):
-        from caretaker.coding_jobs import worker
+        from caretaker.coding_jobs.worker import run_coding_worker
 
-        importlib.reload(worker)
-        await worker.run_coding_worker(status_stream=mock_stream)
+        await run_coding_worker(status_stream=mock_stream)
 
     heartbeats = [
         c[0][0]
