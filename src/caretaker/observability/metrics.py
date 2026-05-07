@@ -1063,13 +1063,14 @@ def record_complexity_tier(tier: str, source: str) -> None:
     ).inc()
 
 
-def record_opencode_invocation(model: str, mode: Literal["review", "fix"], outcome: str) -> None:
+def record_opencode_invocation(
+    model: str, mode: Literal["review", "fix", "ci_fix"], outcome: str
+) -> None:
     """Increment ``caretaker_opencode_invocation_total``.
 
-    ``mode`` is typed as ``Literal["review", "fix"]`` so a typo at a
-    static call site is caught by mypy. The runtime
-    :func:`_bound_or_other` validation stays as defence-in-depth for
-    dynamic callers.
+    ``mode`` is typed as a Literal so a typo at a static call site is
+    caught by mypy. The runtime :func:`_bound_or_other` validation stays
+    as defence-in-depth for dynamic callers.
     """
     OPENCODE_INVOCATION_TOTAL.labels(
         service=_SERVICE_LABEL,
