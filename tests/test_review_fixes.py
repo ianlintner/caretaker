@@ -59,6 +59,53 @@ def _isolated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fleet_clients_creates_last_seen_index() -> None:
+    """``_ensure_indexes`` must register a ``last_seen`` index on
+    ``fleet_clients``.
+
+    Regression: ``MongoFleetRegistryStore.list_clients`` calls
+    ``find({}).sort('last_seen', -1)`` and Azure Cosmos DB's MongoDB
+    API rejects sorts on fields without an explicit index ("The index
+    path corresponding to the specified order-by item is excluded").
+    Without this index every admin/fleet-API list-clients call fails.
+    """
+    from caretaker.fleet.mongo_store import MongoFleetRegistryStore
+
+    created: list[tuple[Any, dict[str, Any]]] = []
+
+    def _capture(spec: Any, **kwargs: Any) -> str:
+        created.append((spec, kwargs))
+        return kwargs.get("name", "idx")
+
+    fake_clients = MagicMock()
+    fake_clients.create_index = AsyncMock(side_effect=_capture)
+    fake_heartbeats = MagicMock()
+    fake_heartbeats.create_index = AsyncMock(side_effect=_capture)
+
+    fake_db = {
+        "fleet_clients": fake_clients,
+        "fleet_heartbeats": fake_heartbeats,
+    }
+
+    store = MongoFleetRegistryStore(mongodb_url="mongodb://stub")
+
+    async def _fake_db_accessor() -> Any:
+        return fake_db
+
+    store._db = _fake_db_accessor  # type: ignore[method-assign]
+    await store._ensure_indexes()
+
+    names = {kwargs.get("name") for _spec, kwargs in created}
+    assert "idx_fleet_clients_repo" in names
+    assert "idx_fleet_clients_last_seen" in names
+    assert "idx_fleet_heartbeats_repo_id" in names
+
+    by_name = {kwargs["name"]: spec for spec, kwargs in created if "name" in kwargs}
+    last_seen_spec = by_name["idx_fleet_clients_last_seen"]
+    assert last_seen_spec[0][0] == "last_seen"
+
+
+@pytest.mark.asyncio
 async def test_recent_heartbeats_pushes_limit_into_mongo() -> None:
     """The cursor must be sorted descending and limited at the DB layer."""
     from caretaker.fleet.mongo_store import MongoFleetRegistryStore

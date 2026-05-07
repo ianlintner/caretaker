@@ -198,20 +198,32 @@ class MongoMemoryBackend:
     # ── Maintenance ───────────────────────────────────────────────────────
 
     def _enforce_namespace_limit(self, namespace: str) -> None:
-        """Prune the oldest entries when the per-namespace cap is exceeded."""
+        """Prune the oldest entries when the per-namespace cap is exceeded.
+
+        Sort happens in Python rather than in Mongo because Azure Cosmos
+        DB's MongoDB API rejects ``sort('updated_at', 1)`` here: the only
+        compound index covering ``updated_at`` is ``(namespace ASC,
+        updated_at DESC)`` (``idx_ns_updated``), and Cosmos won't reuse a
+        descending index to satisfy an ascending OrderBy. By the
+        ``_max_entries`` contract the namespace holds at most a few
+        thousand docs, so reading ``(_id, updated_at)`` projections and
+        sorting in-process is cheap and avoids needing a parallel
+        ``(namespace, updated_at ASC)`` index just for prune.
+        """
         count = self._col.count_documents({"namespace": namespace})
         if count <= self._max_entries:
             return
         excess = count - self._max_entries
-        # Find the oldest entry IDs to delete.
-        oldest = list(
+        rows = list(
             self._col.find(
                 {"namespace": namespace},
-                {"_id": 1},
-                sort=[("updated_at", 1)],
-                limit=excess,
+                {"_id": 1, "updated_at": 1},
             )
         )
+        # Tolerate missing/None ``updated_at`` (legacy rows): treat as
+        # epoch-zero so they prune first.
+        rows.sort(key=lambda d: d.get("updated_at") or datetime.min.replace(tzinfo=UTC))
+        oldest = rows[:excess]
         if oldest:
             ids = [doc["_id"] for doc in oldest]
             self._col.delete_many({"_id": {"$in": ids}})

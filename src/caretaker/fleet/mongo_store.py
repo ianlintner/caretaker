@@ -94,6 +94,16 @@ class MongoFleetRegistryStore:
                 unique=True,
                 name="idx_fleet_clients_repo",
             )
+            # Sort index for ``list_clients`` (admin + fleet API). Azure
+            # Cosmos DB's MongoDB API rejects ``find().sort('last_seen')``
+            # without an explicit index on the sort field — a generic
+            # ``find({})`` cannot lean on the unique-on-repo index above.
+            # Stored as ISO-8601 strings (see ``_client_to_doc``) so
+            # lexicographic ordering matches chronological ordering.
+            await db[_COL_CLIENTS].create_index(
+                [("last_seen", pymongo.DESCENDING)],
+                name="idx_fleet_clients_last_seen",
+            )
             await db[_COL_HEARTBEATS].create_index(
                 [("repo", pymongo.ASCENDING), ("_id", pymongo.ASCENDING)],
                 name="idx_fleet_heartbeats_repo_id",

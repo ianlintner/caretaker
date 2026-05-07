@@ -206,6 +206,30 @@ class RunsStore:
                     [("started_at", pymongo.DESCENDING)],
                     name="idx_started_at",
                 )
+                # Compound indexes for ``list_runs`` queries that filter +
+                # sort. Azure Cosmos DB's MongoDB API enforces a strict
+                # OrderBy contract: a ``find({status: ...}).sort(started_at)``
+                # is only legal when an index covers ``(status, started_at)``
+                # exactly — a single-field index on ``started_at`` is not
+                # enough. The stalled-run sweeper hits this every 60s in
+                # production (status=RUNNING + sort by started_at), so
+                # without these compounds the deployed backend raises
+                # ``OperationFailure: index path corresponding to the
+                # specified order-by item is excluded`` on every sweep.
+                await col.create_index(
+                    [
+                        ("status", pymongo.ASCENDING),
+                        ("started_at", pymongo.DESCENDING),
+                    ],
+                    name="idx_status_started_at",
+                )
+                await col.create_index(
+                    [
+                        ("repository", pymongo.ASCENDING),
+                        ("started_at", pymongo.DESCENDING),
+                    ],
+                    name="idx_repository_started_at",
+                )
                 self._index_created = True
         return col
 
