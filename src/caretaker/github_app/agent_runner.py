@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from caretaker.agents._registry_data import build_registry
 from caretaker.state.models import OrchestratorState, RunSummary
+from caretaker.state.tracker import StateTracker
 
 if TYPE_CHECKING:
     from caretaker.agent_protocol import AgentContext
@@ -23,9 +24,14 @@ class RegistryAgentRunner:
     """Run a named agent via the caretaker :class:`~caretaker.registry.AgentRegistry`.
 
     One instance is shared across all deliveries.  Each :meth:`run` call
-    builds a fresh registry (and fresh ephemeral state) from the per-delivery
-    :class:`~caretaker.agent_protocol.AgentContext`, so there is no cross-
-    delivery state leakage.
+    loads persisted :class:`~caretaker.state.models.OrchestratorState` from
+    the repo's tracking issue so counters like ``ci_attempts`` survive across
+    multiple webhook deliveries for the same PR.  State is saved back after
+    the agent completes.
+
+    If state load fails (network error, no tracking issue yet) the run
+    proceeds with fresh state and a warning is logged — the same behaviour
+    as before this change.
 
     Returns a bounded outcome string:
     - ``"success"`` — agent ran without errors.
@@ -59,7 +65,19 @@ class RegistryAgentRunner:
             )
             return "disabled"
 
-        state = OrchestratorState()
+        tracker = StateTracker(context.github, context.owner, context.repo)
+        try:
+            state = await tracker.load()
+        except Exception:
+            logger.warning(
+                "webhook runner: failed to load state for %s/%s (delivery=%s); using fresh state",
+                context.owner,
+                context.repo,
+                parsed.delivery_id,
+                exc_info=True,
+            )
+            state = OrchestratorState()
+
         summary = RunSummary()
 
         result = await registry.run_one(
@@ -68,6 +86,17 @@ class RegistryAgentRunner:
             summary,
             event_payload=parsed.payload,
         )
+
+        try:
+            await tracker.save()
+        except Exception:
+            logger.warning(
+                "webhook runner: failed to save state for %s/%s (delivery=%s)",
+                context.owner,
+                context.repo,
+                parsed.delivery_id,
+                exc_info=True,
+            )
 
         if result is None or result.errors:
             return "failure"
