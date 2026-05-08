@@ -73,9 +73,12 @@ Optional, but strongly recommended for hands-free Copilot iteration:
 
 A configured repository typically gets:
 
-- `.github/workflows/maintainer.yml`
-- `.github/maintainer/config.yml`
-- `.github/copilot-instructions.md`
-- `.github/agents/*.md`
+- `.github/maintainer/config.yml` — repo-specific config
+- `.github/maintainer/.version` — pinned caretaker version
+- `.github/copilot-instructions.md` — global Copilot project memory
+- `.github/agents/*.md` — per-agent personas
 
-Those files define the workflow triggers, repo-specific config, and agent instructions that let the orchestrator and Copilot work together.
+No workflow file is installed. Caretaker runs server-side on AKS and
+receives GitHub App webhooks; consumer repos only ship config and
+Copilot instructions. See [Architecture](architecture.md) for the
+runtime topology.

@@ -86,7 +86,29 @@ instructions.
 
 ## Features
 
+### Coding backends
+
+When an agent needs to make a code change, it routes through the
+`ExecutorDispatcher`, which picks one of four backends per dispatch:
+
+- **Copilot** — `@copilot` hand-off comment (the legacy default).
+- **Foundry** — in-process LLM tool loop, drives Azure AI Foundry or
+  any LiteLLM-compatible provider directly from `mcp_backend`.
+- **HandoffAgent** — tags the PR/issue and lets `claude-code-action`
+  or `opencode_local` GitHub Actions run asynchronously.
+- **K8s Job** — durable per-task pod for long-running work; brokered
+  through Azure Service Bus and the `caretaker-job-dispatcher`
+  deployment.
+
+Three labels override per-item: `agent:custom`, `agent:copilot`,
+`agent:quarantine`.
+
 ### Core Agents
+
+These eleven agents handle the day-to-day repository workload. Seven
+additional specialist agents (review, principal, refactor, perf,
+migration, test, bootstrap) are documented in
+[docs/agents.md](https://ianlintner.github.io/caretaker/agents/).
 
 #### PR Agent
 - Monitors all open PRs in real-time
@@ -99,7 +121,7 @@ instructions.
 
 #### Issue Agent
 - Triages incoming issues (bug, feature, question, duplicate, stale)
-- Dispatches implementable issues to Copilot
+- Dispatches implementable issues through the configured coding backend
 - Tracks issue → PR → merge lifecycle
 - Auto-closes answered questions and stale issues (configurable)
 - Escalates complex issues to repo owners
@@ -108,10 +130,10 @@ instructions.
 - Monitors default-branch CI failures
 - Automatically creates fix issues for build/test failures
 - Deduplicates similar issues with cooldown periods
-- Assigns work to Copilot for resolution
+- Routes fixes through the configured coding backend
 
 #### Self-Heal Agent
-- Detects backend agent failures during a run
+- Detects `mcp_backend` and dispatcher failures
 - Creates self-diagnosis issues
 - Reports bugs to upstream caretaker repository (configurable)
 - Ensures the system can maintain itself
@@ -155,7 +177,7 @@ instructions.
 
 #### Upgrade Agent
 - Detects new caretaker releases
-- Creates upgrade issues for Copilot execution
+- Creates upgrade issues for the configured coding backend to execute
 - Supports multiple strategies: auto-minor, auto-patch, latest, pinned
 - Handles breaking vs. non-breaking upgrades
 - Version pinning via `.version` file
@@ -340,19 +362,37 @@ memory_store:
 
 ## Architecture
 
+The orchestrator runs server-side on AKS, not in your repo. Three
+deployable processes split the work:
+
 ```
-Orchestrator (Python, runs in GitHub Actions)
+GitHub App webhooks
   │
-  ├── Reads config.yml
-  ├── Reads repo state (open PRs, issues, CI status)
-  ├── Decides what needs to happen
-  │
-  ├── For code changes → creates/updates issues → assigns to @copilot
-  ├── For PR fixes → posts structured comments as the `COPILOT_PAT` identity → @mentions copilot
-  └── For escalation → labels + tags repo owner
+  ▼
+mcp_backend (FastAPI x2, AKS)
+  │   ├── HMAC + allow-list
+  │   ├── dedup + rate-limit
+  │   └── Redis Streams ──► agent router ──► ExecutorDispatcher
+  │                                              │
+  │                                              ├──► Copilot @-mention (legacy)
+  │                                              ├──► Foundry  (in-process LLM tool loop)
+  │                                              ├──► HandoffAgent  (opencode_local / claude-code-action)
+  │                                              └──► Azure Service Bus ──► caretaker-job-dispatcher
+  │                                                                              │
+  │                                                                              ▼
+  │                                                                         per-task K8s Job
+  │                                                                              │
+  ▼                                                                              ▼
+MongoDB / Cosmos · Neo4j · SQLite                                          git push + PR comment
 ```
 
-The orchestrator **never writes code**. It manages Copilot, which does.
+Eighteen agents live behind the dispatcher, grouped by trigger
+(event-driven, scheduled, dispatch-time / advisory). The orchestrator
+**never writes code itself** — it routes to one of four coding backends.
+
+For diagrams of the runtime topology, webhook event pipeline, durable
+coding-job lifecycle, and full agent inventory, see
+[docs/architecture.md](https://ianlintner.github.io/caretaker/architecture/).
 
 ---
 
