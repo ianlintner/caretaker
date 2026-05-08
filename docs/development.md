@@ -43,14 +43,16 @@ mkdocs serve
 
 ## Important directories
 
-| Path                 | Purpose                          |
-| -------------------- | -------------------------------- |
-| `src/caretaker/`     | source package                   |
-| `tests/`             | unit and integration-style tests |
-| `schema/`            | versioned config schema          |
-| `setup-templates/`   | consumer repo templates          |
-| `.github/workflows/` | CI and orchestrator automation   |
-| `docs/`              | documentation site content       |
+| Path                 | Purpose                                                  |
+| -------------------- | -------------------------------------------------------- |
+| `src/caretaker/`     | source package                                           |
+| `tests/`             | unit and integration-style tests                         |
+| `schema/`            | versioned config schema                                  |
+| `setup-templates/`   | consumer repo templates                                  |
+| `infra/k8s/`         | AKS Deployment manifests reconciled by Flux              |
+| `Dockerfile.mcp`     | image used by `mcp_backend` and `caretaker-job-dispatcher` |
+| `.github/workflows/` | CI for this repo (lint, test, image build, docs publish) |
+| `docs/`              | documentation site content                               |
 
 ## CI expectations
 
@@ -62,6 +64,12 @@ The main CI workflow validates:
 - pytest with coverage
 
 The docs workflow separately builds the MkDocs site and publishes it to GitHub Pages on `main`.
+
+A separate image-build workflow publishes
+`gabby.azurecr.io/caretaker-mcp:latest` on each merge to `main`; Flux
+then reconciles the new image into AKS for `mcp_backend` and
+`caretaker-job-dispatcher`. See [Architecture](architecture.md) for
+the runtime topology.
 
 ## Documentation publishing
 
