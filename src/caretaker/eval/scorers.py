@@ -253,18 +253,6 @@ def issue_triage_kind_match(
     )
 
 
-def dispatch_guard_match(
-    legacy_verdict_json: str, candidate_verdict_json: str | None
-) -> ScorerResult:
-    """Exact match on ``(is_self_echo, is_human_intent)`` tuple."""
-    return _exact(
-        legacy_verdict_json,
-        candidate_verdict_json,
-        fields=("is_self_echo", "is_human_intent"),
-        reason_prefix="dispatch_guard_match",
-    )
-
-
 def review_classification_match(
     legacy_verdict_json: str, candidate_verdict_json: str | None
 ) -> ScorerResult:
@@ -466,7 +454,6 @@ DEFAULT_SCORER_REGISTRY: dict[str, tuple[Scorer, ...]] = {
     "readiness": (readiness_verdict_match,),
     "ci_triage": (ci_triage_category_match,),
     "issue_triage": (issue_triage_kind_match,),
-    "dispatch_guard": (dispatch_guard_match,),
     "review_classification": (review_classification_match,),
     "cascade": (cascade_action_match,),
     "stuck_pr": (stuck_pr_match,),
@@ -491,7 +478,6 @@ __all__ = [
     "cascade_action_match",
     "ci_triage_category_match",
     "crystallizer_category_match",
-    "dispatch_guard_match",
     "executor_routing_match",
     "issue_triage_kind_match",
     "readiness_verdict_match",

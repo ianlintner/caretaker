@@ -89,8 +89,7 @@ def render_issue_body(
     The output carries the ``<!-- caretaker:scope-gap -->`` marker so
     the writer can find and update it next run, plus a human-readable
     breakdown of every ``(scope → endpoints)`` pair and the concrete
-    ``permissions:`` YAML block the consumer should paste into their
-    ``.github/workflows/maintainer.yml``.
+    ``permissions:`` YAML block the consumer should apply.
     """
     grouped: dict[str, list[ScopeGapIncident]] = {}
     for incident in incidents:
@@ -124,9 +123,8 @@ def render_issue_body(
             "",
             "### Fix",
             "",
-            "Paste this block into the top of "
-            "`.github/workflows/maintainer.yml` (or merge it into any existing "
-            "`permissions:` block):",
+            "Paste this block into the caretaker App installation settings or "
+            "the relevant workflow's `permissions:` block:",
             "",
             "```yaml",
             yaml_block,

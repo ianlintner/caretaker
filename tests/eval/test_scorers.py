@@ -15,7 +15,6 @@ from caretaker.eval.scorers import (
     cascade_action_match,
     ci_triage_category_match,
     crystallizer_category_match,
-    dispatch_guard_match,
     executor_routing_match,
     issue_triage_kind_match,
     readiness_verdict_match,
@@ -115,21 +114,6 @@ class TestIssueTriage:
 # ── Remaining exact-match scorers ────────────────────────────────────────
 
 
-def test_dispatch_guard_match() -> None:
-    agree = dispatch_guard_match(
-        _j(is_self_echo=False, is_human_intent=True),
-        _j(is_self_echo=False, is_human_intent=True),
-    )
-    assert agree.score == 1.0
-    disagree = dispatch_guard_match(
-        _j(is_self_echo=False, is_human_intent=True),
-        _j(is_self_echo=True, is_human_intent=True),
-    )
-    assert disagree.score == 0.0
-    assert disagree.reason is not None
-    assert "is_self_echo" in disagree.reason
-
-
 def test_review_classification_match() -> None:
     r = review_classification_match(
         _j(kind="nit", severity="low"),
@@ -201,7 +185,6 @@ def test_registry_covers_every_decision_site() -> None:
         "readiness",
         "ci_triage",
         "issue_triage",
-        "dispatch_guard",
         "review_classification",
         "cascade",
         "stuck_pr",

@@ -18,7 +18,6 @@ class TestAgenticConfigDefaults:
             "cascade",
             "stuck_pr",
             "bot_identity",
-            "dispatch_guard",
             "executor_routing",
             "crystallizer_category",
         )

@@ -1924,7 +1924,6 @@ class AgenticConfig(StrictBaseModel):
     cascade: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     stuck_pr: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     bot_identity: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
-    dispatch_guard: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     executor_routing: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     crystallizer_category: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
     # Foundry's pre/post-flight sizing gate. Today the gate is a pure

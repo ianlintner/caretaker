@@ -8,7 +8,6 @@ Guide developers through setting up the caretaker automated repository maintenan
 
 - Analyze repository structure (languages, CI systems, branch protection)
 - Generate appropriate `config.yml` with sensible defaults
-- Create GitHub Actions workflow file
 - Set up agent persona files for Copilot
 - Configure Copilot instructions
 - Validate the complete setup
@@ -44,11 +43,12 @@ Guide developers through setting up the caretaker automated repository maintenan
    - Check default branch: main or master
 
 2. **Generate configuration** (`.github/maintainer/config.yml`):
+
 ```yaml
 version: v1
 
 orchestrator:
-  schedule: daily  # Python projects often have daily deps
+  schedule: daily # Python projects often have daily deps
   summary_issue: true
   dry_run: false
 
@@ -103,7 +103,7 @@ docs_agent:
   auto_update_changelog: true
 
 escalation:
-  targets: []  # Defaults to repo owner
+  targets: [] # Defaults to repo owner
   stale_days: 7
   labels: ["maintainer:escalated"]
 
@@ -114,75 +114,14 @@ llm:
     - issue_decomposition
 ```
 
-3. **Create workflow file** (`.github/workflows/maintainer.yml`):
-```yaml
-name: Caretaker
+3. **Pin version** (`.github/maintainer/.version`):
 
-on:
-  schedule:
-    - cron: '0 8 * * *'  # Daily at 8 AM UTC
-  pull_request:
-    types: [opened, synchronize, reopened]
-  pull_request_review:
-    types: [submitted]
-  check_suite:
-    types: [completed]
-  issues:
-    types: [opened, labeled]
-  issue_comment:
-    types: [created]
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Run mode'
-        required: false
-        default: 'full'
-        type: choice
-        options: [full, pr-only, issue-only, upgrade, dry-run]
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  checks: read
-
-jobs:
-  maintain:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install caretaker
-        run: |
-          VERSION=$(cat .github/maintainer/.version)
-          pip install "git+https://github.com/ianlintner/caretaker.git@v${VERSION}"
-
-      - name: Run caretaker
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          caretaker run \
-            --config .github/maintainer/config.yml \
-            --mode "${{ github.event.inputs.mode || 'full' }}" \
-            --event-type "${{ github.event_name }}" \
-            --event-payload '${{ toJSON(github.event) }}'
-```
-
-4. **Pin version** (`.github/maintainer/.version`):
 ```
 0.5.2
 ```
 
 5. **Update Copilot instructions** (`.github/copilot-instructions.md`):
-Append caretaker-specific instructions (if file exists) or create it.
+   Append caretaker-specific instructions (if file exists) or create it.
 
 6. **Create agent persona files**:
    - `.github/agents/maintainer-pr.md`
@@ -211,34 +150,27 @@ Append caretaker-specific instructions (if file exists) or create it.
    - CI: GitHub Actions
 
 2. **Generate config** with Node-specific settings:
+
 ```yaml
 # Similar to Python but with:
 orchestrator:
-  schedule: weekly  # JS deps change less frequently
+  schedule: weekly # JS deps change less frequently
 
 dependency_agent:
   enabled: true
-  auto_merge_minor: false  # More conservative for JS
+  auto_merge_minor: false # More conservative for JS
   auto_merge_patch: true
   package_manager: npm
 ```
 
-3. **Workflow adjustments**:
-```yaml
-# Uses Node.js setup instead of Python:
-- uses: actions/setup-node@v4
-  with:
-    node-version: '20'
-    cache: 'npm'
-```
-
-4. **Complete setup** following same pattern as Python example.
+3. **Complete setup** following same pattern as Python example.
 
 ### Example 3: Minimal Setup for Small Project
 
 **Scenario**: Setting up caretaker in a small documentation-only repo.
 
 **Configuration**:
+
 ```yaml
 version: v1
 
@@ -279,6 +211,7 @@ devops_agent:
 When a user says "set up caretaker" or similar:
 
 1. **Confirm intent**:
+
    ```
    I'll help you set up caretaker for automated repository maintenance.
    This will:
@@ -292,6 +225,7 @@ When a user says "set up caretaker" or similar:
    ```
 
 2. **Analyze repository**:
+
    ```python
    # Detect languages
    languages = detect_languages()  # Look for language-specific files
@@ -435,6 +369,7 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Invalid YAML syntax or incorrect workflow structure
 
 **Solution**:
+
 1. Validate YAML syntax: `yamllint .github/workflows/maintainer.yml`
 2. Check indentation (use spaces, not tabs)
 3. Verify all required fields are present
@@ -447,6 +382,7 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Insufficient permissions in workflow file
 
 **Solution**:
+
 1. Check `permissions:` block includes:
    ```yaml
    permissions:
@@ -465,6 +401,7 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Invalid version in `.github/maintainer/.version`
 
 **Solution**:
+
 1. Check latest release: https://github.com/ianlintner/caretaker/releases
 2. Update `.version` file with valid version (tag name without the `v` prefix)
 3. Use format: `X.Y.Z` (e.g., `0.5.2`)
@@ -477,6 +414,7 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Config doesn't match schema
 
 **Solution**:
+
 1. Validate against schema: `caretaker validate --config .github/maintainer/config.yml`
 2. Check for typos in field names
 3. Verify all required fields are present
@@ -489,6 +427,7 @@ def get_merge_method(repo_info: RepoInfo) -> str:
 **Cause**: Files weren't copied or created
 
 **Solution**:
+
 1. Fetch templates from caretaker repo
 2. Copy to `.github/agents/`
 3. Verify files exist and are readable

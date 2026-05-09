@@ -159,7 +159,6 @@ def diagnose_consensus_config(config: MaintainerConfig) -> list[str]:
         "cascade",
         "stuck_pr",
         "bot_identity",
-        "dispatch_guard",
         "executor_routing",
         "crystallizer_category",
         "size_classifier",

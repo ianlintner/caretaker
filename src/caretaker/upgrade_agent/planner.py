@@ -109,10 +109,6 @@ _REPO_BASE = "https://raw.githubusercontent.com/ianlintner/caretaker"
 # Files that must stay in sync with the installed caretaker version.
 SYNC_FILES: list[tuple[str, str]] = [
     (
-        ".github/workflows/maintainer.yml",
-        "setup-templates/templates/workflows/maintainer.yml",
-    ),
-    (
         ".github/agents/maintainer-pr.md",
         "setup-templates/templates/agents/maintainer-pr.md",
     ),
@@ -135,28 +131,7 @@ SYNC_FILES: list[tuple[str, str]] = [
 # that gates whether the consumer wants this workflow installed.
 # Sync issues list these in a separate "Optional templates" section so
 # Copilot only writes them when the corresponding feature is enabled.
-OPTIONAL_TEMPLATES: list[tuple[str, str, str]] = [
-    (
-        ".github/workflows/claude.yml",
-        "setup-templates/templates/workflows/claude.yml",
-        "executor.claude_code.enabled",
-    ),
-    (
-        ".github/workflows/claude-code-review.yml",
-        "setup-templates/templates/workflows/claude-code-review.yml",
-        "executor.claude_code.enabled or pr_reviewer.complex_reviewer == 'claude_code'",
-    ),
-    (
-        ".github/workflows/opencode.yml",
-        "setup-templates/templates/workflows/opencode.yml",
-        "executor.opencode.enabled",
-    ),
-    (
-        ".github/workflows/opencode-review.yml",
-        "setup-templates/templates/workflows/opencode-review.yml",
-        "executor.opencode.enabled or pr_reviewer.complex_reviewer == 'opencode'",
-    ),
-]
+OPTIONAL_TEMPLATES: list[tuple[str, str, str]] = []
 
 
 def build_sync_issue_body(version: str) -> str:

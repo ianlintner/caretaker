@@ -47,19 +47,6 @@ class TestMakeCausalMarker:
         assert "id=custom-abc" in m
         assert "source=x" in m
 
-    def test_matches_dispatch_guard_regex(self) -> None:
-        """Marker must still match the workflow JS self-trigger guard regex.
-
-        Dispatch guard in .github/workflows/maintainer.yml uses
-        ``/<!--\\s*caretaker:[a-z0-9:_-]+/i`` to detect any caretaker marker.
-        The causal marker has to keep matching so the guard still trips.
-        """
-        import re as _re
-
-        guard_re = _re.compile(r"<!--\s*caretaker:[a-z0-9:_-]+", _re.IGNORECASE)
-        m = make_causal_marker("pr-agent", run_id=1)
-        assert guard_re.search(m) is not None
-
 
 class TestExtractCausal:
     def test_returns_none_when_absent(self) -> None:
