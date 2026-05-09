@@ -120,6 +120,7 @@ class GraphBuilder:
             "causal_events": 0,
             "executors": 0,
             "comments": 0,
+            "branches": 0,
             "edges": 0,
         }
 
@@ -207,6 +208,7 @@ class GraphBuilder:
                     },
                 )
                 await _belongs_to(NodeType.BRANCH, branch_id)
+                counts["branches"] += 1
                 # PR → Branch
                 await self._store.merge_edge(
                     NodeType.PR,
