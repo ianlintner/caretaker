@@ -74,6 +74,12 @@ class TrackedPR(BaseModel):
     readiness_blockers: list[str] = Field(default_factory=list)
     readiness_summary: str = ""
 
+    # ── Graph unification (2026-05) ──────────────────────────────────────
+    # Branch name from ``pr.head.ref``. Populated at PR discovery time so
+    # the graph builder can create ``:Branch`` nodes and ``FROM_BRANCH`` /
+    # ``BRANCHED_FROM`` edges without additional API calls.
+    branch: str | None = None
+
     # Evolution: within-run stuck detection (Phase 5)
     fix_cycles: int = 0
     last_state_change_at: datetime | None = None

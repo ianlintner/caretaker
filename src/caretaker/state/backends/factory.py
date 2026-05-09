@@ -23,6 +23,9 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
     - ``"redis"`` — Redis via ``RedisMemoryBackend``.
                     Requires ``redis.enabled = true`` and the
                     ``REDIS_URL`` env var to be set.
+    - ``"neo4j"`` — Neo4j via ``Neo4jMemoryBackend``.
+                    Requires ``graph_store.enabled = true`` and the
+                    ``NEO4J_URL`` / ``NEO4J_AUTH`` env vars to be set.
     """
     if not config.memory_store.enabled:
         return None
@@ -54,6 +57,23 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
             logger.info("Using Redis memory backend")
             return build_redis_backend(
                 redis_url_env=config.redis.redis_url_env,
+                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
+            )
+
+    if config.memory_store.backend == "neo4j":
+        if not config.graph_store.enabled:
+            logger.warning(
+                "memory_store.backend='neo4j' but graph_store.enabled=false. "
+                "Falling back to SQLite."
+            )
+        else:
+            from caretaker.state.backends.neo4j_backend import build_neo4j_backend
+
+            logger.info("Using Neo4j memory backend")
+            return build_neo4j_backend(
+                url_env=config.graph_store.neo4j_url_env,
+                auth_env=config.graph_store.neo4j_auth_env,
+                database=config.graph_store.database,
                 max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
             )
 

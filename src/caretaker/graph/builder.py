@@ -191,6 +191,48 @@ class GraphBuilder:
             counts["prs"] += 1
             await _belongs_to(NodeType.PR, pr_id)
 
+            # ── Graph unification: Branch node (2026-05) ──────────────────
+            # Wire the PR → Branch → Issue chain when branch info is
+            # available. Branch name comes from ``TrackedPR.branch``
+            # (populated at discovery time from ``pr.head.ref``).
+            if getattr(pr, "branch", None):
+                branch_name = str(pr.branch)
+                branch_id = f"branch:{repo_slug}:{branch_name}"
+                await self._store.merge_node(
+                    NodeType.BRANCH,
+                    branch_id,
+                    {
+                        "name": branch_name,
+                        "repo": repo_slug,
+                    },
+                )
+                await _belongs_to(NodeType.BRANCH, branch_id)
+                # PR → Branch
+                await self._store.merge_edge(
+                    NodeType.PR,
+                    pr_id,
+                    NodeType.BRANCH,
+                    branch_id,
+                    RelType.FROM_BRANCH,
+                    _bitemporal(),
+                )
+                counts["edges"] += 1
+
+            # ── Graph unification: TOUCHED_MEMORY (2026-05) ───────────────
+            # TODO: Wire PR → MemoryEntry edges when the M5 live event feed
+            # is available. The Neo4jMemoryBackend writes :MemoryEntry nodes;
+            # the graph writer should stamp TOUCHED_MEMORY from the active
+            # PR/Issue to those entries at write time. For now the edge type
+            # and MemoryEntry node type are defined in models.py so Cypher
+            # queries that reference them don't fail on schema mismatch.
+            #
+            # Example (future):
+            #   await self._store.merge_edge(
+            #       NodeType.PR, pr_id,
+            #       NodeType.MEMORY_ENTRY, mem_entry_id,
+            #       RelType.TOUCHED_MEMORY, _bitemporal(),
+            #   )
+
             # PR agent relationships based on state
             if pr.ownership_state != "unowned":
                 await self._store.merge_edge(

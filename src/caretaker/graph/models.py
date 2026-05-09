@@ -72,6 +72,16 @@ class NodeType(StrEnum):
     # ``summary_embedding`` is stamped so cosine ranking works without
     # a separate backfill.
     INCIDENT = "Incident"
+    # ── Graph unification (2026-05) ──────────────────────────────────────
+    # ``:Branch`` connects the Issue → Branch → PR chain so the full
+    # lifecycle is queryable: ``(i:Issue)<-[:BRANCHED_FROM]-(b:Branch)
+    # <-[:FROM_BRANCH]-(p:PR)``. Branch name comes from ``pr.head.ref``.
+    BRANCH = "Branch"
+    # ``:MemoryEntry`` nodes are stored by :class:`Neo4jMemoryBackend` —
+    # agent working memory keyed on ``(namespace, key)``. Linking them
+    # into the graph via ``TOUCHED_MEMORY`` edges lets Cypher answer
+    # "what did the agent remember when it acted on this PR?"
+    MEMORY_ENTRY = "MemoryEntry"
 
 
 class RelType(StrEnum):
@@ -132,6 +142,19 @@ class RelType(StrEnum):
     ON = "ON"
     EMITS = "EMITS"
     HAS_EVENT = "HAS_EVENT"
+    # ── Graph unification (2026-05) ──────────────────────────────────────
+    # Branch → Issue: a branch was cut to address this issue (many:1).
+    BRANCHED_FROM = "BRANCHED_FROM"  # Branch → Issue
+    # PR → Branch: this PR was opened from this branch (1:1 per PR).
+    FROM_BRANCH = "FROM_BRANCH"  # PR → Branch
+    # PR → Comment: any comment (human or bot) posted on the PR thread.
+    HAS_COMMENT = "HAS_COMMENT"  # PR → Comment
+    # PR → CheckRun: a CI check run executing against this PR's head.
+    HAS_CHECK = "HAS_CHECK"  # PR → CheckRun
+    # PR/Issue → MemoryEntry: agent working memory that influenced a
+    # decision on this entity. Written by the graph writer when an agent
+    # stores memory during a run scoped to this PR/Issue.
+    TOUCHED_MEMORY = "TOUCHED_MEMORY"  # PR|Issue → MemoryEntry
 
 
 class GraphNode(BaseModel):
