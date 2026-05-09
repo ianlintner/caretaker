@@ -218,6 +218,26 @@ class GraphBuilder:
                 )
                 counts["edges"] += 1
 
+                # ── Branch → Issue edge ───────────────────────────────
+                # When this PR's branch addresses a tracked issue, wire
+                # the BRANCHED_FROM edge so Cypher can traverse the full
+                # Issue ← Branch ← PR chain.
+                linked_issue = next(
+                    (i for i in state.tracked_issues.values() if i.assigned_pr == number),
+                    None,
+                )
+                if linked_issue is not None:
+                    issue_id = f"issue:{linked_issue.number}"
+                    await self._store.merge_edge(
+                        NodeType.BRANCH,
+                        branch_id,
+                        NodeType.ISSUE,
+                        issue_id,
+                        RelType.BRANCHED_FROM,
+                        _bitemporal(),
+                    )
+                    counts["edges"] += 1
+
             # ── Graph unification: TOUCHED_MEMORY (2026-05) ───────────────
             # TODO: Wire PR → MemoryEntry edges when the M5 live event feed
             # is available. The Neo4jMemoryBackend writes :MemoryEntry nodes;

@@ -338,13 +338,16 @@ class PRAgent:
 
         for pr in open_prs:
             try:
-                tracking = tracked_prs.get(pr.number, TrackedPR(number=pr.number, branch=getattr(pr, 'head_ref', None)))
+                tracking = tracked_prs.get(
+                    pr.number,
+                    TrackedPR(number=pr.number, branch=pr.head_ref or None),
+                )
                 tracking = await self._process_pr(pr, tracking, report)
                 tracking.last_checked = datetime.now(UTC)
                 # Persist branch name for graph unification (2026-05).
                 # head_ref can change on force-push; always update so the
                 # graph stays in sync.
-                if hasattr(pr, 'head_ref') and pr.head_ref:
+                if pr.head_ref:
                     tracking.branch = pr.head_ref
                 tracked_prs[pr.number] = tracking
             except Exception as e:
