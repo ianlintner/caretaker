@@ -11,17 +11,21 @@ Available back-ends:
              Enabled via config: memory_store.backend = "mongo"
     redis  — Upstash / Redis Cloud / local Redis.
              Enabled via config: memory_store.backend = "redis"
+    neo4j  — Neo4j Aura / Desktop / local Docker.
+             Enabled via config: memory_store.backend = "neo4j"
 
 See docs/azure-backend-adoption-roadmap.md § Phase 1.
 """
 
 from caretaker.state.backends.base import MemoryBackend
 from caretaker.state.backends.factory import build_memory_backend
+from caretaker.state.backends.neo4j_backend import Neo4jMemoryBackend
 from caretaker.state.backends.redis_backend import RedisMemoryBackend
 from caretaker.state.backends.sqlite_backend import SQLiteMemoryBackend
 
 __all__ = [
     "MemoryBackend",
+    "Neo4jMemoryBackend",
     "RedisMemoryBackend",
     "SQLiteMemoryBackend",
     "build_memory_backend",

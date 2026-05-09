@@ -120,6 +120,7 @@ class GraphBuilder:
             "causal_events": 0,
             "executors": 0,
             "comments": 0,
+            "branches": 0,
             "edges": 0,
         }
 
@@ -190,6 +191,69 @@ class GraphBuilder:
             )
             counts["prs"] += 1
             await _belongs_to(NodeType.PR, pr_id)
+
+            # ── Graph unification: Branch node (2026-05) ──────────────────
+            # Wire the PR → Branch → Issue chain when branch info is
+            # available. Branch name comes from ``TrackedPR.branch``
+            # (populated at discovery time from ``pr.head.ref``).
+            if getattr(pr, "branch", None):
+                branch_name = str(pr.branch)
+                branch_id = f"branch:{repo_slug}:{branch_name}"
+                await self._store.merge_node(
+                    NodeType.BRANCH,
+                    branch_id,
+                    {
+                        "name": branch_name,
+                        "repo": repo_slug,
+                    },
+                )
+                await _belongs_to(NodeType.BRANCH, branch_id)
+                counts["branches"] += 1
+                # PR → Branch
+                await self._store.merge_edge(
+                    NodeType.PR,
+                    pr_id,
+                    NodeType.BRANCH,
+                    branch_id,
+                    RelType.FROM_BRANCH,
+                    _bitemporal(),
+                )
+                counts["edges"] += 1
+
+                # ── Branch → Issue edge ───────────────────────────────
+                # When this PR's branch addresses a tracked issue, wire
+                # the BRANCHED_FROM edge so Cypher can traverse the full
+                # Issue ← Branch ← PR chain.
+                linked_issue = next(
+                    (i for i in state.tracked_issues.values() if i.assigned_pr == number),
+                    None,
+                )
+                if linked_issue is not None:
+                    issue_id = f"issue:{linked_issue.number}"
+                    await self._store.merge_edge(
+                        NodeType.BRANCH,
+                        branch_id,
+                        NodeType.ISSUE,
+                        issue_id,
+                        RelType.BRANCHED_FROM,
+                        _bitemporal(),
+                    )
+                    counts["edges"] += 1
+
+            # ── Graph unification: TOUCHED_MEMORY (2026-05) ───────────────
+            # TODO: Wire PR → MemoryEntry edges when the M5 live event feed
+            # is available. The Neo4jMemoryBackend writes :MemoryEntry nodes;
+            # the graph writer should stamp TOUCHED_MEMORY from the active
+            # PR/Issue to those entries at write time. For now the edge type
+            # and MemoryEntry node type are defined in models.py so Cypher
+            # queries that reference them don't fail on schema mismatch.
+            #
+            # Example (future):
+            #   await self._store.merge_edge(
+            #       NodeType.PR, pr_id,
+            #       NodeType.MEMORY_ENTRY, mem_entry_id,
+            #       RelType.TOUCHED_MEMORY, _bitemporal(),
+            #   )
 
             # PR agent relationships based on state
             if pr.ownership_state != "unowned":

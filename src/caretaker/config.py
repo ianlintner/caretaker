@@ -1219,12 +1219,13 @@ class MemoryStoreConfig(StrictBaseModel):
 
     enabled: bool = True
     # Storage backend: "sqlite" (default, zero-dependency), "mongo" (Phase 1, requires
-    # MongoConfig.enabled=true and MONGODB_URL env var set), or "redis" (requires
-    # RedisConfig.enabled=true and REDIS_URL env var set).
-    backend: Literal["sqlite", "mongo", "redis"] = "sqlite"
+    # MongoConfig.enabled=true and MONGODB_URL env var set), "redis" (requires
+    # RedisConfig.enabled=true and REDIS_URL env var set), or "neo4j" (requires
+    # GraphStoreConfig.enabled=true and NEO4J_URL / NEO4J_AUTH env vars set).
+    backend: Literal["sqlite", "mongo", "redis", "neo4j"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
-    # Ignored when backend="mongo".
+    # Ignored when backend is not "sqlite".
     db_path: str = ".caretaker-memory.db"
     # Write a JSON snapshot of the store to this path after every save so it
     # can be uploaded as a workflow artifact for auditing / rollback.
