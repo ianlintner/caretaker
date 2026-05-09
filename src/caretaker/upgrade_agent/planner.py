@@ -126,14 +126,8 @@ SYNC_FILES: list[tuple[str, str]] = [
     ),
 ]
 
+
 # BYOCA workflow templates — optional installs. Each entry pairs the local
-# install path with the canonical template path and the config-side flag
-# that gates whether the consumer wants this workflow installed.
-# Sync issues list these in a separate "Optional templates" section so
-# Copilot only writes them when the corresponding feature is enabled.
-OPTIONAL_TEMPLATES: list[tuple[str, str, str]] = []
-
-
 def build_sync_issue_body(version: str) -> str:
     """Build the body for a workflow/file sync issue.
 
@@ -169,23 +163,6 @@ def build_sync_issue_body(version: str) -> str:
     for local_path, template_path in SYNC_FILES:
         url = f"{_REPO_BASE}/{tag_ref}/{template_path}"
         lines.append(f"- **`{local_path}`**")
-        lines.append(f"  Source: {url}")
-        lines.append("")
-
-    lines.extend(
-        [
-            "### Optional templates (BYOCA coding agents)",
-            "",
-            "Sync these only when the matching feature is enabled in "
-            "`.github/maintainer/config.yml`. If the file does not exist locally "
-            "and the gate condition is false, leave it absent. If it exists "
-            "locally, sync it to the canonical version.",
-            "",
-        ]
-    )
-    for local_path, template_path, gate in OPTIONAL_TEMPLATES:
-        url = f"{_REPO_BASE}/{tag_ref}/{template_path}"
-        lines.append(f"- **`{local_path}`** — install when `{gate}`")
         lines.append(f"  Source: {url}")
         lines.append("")
 

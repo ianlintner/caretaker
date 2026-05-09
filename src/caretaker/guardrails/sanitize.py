@@ -200,11 +200,11 @@ _INVISIBLE_CHARS: frozenset[str] = frozenset(
 
 
 # HTML-comment caretaker markers ``<!-- caretaker:… -->`` are reserved for
-# caretaker's internal dispatch-guard state tracking. When they appear in
-# *inbound* content it is almost always because a user pasted a caretaker
-# comment back into an issue body; stripping them prevents a dispatch-
-# guard bypass via echo. Matching is permissive (missing closing ``-->``
-# still strips the marker token) so we also catch truncated payloads.
+# caretaker's internal state tracking. When they appear in *inbound* content
+# it is almost always because a user pasted a caretaker comment back into an
+# issue body; stripping them prevents marker-spoofing via echo. Matching is
+# permissive (missing closing ``-->`` still strips the marker token) so we
+# also catch truncated payloads.
 _CARETAKER_MARKER_RE = re.compile(
     r"<!--\s*caretaker:[a-z0-9:_\-]+(?:\s*-->)?",
     re.IGNORECASE,

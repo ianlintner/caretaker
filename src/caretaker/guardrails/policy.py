@@ -15,7 +15,7 @@ Design notes
 * ``block_caretaker_markers`` defaults to ``True`` on every target. The
   ``<!-- caretaker:* -->`` HTML-comment markers are reserved for
   caretaker's own state tracking; letting an LLM emit one opens a
-  dispatch-guard bypass.
+  marker-spoofing vector.
 * ``MergeRollbackConfig.enabled`` defaults to ``False`` on first ship —
   operators promote per-repo once they are comfortable with the
   post-merge verify cadence.
@@ -43,7 +43,7 @@ class OutputPolicy(_StrictModel):
     block_caretaker_markers
         When ``True`` (default), any ``<!-- caretaker:* -->`` HTML-comment
         in the LLM output is stripped. Operators should never turn this
-        off — the markers are reserved for caretaker's dispatch-guard.
+        off — the markers are reserved for caretaker's internal state tracking.
     block_hidden_links
         Strip zero-width characters and markdown links whose visible text
         and target URL disagree by more than a conservative threshold.

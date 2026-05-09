@@ -22,8 +22,8 @@ Design notes
 The marker is emitted **alongside** existing markers rather than embedded in
 them, so:
   * existing ``<!-- caretaker:xxx -->`` regexes keep matching
-  * the dispatch-guard self-loop regex ``<!--\\s*caretaker:[a-z0-9:_-]+``
-    already catches ``caretaker:causal`` — no workflow JS change needed
+  * the caretaker marker regex ``<!--\\s*caretaker:[a-z0-9:_-]+``
+    already catches ``caretaker:causal`` — no additional change needed
   * adding causal tokens to a write path is a single-line change
 """
 

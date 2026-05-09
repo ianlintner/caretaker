@@ -67,7 +67,6 @@ pr_agent:
     flaky_retries: 1
     ignore_jobs: []
   review:
-    auto_approve_copilot: false
     nitpick_threshold: low
 
 issue_agent:

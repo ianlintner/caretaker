@@ -67,7 +67,6 @@ pr_agent:
     mode: gate_and_merge
   review:
     auto_approve_caretaker_prs: true
-    auto_approve_copilot: false
     nitpick_threshold: low
 
 issue_agent:

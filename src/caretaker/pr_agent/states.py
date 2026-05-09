@@ -118,7 +118,7 @@ def evaluate_ci(
     """Evaluate CI status from check runs.
 
     ``caretaker_workflow_jobs`` carries the names of caretaker's own
-    supervisor jobs (``maintainer.yml``: dispatch-guard / doctor /
+    supervisor jobs (``maintainer.yml``: doctor /
     maintain / self-heal-on-failure). They are excluded from the upstream
     rollup for the same reason ``caretaker/pr-readiness`` is: caretaker
     must not gate itself.

@@ -71,7 +71,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "auto_approve_copilot": { "type": "boolean" },
+            "auto_approve_copilot": { "type": "boolean", "deprecated": true },
             "nitpick_threshold": {
               "type": "string",
               "enum": ["low", "high"]

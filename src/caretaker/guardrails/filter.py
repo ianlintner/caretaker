@@ -9,8 +9,8 @@ classes of failure that sanitize-on-input cannot:
    poisoned upstream back into an outbound artefact.
 2. **Marker spoofing** — the model emits one of caretaker's reserved
    ``<!-- caretaker:* -->`` HTML-comment markers. Those markers are how
-   the dispatch-guard tells self-echoes from human prompts; an LLM that
-   can emit them can bypass the guard entirely.
+   caretaker tracks internal state; an LLM that can emit them can bypass
+   webhook dedup and marker-based guards entirely.
 3. **Render-time shenanigans** — zero-width chars, bidi overrides, ANSI
    escape sequences, visible-vs-target URL mismatches. None of these
    belong in a GitHub comment; all are standard social-engineering
@@ -197,7 +197,7 @@ def filter_output(
     cleaned = content
 
     # Step 1: strip caretaker markers. Non-negotiable; this is the
-    # dispatch-guard backdoor closing move.
+    # marker-spoofing prevention step.
     if pol.block_caretaker_markers:
         cleaned, marker_count = _strip_caretaker_markers_out(cleaned)
         if marker_count:

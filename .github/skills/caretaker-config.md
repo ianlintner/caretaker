@@ -53,7 +53,6 @@ pr_agent:
     flaky_retries: 1
     ignore_jobs: []
   review:
-    auto_approve_copilot: true | false
     nitpick_threshold: low | medium | high
 
 issue_agent:
@@ -235,7 +234,7 @@ pr_agent:
   ci:
     flaky_retries: 2
   review:
-    auto_approve_copilot: true  # Auto-approve
+    nitpick_threshold: low  # Keep nitpicks low
 
 issue_agent:
   enabled: true

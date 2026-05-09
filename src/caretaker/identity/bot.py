@@ -49,8 +49,6 @@ BotFamily = Literal[
 
 # Explicit allowlist of well-known automation logins. Anything here is treated
 # as automated even when the ``[bot]`` suffix is missing (e.g. ``copilot``).
-# Keep in sync with the JS dispatch-guard regex in
-# ``.github/workflows/maintainer.yml`` (handled separately by T-A2).
 _NAMED_BOTS: frozenset[str] = frozenset(
     {
         "copilot",

@@ -141,7 +141,7 @@ pr_agent:
     ignore_jobs: [] # Don't ignore any jobs
 
   review:
-    auto_approve_copilot: false # Don't auto-approve (unless configured)
+    nitpick_threshold: low # Keep review noise minimal
 ```
 
 **Prevention**: Verify branch protection rules align with auto-merge config.

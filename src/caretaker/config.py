@@ -67,7 +67,7 @@ class ReadinessConfig(StrictBaseModel):
     # itself is the running CI, "ci_pending" stays true forever. Always
     # ignored regardless of ``ci.ignore_jobs``.
     caretaker_workflow_check_names: list[str] = Field(
-        default_factory=lambda: ["dispatch-guard", "doctor", "maintain", "self-heal-on-failure"]
+        default_factory=lambda: ["doctor", "maintain", "self-heal-on-failure"]
     )
     # Polling cadence used by the long-running ``resync_open_prs`` loop in
     # the GitHub App webhook server (and any future agent-worker loop). The
@@ -123,11 +123,9 @@ class CIConfig(StrictBaseModel):
 
 
 class ReviewConfig(StrictBaseModel):
-    # NOTE: auto_approve_copilot is currently a no-op — accepted for backward
-    # compatibility with existing configs but not yet wired into the review
-    # flow. Tracked as a follow-up to Sprint 2 E2 (auto-merge after Copilot
-    # post-approval push), where the same review-state semantics need to be
-    # decided. Setting this to true today has no effect.
+    # Deprecated no-op — accepted for backward compat with existing consumer
+    # configs but never wired into the review flow. Will be removed in the
+    # next major version; do not add new references to this field.
     auto_approve_copilot: bool = False
     nitpick_threshold: Literal["low", "high"] = "low"
     # When CI is green and there are no blocking review findings on a caretaker
