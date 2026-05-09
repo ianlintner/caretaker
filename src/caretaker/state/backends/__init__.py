@@ -9,12 +9,20 @@ Available back-ends:
              Works in GitHub Actions with ``actions/cache``.
     mongo  — Azure Cosmos DB for MongoDB / Atlas / local mongod (Phase 1).
              Enabled via config: memory_store.backend = "mongo"
+    redis  — Upstash / Redis Cloud / local Redis.
+             Enabled via config: memory_store.backend = "redis"
 
 See docs/azure-backend-adoption-roadmap.md § Phase 1.
 """
 
 from caretaker.state.backends.base import MemoryBackend
 from caretaker.state.backends.factory import build_memory_backend
+from caretaker.state.backends.redis_backend import RedisMemoryBackend
 from caretaker.state.backends.sqlite_backend import SQLiteMemoryBackend
 
-__all__ = ["MemoryBackend", "SQLiteMemoryBackend", "build_memory_backend"]
+__all__ = [
+    "MemoryBackend",
+    "RedisMemoryBackend",
+    "SQLiteMemoryBackend",
+    "build_memory_backend",
+]

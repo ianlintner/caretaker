@@ -1218,9 +1218,10 @@ class MemoryStoreConfig(StrictBaseModel):
     """Configuration for the disk-backed agent memory store."""
 
     enabled: bool = True
-    # Storage backend: "sqlite" (default, zero-dependency) or "mongo" (Phase 1, requires
-    # MongoConfig.enabled=true and MONGODB_URL env var set).
-    backend: Literal["sqlite", "mongo"] = "sqlite"
+    # Storage backend: "sqlite" (default, zero-dependency), "mongo" (Phase 1, requires
+    # MongoConfig.enabled=true and MONGODB_URL env var set), or "redis" (requires
+    # RedisConfig.enabled=true and REDIS_URL env var set).
+    backend: Literal["sqlite", "mongo", "redis"] = "sqlite"
     # Path to the SQLite database file.  A relative path is resolved from the
     # current working directory (i.e. the GitHub Actions workspace root).
     # Ignored when backend="mongo".

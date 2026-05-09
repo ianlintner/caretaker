@@ -262,7 +262,7 @@
         "enabled": { "type": "boolean" },
         "backend": {
           "type": "string",
-          "enum": ["sqlite", "mongo"]
+          "enum": ["sqlite", "mongo", "redis"]
         },
         "db_path": { "type": "string" },
         "snapshot_path": { "type": "string" },

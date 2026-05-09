@@ -20,6 +20,9 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
     - ``"mongo"``  — MongoDB via ``MongoMemoryBackend`` (Phase 1).
                      Requires ``mongo.enabled = true`` and the
                      ``MONGODB_URL`` env var to be set.
+    - ``"redis"`` — Redis via ``RedisMemoryBackend``.
+                    Requires ``redis.enabled = true`` and the
+                    ``REDIS_URL`` env var to be set.
     """
     if not config.memory_store.enabled:
         return None
@@ -37,6 +40,20 @@ def build_memory_backend(config: MaintainerConfig) -> MemoryBackend | None:
                 mongodb_url_env=config.mongo.mongodb_url_env,
                 database_name=config.mongo.database_name,
                 collection_name=config.mongo.memory_collection,
+                max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
+            )
+
+    if config.memory_store.backend == "redis":
+        if not config.redis.enabled:
+            logger.warning(
+                "memory_store.backend='redis' but redis.enabled=false. Falling back to SQLite."
+            )
+        else:
+            from caretaker.state.backends.redis_backend import build_redis_backend
+
+            logger.info("Using Redis memory backend")
+            return build_redis_backend(
+                redis_url_env=config.redis.redis_url_env,
                 max_entries_per_namespace=config.memory_store.max_entries_per_namespace,
             )
 
