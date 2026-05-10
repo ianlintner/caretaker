@@ -55,6 +55,8 @@ spec:
               value: "caretaker-job-dispatcher"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.default.svc.cluster.local:4317"
+            - name: AZURE_CLIENT_ID
+              value: "e502213f-1f15-4f03-9fb4-b546f51aafe9"
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
