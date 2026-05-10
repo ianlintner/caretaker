@@ -418,6 +418,34 @@ class ClaudeClient:
         )
         return await self._complete("analyze_stuck_pr", prompt, 800)
 
+    async def generate_merge_summary(
+        self,
+        pr_number: int,
+        title: str,
+        body: str,
+        author: str,
+    ) -> str:
+        """Generate a merge close-out comment with summary, notes, and follow-ups.
+
+        Called by the PR agent just before merging to post a human-readable
+        wrap-up comment on the PR.
+        """
+        truncated_body = body[:3000] if body else "(no description provided)"
+        prompt = (
+            f"PR #{pr_number} by @{author} is about to be merged.\n\n"
+            f"Title: {title}\n\n"
+            f"Description:\n{truncated_body}\n\n"
+            "Write a concise merge close-out comment in GitHub Markdown. Include:\n"
+            "1. **Summary** — what this PR does (1-3 sentences)\n"
+            "2. **Notes** — interesting implementation details or tradeoffs "
+            "(bullet list; omit section entirely if nothing notable)\n"
+            "3. **Follow-ups** — open questions or suggested next steps "
+            "(bullet list; omit section entirely if nothing to flag)\n\n"
+            "Be concise. Use Markdown formatting. "
+            "Do not restate the PR title as a heading."
+        )
+        return await self._complete("merge_summary", prompt, 600)
+
     async def decompose_issue(self, issue_body: str, repo_context: str = "") -> str:
         """Break a large issue into smaller implementable tasks."""
         prompt = (
