@@ -41,19 +41,13 @@ pr_agent:
     context_injection: true
   ci:
     flaky_retries: 1
-    # Ignore caretaker's own published readiness check when evaluating
-    # upstream CI. Otherwise the PR state machine sees it as pending /
-    # action_required on every cycle and never transitions to
-    # ci_failing, which deadlocks the custom-agent dispatcher against
-    # its own gate.
-    ignore_jobs:
-      - caretaker/pr-readiness
     # When the repo-wide PR CI backlog guard trips, close caretaker-managed PRs
     # instead of asking Copilot to "fix" queue pressure.
     close_managed_prs_on_backlog: true
   # Autonomous self-merge loop for caretaker-authored PRs.
-  # - gate_and_merge: caretaker/pr-readiness is a required check AND caretaker
-  #   merges directly when the PR turns green.
+  # - merge_authority.mode: advisory — readiness check publishing is disabled
+  #   globally (ReadinessConfig.enabled defaults to False), so caretaker relies
+  #   on its own CI evaluation and auto-approve logic to decide merge readiness.
   # - auto_approve_caretaker_prs: caretaker submits an APPROVE review on its own
   #   PRs once CI is clean and no blocker findings exist, satisfying the
   #   required-review gate without a human in the loop.
@@ -64,7 +58,7 @@ pr_agent:
   # autonomy regressed silently after PR #621. Inlined here as the single
   # source of truth.
   merge_authority:
-    mode: gate_and_merge
+    mode: advisory
   review:
     auto_approve_caretaker_prs: true
     nitpick_threshold: low

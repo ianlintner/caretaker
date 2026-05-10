@@ -31,7 +31,7 @@ Help developers understand, configure, and customize caretaker behavior for thei
 ### Full Configuration Structure
 
 ```yaml
-version: v1  # Config schema version (required)
+version: v1 # Config schema version (required)
 
 orchestrator:
   schedule: daily | weekly | hourly | manual
@@ -88,7 +88,7 @@ docs_agent:
   auto_update_changelog: true | false
 
 escalation:
-  targets: []  # GitHub usernames, empty = repo owner
+  targets: [] # GitHub usernames, empty = repo owner
   stale_days: 7
   labels: ["maintainer:escalated"]
 
@@ -123,19 +123,19 @@ orchestrator:
 pr_agent:
   enabled: true
   auto_merge:
-    copilot_prs: false  # Manual review required
+    copilot_prs: false # Manual review required
     dependabot_prs: false
     human_prs: false
     merge_method: squash
 
 issue_agent:
   enabled: true
-  auto_assign_bugs: false  # Manual triage
+  auto_assign_bugs: false # Manual triage
   auto_assign_features: false
 
 upgrade_agent:
   enabled: true
-  strategy: manual  # No automatic upgrades
+  strategy: manual # No automatic upgrades
   auto_merge_non_breaking: false
 
 # Most agents disabled for safety
@@ -144,13 +144,13 @@ dependency_agent:
 
 security_agent:
   enabled: true
-  auto_fix_vulnerabilities: false  # Alert only
+  auto_fix_vulnerabilities: false # Alert only
 
 devops_agent:
   enabled: false
 
 escalation:
-  stale_days: 3  # Quick escalation
+  stale_days: 3 # Quick escalation
 ```
 
 ### 2. Balanced / Recommended
@@ -168,8 +168,8 @@ orchestrator:
 pr_agent:
   enabled: true
   auto_merge:
-    copilot_prs: true  # Trust caretaker PRs
-    dependabot_prs: true  # Auto-merge deps
+    copilot_prs: true # Trust caretaker PRs
+    dependabot_prs: true # Auto-merge deps
     human_prs: false
     merge_method: squash
   copilot:
@@ -182,19 +182,19 @@ pr_agent:
 
 issue_agent:
   enabled: true
-  auto_assign_bugs: true  # Auto-assign simple bugs
-  auto_assign_features: false  # Manual feature review
+  auto_assign_bugs: true # Auto-assign simple bugs
+  auto_assign_features: false # Manual feature review
 
 upgrade_agent:
   enabled: true
-  strategy: auto-minor  # Auto-upgrade minor versions
+  strategy: auto-minor # Auto-upgrade minor versions
   channel: stable
   auto_merge_non_breaking: true
 
 dependency_agent:
   enabled: true
   auto_merge_minor: false
-  auto_merge_patch: true  # Auto patch updates only
+  auto_merge_patch: true # Auto patch updates only
 
 security_agent:
   enabled: true
@@ -217,7 +217,7 @@ Use when: High-trust environment, low-risk repo, fast iteration
 version: v1
 
 orchestrator:
-  schedule: hourly  # Very frequent
+  schedule: hourly # Very frequent
   summary_issue: true
   dry_run: false
 
@@ -226,7 +226,7 @@ pr_agent:
   auto_merge:
     copilot_prs: true
     dependabot_prs: true
-    human_prs: true  # Even auto-merge human PRs (careful!)
+    human_prs: true # Even auto-merge human PRs (careful!)
     merge_method: squash
   copilot:
     max_retries: 3
@@ -234,21 +234,21 @@ pr_agent:
   ci:
     flaky_retries: 2
   review:
-    nitpick_threshold: low  # Keep nitpicks low
+    nitpick_threshold: low # Keep nitpicks low
 
 issue_agent:
   enabled: true
   auto_assign_bugs: true
-  auto_assign_features: true  # Auto-assign features too
+  auto_assign_features: true # Auto-assign features too
 
 upgrade_agent:
   enabled: true
-  strategy: latest  # Always latest
+  strategy: latest # Always latest
   auto_merge_non_breaking: true
 
 dependency_agent:
   enabled: true
-  auto_merge_minor: true  # Auto minor updates
+  auto_merge_minor: true # Auto minor updates
   auto_merge_patch: true
 
 security_agent:
@@ -260,7 +260,7 @@ devops_agent:
   auto_fix_ci: true
 
 llm:
-  claude_enabled: true  # Use Claude for better decisions
+  claude_enabled: true # Use Claude for better decisions
   claude_features:
     - ci_log_analysis
     - architectural_review
@@ -276,7 +276,7 @@ version: v1
 
 orchestrator:
   schedule: weekly
-  summary_issue: false  # Less noise
+  summary_issue: false # Less noise
   dry_run: false
 
 pr_agent:
@@ -297,13 +297,13 @@ upgrade_agent:
   enabled: true
 
 dependency_agent:
-  enabled: false  # No dependencies
+  enabled: false # No dependencies
 
 security_agent:
-  enabled: false  # No security concerns
+  enabled: false # No security concerns
 
 devops_agent:
-  enabled: false  # No complex CI
+  enabled: false # No complex CI
 
 docs_agent:
   enabled: true
@@ -314,22 +314,24 @@ docs_agent:
 
 ### Tuning Schedule
 
-| Repo Activity | Recommended Schedule | Reasoning |
-|---------------|---------------------|-----------|
-| <2 commits/day | weekly | Low activity, weekly is sufficient |
-| 2-10 commits/day | daily | Moderate activity, daily keeps up |
-| >10 commits/day | hourly | High activity, need frequent checks |
-| On-demand | manual | Use workflow_dispatch trigger only |
+| Repo Activity    | Recommended Schedule | Reasoning                           |
+| ---------------- | -------------------- | ----------------------------------- |
+| <2 commits/day   | weekly               | Low activity, weekly is sufficient  |
+| 2-10 commits/day | daily                | Moderate activity, daily keeps up   |
+| >10 commits/day  | hourly               | High activity, need frequent checks |
+| On-demand        | manual               | Use workflow_dispatch trigger only  |
 
 ### Tuning Auto-Merge
 
 **When to enable copilot_prs auto-merge:**
+
 - ✅ You trust caretaker's judgment
 - ✅ You have comprehensive tests
 - ✅ PRs are small and focused
 - ✅ You review commit history regularly
 
 **When to disable:**
+
 - ❌ Critical production system
 - ❌ Compliance/audit requirements
 - ❌ Learning caretaker behavior
@@ -339,15 +341,15 @@ docs_agent:
 
 Enable agents based on repo needs:
 
-| Agent | Enable When | Disable When |
-|-------|-------------|--------------|
-| pr_agent | Always | Never (core agent) |
-| issue_agent | Have external contributors | Private/internal repo only |
-| upgrade_agent | Want auto-updates | Pinned versions required |
-| dependency_agent | Use package managers | No dependencies |
-| security_agent | Have security concerns | Low-risk projects |
-| devops_agent | Complex CI | Simple/no CI |
-| docs_agent | Have changelog | No docs/changelog |
+| Agent            | Enable When                | Disable When               |
+| ---------------- | -------------------------- | -------------------------- |
+| pr_agent         | Always                     | Never (core agent)         |
+| issue_agent      | Have external contributors | Private/internal repo only |
+| upgrade_agent    | Want auto-updates          | Pinned versions required   |
+| dependency_agent | Use package managers       | No dependencies            |
+| security_agent   | Have security concerns     | Low-risk projects          |
+| devops_agent     | Complex CI                 | Simple/no CI               |
+| docs_agent       | Have changelog             | No docs/changelog          |
 
 ## Validation and Testing
 
@@ -389,6 +391,7 @@ gh run watch
 **Symptom**: Changes to config don't seem to apply
 
 **Solutions**:
+
 1. Verify config file is committed and pushed
 2. Check file path is exactly `.github/maintainer/config.yml`
 3. Validate YAML syntax
@@ -400,6 +403,7 @@ gh run watch
 **Symptom**: "Invalid configuration" errors
 
 **Solutions**:
+
 1. Check YAML syntax (indentation, quotes)
 2. Verify all required fields present
 3. Check field names for typos
@@ -411,6 +415,7 @@ gh run watch
 **Symptom**: Caretaker doing more/less than expected
 
 **Solutions**:
+
 1. Review auto_merge settings
 2. Check agent enabled status
 3. Verify schedule is appropriate

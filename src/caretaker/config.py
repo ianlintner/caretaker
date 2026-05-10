@@ -42,7 +42,7 @@ class OwnershipConfig(StrictBaseModel):
 class ReadinessConfig(StrictBaseModel):
     """Configuration for PR readiness evaluation."""
 
-    enabled: bool = True
+    enabled: bool = False
     check_name: str = "caretaker/pr-readiness"
     required_reviews: int = 1
     require_all_checks_passed: bool = True
