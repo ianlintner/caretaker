@@ -212,11 +212,10 @@ spec:
             # consumer task per replica drains the stream. Survives pod
             # restart; load-balanced across replicas via consumer group.
             - name: CARETAKER_EVENT_BUS_MAXLEN
-              # Keep the Redis stream comfortably below the 400Mi Redis
-              # maxmemory cap. Large scheduler payloads previously filled
-              # Redis before reaching 100k entries, causing login session
-              # writes to fail with OutOfMemoryError.
-              value: "5000"
+              # Keep the Redis stream well below the 1Gi Redis maxmemory cap.
+              # Each caretaker:events entry averages ~260 KiB; 500 entries ≈ 130 MiB.
+              # Previously 5000 caused OOM (5000 × 260 KiB ≈ 1.3 GiB > 1 GiB limit).
+              value: "500"
             - name: CARETAKER_EVENT_BUS_CLAIM_IDLE_MS
               value: "300000"
             - name: CARETAKER_EVENT_BUS_REAPER_INTERVAL_SECONDS
