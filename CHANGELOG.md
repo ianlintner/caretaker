@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-W20] — 2026-05-11
+
+- default complex_reviewer to opencode (#672)
+- add v0.27.1 to releases.json (#673)
+- opencode_local backend with tier-based model selection (#674)
+- add v0.28.0 to releases.json (#675)
+- correct opencode CLI invocation + real model IDs (#677)
+- add v0.28.1 to releases.json (#678)
+- install git in MCP image (#679)
+- add v0.28.2 to releases.json (#680)
+- env-driven log level + DEBUG default in QA (#681)
+- add v0.28.3 to releases.json (#682)
+- use verified-working OpenRouter model IDs (#683)
+- add v0.28.4 to releases.json (#684)
+- phases 1-4 — metrics, health probe, OTEL spans, cost tracking, PR timeline (#685)
+- caretaker fleet migration — gated review workflows (#686)
+- config-driven webhook fleet allow-list (#687)
+- add v0.29.0 to releases.json (#688)
+- no-config-file is ok, not fail (#690)
+- add v0.29.1 to releases.json (#691)
+- MCP memory 1Gi → 2Gi + log level INFO (#692)
+- skip fleet heartbeat write on not_in_allowlist outcome (#694)
+- Cosmos-compatible Mongo sort queries (#695)
+- add v0.29.2 to releases.json (#696)
+- resolve v0.29.2 e2e validation gaps (#697)
+- add v0.29.3 to releases.json (#698)
+- Bump transitive GitPython to 3.1.49 to remediate config newline injection RCE (#699)
+- durable K8s coding job pipeline via Azure Service Bus + Redis Streams (#700)
+- route CI failures through opencode_local for dogfooding (#701)
+- rewrite with 4 current-state diagrams (#702)
+- refresh README + 4 doc pages to current architecture (#703)
+- Redis + Neo4j memory backends, graph unification (Branch nodes) (#705)
+- disable readiness gate, add pre-merge summary comment, fix ASB test stubs (#706)
+- reduce event bus MAXLEN to 500 and pin dispatcher managed identity (#707)
+- bump urllib3 from 2.6.3 to 2.7.0 in the uv group across 1 directory (#712)
+
 ## [2026-W19] — 2026-05-04
 
 - route PR-head CI failures to PR comment, not new issue (#611)
