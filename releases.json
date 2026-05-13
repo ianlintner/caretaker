@@ -1,6 +1,13 @@
 {
   "releases": [
     {
+      "version": "0.29.4",
+      "min_compatible": "0.29.3",
+      "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.29.4",
+      "upgrade_notes": "<!-- Release notes generated using configuration in .github/release.yml at v0.29.4 -->\n\n## What's Changed\n### Maintenance\n* chore(deps): bump urllib3 from 2.6.3 to 2.7.0 in the uv group across 1 directory by @dependabot[bot] in https://github.com/ianlintner/caretaker/pull/712\n* chore(deps): bump authlib from 1.7.0 to 1.7.1 in the uv group across 1 directory by @dependabot[bot] in https://github.com/ianlintner/caretaker/pull/715\n### Other Changes\n* chore: add v0.29.3 to releases.json by @github-actions[bot] in https://github.com/ianlintner/caretaker/pull/698\n* Bump transitive GitPython to 3.1.49 to remediate config newline injection RCE by @Copilot in https://github.com/ianlintner/caretaker/pull/699\n* feat(coding-jobs): durable K8s coding job pipeline via Azure Service Bus + Redis Streams by @ianlintner in https://github.com/ianlintner/caretaker/pull/700\n* feat(ci-fix): route CI failures through opencode_local for dogfooding by @ianlintner in https://github.com/ianlintner/caretaker/pull/701\n* docs(architecture): rewrite with 4 current-state diagrams by @ianlintner in https://github.com/ianlintner/caretaker/pull/702\n* docs: refresh README + 4 doc pages to current architecture by @ianlintner in https://github.com/ianlintner/caretaker/pull/703\n* feat: Redis + Neo4j memory backends, graph unification (Branch nodes) by @ianlintner in https://github.com/ianlintner/caretaker/pull/705\n* chore(maintainer): disable readiness gate, add pre-merge summary comment, fix ASB test stubs by @ianlintner in https://github.com/ianlintner/caretaker/pull/706\n* fix(k8s): reduce event bus MAXLEN to 500 and pin dispatcher managed identity by @ianlintner in https://github.com/ianlintner/caretaker/pull/707\n\n\n**Full Changelog**: https://github.com/ianlintner/caretaker/compare/v0.29.3...v0.29.4",
+      "breaking": false
+    },
+    {
       "version": "0.29.3",
       "min_compatible": "0.29.2",
       "changelog_url": "https://github.com/ianlintner/caretaker/releases/tag/v0.29.3",
