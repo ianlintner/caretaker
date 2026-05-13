@@ -46,7 +46,12 @@ spec:
           image: gabby.azurecr.io/caretaker-mcp:latest
           imagePullPolicy: Always
           args: ["python", "-m", "caretaker.coding_jobs.dispatcher_main"]
+          # Force line-buffered stdout/stderr so crash logs aren't lost
+          # in the stdio buffer — same fix as 2026-04-30 postmortem.
+          terminationMessagePolicy: FallbackToLogsOnError
           env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: CARETAKER_ASB_NAMESPACE
               value: "thebiggestboy.servicebus.windows.net"
             - name: CARETAKER_CODING_JOBS_K8S_WORKER_IMAGE
@@ -66,7 +71,10 @@ spec:
           resources:
             requests:
               cpu: "50m"
-              memory: "128Mi"
+              # Raised from 128Mi: steady-state observed at 140Mi (kubectl top).
+              memory: "192Mi"
             limits:
               cpu: "200m"
-              memory: "256Mi"
+              # Raised from 256Mi to give headroom above the 192Mi request
+              # and absorb Redis-stream replay spikes.
+              memory: "384Mi"

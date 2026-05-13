@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from caretaker.config import OwnershipConfig
-from caretaker.github_client.models import Comment, User
+from caretaker.github_client.models import Comment, PRState, User
 from caretaker.pr_agent.ownership import (
     STATUS_COMMENT_MARKER,
     build_status_comment,
@@ -21,6 +21,7 @@ from caretaker.pr_agent.ownership import (
     compact_legacy_comments,
     find_status_comment,
     release_ownership,
+    should_release_ownership,
     upsert_status_comment,
 )
 from caretaker.state.models import OwnershipState, TrackedPR
@@ -318,3 +319,51 @@ class TestCompactLegacyComments:
 class TestTrackedPRCompactionFlag:
     def test_default_is_false(self) -> None:
         assert TrackedPR(number=1).legacy_comments_compacted is False
+
+
+# ── should_release_ownership ──────────────────────────────────────────────────
+
+
+class TestShouldReleaseOwnership:
+    """Regression tests for the escalated-reason branch.
+
+    Previously ``should_release_ownership(pr, tracking, "escalated")``
+    returned True for *any* OWNED PR, causing every claimed PR to be
+    immediately released as escalated on the second evaluation cycle.
+    The fix checks ``tracking.escalated`` instead of blindly returning True.
+    """
+
+    def _owned_tracking(self, *, escalated: bool = False) -> TrackedPR:
+        t = TrackedPR(number=1)
+        t.ownership_state = OwnershipState.OWNED
+        t.escalated = escalated
+        return t
+
+    def test_escalated_reason_false_when_not_escalated(self) -> None:
+        """Normal owned PR must NOT be released as escalated."""
+        pr = make_pr(number=1)
+        tracking = self._owned_tracking(escalated=False)
+        assert should_release_ownership(pr, tracking, "escalated") is False
+
+    def test_escalated_reason_true_when_escalated(self) -> None:
+        """PR with tracking.escalated=True must be released."""
+        pr = make_pr(number=1)
+        tracking = self._owned_tracking(escalated=True)
+        assert should_release_ownership(pr, tracking, "escalated") is True
+
+    def test_unowned_pr_never_releases_escalated(self) -> None:
+        """UNOWNED PR ignores the escalated flag entirely."""
+        pr = make_pr(number=1)
+        t = TrackedPR(number=1)  # default UNOWNED
+        t.escalated = True
+        assert should_release_ownership(pr, t, "escalated") is False
+
+    def test_merged_reason_unaffected(self) -> None:
+        pr = make_pr(number=1, merged=True)
+        tracking = self._owned_tracking()
+        assert should_release_ownership(pr, tracking, "merged") is True
+
+    def test_closed_reason_unaffected(self) -> None:
+        pr = make_pr(number=1, state=PRState.CLOSED)
+        tracking = self._owned_tracking()
+        assert should_release_ownership(pr, tracking, "closed") is True

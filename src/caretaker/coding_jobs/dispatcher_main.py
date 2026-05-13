@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,29 @@ async def _main() -> None:
         asyncio.create_task(result_poster.run(redis_bus), name="result-poster"),
     ]
 
+    def _on_task_done(task: asyncio.Task[object]) -> None:  # noqa: ANN001
+        """Trigger graceful shutdown if a task dies unexpectedly.
+
+        A task that exits without cancellation is a bug — either a Redis
+        TimeoutError leaked past the reconnect loop or some other fatal
+        condition. Setting ``stop`` here causes the main coroutine to
+        cancel the remaining tasks and exit non-zero, which lets
+        Kubernetes restart the pod and self-heal.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "task %s failed — triggering shutdown so Kubernetes restarts the pod",
+                task.get_name(),
+                exc_info=exc,
+            )
+            stop.set()
+
+    for t in tasks:
+        t.add_done_callback(_on_task_done)
+
     logger.info("caretaker-job-dispatcher started namespace=%s", config.asb_namespace)
     await stop.wait()
     for t in tasks:
@@ -79,6 +103,13 @@ async def _main() -> None:
     await redis_bus.close()
     await asb_client.close()
     await credential.close()
+
+    # Exit non-zero when stop was triggered by a task failure (not SIGTERM/SIGINT).
+    # Kubernetes restartPolicy:Always applies backoff on non-zero exits, giving
+    # operators a clear crash-restart signal rather than a silent zombie pod.
+    for t in tasks:
+        if not t.cancelled() and t.exception() is not None:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
