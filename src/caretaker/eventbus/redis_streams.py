@@ -182,7 +182,28 @@ class RedisStreamsEventBus:
         block_ms: int = 5_000,
         batch_size: int = 10,
     ) -> None:
-        await self.ensure_group(stream, group)
+        # Retry ensure_group with exponential backoff. A Redis TimeoutError here
+        # (e.g. during pod startup or after an OOM restart) previously propagated
+        # directly out of consume() and killed the caller's asyncio task silently.
+        _backoff = 1.0
+        while True:
+            try:
+                await self.ensure_group(stream, group)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "eventbus.consume ensure_group failed stream=%s group=%s — retry in %.0fs",
+                    stream,
+                    group,
+                    _backoff,
+                    exc_info=True,
+                )
+                self._client = None
+                await asyncio.sleep(_backoff)
+                _backoff = min(_backoff * 2, 30.0)
+
         logger.info(
             "eventbus.consume start stream=%s group=%s consumer=%s",
             stream,
@@ -190,6 +211,7 @@ class RedisStreamsEventBus:
             consumer,
         )
         client = await self._get_client()
+        _backoff = 1.0
 
         while True:
             try:
@@ -216,10 +238,12 @@ class RedisStreamsEventBus:
                     exc_info=True,
                 )
                 self._client = None
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(_backoff)
+                _backoff = min(_backoff * 2, 30.0)
                 client = await self._get_client()
                 continue
 
+            _backoff = 1.0  # reset on successful read
             if not response:
                 continue
 

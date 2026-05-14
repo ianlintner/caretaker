@@ -304,6 +304,14 @@ spec:
                   name: caretaker-secrets
                   key: openrouter-api-key
                   optional: true
+            - name: CARETAKER_DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: discord-bot-token
+                  optional: true
+            - name: CARETAKER_DISCORD_CHANNEL_ID
+              value: "1504316939089084506"
           resources:
             requests:
               cpu: "10m"

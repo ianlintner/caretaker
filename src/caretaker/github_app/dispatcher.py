@@ -49,6 +49,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from caretaker.github_app.events import agents_for_event
+from caretaker.identity.bot import deterministic_family
 from caretaker.observability.metrics import (
     record_error,
     record_webhook_event,
@@ -259,6 +260,34 @@ class WebhookDispatcher:
                         duration_seconds=duration,
                         detail=f"repo {repo_slug!r} not in fleet_gate.allowed_repos",
                     )
+
+            # Self-sender filter — drop events that caretaker itself fired
+            # (e.g. issue_comment.edited from tracker state updates).
+            # Prevents the feedback loop where our own comment edits re-trigger
+            # the full dispatch cycle.
+            if parsed.sender_login and deterministic_family(parsed.sender_login) == "caretaker":
+                logger.debug(
+                    "webhook self-sender suppressed event=%s action=%s delivery=%s sender=%s",
+                    parsed.event_type,
+                    parsed.action,
+                    parsed.delivery_id,
+                    parsed.sender_login,
+                )
+                duration = time.monotonic() - started
+                record_webhook_event(
+                    event=parsed.event_type,
+                    mode=self._mode.value,
+                    outcome="self_sender",
+                )
+                return DispatchResult(
+                    mode=self._mode,
+                    event=parsed.event_type,
+                    delivery_id=parsed.delivery_id,
+                    agents=(),
+                    outcome="self_sender",
+                    duration_seconds=duration,
+                    detail=f"sender {parsed.sender_login!r} is caretaker itself",
+                )
 
             agents = tuple(agents_for_event(parsed.event_type))
 

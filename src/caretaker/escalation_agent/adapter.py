@@ -32,6 +32,7 @@ class EscalationAgentAdapter(BaseAgent):
             owner=self._ctx.owner,
             repo=self._ctx.repo,
             notify_assignees=cfg.notify_assignees,
+            discord_config=self._ctx.config.discord,
         )
         report = await agent.run()
         return AgentResult(

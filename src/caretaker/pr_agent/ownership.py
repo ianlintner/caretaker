@@ -194,7 +194,7 @@ def should_release_ownership(
         return False
 
     if reason == "escalated":
-        return True
+        return tracking.escalated
     if reason == "merged":
         return bool(pr.merged)
     if reason == "closed":

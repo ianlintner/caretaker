@@ -135,3 +135,30 @@ def test_parse_webhook_ignores_bogus_installation_id() -> None:
         headers={"X-GitHub-Event": "ping", "X-GitHub-Delivery": "d"},
     )
     assert parsed.installation_id is None
+
+
+def test_parse_webhook_extracts_sender_login() -> None:
+    payload = {"sender": {"login": "the-care-taker[bot]", "type": "Bot"}}
+    body = json.dumps(payload).encode("utf-8")
+    parsed = parse_webhook(
+        body=body,
+        headers={"X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "d"},
+    )
+    assert parsed.sender_login == "the-care-taker[bot]"
+
+
+def test_parse_webhook_sender_login_defaults_to_empty() -> None:
+    parsed = parse_webhook(
+        body=b"{}",
+        headers={"X-GitHub-Event": "ping", "X-GitHub-Delivery": "d"},
+    )
+    assert parsed.sender_login == ""
+
+
+def test_parse_webhook_ignores_non_string_sender_login() -> None:
+    body = json.dumps({"sender": {"login": 42}}).encode("utf-8")
+    parsed = parse_webhook(
+        body=body,
+        headers={"X-GitHub-Event": "ping", "X-GitHub-Delivery": "d"},
+    )
+    assert parsed.sender_login == ""

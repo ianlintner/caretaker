@@ -495,6 +495,31 @@ class PRReviewerAgent(BaseAgent):
                             backend_label = fix_decision.backend
                         else:
                             auto_fix_reason = fix_decision.reason
+                            # Pre-escalation rung: one final attempt before giving up.
+                            if _auto_fix.should_attempt_pre_escalation(
+                                fix_decision.reason, cfg.auto_fix
+                            ):
+                                import types as _types  # noqa: PLC0415
+
+                                _pr_obj = _types.SimpleNamespace(
+                                    html_url=pr_url,
+                                    head_ref=head_branch,
+                                )
+                                _pre_fixed = await _auto_fix.dispatch_pre_escalation_attempt(
+                                    _pr_obj,
+                                    cfg.auto_fix,
+                                    cfg,
+                                    all_prior_errors="",
+                                    attempt_count=tracking.auto_fix_attempts,
+                                )
+                                if _pre_fixed:
+                                    logger.info(
+                                        "pr-reviewer: pre-escalation agent fixed PR #%d "
+                                        "(harvest path)",
+                                        pr_number,
+                                    )
+                                    auto_fix_dispatched = True
+                                    auto_fix_reason = "pre_escalation_success"
                         break  # one REQUEST_CHANGES is enough to arm the fixer
                 # Always mark reviewed after harvest regardless of fix dispatch.
                 try:
@@ -716,6 +741,33 @@ class PRReviewerAgent(BaseAgent):
                             )
                             auto_fix_dispatched = True
                             state.tracked_prs[pr_number] = _tracking
+                        else:
+                            # Pre-escalation rung: one final attempt before giving up.
+                            if _auto_fix.should_attempt_pre_escalation(
+                                _decision.reason, cfg.auto_fix
+                            ):
+                                import types as _types  # noqa: PLC0415
+
+                                _pr_obj = _types.SimpleNamespace(
+                                    html_url=pr_url,
+                                    head_ref=head_branch,
+                                )
+                                _pre_fixed = await _auto_fix.dispatch_pre_escalation_attempt(
+                                    _pr_obj,
+                                    cfg.auto_fix,
+                                    cfg,
+                                    all_prior_errors="",
+                                    attempt_count=_tracking.auto_fix_attempts,
+                                )
+                                if _pre_fixed:
+                                    logger.info(
+                                        "pr-reviewer: pre-escalation agent fixed PR #%d "
+                                        "(inline path)",
+                                        pr_number,
+                                    )
+                                    auto_fix_dispatched = True
+                                    auto_fix_reason = "pre_escalation_success"
+                                    state.tracked_prs[pr_number] = _tracking
                     # Mark as reviewed
                     try:
                         reviewed_label = "caretaker:reviewed"
@@ -900,6 +952,31 @@ class PRReviewerAgent(BaseAgent):
                             new_head_sha=outcome.new_head_sha,
                             fix_backend=fix_decision.backend,
                         )
+                else:
+                    # Pre-escalation rung: one final attempt before giving up.
+                    if _auto_fix.should_attempt_pre_escalation(fix_decision.reason, cfg.auto_fix):
+                        import types as _types  # noqa: PLC0415
+
+                        _pr_obj = _types.SimpleNamespace(
+                            html_url=pr_url,
+                            head_ref=head_branch,
+                        )
+                        _pre_fixed = await _auto_fix.dispatch_pre_escalation_attempt(
+                            _pr_obj,
+                            cfg.auto_fix,
+                            cfg,
+                            all_prior_errors="",
+                            attempt_count=_tracking.auto_fix_attempts,
+                        )
+                        if _pre_fixed:
+                            logger.info(
+                                "pr-reviewer: pre-escalation agent fixed PR #%d "
+                                "(local-subprocess path)",
+                                pr_number,
+                            )
+                            auto_fix_dispatched = True
+                            auto_fix_reason = "pre_escalation_success"
+                            state.tracked_prs[pr_number] = _tracking
             await self._emit_pr_review_audit(
                 owner=owner,
                 repo=repo,
@@ -1068,7 +1145,71 @@ class PRReviewerAgent(BaseAgent):
                 exc,
             )
         report.reviewed.append(pr_number)
+        await self._notify_discord_review(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            pr_title=(pr.get("title") or f"#{pr_number}"),
+            pr_url=f"https://github.com/{owner}/{repo}/pull/{pr_number}",
+            backend=backend,
+            review_result=review_result,
+        )
         return review_result
+
+    async def _notify_discord_review(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        pr_title: str,
+        pr_url: str,
+        backend: str,
+        review_result: ReviewResult,
+    ) -> None:
+        discord_cfg = self._ctx.config.discord
+        if not discord_cfg.enabled:
+            return
+        from caretaker.notifications.discord import DiscordColor, DiscordNotifier
+
+        notifier = DiscordNotifier.from_config(discord_cfg)
+        if not notifier:
+            return
+
+        verdict = getattr(review_result, "verdict", "COMMENT")
+        color = (
+            DiscordColor.SUCCESS
+            if verdict == "APPROVE"
+            else (DiscordColor.FAILURE if verdict == "REQUEST_CHANGES" else DiscordColor.INFO)
+        )
+        summary = getattr(review_result, "summary", "") or ""
+        comments = getattr(review_result, "comments", []) or []
+        comment_lines = []
+        for c in comments[:10]:
+            path = getattr(c, "path", "?")
+            line = getattr(c, "line", 0)
+            body = (getattr(c, "body", "") or "")[:200]
+            comment_lines.append(f"**{path}:{line}** — {body}")
+        fields = []
+        if comment_lines:
+            fields.append(
+                {
+                    "name": f"Inline comments ({len(comments)} total)",
+                    "value": "\n".join(comment_lines[:5]),
+                    "inline": False,
+                }
+            )
+        fields.append({"name": "Backend", "value": backend, "inline": True})
+        fields.append({"name": "Verdict", "value": verdict, "inline": True})
+
+        await notifier.send_embed(
+            title=f"PR Review — {owner}/{repo}#{pr_number}",
+            description=f"**[{pr_title}]({pr_url})**\n\n{summary[:1500]}",
+            color=color,
+            fields=fields,
+            url=pr_url,
+            footer=f"{owner}/{repo}",
+        )
 
     async def _classify_complexity(  # noqa: PLR0913 — kwargs-only callsite
         self,
