@@ -74,6 +74,7 @@ def webhook_event_payload(parsed: ParsedWebhook) -> dict[str, object]:
         "action": parsed.action,
         "installation_id": parsed.installation_id,
         "repository_full_name": parsed.repository_full_name,
+        "sender_login": parsed.sender_login,
         "raw_payload": parsed.payload,
     }
     _inject_trace_context(payload)
@@ -103,6 +104,7 @@ def run_trigger_event_payload(
         "action": parsed.action,
         "installation_id": parsed.installation_id,
         "repository_full_name": parsed.repository_full_name,
+        "sender_login": parsed.sender_login,
         "raw_payload": parsed.payload,
     }
     _inject_trace_context(payload)
@@ -128,6 +130,15 @@ def _parsed_from_payload(payload: dict[str, Any]) -> ParsedWebhook | None:
         installation_id = payload.get("installation_id")
         repo_full = payload.get("repository_full_name")
         raw_payload = payload.get("raw_payload") or {}
+        # sender_login: prefer the top-level field (set since this fix);
+        # fall back to raw_payload.sender.login for older queued events.
+        sender_login = payload.get("sender_login") or ""
+        if not sender_login and isinstance(raw_payload, dict):
+            raw_sender = raw_payload.get("sender")
+            if isinstance(raw_sender, dict):
+                raw_login = raw_sender.get("login")
+                if isinstance(raw_login, str):
+                    sender_login = raw_login
         return ParsedWebhook(
             event_type=str(payload["event_type"]),
             delivery_id=str(payload["delivery_id"]),
@@ -135,6 +146,7 @@ def _parsed_from_payload(payload: dict[str, Any]) -> ParsedWebhook | None:
             installation_id=int(installation_id) if isinstance(installation_id, int) else None,
             repository_full_name=str(repo_full) if isinstance(repo_full, str) else None,
             payload=raw_payload if isinstance(raw_payload, dict) else {},
+            sender_login=sender_login,
         )
     except (KeyError, TypeError, ValueError) as exc:
         logger.error("undecodable event payload: %s", exc)

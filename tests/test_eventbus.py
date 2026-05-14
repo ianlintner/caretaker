@@ -163,3 +163,48 @@ def test_webhook_event_payload_roundtrip() -> None:
     assert payload["installation_id"] == 42
     assert payload["repository_full_name"] == "owner/repo"
     assert payload["raw_payload"] == {"pull_request": {"number": 7}}
+
+
+def test_webhook_event_payload_preserves_sender_login() -> None:
+    """sender_login must survive the serialize → deserialize round-trip.
+
+    Without this, the self-sender filter in the dispatcher is bypassed for
+    all events consumed from the Redis bus (sender_login defaults to "").
+    """
+    from caretaker.eventbus.consumer import _parsed_from_payload
+
+    parsed = ParsedWebhook(
+        event_type="issue_comment",
+        delivery_id="xyz-999",
+        action="edited",
+        installation_id=99,
+        repository_full_name="org/repo",
+        payload={"sender": {"login": "the-care-taker[bot]"}, "comment": {}},
+        sender_login="the-care-taker[bot]",
+    )
+    bus_payload = webhook_event_payload(parsed)
+    assert bus_payload["sender_login"] == "the-care-taker[bot]"
+
+    re_parsed = _parsed_from_payload(bus_payload)
+    assert re_parsed is not None
+    assert re_parsed.sender_login == "the-care-taker[bot]"
+
+
+def test_parsed_from_payload_falls_back_to_raw_payload_sender() -> None:
+    """Older queued events without a top-level sender_login still get the login
+    extracted from raw_payload.sender.login."""
+    from caretaker.eventbus.consumer import _parsed_from_payload
+
+    # Simulate a pre-fix event that has no "sender_login" key at top level.
+    old_style_payload = {
+        "kind": "webhook",
+        "delivery_id": "old-event-1",
+        "event_type": "issue_comment",
+        "action": "edited",
+        "installation_id": 99,
+        "repository_full_name": "org/repo",
+        "raw_payload": {"sender": {"login": "care-taker-bot[bot]"}, "comment": {}},
+    }
+    re_parsed = _parsed_from_payload(old_style_payload)
+    assert re_parsed is not None
+    assert re_parsed.sender_login == "care-taker-bot[bot]"
