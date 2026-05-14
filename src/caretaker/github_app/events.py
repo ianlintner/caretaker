@@ -48,6 +48,10 @@ EVENT_AGENT_MAP: dict[str, list[str]] = {
     "installation_repositories": ["bootstrap"],
     # Ping is what GitHub sends to validate the webhook URL on create.
     "ping": [],
+    # Synthetic schedule event published by the reconciliation scheduler
+    # (every 30 min). Routes to the same agents that run in polling mode
+    # so that pr_reviewer, issue-triage, etc. work without webhook triggers.
+    "schedule": ["pr", "pr-reviewer", "pr-ci-approver", "issue", "security", "stale", "escalation"],
 }
 
 
