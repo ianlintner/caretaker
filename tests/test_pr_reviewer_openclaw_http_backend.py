@@ -237,6 +237,26 @@ async def test_fix_run_raises_on_cannot_fix(monkeypatch) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_fix_run_pre_escalation_includes_prior_errors(monkeypatch) -> None:
+    invoke_mock = AsyncMock(return_value="Fixed the issue on third attempt.")
+    monkeypatch.setattr(openclaw_http, "_invoke_openclaw", invoke_mock)
+
+    result = await openclaw_http.fix_run(
+        workdir="/tmp/fake",
+        review_summary="Fix the type error in foo.py",
+        review_comments=[],
+        config=_fake_config(),
+        prior_errors="prior error text",
+        attempt_count=3,
+    )
+
+    assert result == "Fixed the issue on third attempt."
+    invoke_mock.assert_awaited_once()
+    call_kwargs = invoke_mock.call_args.kwargs
+    assert "prior error text" in call_kwargs["prompt"]
+
+
 # ── _parse_review_payload fallback inline comment ─────────────────────────
 
 

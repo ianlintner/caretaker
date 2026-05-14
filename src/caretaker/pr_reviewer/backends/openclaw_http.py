@@ -82,6 +82,8 @@ _FIX_PROMPT_TEMPLATE = """\
 You are addressing review feedback on a pull request. The repo is
 cloned and checked out to the PR head branch in the current directory.
 
+Working directory: {workdir}
+
 Reviewer verdict: REQUEST_CHANGES
 
 Summary:
@@ -105,6 +107,8 @@ _PRE_ESCALATION_FIX_PROMPT_TEMPLATE = """\
 You are making a final automated fix attempt on a pull request.
 {attempt_count} previous automated attempts have already failed.
 The repo is cloned and checked out to the PR head branch.
+
+Working directory: {workdir}
 
 Review summary (from last reviewer pass):
 ---
@@ -192,13 +196,22 @@ async def _invoke_openclaw(
             if response.status_code >= 400:
                 body_text = await response.aread()
                 raise OpenclawHttpError(
-                    f"openclaw returned HTTP {response.status_code}: {body_text.decode()[:400]}"
+                    f"openclaw HTTP {response.status_code}: "
+                    f"{body_text.decode(errors='replace')[:100]}"
                 )
             text = await _collect_sse_text(response.aiter_lines())
     except httpx.TimeoutException as exc:
         raise OpenclawHttpError(f"openclaw timed out after {timeout_seconds}s") from exc
     except httpx.ConnectError as exc:
-        raise OpenclawHttpError(f"openclaw unreachable at {base_url}: {exc}") from exc
+        # Strip any credentials from the URL before logging.
+        try:
+            import urllib.parse as _urlparse
+
+            _parsed = _urlparse.urlparse(base_url)
+            _safe_host = f"{_parsed.hostname}:{_parsed.port}" if _parsed.port else _parsed.hostname
+        except Exception:
+            _safe_host = "(unknown host)"
+        raise OpenclawHttpError(f"openclaw unreachable at {_safe_host}") from exc
     logger.info("openclaw_http: received %d chars", len(text))
     return text
 
@@ -339,13 +352,14 @@ async def run(
             cleanup_workdir(workdir, keep=(not success and config.keep_workdir_on_failure))
 
 
-def _build_fix_prompt(*, summary: str, comments: list[InlineReviewComment]) -> str:
+def _build_fix_prompt(*, workdir: str, summary: str, comments: list[InlineReviewComment]) -> str:
     if comments:
         rendered = "\n".join(f"- `{c.path}:{c.line}` — {c.body}" for c in comments[:8])
         comments_section = f"Inline comments:\n{rendered}\n"
     else:
         comments_section = "(no inline comments)\n"
     return _FIX_PROMPT_TEMPLATE.format(
+        workdir=workdir,
         summary=summary.strip() or "(no summary)",
         comments_section=comments_section,
     )
@@ -353,6 +367,7 @@ def _build_fix_prompt(*, summary: str, comments: list[InlineReviewComment]) -> s
 
 def _build_pre_escalation_fix_prompt(
     *,
+    workdir: str,
     summary: str,
     comments: list[InlineReviewComment],
     prior_errors: str,
@@ -364,6 +379,7 @@ def _build_pre_escalation_fix_prompt(
     else:
         comments_section = "(no inline comments)\n"
     return _PRE_ESCALATION_FIX_PROMPT_TEMPLATE.format(
+        workdir=workdir,
         attempt_count=attempt_count,
         summary=summary.strip() or "(no summary)",
         comments_section=comments_section,
@@ -389,13 +405,16 @@ async def fix_run(
     """
     if prior_errors:
         prompt = _build_pre_escalation_fix_prompt(
+            workdir=workdir,
             summary=review_summary,
             comments=review_comments,
             prior_errors=prior_errors,
             attempt_count=attempt_count,
         )
     else:
-        prompt = _build_fix_prompt(summary=review_summary, comments=review_comments)
+        prompt = _build_fix_prompt(
+            workdir=workdir, summary=review_summary, comments=review_comments
+        )
 
     text = await _invoke_openclaw(
         base_url=config.base_url,
