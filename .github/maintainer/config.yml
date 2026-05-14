@@ -218,9 +218,8 @@ pr_reviewer:
     api_key: "litellm-local-proxy"
     model: "my-router"
     timeout_seconds: 300
-
-auto_fix:
-  pre_escalation_agent: "openclaw_http"
+  auto_fix:
+    pre_escalation_agent: "openclaw_http"
 
 executor:
   provider: auto
