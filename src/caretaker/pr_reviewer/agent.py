@@ -521,6 +521,18 @@ class PRReviewerAgent(BaseAgent):
                                     auto_fix_dispatched = True
                                     auto_fix_reason = "pre_escalation_success"
                         break  # one REQUEST_CHANGES is enough to arm the fixer
+                # Notify Discord with the harvested review result.
+                await self._notify_discord_review(
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    pr_title=(pr.get("title") or f"#{pr_number}"),
+                    pr_url=pr.get(
+                        "html_url", f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+                    ),
+                    backend="harvest",
+                    review_result=posted[0],
+                )
                 # Always mark reviewed after harvest regardless of fix dispatch.
                 try:
                     reviewed_label = "caretaker:reviewed"
@@ -708,6 +720,17 @@ class PRReviewerAgent(BaseAgent):
                         result=result,
                         post_inline_comments=cfg.post_inline_comments,
                         force_event=cfg.review_event if cfg.review_event != "AUTO" else None,
+                    )
+                    await self._notify_discord_review(
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        pr_title=(pr.get("title") or f"#{pr_number}"),
+                        pr_url=pr.get(
+                            "html_url", f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+                        ),
+                        backend="inline",
+                        review_result=result,
                     )
                     backend_label = "inline"
                     verdict_label = result.verdict

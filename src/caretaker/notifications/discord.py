@@ -49,11 +49,14 @@ class DiscordNotifier:
         """Return a notifier if Discord is enabled and credentials are present."""
         if not cfg.enabled:
             return None
-        token = os.environ.get(cfg.bot_token_env, "").strip()
+        token_env = cfg.bot_token_env
+        if not isinstance(token_env, str):
+            return None
+        token = os.environ.get(token_env, "").strip()
         if not token:
             logger.warning(
                 "discord: enabled but %s is not set; notifications disabled",
-                cfg.bot_token_env,
+                token_env,
             )
             return None
         if not cfg.channel_id:
