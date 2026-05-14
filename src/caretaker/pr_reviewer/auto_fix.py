@@ -41,6 +41,7 @@ from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subproce
 if TYPE_CHECKING:
     from caretaker.config import AutoFixConfig, PRReviewerConfig
     from caretaker.github_client.api import GitHubClient
+    from caretaker.github_client.models import PullRequest
     from caretaker.pr_reviewer.inline_reviewer import ReviewResult
     from caretaker.state.models import TrackedPR
 
@@ -658,6 +659,108 @@ async def _dispatch_auto_fix_inner(
                 _cleanup(workdir, keep=False)
 
 
+def should_attempt_pre_escalation(reason: str, cfg: AutoFixConfig) -> bool:
+    """Return True when the pre-escalation rung should fire.
+
+    Conditions (both must hold):
+      * ``cfg.pre_escalation_agent`` is non-empty — operator opted in.
+      * ``reason`` contains ``"max_attempts"`` — primary fixers hit their cap.
+
+    Pure predicate; no side-effects, easy to unit-test.
+    """
+    return bool(cfg.pre_escalation_agent) and "max_attempts" in reason
+
+
+async def dispatch_pre_escalation_attempt(
+    pr: PullRequest,
+    cfg: AutoFixConfig,
+    pr_reviewer_cfg: PRReviewerConfig,
+    all_prior_errors: str,
+    attempt_count: int,
+) -> bool:
+    """Run the pre-escalation fixer as a last-resort before human escalation.
+
+    Resolves the backend via :func:`_resolve_backend_module`, prepares a
+    fresh workdir (same as the normal dispatch path), then calls
+    ``backend.fix_run()``.  Returns ``True`` on success, ``False`` on any
+    exception (including ``OpenclawHttpError``).
+
+    Parameters
+    ----------
+    pr:
+        A ``PullRequest``-like object with ``html_url`` and ``head_ref``
+        attributes (``caretaker.github_client.models.PullRequest``).
+    cfg:
+        The ``AutoFixConfig`` — supplies ``pre_escalation_agent``.
+    pr_reviewer_cfg:
+        The full ``PRReviewerConfig`` — used to locate the backend-specific
+        config object (e.g. ``pr_reviewer_cfg.openclaw_http``).
+    all_prior_errors:
+        Concatenated error output from previous fix attempts.
+    attempt_count:
+        Total number of fix attempts already made (passed through to the
+        backend so it can adjust its prompt).
+    """
+    backend_name = cfg.pre_escalation_agent
+    try:
+        backend_module = _resolve_backend_module(backend_name)
+
+        # Reuse the openclaw_http module's own _prepare_workdir so the
+        # workdir setup is identical to that backend's normal run path.
+        # For other backends we fall back to the lazy import used by the
+        # main dispatcher.
+        prepare_fn = getattr(backend_module, "_prepare_workdir", None)
+        if prepare_fn is not None:
+            backend_config = getattr(pr_reviewer_cfg, backend_name, None)
+            workdir, _parsed = await prepare_fn(
+                pr.html_url,
+                config=backend_config,
+                head_branch=pr.head_ref,
+            )
+        else:
+            import os as _os  # noqa: PLC0415
+
+            from caretaker.pr_reviewer.backends._workdir import (  # noqa: PLC0415
+                prepare_workdir,
+            )
+
+            token = _os.environ.get("GITHUB_TOKEN", "").strip()
+            workdir, _parsed = await prepare_workdir(
+                pr.html_url,
+                clone_depth=50,
+                head_branch=pr.head_ref,
+                github_token=token,
+            )
+
+        fix_callable = getattr(backend_module, "fix_run", None)
+        if fix_callable is None:
+            logger.warning(
+                "pre_escalation: backend %r has no fix_run(); skipping",
+                backend_name,
+            )
+            return False
+
+        backend_config = getattr(pr_reviewer_cfg, backend_name, None)
+        await fix_callable(
+            workdir=workdir,
+            review_summary="",
+            review_comments=[],
+            config=backend_config,
+            prior_errors=all_prior_errors,
+            attempt_count=attempt_count,
+        )
+        logger.info("pre_escalation: %r succeeded", backend_name)
+        return True
+    except Exception as exc:  # noqa: BLE001 — best-effort last resort
+        logger.warning(
+            "pre_escalation: %r raised %s: %s",
+            backend_name,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+
+
 def _resolve_backend_module(backend: str):  # type: ignore[no-untyped-def]
     """Map a backend name to its module so we can look up ``fix_run``.
 
@@ -699,6 +802,8 @@ __all__ = [
     "commit_and_push",
     "decide_auto_fix",
     "dispatch_auto_fix",
+    "dispatch_pre_escalation_attempt",
     "post_dispatch_comment",
     "run_deterministic_lint",
+    "should_attempt_pre_escalation",
 ]
