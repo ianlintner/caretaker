@@ -1145,7 +1145,71 @@ class PRReviewerAgent(BaseAgent):
                 exc,
             )
         report.reviewed.append(pr_number)
+        await self._notify_discord_review(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            pr_title=(pr.get("title") or f"#{pr_number}"),
+            pr_url=f"https://github.com/{owner}/{repo}/pull/{pr_number}",
+            backend=backend,
+            review_result=review_result,
+        )
         return review_result
+
+    async def _notify_discord_review(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        pr_title: str,
+        pr_url: str,
+        backend: str,
+        review_result: ReviewResult,
+    ) -> None:
+        discord_cfg = self._ctx.config.discord
+        if not discord_cfg.enabled:
+            return
+        from caretaker.notifications.discord import DiscordColor, DiscordNotifier
+
+        notifier = DiscordNotifier.from_config(discord_cfg)
+        if not notifier:
+            return
+
+        verdict = getattr(review_result, "verdict", "COMMENT")
+        color = (
+            DiscordColor.SUCCESS
+            if verdict == "APPROVE"
+            else (DiscordColor.FAILURE if verdict == "REQUEST_CHANGES" else DiscordColor.INFO)
+        )
+        summary = getattr(review_result, "summary", "") or ""
+        comments = getattr(review_result, "comments", []) or []
+        comment_lines = []
+        for c in comments[:10]:
+            path = getattr(c, "path", "?")
+            line = getattr(c, "line", 0)
+            body = (getattr(c, "body", "") or "")[:200]
+            comment_lines.append(f"**{path}:{line}** — {body}")
+        fields = []
+        if comment_lines:
+            fields.append(
+                {
+                    "name": f"Inline comments ({len(comments)} total)",
+                    "value": "\n".join(comment_lines[:5]),
+                    "inline": False,
+                }
+            )
+        fields.append({"name": "Backend", "value": backend, "inline": True})
+        fields.append({"name": "Verdict", "value": verdict, "inline": True})
+
+        await notifier.send_embed(
+            title=f"PR Review — {owner}/{repo}#{pr_number}",
+            description=f"**[{pr_title}]({pr_url})**\n\n{summary[:1500]}",
+            color=color,
+            fields=fields,
+            url=pr_url,
+            footer=f"{owner}/{repo}",
+        )
 
     async def _classify_complexity(  # noqa: PLR0913 — kwargs-only callsite
         self,

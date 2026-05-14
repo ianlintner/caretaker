@@ -68,6 +68,14 @@ spec:
                   name: caretaker-secrets
                   key: redis-url
                   optional: true
+            - name: CARETAKER_DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: caretaker-secrets
+                  key: discord-bot-token
+                  optional: true
+            - name: CARETAKER_DISCORD_CHANNEL_ID
+              value: "1504316939089084506"
           resources:
             requests:
               cpu: "50m"

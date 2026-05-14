@@ -1970,6 +1970,26 @@ class AgenticConfig(StrictBaseModel):
     size_classifier: AgenticDomainConfig = Field(default_factory=AgenticDomainConfig)
 
 
+class DiscordConfig(StrictBaseModel):
+    """Discord Bot notification sink.
+
+    When enabled, caretaker posts verbose event details to the configured
+    channel.  GitHub comments are unaffected — Discord is an additive
+    channel, not a replacement.  Set ``github_verbosity`` to ``"summary"``
+    to shorten GitHub PR comments when Discord carries the full detail.
+    """
+
+    enabled: bool = False
+    channel_id: str = ""
+    bot_token_env: str = "CARETAKER_DISCORD_BOT_TOKEN"
+    # "full" = GitHub comments unchanged; "summary" = truncate to reduce API
+    # call volume when Discord is the primary verbose sink.
+    github_verbosity: Literal["full", "summary"] = "full"
+    # Maximum chars for a GitHub PR/issue comment body when github_verbosity
+    # is "summary".  Content beyond this is posted to Discord only.
+    github_comment_max_chars: int = 1200
+
+
 class MaintainerConfig(StrictBaseModel):
     version: Literal["v1"] = "v1"
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
@@ -2028,6 +2048,7 @@ class MaintainerConfig(StrictBaseModel):
     # GitHub write, checkpoint_and_rollback on post-merge state mutations.
     # Enabled by default — this is safety, not a feature.
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    discord: DiscordConfig = Field(default_factory=DiscordConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> MaintainerConfig:

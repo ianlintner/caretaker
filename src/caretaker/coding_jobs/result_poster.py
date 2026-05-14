@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from caretaker.coding_jobs.models import JobStatus, StatusEvent
 
 if TYPE_CHECKING:
-    from caretaker.config import CodingJobsConfig
+    from caretaker.config import CodingJobsConfig, DiscordConfig
     from caretaker.eventbus.base import Event
 
 logger = logging.getLogger(__name__)
@@ -30,10 +30,12 @@ class ResultPoster:
         post_comment: PostCommentFn,
         config: CodingJobsConfig,
         consumer_name: str = "result-poster-0",
+        discord_config: DiscordConfig | None = None,
     ) -> None:
         self._post = post_comment
         self._config = config
         self._consumer_name = consumer_name
+        self._discord_config = discord_config
 
     async def run(self, redis_bus: Any) -> None:
         from caretaker.coding_jobs.status_stream import JobStatusStream
@@ -56,6 +58,40 @@ class ResultPoster:
         body = _format_success(se) if se.status == JobStatus.COMPLETED else _format_failure(se)
         logger.info("result-poster: posting job_id=%s status=%s", se.job_id, se.status.value)
         await self._post(job_id=se.job_id, body=body)
+        await self._notify_discord(se)
+
+    async def _notify_discord(self, se: StatusEvent) -> None:
+        if not self._discord_config:
+            return
+        from caretaker.notifications.discord import DiscordColor, DiscordNotifier
+
+        notifier = DiscordNotifier.from_config(self._discord_config)
+        if not notifier:
+            return
+
+        success = se.status == JobStatus.COMPLETED
+        color = DiscordColor.SUCCESS if success else DiscordColor.FAILURE
+        title = "Coding job completed ✓" if success else f"Coding job failed ({se.status.value})"
+        fields: list[dict[str, object]] = [
+            {"name": "Job ID", "value": se.job_id or "unknown", "inline": True},
+            {"name": "Attempt", "value": str(se.attempt), "inline": True},
+        ]
+        if se.commit_sha:
+            fields.append({"name": "Commit", "value": f"`{se.commit_sha}`", "inline": True})
+        if se.error:
+            fields.append({"name": "Error", "value": se.error[:512], "inline": False})
+
+        description = ""
+        if se.pr_url:
+            description = f"[View PR]({se.pr_url})"
+
+        await notifier.send_embed(
+            title=title,
+            description=description,
+            color=color,
+            fields=fields,
+            url=se.pr_url or None,
+        )
 
 
 def _format_success(e: StatusEvent) -> str:

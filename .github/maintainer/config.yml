@@ -154,6 +154,16 @@ escalation:
   stale_days: 7
   labels: ["maintainer:escalated"]
 
+discord:
+  enabled: true
+  channel_id: "1504316939089084506"
+  bot_token_env: CARETAKER_DISCORD_BOT_TOKEN
+  # Discord gets full verbose detail; GitHub comments stay concise.
+  # Set to "summary" to truncate GitHub PR/issue comments and use Discord
+  # as the primary verbose sink (reduces GitHub API call volume).
+  github_verbosity: summary
+  github_comment_max_chars: 1200
+
 llm:
   # Route through OpenRouter — single key (OPENROUTER_API_KEY) fronts 300+
   # models from one credential. Strict prefix validation rejects any

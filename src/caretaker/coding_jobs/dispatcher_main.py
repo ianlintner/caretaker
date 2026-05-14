@@ -21,7 +21,7 @@ async def _main() -> None:
     from caretaker.coding_jobs.reconciler import Reconciler
     from caretaker.coding_jobs.result_poster import ResultPoster
     from caretaker.coding_jobs.status_stream import JobStatusStream
-    from caretaker.config import CodingJobsConfig
+    from caretaker.config import CodingJobsConfig, DiscordConfig
     from caretaker.eventbus.redis_streams import RedisStreamsEventBus
 
     config = CodingJobsConfig(
@@ -59,7 +59,12 @@ async def _main() -> None:
     async def _noop_post(**kwargs: object) -> None:
         logger.info("result-poster: noop post job_id=%s", kwargs.get("job_id"))
 
-    result_poster = ResultPoster(post_comment=_noop_post, config=config)
+    discord_cfg = DiscordConfig(
+        enabled=os.environ.get("CARETAKER_DISCORD_BOT_TOKEN", "") != "",
+        channel_id=os.environ.get("CARETAKER_DISCORD_CHANNEL_ID", ""),
+        bot_token_env="CARETAKER_DISCORD_BOT_TOKEN",
+    )
+    result_poster = ResultPoster(post_comment=_noop_post, config=config, discord_config=discord_cfg)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

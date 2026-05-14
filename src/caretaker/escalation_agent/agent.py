@@ -12,6 +12,7 @@ from caretaker.tools.debug_dump import render_debug_dump
 from caretaker.tools.github import GitHubIssueTools
 
 if TYPE_CHECKING:
+    from caretaker.config import DiscordConfig
     from caretaker.github_client.api import GitHubClient
 
 logger = logging.getLogger(__name__)
@@ -52,12 +53,14 @@ class EscalationAgent:
         owner: str,
         repo: str,
         notify_assignees: list[str] | None = None,
+        discord_config: DiscordConfig | None = None,
     ) -> None:
         self._github = github
         self._owner = owner
         self._repo = repo
         self._notify_assignees = notify_assignees or []
         self._issues = GitHubIssueTools(github, owner, repo)
+        self._discord_config = discord_config
 
     async def run(self) -> EscalationReport:
         report = EscalationReport()
@@ -90,11 +93,44 @@ class EscalationAgent:
         try:
             issue_number = await self._upsert_digest(body)
             report.digest_issue_number = issue_number
+            await self._notify_discord(buckets, issue_number)
         except Exception as e:
             logger.error("Escalation agent: digest upsert failed: %s", e)
             report.errors.append(str(e))
 
         return report
+
+    async def _notify_discord(self, buckets: dict[str, list[Any]], issue_number: int) -> None:
+        if not self._discord_config:
+            return
+        from caretaker.notifications.discord import DiscordColor, DiscordNotifier
+
+        notifier = DiscordNotifier.from_config(self._discord_config)
+        if not notifier:
+            return
+
+        week = datetime.now(UTC).strftime("%Y-W%V")
+        total = sum(len(v) for v in buckets.values())
+        issue_url = f"https://github.com/{self._owner}/{self._repo}/issues/{issue_number}"
+
+        fields = []
+        for label, items in sorted(buckets.items()):
+            description = _ACTION_LABELS.get(label, label)
+            item_list = ", ".join(f"#{i.number}" for i in sorted(items, key=lambda x: x.number))
+            fields.append(
+                {"name": f"{description} ({len(items)})", "value": item_list, "inline": False}
+            )
+
+        await notifier.send_embed(
+            title=f"🔔 Human Action Required — {week}",
+            description=(
+                f"{total} item(s) need maintainer attention in `{self._owner}/{self._repo}`."
+            ),
+            color=DiscordColor.WARNING,
+            fields=fields,
+            url=issue_url,
+            footer=f"Digest #{issue_number}",
+        )
 
     async def _upsert_digest(self, body: str) -> int:
         await self._issues.ensure_label(
