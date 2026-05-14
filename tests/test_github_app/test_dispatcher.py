@@ -530,3 +530,63 @@ async def test_non_comment_event_unaffected_by_gate(
 
     assert result.outcome == "active"
     assert runner.calls == ["pr", "pr-reviewer"]
+
+
+# ── self-sender filter ───────────────────────────────────────────────
+
+
+def _make_parsed_with_sender(
+    *,
+    event: str = "issue_comment",
+    action: str | None = "edited",
+    sender: str = "the-care-taker[bot]",
+    repository_full_name: str | None = "ianlintner/caretaker",
+) -> ParsedWebhook:
+    return ParsedWebhook(
+        event_type=event,
+        delivery_id="self-sender-delivery-1",
+        action=action,
+        installation_id=42,
+        repository_full_name=repository_full_name,
+        payload={"action": action},
+        sender_login=sender,
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_sender_caretaker_bot_is_suppressed() -> None:
+    dispatcher = WebhookDispatcher(mode=DispatchMode.ACTIVE)
+    result = await dispatcher.dispatch(_make_parsed_with_sender(sender="the-care-taker[bot]"))
+
+    assert result.outcome == "self_sender"
+    assert result.agents == ()
+    assert "the-care-taker[bot]" in (result.detail or "")
+
+
+@pytest.mark.asyncio
+async def test_self_sender_shadow_mode_is_also_suppressed() -> None:
+    dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
+    result = await dispatcher.dispatch(_make_parsed_with_sender(sender="the-care-taker[bot]"))
+
+    assert result.outcome == "self_sender"
+
+
+@pytest.mark.asyncio
+async def test_self_sender_non_caretaker_bot_is_not_suppressed() -> None:
+    """dependabot, copilot, random users — should all pass through normally."""
+    dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
+    for login in ("dependabot[bot]", "copilot-swe-agent[bot]", "some-human"):
+        result = await dispatcher.dispatch(
+            _make_parsed_with_sender(sender=login, event="pull_request", action="opened")
+        )
+        assert result.outcome != "self_sender", f"login {login!r} was incorrectly suppressed"
+
+
+@pytest.mark.asyncio
+async def test_self_sender_empty_login_is_not_suppressed() -> None:
+    """Webhooks without sender field should not be dropped."""
+    dispatcher = WebhookDispatcher(mode=DispatchMode.SHADOW)
+    result = await dispatcher.dispatch(
+        _make_parsed_with_sender(sender="", event="pull_request", action="opened")
+    )
+    assert result.outcome != "self_sender"

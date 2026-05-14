@@ -42,6 +42,7 @@ class ParsedWebhook:
     installation_id: int | None
     repository_full_name: str | None
     payload: dict[str, Any]
+    sender_login: str = ""
 
 
 def verify_signature(
@@ -113,6 +114,13 @@ def parse_webhook(
         if isinstance(raw_name, str):
             repo_full_name = raw_name
 
+    sender_login = ""
+    sender = payload.get("sender")
+    if isinstance(sender, dict):
+        raw_login = sender.get("login")
+        if isinstance(raw_login, str):
+            sender_login = raw_login
+
     return ParsedWebhook(
         event_type=event_type,
         delivery_id=delivery_id,
@@ -120,6 +128,7 @@ def parse_webhook(
         installation_id=installation_id,
         repository_full_name=repo_full_name,
         payload=payload,
+        sender_login=sender_login,
     )
 
 
