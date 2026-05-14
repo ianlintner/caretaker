@@ -177,3 +177,71 @@ async def test_run_returns_fallback_result_when_no_json_block(monkeypatch) -> No
         config=_fake_config(),
     )
     assert result.verdict == "COMMENT"
+
+
+@pytest.mark.asyncio
+async def test_run_raises_on_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(
+        openclaw_http,
+        "_prepare_workdir",
+        AsyncMock(return_value=("/tmp/fake", MagicMock())),
+    )
+    monkeypatch.setattr(openclaw_http, "cleanup_workdir", MagicMock())
+    monkeypatch.setattr(
+        openclaw_http,
+        "_invoke_openclaw",
+        AsyncMock(side_effect=OpenclawHttpError("openclaw timed out after 30s")),
+    )
+
+    with pytest.raises(OpenclawHttpError, match="timed out"):
+        await openclaw_http.run(
+            pr_url="https://github.com/o/r/pull/1",
+            config=_fake_config(),
+        )
+
+
+# ── fix_run() ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fix_run_returns_summary_on_success(monkeypatch) -> None:
+    monkeypatch.setattr(
+        openclaw_http,
+        "_invoke_openclaw",
+        AsyncMock(return_value="Applied the suggested changes successfully."),
+    )
+
+    result = await openclaw_http.fix_run(
+        workdir="/tmp/fake",
+        review_summary="Fix the type error in foo.py",
+        review_comments=[],
+        config=_fake_config(),
+    )
+    assert result == "Applied the suggested changes successfully."
+
+
+@pytest.mark.asyncio
+async def test_fix_run_raises_on_cannot_fix(monkeypatch) -> None:
+    monkeypatch.setattr(
+        openclaw_http,
+        "_invoke_openclaw",
+        AsyncMock(return_value="CARETAKER_FIX_DECLINED: The issue requires manual intervention."),
+    )
+
+    with pytest.raises(OpenclawHttpError, match="declined to fix"):
+        await openclaw_http.fix_run(
+            workdir="/tmp/fake",
+            review_summary="Fix the type error in foo.py",
+            review_comments=[],
+            config=_fake_config(),
+        )
+
+
+# ── _parse_review_payload fallback inline comment ─────────────────────────
+
+
+def test_parse_review_payload_fallback_includes_inline_comment() -> None:
+    result, fallback = _parse_review_payload("Just prose, no JSON block.")
+    assert fallback is True
+    assert len(result.comments) >= 1
+    assert any("parse" in c.body for c in result.comments)

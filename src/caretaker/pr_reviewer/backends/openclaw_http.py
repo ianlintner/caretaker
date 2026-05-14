@@ -225,6 +225,13 @@ def _parse_review_payload(text: str) -> tuple[ReviewResult, bool]:
                     "JSON block. Raw output below.\n\n" + text[:800]
                 ),
                 verdict="COMMENT",
+                comments=[
+                    InlineReviewComment(
+                        path="(parse failure)",
+                        line=1,
+                        body="openclaw_http: failed to parse structured review output",
+                    )
+                ],
             ),
             True,
         )
