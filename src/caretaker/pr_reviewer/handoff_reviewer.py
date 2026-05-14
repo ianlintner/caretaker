@@ -35,6 +35,7 @@ CODERABBIT_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-coderabbit-handoff -->"
 GREPTILE_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-greptile-handoff -->"
 CLAUDE_CODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-claude-code-local-handoff -->"
 OPENCODE_LOCAL_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-opencode-local-handoff -->"
+OPENCLAW_HTTP_REVIEW_MARKER = "<!-- caretaker:pr-reviewer-openclaw-http-handoff -->"
 
 # Invocation models a backend can use:
 #   - ``comment_trigger``: caretaker labels the PR + posts a mention
@@ -366,6 +367,7 @@ __all__ = [
     "GREPTILE_REVIEW_MARKER",
     "HandoffReviewerSpec",
     "InvocationMode",
+    "OPENCLAW_HTTP_REVIEW_MARKER",
     "OPENCODE_LOCAL_REVIEW_MARKER",
     "OPENCODE_REVIEW_MARKER",
     "PR_AGENT_REVIEW_MARKER",
