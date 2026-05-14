@@ -32,7 +32,7 @@ import contextlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from caretaker.observability.metrics import record_auto_fix_dispatch
 from caretaker.observability.tracer_compat import Status, StatusCode, get_tracer
@@ -41,9 +41,22 @@ from caretaker.pr_reviewer.backends._subprocess_streaming import stream_subproce
 if TYPE_CHECKING:
     from caretaker.config import AutoFixConfig, PRReviewerConfig
     from caretaker.github_client.api import GitHubClient
-    from caretaker.github_client.models import PullRequest
     from caretaker.pr_reviewer.inline_reviewer import ReviewResult
     from caretaker.state.models import TrackedPR
+
+
+@runtime_checkable
+class _PRLike(Protocol):
+    """Structural type satisfied by both ``PullRequest`` and a ``SimpleNamespace``.
+
+    ``dispatch_pre_escalation_attempt`` only needs these two attributes;
+    using a Protocol instead of the concrete model keeps the call-site in
+    ``agent.py`` free of complex construction logic.
+    """
+
+    html_url: str
+    head_ref: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +685,7 @@ def should_attempt_pre_escalation(reason: str, cfg: AutoFixConfig) -> bool:
 
 
 async def dispatch_pre_escalation_attempt(
-    pr: PullRequest,
+    pr: _PRLike,
     cfg: AutoFixConfig,
     pr_reviewer_cfg: PRReviewerConfig,
     all_prior_errors: str,
