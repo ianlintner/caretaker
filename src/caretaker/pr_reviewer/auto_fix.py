@@ -678,6 +678,10 @@ def _resolve_backend_module(backend: str):  # type: ignore[no-untyped-def]
         from caretaker.pr_reviewer.backends import opencode_local  # noqa: PLC0415
 
         return opencode_local
+    if backend == "openclaw_http":
+        from caretaker.pr_reviewer.backends import openclaw_http  # noqa: PLC0415
+
+        return openclaw_http
     from caretaker.pr_reviewer.backends._workdir import WorkdirError  # noqa: PLC0415
 
     raise WorkdirError(

@@ -125,6 +125,7 @@ def _build_specs() -> dict[str, HandoffReviewerSpec]:
         claude_code_local,
         coderabbit,
         greptile,
+        openclaw_http,
         opencode_local,
         pr_agent,
     )
@@ -135,6 +136,7 @@ def _build_specs() -> dict[str, HandoffReviewerSpec]:
         greptile.SPEC,
         claude_code_local.SPEC,
         opencode_local.SPEC,
+        openclaw_http.SPEC,
     ):
         specs[spec.backend] = spec
     return specs
