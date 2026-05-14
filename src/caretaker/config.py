@@ -957,6 +957,34 @@ class OpenCodeLocalBackendConfig(StrictBaseModel):
     keep_workdir_on_failure: bool = False
 
 
+class OpenclaWHttpConfig(StrictBaseModel):
+    """Configuration for the ``openclaw_http`` review/fix backend.
+
+    Calls the openclaw server's OpenAI-compatible
+    ``/v1/chat/completions`` endpoint (SSE streaming) instead of
+    spawning a subprocess. Designed for in-cluster deployments where
+    openclaw runs as a Kubernetes service on a private network — no
+    CLI binary required in caretaker's pod.
+    """
+
+    enabled: bool = False
+    # In-cluster service URL, e.g.
+    # ``http://openclaw.openclaw.svc.cluster.local:8080``.
+    # Confirmed during Phase 0 validation; see the spec for the
+    # port-forward smoke-test procedure.
+    base_url: str = ""
+    # Bearer token for the gateway auth. Empty string = open auth
+    # (private in-cluster ingress — preferred for in-cluster).
+    # When non-empty, store in ``caretaker-secrets`` / AKV under
+    # ``openclaw-api-key`` and inject via env / secret mount.
+    api_key: str = ""
+    # Model identifier sent in the request body. Confirmed during
+    # Phase 0 smoke-test (``openclaw/default`` is the typical value).
+    model: str = "openclaw/default"
+    timeout_seconds: int = 300
+    keep_workdir_on_failure: bool = False
+
+
 class AutoFixConfig(StrictBaseModel):
     """Configuration for the PR-reviewer auto-fix loop.
 
@@ -1032,6 +1060,12 @@ class AutoFixConfig(StrictBaseModel):
     # reviewer supplied ``issue_categories`` and merges the union.
     # Default False — trust the LLM's classification when present.
     always_run_heuristic: bool = False
+    # When non-empty, this backend gets one final fix attempt after
+    # ``max_attempts`` is exhausted — a last resort before caretaker
+    # posts the human-escalation digest. Use ``"openclaw_http"`` to
+    # route to the in-cluster openclaw server. Empty string disables
+    # the pre-escalation rung (default).
+    pre_escalation_agent: str = ""
 
 
 class PRAgentBackendConfig(StrictBaseModel):
@@ -1131,6 +1165,10 @@ class PRReviewerConfig(StrictBaseModel):
     # ``caretaker_owned_reviewer = "opencode_local"`` (the default for
     # PRs authored by ``the-care-taker[bot]``).
     opencode_local: OpenCodeLocalBackendConfig = Field(default_factory=OpenCodeLocalBackendConfig)
+    # Settings for the openclaw HTTP backend. Used when
+    # ``caretaker_owned_reviewer = "openclaw_http"`` or
+    # ``complex_reviewer = "openclaw_http"``.
+    openclaw_http: OpenclaWHttpConfig = Field(default_factory=OpenclaWHttpConfig)
     # Backend used to review PRs authored by caretaker itself.  Defaults
     # to ``"opencode_local"`` (in-pod subprocess, synchronous, no
     # comment-trigger round-trip).  Set to ``""`` to use the standard
