@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -270,7 +270,7 @@ class _LiveRateLimitCooldownCollector:
 # :class:`Gauge`) bound to the collector so external code that introspects
 # via the registry continues to work.
 RATE_LIMIT_COOLDOWN_SECONDS = _LiveRateLimitCooldownCollector()
-REGISTRY.register(RATE_LIMIT_COOLDOWN_SECONDS)
+REGISTRY.register(cast("Any", RATE_LIMIT_COOLDOWN_SECONDS))
 
 
 RATE_LIMIT_REMAINING = Gauge(
