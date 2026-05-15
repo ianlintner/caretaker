@@ -85,7 +85,7 @@ backend = [
 admin = [
     "fastapi>=0.100,<1",
     "uvicorn>=0.23,<1",
-    "authlib>=1.3,<2",           # OIDC/OAuth2 client
+    "authlib>=1.7.2,<2",         # OIDC/OAuth2 client (security: OIDC redirect validation fixes)
     "itsdangerous>=2.1,<3",      # session cookie signing
     "neo4j>=5.0,<6",             # Neo4j async driver
     "redis[asyncio]>=5,<6",      # session storage
@@ -96,7 +96,7 @@ admin = [
 # Anthropic SDK remains the default; install this extra and set
 # ``llm.provider: litellm`` in config to enable other backends.
 llm-multi = [
-    "litellm>=1.83.7,<2",
+    "litellm>=1.83.11,<2",  # security: fixes custom-code guardrail sandbox escape
     "aiohttp>=3.13.5",  # security: CVE-2026-34516 multipart header bypass + CVE-2024-52304 zip bomb
 ]
 # Phase 3 custom coding agent — on-demand Kubernetes Job worker. See
@@ -223,5 +223,5 @@ ignore_missing_imports = true
 # that fixes CVE-2025-14974 (symlink following in set_key/unset_key).
 override-dependencies = [
     "python-dotenv>=1.2.2",
-    "gitpython>=3.1.49",
+    "gitpython>=3.1.50",
 ]

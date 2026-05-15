@@ -126,6 +126,16 @@ def _redact_authorization_request_hook(span: Any, request: Any) -> None:
         pass
 
 
+async def _aredact_authorization_request_hook(span: Any, request: Any) -> None:
+    """Async variant for newer httpx instrumentor hook API.
+
+    Some ``opentelemetry-instrumentation-httpx`` versions await the async
+    request hook for ``AsyncClient`` transports. Reuse the same redaction
+    logic so behavior stays identical across SDK versions.
+    """
+    _redact_authorization_request_hook(span, request)
+
+
 def bootstrap_observability(service_name: str) -> None:
     """Initialise tracing + metrics + log enrichment for one process.
 
@@ -138,9 +148,18 @@ def bootstrap_observability(service_name: str) -> None:
     def _httpx() -> None:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-        HTTPXClientInstrumentor().instrument(
-            request_hook=_redact_authorization_request_hook,
-        )
+        instrumentor = HTTPXClientInstrumentor()
+        try:
+            # Newer instrumentation SDKs split sync/async hooks.
+            instrumentor.instrument(
+                request_hook=_redact_authorization_request_hook,
+                async_request_hook=_aredact_authorization_request_hook,
+            )
+        except TypeError:
+            # Older SDKs only accept ``request_hook``.
+            instrumentor.instrument(
+                request_hook=_redact_authorization_request_hook,
+            )
 
     _safe("httpx", _httpx)
 
