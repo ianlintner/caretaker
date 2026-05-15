@@ -237,7 +237,7 @@ class DocsAgent:
                 merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
             else:
                 merged_at = merged_at_str
-            if merged_at >= since:
+            if merged_at >= since and not _is_system_pr(pr):
                 merged.append(pr)
         return merged
 
@@ -256,6 +256,23 @@ class DocsAgent:
     async def _get_branch_sha(self, branch: str) -> str:
         data = await self._github._get(f"/repos/{self._owner}/{self._repo}/git/ref/heads/{branch}")
         return str(data["object"]["sha"])
+
+
+_SYSTEM_BRANCH_PREFIXES = (
+    "docs/changelog-",  # docs agent's own changelog PRs (self-referential)
+    "chore/releases-json-",  # automated version/release update PRs
+)
+
+
+def _is_system_pr(pr: Any) -> bool:
+    """Return True for automated housekeeping PRs that should not appear in the changelog."""
+    head_ref: str = getattr(pr, "head_ref", "") or ""
+    if head_ref.startswith(_SYSTEM_BRANCH_PREFIXES):
+        return True
+    body: str = getattr(pr, "body", "") or ""
+    if DOCS_AGENT_MARKER in body:
+        return True
+    return False
 
 
 def _build_changelog_entry(prs: list[Any]) -> str:

@@ -37,7 +37,9 @@ EVENT_AGENT_MAP: dict[str, list[str]] = {
     "dependabot_alert": ["security"],
     "code_scanning_alert": ["security"],
     "secret_scanning_alert": ["security"],
-    # Repository push (docs / changelog triggers)
+    # Repository push — docs agent filters internally to default-branch pushes
+    # only, so it fires when real PRs merge into main but not on its own
+    # changelog branch commits.
     "push": ["docs"],
     # App lifecycle — bootstrap agent auto-scaffolds setup files in
     # newly-installed repos. The agent is idempotent: it skips repos
@@ -51,7 +53,16 @@ EVENT_AGENT_MAP: dict[str, list[str]] = {
     # Synthetic schedule event published by the reconciliation scheduler
     # (every 30 min). Routes to the same agents that run in polling mode
     # so that pr_reviewer, issue-triage, etc. work without webhook triggers.
-    "schedule": ["pr", "pr-reviewer", "pr-ci-approver", "issue", "security", "stale", "escalation"],
+    "schedule": [
+        "pr",
+        "pr-reviewer",
+        "pr-ci-approver",
+        "issue",
+        "security",
+        "stale",
+        "escalation",
+        "docs",
+    ],
 }
 
 

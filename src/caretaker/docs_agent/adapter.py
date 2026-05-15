@@ -28,6 +28,15 @@ class DocsAgentAdapter(BaseAgent):
     ) -> AgentResult:
         cfg = self._ctx.config.docs_agent
         repo_info = await self._ctx.github.get_repo(self._ctx.owner, self._ctx.repo)
+
+        # For push events, only run when the push is to the default branch.
+        # This fires when PRs merge into main but skips the docs agent's own
+        # commits to docs/changelog-* branches (which would cause a loop).
+        if event_payload is not None and "ref" in event_payload:
+            pushed_ref = event_payload.get("ref", "")
+            default_ref = f"refs/heads/{repo_info.default_branch}"
+            if pushed_ref != default_ref:
+                return AgentResult(processed=0, errors=[])
         agent = DocsAgent(
             github=self._ctx.github,
             owner=self._ctx.owner,
