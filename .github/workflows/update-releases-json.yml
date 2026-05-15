@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           # Fetch the default branch so we can push the update PR against it.
           ref: ${{ github.event.repository.default_branch }}
