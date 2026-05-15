@@ -228,11 +228,20 @@ class PullRequest(BaseModel):
         - Head-branch prefix ``chore/releases-json-`` (update-releases-json workflow), OR
         - Author login ``github-actions[bot]`` combined with a ``chore/`` branch prefix
           (future-proofs additional chore workflows without requiring per-workflow
-          changes here).
+          changes here), OR
+        - Caretaker family author combined with a ``docs/changelog-`` branch prefix
+          (weekly changelog reconciliation PRs from the Docs agent).
         """
-        return self.head_ref.startswith("chore/releases-json-") or (
-            self.user.login in ("github-actions[bot]", "github-actions")
-            and self.head_ref.startswith("chore/")
+        return (
+            self.head_ref.startswith("chore/releases-json-")
+            or (
+                self.user.login in ("github-actions[bot]", "github-actions")
+                and self.head_ref.startswith("chore/")
+            )
+            or (
+                deterministic_family(self.user.login) == "caretaker"
+                and self.head_ref.startswith("docs/changelog-")
+            )
         )
 
     @property

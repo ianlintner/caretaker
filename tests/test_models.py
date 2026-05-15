@@ -75,6 +75,20 @@ class TestPullRequest:
         )
         assert pr.is_maintainer_bot_pr is False
 
+    def test_is_maintainer_bot_pr_caretaker_docs_changelog(self) -> None:
+        pr = make_pr(
+            user=User(login="the-care-taker[bot]", id=1, type="Bot"),
+            head_ref="docs/changelog-2024-W01",
+        )
+        assert pr.is_maintainer_bot_pr is True
+
+    def test_is_not_maintainer_bot_pr_human_docs_changelog(self) -> None:
+        pr = make_pr(
+            user=User(login="dev-user", id=3, type="User"),
+            head_ref="docs/changelog-2024-W01",
+        )
+        assert pr.is_maintainer_bot_pr is False
+
     def test_is_maintainer_pr(self) -> None:
         pr = make_pr(labels=[Label(name="maintainer:internal")])
         assert pr.is_maintainer_pr is True
