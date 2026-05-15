@@ -580,6 +580,46 @@ class PRReviewerAgent(BaseAgent):
         deletions = sum(int(f.get("deletions", 0)) for f in files)
         file_paths = [f.get("path", "") for f in files]
 
+        # Skip if there is nothing to review — empty file list or a
+        # purely structural change (renames, mode changes) with zero
+        # line-level diff.  Reviewers that receive an empty diff produce
+        # noisy "I cannot see any changes" comments rather than a useful
+        # verdict, so bail early with a silent no_diff skip.
+        if not files or (additions == 0 and deletions == 0):
+            report.skipped.append(pr_number)
+            logger.info(
+                "pr-reviewer: #%d skipping — no diff (files=%d additions=%d deletions=%d)",
+                pr_number,
+                len(files),
+                additions,
+                deletions,
+            )
+            await record_decision(
+                f"{owner}/{repo}",
+                int(pr_number),
+                "pr_reviewer",
+                "review_skipped",
+                reason="no_diff",
+                author=pr_author,
+            )
+            await self._emit_pr_review_audit(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                pr_author=pr_author,
+                is_caretaker_pr=is_caretaker_pr,
+                routing_reason="no_diff",
+                tier=tier_label,
+                backend=backend_label,
+                model=model_label,
+                verdict="skipped",
+                start_monotonic=start_monotonic,
+                auto_fix_dispatched=auto_fix_dispatched,
+                auto_fix_reason="no_diff",
+                span=span,
+            )
+            return
+
         decision = decide(
             additions=additions,
             deletions=deletions,

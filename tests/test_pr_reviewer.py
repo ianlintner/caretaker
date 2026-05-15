@@ -490,6 +490,99 @@ async def test_execute_emits_audit_log_on_skip_draft(caplog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_skips_pr_with_no_diff(caplog) -> None:
+    """A PR with no changed lines is silently skipped (verdict=skipped, reason=no_diff)."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        trigger_actions=["opened"],
+        skip_draft=False,
+        skip_labels=[],
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+    mock_ctx.github = MagicMock()
+    # Zero line-delta: only a rename/mode-change, no added or deleted lines.
+    mock_ctx.github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "old.py", "additions": 0, "deletions": 0}]
+    )
+
+    agent = PRReviewerAgent(mock_ctx)
+    with caplog.at_level("INFO"):
+        await agent.execute(
+            state=MagicMock(),
+            event_payload={
+                "action": "opened",
+                "pull_request": {
+                    "number": 55,
+                    "title": "rename only",
+                    "body": "",
+                    "draft": False,
+                    "head": {"sha": "abc"},
+                    "labels": [],
+                    "user": {"login": "human"},
+                },
+            },
+        )
+
+    assert any(
+        "pr_review_complete" in rec.message
+        and "pr=55" in rec.message
+        and "verdict=skipped" in rec.message
+        for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_execute_skips_pr_with_empty_file_list(caplog) -> None:
+    """A PR with no files at all (empty diff) is silently skipped."""
+    from caretaker.pr_reviewer.agent import PRReviewerAgent
+
+    mock_ctx = MagicMock()
+    mock_ctx.config.pr_reviewer = PRReviewerConfig(
+        enabled=True,
+        webhook_only=False,
+        trigger_actions=["opened"],
+        skip_draft=False,
+        skip_labels=[],
+    )
+    mock_ctx.owner = "org"
+    mock_ctx.repo = "repo"
+    mock_ctx.llm_router = None
+    mock_ctx.github = MagicMock()
+    mock_ctx.github.list_pull_request_files = AsyncMock(return_value=[])
+
+    agent = PRReviewerAgent(mock_ctx)
+    with caplog.at_level("INFO"):
+        await agent.execute(
+            state=MagicMock(),
+            event_payload={
+                "action": "opened",
+                "pull_request": {
+                    "number": 56,
+                    "title": "empty PR",
+                    "body": "",
+                    "draft": False,
+                    "head": {"sha": "abc"},
+                    "labels": [],
+                    "user": {"login": "human"},
+                },
+            },
+        )
+
+    assert any(
+        "pr_review_complete" in rec.message
+        and "pr=56" in rec.message
+        and "verdict=skipped" in rec.message
+        for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
+
+
+@pytest.mark.asyncio
 async def test_execute_processes_opened_action() -> None:
     """PR 'opened' action with trigger_actions=['opened'] → _handle_pr called."""
     from caretaker.pr_reviewer.agent import PRReviewerAgent

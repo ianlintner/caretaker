@@ -56,7 +56,9 @@ def _make_config(
 
 def _make_ctx(cfg: MaintainerConfig) -> AgentContext:
     github = AsyncMock()
-    github.list_pull_request_files = AsyncMock(return_value=[])
+    github.list_pull_request_files = AsyncMock(
+        return_value=[{"path": "src/foo.py", "additions": 10, "deletions": 5}]
+    )
     github.list_pull_requests = AsyncMock(return_value=[])
     github.ensure_label = AsyncMock()
     github.add_labels = AsyncMock(return_value=[])
