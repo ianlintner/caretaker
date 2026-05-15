@@ -270,9 +270,7 @@ def _is_system_pr(pr: Any) -> bool:
     if head_ref.startswith(_SYSTEM_BRANCH_PREFIXES):
         return True
     body: str = getattr(pr, "body", "") or ""
-    if DOCS_AGENT_MARKER in body:
-        return True
-    return False
+    return DOCS_AGENT_MARKER in body
 
 
 def _build_changelog_entry(prs: list[Any]) -> str:
