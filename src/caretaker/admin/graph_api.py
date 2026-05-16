@@ -104,6 +104,23 @@ async def pr_lifecycle(
     return await _get_store().get_neighbors(f"pr:{number}", depth=2)
 
 
+@router.get("/causal/{event_id}/chain")
+async def causal_chain(
+    event_id: str,
+    max_depth: int = Query(default=50, ge=1, le=200),
+    _user: UserInfo = Depends(require_session),
+) -> SubGraph:
+    """Return the full ancestor+descendant chain rooted at a CausalEvent.
+
+    Unlike ``/api/admin/causal/{id}/descendants`` (flat list of events),
+    this endpoint returns a :class:`SubGraph` that includes the attached
+    PR / Issue / Comment / Run nodes via the ``ON`` / ``EMITS`` /
+    ``HAS_EVENT`` edges, so the visualizer can render the complete
+    "what caused what, on which entities" story in one fetch.
+    """
+    return await _get_store().get_causal_chain(event_id, max_depth=max_depth)
+
+
 # ── Compaction (M4) ────────────────────────────────────────────────────────
 
 

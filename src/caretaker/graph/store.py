@@ -65,6 +65,8 @@ class GraphStore:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (inc:Incident) REQUIRE inc.id IS UNIQUE",
             # Graph unification: Branch node (2026-05).
             "CREATE CONSTRAINT IF NOT EXISTS FOR (b:Branch) REQUIRE b.id IS UNIQUE",
+            # Graph unification: WebhookKind aggregate node (2026-05).
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (w:WebhookKind) REQUIRE w.id IS UNIQUE",
         ]
         async with self._driver.session(database=self._database) as session:
             for q in queries:
@@ -228,6 +230,82 @@ class GraphStore:
                             properties=dict(r),
                         )
 
+        return SubGraph(nodes=list(seen_nodes.values()), edges=list(seen_edges.values()))
+
+    async def get_causal_chain(
+        self,
+        event_id: str,
+        *,
+        max_depth: int = 50,
+    ) -> SubGraph:
+        """Return the full causal chain rooted at a ``:CausalEvent`` node.
+
+        Walks the ``CAUSED_BY`` chain in both directions (ancestors and
+        descendants) and pulls in the attached PR / Issue / Comment / Run
+        nodes via ``ON`` / ``EMITS`` / ``HAS_EVENT`` so the visualizer can
+        render the full "what caused what" story in a single payload.
+
+        ``event_id`` is the bare causal id (e.g. ``"abc123"``); the store
+        prepends the ``causal:`` prefix that the writer uses internally.
+
+        TODO(user): implement the Cypher query — see graph_api.py for the
+        endpoint contract. The query should bind ``$node_id`` (full prefixed
+        id) and ``$max_depth``, and return ``nodes`` + ``rels`` lists in the
+        same shape :meth:`get_neighbors` uses so the projection loop below
+        works unchanged.
+        """
+        node_id = f"causal:{event_id}" if not event_id.startswith("causal:") else event_id
+        # Bidirectional CAUSED_BY walk (undirected ``-[*]-``) from the
+        # anchor event, capped by ``$max_depth`` rungs. Each chain node
+        # then fans out to its attached PR/Issue/Comment/Run via the
+        # ``ON`` / ``EMITS`` / ``HAS_EVENT`` edges so the visualiser
+        # gets the entities the chain operated on without a second
+        # round trip. ``collect(DISTINCT ...)`` deduplicates nodes /
+        # rels that appear on multiple paths (diamond shaped chains).
+        depth_cap = max(1, min(int(max_depth), 200))  # bound the planner cost
+        query = (
+            "MATCH path = (start:CausalEvent {id: $node_id})"
+            f"-[:CAUSED_BY*0..{depth_cap}]-(chain) "
+            "WITH collect(DISTINCT chain) AS events, "
+            "     collect(DISTINCT path) AS paths "
+            "UNWIND events AS e "
+            "OPTIONAL MATCH (e)-[r:ON|EMITS|HAS_EVENT]-(attached) "
+            "WITH events, paths, "
+            "     collect(DISTINCT attached) AS attached_nodes, "
+            "     collect(DISTINCT r) AS attached_rels "
+            "RETURN events + attached_nodes AS nodes, "
+            "       reduce(rs=[], p IN paths | rs + relationships(p)) "
+            "         + attached_rels AS rels"
+        )
+
+        seen_nodes: dict[str, GraphNode] = {}
+        seen_edges: dict[str, GraphEdge] = {}
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, node_id=node_id)
+            async for record in result:
+                for n in record["nodes"]:
+                    props = dict(n)
+                    nid = str(props.pop("id", n.element_id))
+                    if nid not in seen_nodes:
+                        labels = list(n.labels)
+                        seen_nodes[nid] = GraphNode(
+                            id=nid,
+                            type=labels[0] if labels else "Unknown",
+                            label=str(props.get("name", props.get("number", nid))),
+                            properties=props,
+                        )
+                for r in record["rels"]:
+                    eid = str(r.element_id)
+                    if eid not in seen_edges:
+                        src_props = dict(r.start_node)
+                        tgt_props = dict(r.end_node)
+                        seen_edges[eid] = GraphEdge(
+                            id=eid,
+                            source=str(src_props.get("id", r.start_node.element_id)),
+                            target=str(tgt_props.get("id", r.end_node.element_id)),
+                            type=r.type,
+                            properties=dict(r),
+                        )
         return SubGraph(nodes=list(seen_nodes.values()), edges=list(seen_edges.values()))
 
     async def get_shortest_path(self, from_id: str, to_id: str) -> SubGraph:

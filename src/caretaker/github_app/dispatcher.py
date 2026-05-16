@@ -46,7 +46,7 @@ import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from caretaker.github_app.events import agents_for_event
 from caretaker.identity.bot import deterministic_family
@@ -323,6 +323,38 @@ class WebhookDispatcher:
             mode=self._mode.value,
             outcome=outcome,
         )
+        # Project this delivery's signature into the graph so the admin
+        # dashboard can answer "which event sources is this repo seeing
+        # and were they routed?" without joining against Prometheus.
+        # Filter-path outcomes (``not_in_allowlist`` / ``self_sender``)
+        # short-circuit above and intentionally skip this projection.
+        try:
+            from caretaker.graph.webhooks import (
+                record_webhook_to_graph,
+                record_webhook_trigger,
+            )
+
+            repo_slug = parsed.repository_full_name or ""
+            record_webhook_to_graph(
+                repo=repo_slug,
+                event_type=parsed.event_type,
+                action=parsed.action,
+                outcome=outcome,
+            )
+            # Project TRIGGERED edges to the entities the webhook was
+            # about. We use the inbound payload (not agent-side fan-out)
+            # so the edge cardinality stays "per delivery, per entity"
+            # — typically 0 or 1 PR + 0 or 1 issue per webhook.
+            for target_label, target_id in _trigger_targets(parsed):
+                record_webhook_trigger(
+                    repo=repo_slug,
+                    event_type=parsed.event_type,
+                    action=parsed.action,
+                    target_label=target_label,
+                    target_id=target_id,
+                )
+        except Exception:  # pragma: no cover - graph write is best-effort
+            logger.debug("graph webhook projection failed", exc_info=True)
         return DispatchResult(
             mode=self._mode,
             event=parsed.event_type,
@@ -380,20 +412,25 @@ class WebhookDispatcher:
         shadowed: list[str] = []
         failed: list[str] = []
 
-        for agent in agents:
-            if self._active_agents is not None and agent not in self._active_agents:
-                # Outside the allow-list → shadow. Keeps dashboards
-                # populated for un-promoted agents during rollout.
-                self._log_agent_would_run(parsed, agent)
-                record_worker_job(job=f"webhook:{agent}", outcome="shadow", duration=0.0)
-                shadowed.append(agent)
-                continue
+        # Push the active PR/Issue scope so any memory writes during this
+        # dispatch get TOUCHED_MEMORY edges back to the entity the agent
+        # is acting on. ``_scope_for`` returns a no-op context manager when
+        # the payload carries no PR/Issue number (e.g. push, ping).
+        with _scope_for(parsed):
+            for agent in agents:
+                if self._active_agents is not None and agent not in self._active_agents:
+                    # Outside the allow-list → shadow. Keeps dashboards
+                    # populated for un-promoted agents during rollout.
+                    self._log_agent_would_run(parsed, agent)
+                    record_worker_job(job=f"webhook:{agent}", outcome="shadow", duration=0.0)
+                    shadowed.append(agent)
+                    continue
 
-            outcome = await self._run_one_active_agent(parsed, agent, context)
-            if outcome == "success":
-                ran.append(agent)
-            else:
-                failed.append(agent)
+                outcome = await self._run_one_active_agent(parsed, agent, context)
+                if outcome == "success":
+                    ran.append(agent)
+                else:
+                    failed.append(agent)
 
         self._log(parsed, "active", agents)
         detail = f"active ran={len(ran)} failed={len(failed)} shadowed={len(shadowed)}"
@@ -483,6 +520,76 @@ class WebhookDispatcher:
             parsed.installation_id,
             parsed.repository_full_name,
         )
+
+
+def _extract_pr_issue(parsed: ParsedWebhook) -> tuple[int | None, int | None]:
+    """Pull the (pr_number, issue_number) out of a parsed webhook payload.
+
+    GitHub stamps ``payload.pull_request.number`` on pull_request events
+    and ``payload.issue.number`` on issue events. issue_comment events on
+    a PR carry *both* (``issue.pull_request`` is the PR link) — in that
+    case we attribute to the PR only so the TRIGGERED edge points at the
+    work entity rather than the issue shell.
+    """
+    payload = parsed.payload or {}
+    pr_number: int | None = None
+    issue_number: int | None = None
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict) and isinstance(pr.get("number"), int):
+        pr_number = pr["number"]
+    issue = payload.get("issue")
+    if isinstance(issue, dict) and isinstance(issue.get("number"), int):
+        if pr_number is None and "pull_request" not in issue:
+            issue_number = issue["number"]
+        elif pr_number is None and "pull_request" in issue:
+            # issue_comment on a PR — promote to pr_number.
+            pr_link = issue.get("pull_request")
+            if isinstance(pr_link, dict):
+                pr_number = issue["number"]
+    return pr_number, issue_number
+
+
+def _trigger_targets(parsed: ParsedWebhook) -> list[tuple[str, str]]:
+    """Return ``(label, node_id)`` pairs the webhook should connect to."""
+    pr_number, issue_number = _extract_pr_issue(parsed)
+    out: list[tuple[str, str]] = []
+    if pr_number is not None:
+        out.append(("PR", f"pr:{pr_number}"))
+    if issue_number is not None:
+        out.append(("Issue", f"issue:{issue_number}"))
+    return out
+
+
+def _scope_for(parsed: ParsedWebhook) -> Any:
+    """Return a context manager that pushes the active PR/Issue scope.
+
+    Extracts the PR or Issue number from the well-known GitHub payload
+    shapes (via :func:`_extract_pr_issue`) and pushes a
+    :class:`~caretaker.graph.scope.Scope` so memory writes during the
+    dispatch get attributed via ``TOUCHED_MEMORY``. Returns a no-op
+    context manager when neither number is present (push, ping, etc.)
+    or when the graph package isn't importable.
+    """
+    try:
+        from caretaker.graph.scope import Scope, active_scope
+    except Exception:  # pragma: no cover - graph package optional
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    pr_number, issue_number = _extract_pr_issue(parsed)
+    if pr_number is None and issue_number is None:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    return active_scope(
+        Scope(
+            repo=parsed.repository_full_name or "",
+            pr_number=pr_number,
+            issue_number=issue_number,
+        )
+    )
 
 
 def _max_in_flight() -> int:

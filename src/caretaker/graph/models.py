@@ -82,6 +82,15 @@ class NodeType(StrEnum):
     # into the graph via ``TOUCHED_MEMORY`` edges lets Cypher answer
     # "what did the agent remember when it acted on this PR?"
     MEMORY_ENTRY = "MemoryEntry"
+    # ── Graph unification (2026-05, webhook coverage) ────────────────────
+    # ``:WebhookKind`` is the *aggregated* webhook node — one per
+    # ``(repo, event_type, action)`` signature rather than per delivery,
+    # so cardinality stays bounded (typically ~50/repo) while still
+    # answering "which event signatures does this repo see?" and
+    # "which signature triggered runs/PRs?". The per-delivery trace lives
+    # in the existing ``:CausalEvent`` chain. Counters (``deliveries``,
+    # ``last_outcome``) are upserted by the dispatcher via ``GraphWriter``.
+    WEBHOOK_KIND = "WebhookKind"
 
 
 class RelType(StrEnum):
@@ -155,6 +164,11 @@ class RelType(StrEnum):
     # decision on this entity. Written by the graph writer when an agent
     # stores memory during a run scoped to this PR/Issue.
     TOUCHED_MEMORY = "TOUCHED_MEMORY"  # PR|Issue → MemoryEntry
+    # WebhookKind → Run|PR|Issue: a webhook signature delivered an event
+    # that the dispatcher routed to this entity. Counter ``deliveries`` on
+    # the edge tracks how many times this (signature → target) tuple has
+    # been seen so cypher can rank "noisy" event sources per target.
+    TRIGGERED = "TRIGGERED"  # WebhookKind → Run|PR|Issue
 
 
 class GraphNode(BaseModel):

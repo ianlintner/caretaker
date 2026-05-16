@@ -180,6 +180,52 @@ class Neo4jMemoryBackend:
             )
         if self._max_entries > 0:
             self._enforce_namespace_limit(namespace)
+        # Project a TOUCHED_MEMORY edge into the graph when the caller has
+        # opened a PR/Issue scope. The edge connects the active entity to
+        # this :MemoryEntry so cypher can answer "what did the agent
+        # remember when it acted on this PR?". Best-effort: writer is a
+        # no-op when Neo4j graph isn't configured.
+        self._maybe_link_memory_scope(namespace, key)
+
+    def _maybe_link_memory_scope(self, namespace: str, key: str) -> None:
+        """Stamp a ``TOUCHED_MEMORY`` edge from the active PR/Issue scope."""
+        try:
+            from caretaker.graph.models import NodeType, RelType
+            from caretaker.graph.scope import current
+            from caretaker.graph.writer import get_writer
+        except Exception:  # pragma: no cover - graph package optional in tests
+            return
+        scope = current()
+        if scope is None:
+            return
+        if scope.pr_number is None and scope.issue_number is None:
+            return
+        writer = get_writer()
+        # MemoryEntry node id mirrors the (namespace, key) uniqueness
+        # constraint so the edge merge resolves to the same row the
+        # cypher above just upserted.
+        entry_id = f"memory:{namespace}:{key}"
+        writer.record_node(
+            NodeType.MEMORY_ENTRY,
+            entry_id,
+            {"namespace": namespace, "key": key, "repo": scope.repo},
+        )
+        if scope.pr_number is not None:
+            writer.record_edge(
+                NodeType.PR,
+                f"pr:{scope.pr_number}",
+                NodeType.MEMORY_ENTRY,
+                entry_id,
+                RelType.TOUCHED_MEMORY,
+            )
+        if scope.issue_number is not None:
+            writer.record_edge(
+                NodeType.ISSUE,
+                f"issue:{scope.issue_number}",
+                NodeType.MEMORY_ENTRY,
+                entry_id,
+                RelType.TOUCHED_MEMORY,
+            )
 
     def set_json(
         self,
