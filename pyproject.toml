@@ -55,7 +55,7 @@ dev = [
     "kubernetes>=30,<34",
     "azure-servicebus>=7.11",
     "azure-identity>=1.16",
-    "aiohttp>=3.9",
+    "aiohttp>=3.13.5",
 ]
 docs = [
     "mkdocs>=1.6,<2",
@@ -111,7 +111,7 @@ k8s-worker = [
 asb = [
     "azure-servicebus>=7.11",
     "azure-identity>=1.16",
-    "aiohttp>=3.9",          # required by azure-identity[aio] async transport
+    "aiohttp>=3.13.5",          # required by azure-identity[aio] async transport
 ]
 # Workstream A4 — offline evaluation of the shadow-decision stream via
 # Braintrust. The harness falls open to a local-only JSON report when
