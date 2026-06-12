@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-W21] — 2026-05-18
+
+- bump urllib3 from 2.6.3 to 2.7.0 in the uv group across 1 directory (#712)
+- bump authlib from 1.7.0 to 1.7.1 in the uv group across 1 directory (#715)
+- bump GitHub Actions to Node.js 24-compatible versions (#720)
+- remediate escalated Dependabot security findings (#721)
+
 ## [2026-W20] — 2026-05-11
 
 - default complex_reviewer to opencode (#672)
