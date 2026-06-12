@@ -1,4 +1,6 @@
-# Caretaker
+# Caretaker (Deprecated)
+
+This was an interesting experiment with AI agents building themselves, but ultimately a general purpose agent such as openclaw or hermes variants integrated with engineeering process is far more effective due to its extensive eco-system and integrations. The major learning is the ecosystem is changing so fast and general purpose agents may work for 80% rather than the 20%.
 
 Autonomous GitHub repository management powered by Copilot and github app.
 
